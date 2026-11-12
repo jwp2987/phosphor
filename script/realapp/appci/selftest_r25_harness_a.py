@@ -228,7 +228,7 @@ def r25_no_lab_case_builds_a_raw_append_line_for_a_nu_arm():
         for n in ast.walk(tree):
             if isinstance(n, ast.Constant) and isinstance(n.value, str) and ">>" in n.value and id(n) not in docs:
                 v = n.value
-                if v in ("echo %s >> %s", "pwd >> %s") or any(a in v for a in ("sh -c", "^sh -c", "print -l $preexec_functions", "$EPOCHREALTIME")):
+                if v in ("echo %s >> %s", "pwd >> %s") or any(a in v for a in ("sh -c", "^sh -c", "print -l $preexec_functions", "typeset -p preexec_functions", "$EPOCHREALTIME")):
                     continue
                 if fn == "cases_lab_diff.py" and v.startswith("cd %s && echo two >>"):
                     continue                       # CLG.run: the script goes through `sh -c` / base64 | sh

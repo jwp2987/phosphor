@@ -99,6 +99,7 @@ __pa_n=0
 # __pa_ran, so a line the shell ran is logged even when its number was reused; a precmd with neither (an empty Enter, ^C at the prompt) logs nothing.
 __pa_ran=
 __pa_rec() {
+  setopt localoptions noerrreturn noerrexit unset nopipefail noprintexitvalue noxtrace nowarncreateglobal noksharrays clobber appendcreate 2>/dev/null   # r25: as __pa_pxh
   local c; c=${history[$((HISTCMD-1))]};   # raw history text: `fc -l` prints a ZWJ / unprintable as the TEXT \\u200d (r18e4)
   [[ -n $c ]] || c=$(fc -ln -1 2>/dev/null)
   c=${c#"${c%%%%[![:space:]]*}"}; c=${c//$'\n'/\\n}
@@ -127,9 +128,16 @@ __pa_px=; __pa_lf=; __pa_ah=; __pa_p0=
 # #2162: the line is logged from preexec itself ($1 is the line the shell is about to run), not only from the next precmd's history lookup, so a
 # session whose history/precmd path misses it still records it. __pa_pre makes the precmd path skip a line preexec already logged (no double C line).
 __pa_pxh() {
-  __pa_px="$EPOCHREALTIME ${__pa_ah:-0} ${__pa_p0:-0}"; __pa_ah=; __pa_p0=; __pa_ran=1
-  local l=$1; l=${l#"${l%%%%[![:space:]]*}"}; l=${l//$'\n'/\\n}
-  if [[ -n $l ]]; then __pa_pre=1; print -r -- "C"$'\t'"$EPOCHREALTIME"$'\t'"$l" >> "$PA_CTL/rec.log"; fi
+  # #2162 (r25): the hook must not depend on the user's options (err_exit / err_return / nounset / noclobber / xtrace set by a rc or by the app's bootstrap), says on
+  # hook.enter that it ran (time, pid, first 40 bytes of the line) and keeps its own stderr in hook.err, and marks the line as logged ONLY after the write
+  # succeeded, so a failed write here is still caught by the precmd history path instead of being swallowed by __pa_pre.
+  setopt localoptions noerrreturn noerrexit unset nopipefail noprintexitvalue noxtrace nowarncreateglobal noksharrays clobber appendcreate 2>/dev/null
+  {
+    __pa_px="$EPOCHREALTIME ${__pa_ah:-0} ${__pa_p0:-0}"; __pa_ah=; __pa_p0=; __pa_ran=1
+    local l=$1; l=${l#"${l%%%%[![:space:]]*}"}; l=${l//$'\n'/\\n}
+    print -r -- "$EPOCHREALTIME"$'\t'"$$"$'\t'"${l:0:40}" >> "$PA_CTL/hook.enter"
+    if [[ -n $l ]]; then print -r -- "C"$'\t'"$EPOCHREALTIME"$'\t'"$l" >> "$PA_CTL/rec.log" && __pa_pre=1; fi
+  } 2>> "$PA_CTL/hook.err"
 }
 preexec_functions+=(__pa_pxh)
 # #2162: an app bootstrap that rebuilds preexec_functions can drop the hook above; precmd puts it back (and names the loss in $PA_CTL/hook.log)

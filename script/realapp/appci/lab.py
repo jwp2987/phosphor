@@ -384,6 +384,17 @@ class LocalRemote:
                 pass
 
 
+INTERNAL_NU_COMMANDS = ("__warp_report_input",)
+
+
+def drop_internal_commands(cmds, shell):
+    """r25 D: nu's pre_execution hook logs the app's OWN host command (` __warp_report_input`, sent by the Alt-i keybinding via executehostcommand, nu.nu) as a
+    received line. In nu rows those lines are not what the case typed: drop EXACTLY that command (after strip), nothing else. cmds: [(epoch, line)]."""
+    if shell != "nu":
+        return list(cmds)
+    return [(t, c) for t, c in cmds if c.strip() not in INTERNAL_NU_COMMANDS]
+
+
 class LabRemote:
     """the lab user's side over HTTP: effect files live in /work/<user>; a relative name that is not there is looked up in the home (`echo x >> ~/f`);
     the shell logs are the ctl dir's rec.log / prompt.log (fish: fish_rec.log)"""
@@ -427,7 +438,7 @@ class LabRemote:
                     out.append((float(p[1]), p[2]))
                 except ValueError:
                     out.append((0.0, p[2]))
-        return out
+        return drop_internal_commands(out, self.shell)
 
     def prompts(self):
         return len([l for l in self.read("prompt.log") if l.startswith("P")])

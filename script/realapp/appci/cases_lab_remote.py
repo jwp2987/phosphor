@@ -180,7 +180,7 @@ def c_file_tree_remote(ctx, r, arm):
         # no prompt has come back: the shell backend has nothing to react to, and a quiet period shows it neither polls nor guesses
         time.sleep(2.0 + 2 * rt)
         r.check(not saw_added(ctx.log_since(mark), new), "the file was reported before any prompt returned: the shell backend must refresh on prompt events only")
-        ctx.be.type("true", CL.type_pace(ctx), enter=True)
+        ctx.be.type(CL.PROMPT_NUDGE, CL.type_pace(ctx), enter=True)
         seen = ctx.until(lambda: saw_added(ctx.log_since(mark), new), 15 + 6 * rt, step=0.1)
         r.check(bool(seen), "the next prompt did not bring the new file into the tree (no hop=file_tree update naming it)")
     ctx.shot("lab_file_tree_update_%s" % arm["helper"])
@@ -189,7 +189,7 @@ def c_file_tree_remote(ctx, r, arm):
     mark = ctx.log_size()
     lab.ssh(u, "rm -f %s/%s" % (repo, new))
     if arm["helper"] == "nohelper":
-        ctx.be.type("true", CL.type_pace(ctx), enter=True)
+        ctx.be.type(CL.PROMPT_NUDGE, CL.type_pace(ctx), enter=True)
     gone = ctx.until(lambda: any(e == "update" and rem >= 1 for e, _s, rem, _a, _h in tree_events(ctx.log_since(mark))), 15 + 6 * rt, step=0.1)
     r.check(bool(gone), "the removal of the file was never reported (no hop=file_tree update with removed>=1)")
     CL.finish_remote(ctx, r)
