@@ -1,0 +1,21 @@
+{
+ "summary_line": null,
+ "duration_s": null,
+ "run": null,
+ "passed": 0,
+ "failed": 0,
+ "timed_out": 0,
+ "skipped": 0,
+ "slow": 0,
+ "flaky": 0,
+ "failures": [],
+ "regressions": [],
+ "notes": [],
+ "errors": [
+  "error: nextest exited 127 (not 0=passed / 100=test failures).",
+  "ERROR: Job failed: exit status 2"
+ ],
+ "job": "test-windows",
+ "status": "canceled",
+ "duration": 1873.354077
+}

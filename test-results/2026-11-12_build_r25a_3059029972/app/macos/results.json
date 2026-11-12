@@ -1,0 +1,5227 @@
+{
+ "meta": {
+  "platform": "macos",
+  "backend": "mac",
+  "app_display": "macos",
+  "seed": "1",
+  "commit": "083c9f01",
+  "sha": "083c9f01898d499f3990579472f20222c290d1b3",
+  "owner_settings": "sha256 81d188e9844d",
+  "tier": "targeted",
+  "scale": "1"
+ },
+ "generated": "2026-11-12T07:50:51-0600",
+ "summary": {
+  "pass": 19,
+  "fail": 6,
+  "skip": 4,
+  "noref": 7
+ },
+ "cases": [
+  {
+   "name": "mode_proof",
+   "mode": "terminal",
+   "status": "pass",
+   "ran_mode": "terminal",
+   "seconds": 3.7,
+   "evidence": [
+    "mode_proof: log_view_mode=terminal ocr_agent_markers=False ocr_terminal_hint=True queue_destination=table"
+   ],
+   "tainted": false,
+   "wall": [
+    1794485958.61,
+    1794485962.337
+   ],
+   "detail": [
+    "injector accounting: injector sent 1; app saw 1; lost-before-app 0 (Enter: sent 0, app saw 0); of the app's: 0 unbound keydown/typed, 1 taken by a key binding, 0 Enter by a binding; macOS: 1 key-down(s) reached NSApplication, 1 dispatched as key events, 0 not (0 Cmd chord(s) injected)"
+   ],
+   "metrics": {
+    "log_view_mode": "terminal",
+    "queue_destination": "table",
+    "ocr_agent_markers": false,
+    "ocr_terminal_hint": true,
+    "injector": {
+     "sent": 1,
+     "enters_sent": 0,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 1,
+     "unbound": 0,
+     "bound": 1,
+     "enters_bound": 0,
+     "os_keys": 1,
+     "undispatched": 0,
+     "cmd_chords": 0,
+     "menu": 0,
+     "menu_cmd": 0,
+     "cmd_allowed": 0,
+     "app_undelivered": 0,
+     "seen": 1,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 0
+    },
+    "enter_taint": {
+     "taps": 0,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_mode_proof.png"
+   ]
+  },
+  {
+   "name": "ctrl_c_d",
+   "mode": "terminal",
+   "status": "pass",
+   "ran_mode": "terminal",
+   "seconds": 560.8,
+   "evidence": [
+    "enter_route: 78 Enter(s) reached the input editor: Shell=78 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,...]",
+    "host load after the case: loadavg1=3.02 cpus=8"
+   ],
+   "tainted": false,
+   "wall": [
+    1794485963.671,
+    1794486524.509
+   ],
+   "detail": [
+    "Ctrl-C: same trap/timestamp command typed in both terminals; reference measured after Phosphor in the same session; absolute Phosphor median 203.54 ms includes the input-tool spawn (harness floor 140.63095767050982 ms)",
+    "measurement mode: interleaved, blocks of 5 kept samples (+1 discarded lead per block), 12 blocks",
+    "Ctrl-C under flood, app side (#1606): ctrl_event_age p50 2.9 max 10.57 (n=51); key_to_write p50 0.22 max 0.25 (n=39); drawable_wait p50 2.34 max 2.43 (n=3)",
+    "Ctrl-C under flood: Ctrl-C while `yes` floods the terminal; the plain-sleep ctrl_c measurement is the control; reference interleaved with Phosphor in blocks of 5 (A/B/A/B, same session)",
+    "injector accounting: injector sent 9114; app saw 9114; lost-before-app 0 (Enter: sent 80, app saw 80); of the app's: 8944 unbound keydown/typed, 82 taken by a key binding, 78 Enter by a binding; macOS: 9114 key-down(s) reached NSApplication, 9114 dispatched as key events (10 of them a menu key equivalent), 0 not (0 Cmd chord(s) injected)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 78 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "ctrl_c_ms": {
+     "n": 30,
+     "p50": 203.54,
+     "p95": 209.67,
+     "max": 220.07
+    },
+    "ctrl_c_app_segments": {
+     "n": 30,
+     "keydown->ctrl_c_keydown": {
+      "n": 0,
+      "p50": null,
+      "p95": null,
+      "max": null
+     },
+     "ctrl_c_keydown->ctrl_c_to_event_loop": {
+      "n": 30,
+      "p50": 0.35,
+      "p95": 0.39,
+      "max": 0.44
+     },
+     "ctrl_c_to_event_loop->ctrl_c_received": {
+      "n": 30,
+      "p50": 0.04,
+      "p95": 0.11,
+      "max": 0.36
+     },
+     "ctrl_c_received->ctrl_c_pty_write": {
+      "n": 30,
+      "p50": 0.04,
+      "p95": 0.13,
+      "max": 1.88
+     },
+     "keydown_to_write": {
+      "n": 0,
+      "p50": null,
+      "p95": null,
+      "max": null
+     },
+     "handler_to_write": {
+      "n": 30,
+      "p50": 0.45,
+      "p95": 0.77,
+      "max": 2.24
+     }
+    },
+    "harness_floor_ms": 140.631,
+    "reference_ctrl_c_ms": {
+     "n": 30,
+     "p50": 196.68,
+     "p95": 213.88,
+     "max": 215.86
+    },
+    "reference": "Terminal.app (.command via open)",
+    "lat": {
+     "ctrl_c": {
+      "measurement_mode": "sequential",
+      "phosphor": {
+       "n": 30,
+       "p50": 203.54,
+       "p95": 209.67,
+       "max": 220.07
+      },
+      "reference": {
+       "n": 30,
+       "p50": 196.68,
+       "p95": 213.88,
+       "max": 215.86
+      },
+      "reference_name": "Terminal.app (.command via open)",
+      "budget_ms": 20.0,
+      "budget_kind": "overhead",
+      "floor_ms": 140.63095767050982,
+      "notes": [
+       "same trap/timestamp command typed in both terminals; reference measured after Phosphor in the same session; absolute Phosphor median 203.54 ms includes the input-tool spawn (harness floor 140.63095767050982 ms)"
+      ],
+      "per_side": {
+       "phosphor": {
+        "n": 30,
+        "se_median_ms": 0.64
+       },
+       "reference": {
+        "n": 30,
+        "se_median_ms": 0.48
+       }
+      },
+      "overhead_ms": 6.86,
+      "overhead_se_ms": 0.81,
+      "pane_shell": null,
+      "reference_shell": null,
+      "drift_ms": {
+       "phosphor": -1.0,
+       "reference": 0.85
+      },
+      "budget_verdict": "pass",
+      "prev": null,
+      "baseline": {
+       "status": "ok",
+       "p50": 211.52,
+       "p95": 223.47,
+       "delta_ms": -7.98,
+       "delta_pct": -3.8,
+       "verdict": "pass"
+      },
+      "regress_basis": "median",
+      "prev_verdict": "none",
+      "baseline_verdict": "pass",
+      "verdict": "pass"
+     },
+     "ctrl_c_flood": {
+      "measurement_mode": "interleaved",
+      "phosphor": {
+       "n": 30,
+       "p50": 179.39,
+       "p95": 196.0,
+       "max": 199.69
+      },
+      "reference": {
+       "n": 30,
+       "p50": 212.24,
+       "p95": 222.7,
+       "max": 222.76
+      },
+      "reference_name": "Terminal.app (.command via open)",
+      "budget_ms": 20.0,
+      "budget_kind": "overhead",
+      "floor_ms": 140.63095767050982,
+      "notes": [
+       "Ctrl-C while `yes` floods the terminal; the plain-sleep ctrl_c measurement is the control; reference interleaved with Phosphor in blocks of 5 (A/B/A/B, same session)"
+      ],
+      "per_side": {
+       "phosphor": {
+        "n": 30,
+        "se_median_ms": 2.31
+       },
+       "reference": {
+        "n": 30,
+        "se_median_ms": 2.14
+       }
+      },
+      "overhead_ms": -32.85,
+      "overhead_se_ms": 3.32,
+      "pane_shell": "/bin/zsh",
+      "reference_shell": "/bin/zsh",
+      "drift_ms": {
+       "phosphor": -0.4,
+       "reference": 3.37
+      },
+      "budget_verdict": "pass",
+      "prev": null,
+      "baseline": {
+       "status": "ok",
+       "p50": 267.11,
+       "p95": 294.23,
+       "delta_ms": -87.72,
+       "delta_pct": -32.8,
+       "verdict": "pass"
+      },
+      "regress_basis": "median",
+      "prev_verdict": "none",
+      "baseline_verdict": "pass",
+      "verdict": "pass"
+     }
+    },
+    "measurement_mode": "interleaved",
+    "interleave_block": 5,
+    "block_medians_ms": [
+     [
+      "phosphor",
+      177.82
+     ],
+     [
+      "reference",
+      214.53
+     ],
+     [
+      "phosphor",
+      186.16
+     ],
+     [
+      "reference",
+      211.53
+     ],
+     [
+      "phosphor",
+      175.79
+     ],
+     [
+      "reference",
+      208.65
+     ],
+     [
+      "phosphor",
+      181.23
+     ],
+     [
+      "reference",
+      221.32
+     ],
+     [
+      "phosphor",
+      179.2
+     ],
+     [
+      "reference",
+      204.47
+     ],
+     [
+      "phosphor",
+      176.22
+     ],
+     [
+      "reference",
+      194.96
+     ]
+    ],
+    "ctrl_c_flood_ms": {
+     "n": 30,
+     "p50": 179.39,
+     "p95": 196.0,
+     "max": 199.69
+    },
+    "ctrl_c_flood_app_split": {
+     "ctrl_event_age_ms": {
+      "n": 51,
+      "p50": 2.9,
+      "p95": 9.7,
+      "max": 10.57
+     },
+     "key_to_write_ms": {
+      "n": 39,
+      "p50": 0.22,
+      "p95": 0.25,
+      "max": 0.25
+     },
+     "drawable_wait_ms": {
+      "n": 3,
+      "p50": 2.34,
+      "p95": 2.43,
+      "max": 2.43
+     }
+    },
+    "reference_ctrl_c_flood_ms": {
+     "n": 30,
+     "p50": 212.24,
+     "p95": 222.7,
+     "max": 222.76
+    },
+    "ctrl_c_line_integrity": {
+     "phosphor": {
+      "n": 33,
+      "got": 33,
+      "bad": 0,
+      "examples": []
+     },
+     "reference": {
+      "n": 33,
+      "got": 33,
+      "bad": 0,
+      "examples": []
+     }
+    },
+    "injector": {
+     "sent": 9114,
+     "enters_sent": 80,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 9114,
+     "unbound": 8944,
+     "bound": 82,
+     "enters_bound": 78,
+     "os_keys": 9114,
+     "undispatched": 0,
+     "cmd_chords": 0,
+     "menu": 10,
+     "menu_cmd": 0,
+     "cmd_allowed": 0,
+     "app_undelivered": 0,
+     "seen": 9114,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 80
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 78
+    },
+    "enter_taint": {
+     "taps": 154,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 74
+    },
+    "host_load": "loadavg1=3.02 cpus=8"
+   },
+   "shots": [
+    "shots/terminal_ctrl_c_d.png"
+   ]
+  },
+  {
+   "name": "gitbash_subshell",
+   "mode": "terminal",
+   "status": "skip",
+   "ran_mode": "terminal",
+   "seconds": 1.5,
+   "evidence": [],
+   "tainted": false,
+   "wall": [
+    1794486526.656,
+    1794486528.156
+   ],
+   "detail": [
+    "Windows only: Git for Windows' bash.exe as a subshell of the pane's PowerShell (POSIX hosts: the subshells case)",
+    "injector accounting: injector sent 2; app saw 2; lost-before-app 0 (Enter: sent 0, app saw 0); of the app's: 0 unbound keydown/typed, 1 taken by a key binding, 0 Enter by a binding; macOS: 2 key-down(s) reached NSApplication, 2 dispatched as key events (1 of them a menu key equivalent), 0 not (0 Cmd chord(s) injected)"
+   ],
+   "metrics": {
+    "injector": {
+     "sent": 2,
+     "enters_sent": 0,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 2,
+     "unbound": 0,
+     "bound": 1,
+     "enters_bound": 0,
+     "os_keys": 2,
+     "undispatched": 0,
+     "cmd_chords": 0,
+     "menu": 1,
+     "menu_cmd": 0,
+     "cmd_allowed": 0,
+     "app_undelivered": 0,
+     "seen": 2,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 0
+    },
+    "enter_taint": {
+     "taps": 0,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_gitbash_subshell.png"
+   ]
+  },
+  {
+   "name": "latency_enter",
+   "mode": "terminal",
+   "status": "pass",
+   "ran_mode": "terminal",
+   "seconds": 493.9,
+   "evidence": [
+    "enter_route: 111 Enter(s) reached the input editor: Shell=111 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,...]",
+    "host load after the case: loadavg1=4.17 cpus=8"
+   ],
+   "tainted": false,
+   "wall": [
+    1794486530.285,
+    1794487024.212
+   ],
+   "detail": [
+    "measurement mode: interleaved, blocks of 5 kept samples (+1 discarded lead per block), 24 blocks",
+    "app share of Enter->start: enter_begin -> pty_write median 0.79 ms (from the app's input_order log); the remaining overhead is shell/ConPTY side",
+    "shell side: pty_write -> first pty_read median 1.80 ms (n=75)",
+    "M3: Enter -> start with zle_bracketed_paste unset 79.3 ms vs default 78.5 ms (+0.8 ms; 36 app Enters): what zle's bracketed-paste mode costs as a whole (the mode switches around each prompt and, for a wrapped line, the paste widget; ~0 means the mode is not the gap)",
+    "Enter split (Phosphor - reference, medians ms, #1606): t0_to_inj +4.51, inj_to_post +0.02, t0_to_post +4.58, post_to_lf +1.70, lf_to_px +1.81, px_to_stamp -0.09, post_to_stamp +3.17, post_to_px +3.21, t0_to_lf +6.01, lf_to_stamp +1.64, lf_to_ah +0.50, ah_to_p0 +0.73, p0_to_px +0.71; Phosphor app: event_age 0.90, event_to_enter 0.75, enter_to_write 0.79, submit_bookkeeping 0.02, effect_flush 0.21, pty_lock_wait 0.00",
+    "OS split (#1606, medians ms on the OS event clock): phosphor  75, n_matc 75, post_to_evts 47.24, evts_to_tap 0.21, evts_to_app 0.9, evts_to_lf 3.93; reference  75, n_matc 75, post_to_evts 47.24, evts_to_tap 0.35, evts_to_lf 2.09; delta post_to_evts 0.0, evts_to_tap -0.14, evts_to_lf 1.84",
+    "app segment per hop (enter_begin -> pty_write 0.79 ms; medians ms, #2114): enter_to_execute 0.34, submit_bookkeeping 0.02, effect_flush 0.21, command_to_pty 0.21 (sum of the hop medians 0.78)",
+    "REPORT-ONLY: Enter to command start: Phosphor overhead 3.11 +/- 0.51 ms (SE) over Terminal.app (.command via open) vs the 2 ms budget, NOT judged (macOS-bound; #1606 closed by owner 2026-11-05); the app's own share and the OS split are in the notes/metrics",
+    "Enter to command start: reference interleaved with Phosphor in blocks of 5 (A/B/A/B, same session); Linux headless-GPU numbers compare builds, not absolute vs hand-measured baselines",
+    "injector accounting: injector sent 9529; app saw 9529; lost-before-app 0 (Enter: sent 110, app saw 110); of the app's: 9385 unbound keydown/typed, 17 taken by a key binding, 110 Enter by a binding; macOS: 9529 key-down(s) reached NSApplication, 9529 dispatched as key events (17 of them a menu key equivalent), 0 not (0 Cmd chord(s) injected)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 110 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "pane_shell": "/bin/zsh",
+    "stamp_line": "zmodload zsh/datetime; print -r -- $EPOCHREALTIME ${__pa_px:-0} ${__pa_lf:-0} > lat_%d",
+    "enter_sample_start": "injector_spawn",
+    "host_load": "loadavg1=4.17 cpus=8",
+    "measurement_mode": "interleaved",
+    "interleave_block": 5,
+    "block_medians_ms": [
+     [
+      "phosphor",
+      78.01
+     ],
+     [
+      "reference",
+      75.52
+     ],
+     [
+      "phosphor",
+      77.64
+     ],
+     [
+      "reference",
+      76.19
+     ],
+     [
+      "phosphor",
+      80.08
+     ],
+     [
+      "reference",
+      75.3
+     ],
+     [
+      "phosphor",
+      78.55
+     ],
+     [
+      "reference",
+      75.81
+     ],
+     [
+      "phosphor",
+      82.07
+     ],
+     [
+      "reference",
+      74.9
+     ],
+     [
+      "phosphor",
+      80.25
+     ],
+     [
+      "reference",
+      74.95
+     ],
+     [
+      "phosphor",
+      77.83
+     ],
+     [
+      "reference",
+      75.17
+     ],
+     [
+      "phosphor",
+      78.33
+     ],
+     [
+      "reference",
+      73.59
+     ],
+     [
+      "phosphor",
+      77.21
+     ],
+     [
+      "reference",
+      76.64
+     ],
+     [
+      "phosphor",
+      77.47
+     ],
+     [
+      "reference",
+      75.03
+     ],
+     [
+      "phosphor",
+      81.86
+     ],
+     [
+      "reference",
+      75.57
+     ],
+     [
+      "phosphor",
+      78.26
+     ],
+     [
+      "reference",
+      75.31
+     ]
+    ],
+    "enter_to_start_ms": {
+     "n": 60,
+     "p50": 78.46,
+     "p95": 87.5,
+     "max": 91.32
+    },
+    "app_enter_to_pty_write_ms": 0.79,
+    "app_segments_ms": {
+     "event_age_ms": 0.9,
+     "event_age_n": 75,
+     "event_to_enter_ms": 0.75,
+     "event_to_enter_n": 75,
+     "enter_to_write_ms": 0.79,
+     "enter_to_write_n": 75,
+     "submit_bookkeeping_ms": 0.02,
+     "submit_bookkeeping_n": 75,
+     "effect_flush_ms": 0.21,
+     "effect_flush_n": 75,
+     "write_to_first_read_ms": 1.8,
+     "write_to_first_read_n": 75,
+     "write_to_preexec_ms": 3.27,
+     "write_to_preexec_n": 75,
+     "pty_lock_wait_ms": 0.0,
+     "pty_lock_wait_n": 75,
+     "enter_to_execute_ms": 0.34,
+     "enter_to_execute_n": 75,
+     "command_to_pty_ms": 0.21,
+     "command_to_pty_n": 75,
+     "platform": "macos"
+    },
+    "harness_floor_ms": 140.631,
+    "unset_bracketed_paste_app_enters": 36,
+    "unset_bracketed_paste_enter_to_start_ms": {
+     "n": 30,
+     "p50": 79.28,
+     "p95": 91.31,
+     "max": 91.74
+    },
+    "unset_bracketed_paste_minus_default_ms": 0.83,
+    "reference_enter_to_start_ms": {
+     "n": 60,
+     "p50": 75.35,
+     "p95": 81.55,
+     "max": 114.27
+    },
+    "reference": "Terminal.app (.command via open)",
+    "reference_shell": "/bin/zsh",
+    "enter_split_ms": {
+     "phosphor": {
+      "n": 75,
+      "t0_to_inj_ms": 124.44,
+      "inj_to_post_ms": 24.89,
+      "t0_to_post_ms": 149.37,
+      "post_to_lf_ms": 51.28,
+      "lf_to_px_ms": 2.26,
+      "px_to_stamp_ms": 0.37,
+      "post_to_stamp_ms": 53.8,
+      "post_to_px_ms": 53.31,
+      "t0_to_lf_ms": 200.84,
+      "lf_to_stamp_ms": 2.58,
+      "lf_to_ah_ms": 0.7,
+      "ah_to_p0_ms": 0.77,
+      "p0_to_px_ms": 0.91
+     },
+     "reference": {
+      "n": 75,
+      "t0_to_inj_ms": 119.93,
+      "inj_to_post_ms": 24.87,
+      "t0_to_post_ms": 144.79,
+      "post_to_lf_ms": 49.58,
+      "lf_to_px_ms": 0.45,
+      "px_to_stamp_ms": 0.46,
+      "post_to_stamp_ms": 50.63,
+      "post_to_px_ms": 50.1,
+      "t0_to_lf_ms": 194.83,
+      "lf_to_stamp_ms": 0.94,
+      "lf_to_ah_ms": 0.2,
+      "ah_to_p0_ms": 0.04,
+      "p0_to_px_ms": 0.2
+     },
+     "delta": {
+      "t0_to_inj_ms": 4.51,
+      "inj_to_post_ms": 0.02,
+      "t0_to_post_ms": 4.58,
+      "post_to_lf_ms": 1.7,
+      "lf_to_px_ms": 1.81,
+      "px_to_stamp_ms": -0.09,
+      "post_to_stamp_ms": 3.17,
+      "post_to_px_ms": 3.21,
+      "t0_to_lf_ms": 6.01,
+      "lf_to_stamp_ms": 1.64,
+      "lf_to_ah_ms": 0.5,
+      "ah_to_p0_ms": 0.73,
+      "p0_to_px_ms": 0.71
+     },
+     "phosphor_app": {
+      "event_age_ms": 0.9,
+      "event_to_enter_ms": 0.75,
+      "enter_to_write_ms": 0.79,
+      "submit_bookkeeping_ms": 0.02,
+      "effect_flush_ms": 0.21,
+      "pty_lock_wait_ms": 0.0
+     }
+    },
+    "enter_os_split_ms": {
+     "phosphor": {
+      "n": 75,
+      "n_matched": 75,
+      "post_to_evts_ms": 47.24,
+      "evts_to_tap_ms": 0.21,
+      "evts_to_app_ms": 0.9,
+      "evts_to_lf_ms": 3.93
+     },
+     "reference": {
+      "n": 75,
+      "n_matched": 75,
+      "post_to_evts_ms": 47.24,
+      "evts_to_tap_ms": 0.35,
+      "evts_to_lf_ms": 2.09
+     },
+     "delta": {
+      "post_to_evts_ms": 0.0,
+      "evts_to_tap_ms": -0.14,
+      "evts_to_lf_ms": 1.84
+     }
+    },
+    "enter_hops_ms": {
+     "hops": {
+      "enter_to_execute_ms": 0.34,
+      "submit_bookkeeping_ms": 0.02,
+      "effect_flush_ms": 0.21,
+      "command_to_pty_ms": 0.21
+     },
+     "whole_ms": 0.79,
+     "sum_ms": 0.78,
+     "vs": []
+    },
+    "lat": {
+     "enter_to_start": {
+      "measurement_mode": "interleaved",
+      "phosphor": {
+       "n": 60,
+       "p50": 78.46,
+       "p95": 87.5,
+       "max": 91.32
+      },
+      "reference": {
+       "n": 60,
+       "p50": 75.35,
+       "p95": 81.55,
+       "max": 114.27
+      },
+      "reference_name": "Terminal.app (.command via open)",
+      "budget_ms": 2.0,
+      "budget_kind": "overhead",
+      "floor_ms": 140.63095767050982,
+      "notes": [
+       "reference interleaved with Phosphor in blocks of 5 (A/B/A/B, same session); Linux headless-GPU numbers compare builds, not absolute vs hand-measured baselines"
+      ],
+      "per_side": {
+       "phosphor": {
+        "n": 60,
+        "se_median_ms": 0.5
+       },
+       "reference": {
+        "n": 60,
+        "se_median_ms": 0.2
+       }
+      },
+      "overhead_ms": 3.11,
+      "overhead_se_ms": 0.51,
+      "pane_shell": "/bin/zsh",
+      "reference_shell": "/bin/zsh",
+      "drift_ms": {
+       "phosphor": -1.51,
+       "reference": -0.27
+      },
+      "budget_verdict": "fail",
+      "prev": null,
+      "baseline": {
+       "status": "ok",
+       "p50": 96.09,
+       "p95": 110.22,
+       "delta_ms": -17.63,
+       "delta_pct": -18.3,
+       "verdict": "pass"
+      },
+      "regress_basis": "median",
+      "prev_verdict": "none",
+      "baseline_verdict": "pass",
+      "verdict": "fail"
+     }
+    },
+    "injector": {
+     "sent": 9529,
+     "enters_sent": 110,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 9529,
+     "unbound": 9385,
+     "bound": 17,
+     "enters_bound": 110,
+     "os_keys": 9529,
+     "undispatched": 0,
+     "cmd_chords": 0,
+     "menu": 17,
+     "menu_cmd": 0,
+     "cmd_allowed": 0,
+     "app_undelivered": 0,
+     "seen": 9529,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 110
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 110
+    },
+    "enter_taint": {
+     "taps": 186,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 76
+    }
+   },
+   "shots": [
+    "shots/terminal_latency_enter.png"
+   ]
+  },
+  {
+   "name": "latency_key_log",
+   "mode": "terminal",
+   "status": "pass",
+   "ran_mode": "terminal",
+   "seconds": 30.2,
+   "evidence": [
+    "enter_route: 1 Enter(s) reached the input editor: Shell=1 [Shell]",
+    "host load after the case: loadavg1=3.24 cpus=8"
+   ],
+   "tainted": false,
+   "wall": [
+    1794487027.039,
+    1794487057.232
+   ],
+   "detail": [
+    "#2037 key to frame without the wait for the display pass (the app's own share): median 1.46 ms (p95 2.24, n=60); the wait itself: median 0.04 ms (max 7.00)",
+    "#1176 key -> pty write median 0.36 ms (p95 0.76, n=60): within the 1 ms target",
+    "#1995 notifies logged before 12 of 77 key frame build(s): Input:new_10 x26, Input:handle_completion_suggestions_results_3 x13, Input:clear_selected_workflow x1, Input:close_input_suggestions x1 (+5 more)",
+    "#1958 platform samples while typing 63 key(s): 1 (median 59 us, max 59 us, 0 at or over 1 ms); foreground-group lookups by path: none logged",
+    "key to frame: no reference terminal exists for this measurement, so the overhead budget was not judged; JUDGED on the app's own share (key_to_frame_less_display_wait): 1.46 ms against its 2.0 ms budget (n=60): PASS",
+    "key to frame: Phosphor-side keydown to first frame; no same-method reference exists",
+    "key to frame: baseline: no app-share figure (key_to_frame_less_display_wait) in that record: not compared on the app share (median delta -4.73 ms recorded, not judged)",
+    "injector accounting: injector sent 85; app saw 85; lost-before-app 0 (Enter: sent 1, app saw 1); of the app's: 78 unbound keydown/typed, 4 taken by a key binding, 1 Enter by a binding; macOS: 85 key-down(s) reached NSApplication, 85 dispatched as key events (2 of them a menu key equivalent), 0 not (0 Cmd chord(s) injected)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 1 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "key_to_frame_ms": {
+     "n": 60,
+     "p50": 1.5,
+     "p95": 2.5,
+     "max": 9.23
+    },
+    "key_to_frame_own_ms": {
+     "n": 60,
+     "p50": 1.46,
+     "p95": 2.24,
+     "max": 2.46
+    },
+    "key_frame_display_wait_ms": {
+     "n": 60,
+     "p50": 0.04,
+     "p95": 0.08,
+     "max": 7.0
+    },
+    "key_to_pty_write_ms": {
+     "n": 60,
+     "p50": 0.36,
+     "p95": 0.76,
+     "max": 1.35
+    },
+    "typing_ui_items": {
+     "over_4ms": 0,
+     "over_16ms": 0,
+     "max_ms": 0.0,
+     "by_kind": {}
+    },
+    "typing_lock_holds": {},
+    "key_submit_to_presented_ms": {
+     "n": 73,
+     "p50": 20.21,
+     "p95": 26.01,
+     "max": 30.98
+    },
+    "key_to_presented_ms_hop": {
+     "n": 73,
+     "p50": 22.48,
+     "p95": 48.6,
+     "max": 49.29
+    },
+    "key_presented_wait_ms": {
+     "n": 73,
+     "p50": 0.72,
+     "p95": 1.05,
+     "max": 1.23
+    },
+    "key_frame_sched_ms": {
+     "n": 79,
+     "p50": 0.04,
+     "p95": 3.64,
+     "max": 9.56
+    },
+    "key_frame_now_ms": {
+     "n": 6,
+     "p50": 2.29,
+     "p95": 4.37,
+     "max": 4.37
+    },
+    "echo_frame_now_ms": {
+     "n": 61,
+     "p50": 2.41,
+     "p95": 2.78,
+     "max": 3.48
+    },
+    "echo_frame_key_age_ms": {
+     "n": 61,
+     "p50": 0.92,
+     "p95": 1.18,
+     "max": 35.23
+    },
+    "key_frame_builds": 77,
+    "key_frame_builds_multi_pass": 0,
+    "key_frame_build_render_ms": {
+     "n": 77,
+     "p50": 0.0,
+     "p95": 0.22,
+     "max": 0.94
+    },
+    "key_frame_build_layout_ms": {
+     "n": 77,
+     "p50": 0.21,
+     "p95": 0.73,
+     "max": 1.2
+    },
+    "key_frame_build_after_layout_ms": {
+     "n": 77,
+     "p50": 0.01,
+     "p95": 0.04,
+     "max": 0.33
+    },
+    "key_frame_build_paint_ms": {
+     "n": 77,
+     "p50": 0.49,
+     "p95": 0.62,
+     "max": 1.54
+    },
+    "key_frame_build_hover_ms": {
+     "n": 77,
+     "p50": 0.0,
+     "p95": 0.0,
+     "max": 0.0
+    },
+    "key_frame_build_total_ms": {
+     "n": 77,
+     "p50": 0.86,
+     "p95": 1.81,
+     "max": 2.38
+    },
+    "key_frame_build_other_ms": {
+     "n": 77,
+     "p50": 0.14,
+     "p95": 0.19,
+     "max": 0.37
+    },
+    "key_frame_build_views": {
+     "n": 77,
+     "p50": 0,
+     "p95": 4,
+     "max": 8
+    },
+    "key_frame_build_mounted": {
+     "n": 77,
+     "p50": 13,
+     "p95": 18,
+     "max": 18
+    },
+    "key_frame_build_layout_top_ms": {
+     "Terminal": 0.142,
+     "EditorView": 0.084,
+     "Workspace": 0.026,
+     "InputSuggestions": 0.021,
+     "Input": 0.001
+    },
+    "key_frame_build_paint_top_ms": {
+     "Terminal": 0.365,
+     "Workspace": 0.08,
+     "EditorView": 0.02,
+     "InputSuggestions": 0.004,
+     "DisplayChip": 0.001
+    },
+    "input_notify_causes": {
+     "Input:new_10": 26,
+     "Input:handle_completion_suggestions_results_3": 13,
+     "Input:clear_selected_workflow": 1,
+     "Input:close_input_suggestions": 1,
+     "Input:notify_and_notify_children": 1,
+     "Input:notify_and_notify_children_2": 1,
+     "Input:set_prompt_suggestions_banner_state_2": 1,
+     "Input:try_execute_command_from_source": 1,
+     "Input:try_execute_command_from_source_2": 1
+    },
+    "input_notify_frames": 12,
+    "key_presented_sync_on": 6,
+    "key_presented_sync_off": 67,
+    "key_frames_skipped": 12,
+    "skip_runs": 23,
+    "key_frames_now": 6,
+    "key_frames_now_drawn": 6,
+    "echo_frames_now": 61,
+    "echo_frames_now_drawn": 61,
+    "typing_prompt_samples": {
+     "samples": 1,
+     "max_us": 59,
+     "p50_us": 59,
+     "over_1ms": 0,
+     "lookups": {}
+    },
+    "lat": {
+     "key_to_frame": {
+      "measurement_mode": "sequential",
+      "phosphor": {
+       "n": 60,
+       "p50": 1.5,
+       "p95": 2.5,
+       "max": 9.23
+      },
+      "reference": null,
+      "reference_name": null,
+      "budget_ms": 2.0,
+      "budget_kind": "overhead",
+      "floor_ms": null,
+      "notes": [
+       "Phosphor-side keydown to first frame; no same-method reference exists",
+       "baseline: no app-share figure (key_to_frame_less_display_wait) in that record: not compared on the app share (median delta -4.73 ms recorded, not judged)"
+      ],
+      "per_side": {
+       "phosphor": {
+        "n": 60,
+        "se_median_ms": 0.01
+       }
+      },
+      "overhead_ms": null,
+      "budget_verdict": "no-reference",
+      "prev": null,
+      "baseline": {
+       "status": "ok",
+       "p50": 6.23,
+       "p95": 9.32,
+       "delta_ms": -4.73,
+       "delta_pct": -75.9,
+       "verdict": "none",
+       "median_verdict": "pass",
+       "judged_on": "app_share"
+      },
+      "regress_basis": "app_share",
+      "app_share": {
+       "what": "key_to_frame_less_display_wait",
+       "p50": 1.46,
+       "n": 60,
+       "budget_ms": 2.0,
+       "usable": true,
+       "budget_verdict": "pass",
+       "prev": {
+        "p50": null,
+        "delta_ms": null,
+        "delta_pct": null,
+        "verdict": "none"
+       },
+       "baseline": {
+        "p50": null,
+        "delta_ms": null,
+        "delta_pct": null,
+        "verdict": "none"
+       }
+      },
+      "prev_verdict": "none",
+      "baseline_verdict": "none",
+      "verdict": "no-reference",
+      "tail": {
+       "prev": {
+        "p95": null,
+        "delta_ms": null,
+        "delta_pct": null,
+        "verdict": "none"
+       },
+       "baseline": {
+        "p95": 9.32,
+        "delta_ms": -6.82,
+        "delta_pct": -73.2,
+        "verdict": "pass"
+       }
+      }
+     },
+     "ui_work": {
+      "phosphor": {
+       "n": 0,
+       "p50": null,
+       "p95": null,
+       "max": 0.0
+      },
+      "reference": null,
+      "budget_ms": 4,
+      "budget_kind": "ui-item-log",
+      "overhead_ms": null,
+      "prev": null,
+      "baseline": {
+       "status": "n/a"
+      },
+      "budget_verdict": "pass",
+      "verdict": "pass",
+      "notes": [
+       "hop=ui_item logs every main-thread item >= 4 ms: pass = none while typing; warn = frame items (raster-bound on software GL) or a few logic items; fail = more than max(2, 5 %% of the keys) event/action items; >= 16 ms is a dropped frame"
+      ]
+     }
+    },
+    "ui_slow_ops": {
+     "count": 0,
+     "worst_ms": 0,
+     "ops": []
+    },
+    "ui_items_over_4ms": {
+     "logic_count": 0,
+     "logic_max_ms": 0.0,
+     "frame_count": 0,
+     "frame_max_ms": 0.0,
+     "allowed": 3,
+     "source": "none logged (nothing over 4 ms, or a build older than #1191)"
+    },
+    "injector": {
+     "sent": 85,
+     "enters_sent": 1,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 85,
+     "unbound": 78,
+     "bound": 4,
+     "enters_bound": 1,
+     "os_keys": 85,
+     "undispatched": 0,
+     "cmd_chords": 0,
+     "menu": 2,
+     "menu_cmd": 0,
+     "cmd_allowed": 0,
+     "app_undelivered": 0,
+     "seen": 85,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 1
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 1
+    },
+    "enter_taint": {
+     "taps": 1,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    },
+    "host_load": "loadavg1=3.24 cpus=8"
+   },
+   "shots": [
+    "shots/terminal_latency_key_log.png"
+   ]
+  },
+  {
+   "name": "latency_paint",
+   "mode": "terminal",
+   "status": "pass",
+   "ran_mode": "terminal",
+   "seconds": 126.9,
+   "evidence": [
+    "host load after the case: loadavg1=3.23 cpus=8"
+   ],
+   "tainted": false,
+   "wall": [
+    1794487060.032,
+    1794487186.913
+   ],
+   "detail": [
+    "measurement mode: interleaved, blocks of 5 kept samples (+1 discarded lead per block), 12 blocks",
+    "Key to paint: kl3 measures post-to-first-changed-pixel at 240 Hz in each terminal's own window; reference interleaved with Phosphor in blocks of 5 (A/B/A/B, same session)",
+    "injector accounting: injector sent 53; app saw 53; lost-before-app 0 (Enter: sent 0, app saw 0); of the app's: 20 unbound keydown/typed, 26 taken by a key binding, 0 Enter by a binding; macOS: 53 key-down(s) reached NSApplication, 53 dispatched as key events (7 of them a menu key equivalent), 0 not (0 Cmd chord(s) injected)"
+   ],
+   "metrics": {
+    "measurement_mode": "interleaved",
+    "interleave_block": 5,
+    "block_medians_ms": [
+     [
+      "phosphor",
+      32.22
+     ],
+     [
+      "reference",
+      27.43
+     ],
+     [
+      "phosphor",
+      34.04
+     ],
+     [
+      "reference",
+      37.64
+     ],
+     [
+      "phosphor",
+      33.04
+     ],
+     [
+      "reference",
+      27.53
+     ],
+     [
+      "phosphor",
+      34.68
+     ],
+     [
+      "reference",
+      30.05
+     ],
+     [
+      "phosphor",
+      32.96
+     ],
+     [
+      "reference",
+      27.21
+     ],
+     [
+      "phosphor",
+      33.86
+     ],
+     [
+      "reference",
+      25.6
+     ]
+    ],
+    "key_to_paint_ms": {
+     "n": 30,
+     "p50": 33.28,
+     "p95": 37.05,
+     "max": 38.91
+    },
+    "key_event_age_ms": {
+     "n": 39,
+     "p50": 3.28,
+     "p95": 4.77,
+     "max": 4.93
+    },
+    "drawable_wait_ms": {
+     "n": 1,
+     "p50": 4.21,
+     "p95": 4.21,
+     "max": 4.21
+    },
+    "key_submit_to_presented_ms": {
+     "n": 45,
+     "p50": 23.99,
+     "p95": 32.01,
+     "max": 45.86
+    },
+    "key_to_presented_ms_hop": {
+     "n": 45,
+     "p50": 29.22,
+     "p95": 38.38,
+     "max": 52.36
+    },
+    "key_presented_wait_ms": {
+     "n": 45,
+     "p50": 1.16,
+     "p95": 1.91,
+     "max": 1.97
+    },
+    "key_frame_sched_ms": {
+     "n": 45,
+     "p50": 0.08,
+     "p95": 0.14,
+     "max": 0.17
+    },
+    "key_frame_now_ms": {
+     "n": 45,
+     "p50": 4.19,
+     "p95": 5.16,
+     "max": 5.29
+    },
+    "key_frame_builds": 20,
+    "key_frame_builds_multi_pass": 0,
+    "key_frame_build_render_ms": {
+     "n": 20,
+     "p50": 0.06,
+     "p95": 0.06,
+     "max": 0.06
+    },
+    "key_frame_build_layout_ms": {
+     "n": 20,
+     "p50": 0.52,
+     "p95": 0.7,
+     "max": 0.7
+    },
+    "key_frame_build_after_layout_ms": {
+     "n": 20,
+     "p50": 0.03,
+     "p95": 0.05,
+     "max": 0.05
+    },
+    "key_frame_build_paint_ms": {
+     "n": 20,
+     "p50": 0.96,
+     "p95": 1.16,
+     "max": 1.16
+    },
+    "key_frame_build_hover_ms": {
+     "n": 20,
+     "p50": 0.0,
+     "p95": 0.0,
+     "max": 0.0
+    },
+    "key_frame_build_total_ms": {
+     "n": 20,
+     "p50": 1.93,
+     "p95": 2.15,
+     "max": 2.15
+    },
+    "key_frame_build_other_ms": {
+     "n": 20,
+     "p50": 0.31,
+     "p95": 0.37,
+     "max": 0.37
+    },
+    "key_frame_build_views": {
+     "n": 20,
+     "p50": 1.0,
+     "p95": 3,
+     "max": 3
+    },
+    "key_frame_build_mounted": {
+     "n": 20,
+     "p50": 17.0,
+     "p95": 17,
+     "max": 17
+    },
+    "key_frame_build_layout_top_ms": {
+     "Terminal": 0.281,
+     "EditorView": 0.115,
+     "Workspace": 0.065
+    },
+    "key_frame_build_paint_top_ms": {
+     "Terminal": 0.566,
+     "Workspace": 0.194,
+     "EditorView": 0.069
+    },
+    "input_notify_causes": {
+     "Input:close_voltron": 5,
+     "Input:on_focus": 5
+    },
+    "input_notify_frames": 5,
+    "key_presented_sync_on": 0,
+    "key_presented_sync_off": 45,
+    "key_frames_skipped": 0,
+    "skip_runs": 29,
+    "key_frames_now": 45,
+    "key_frames_now_drawn": 45,
+    "reference_key_to_paint_ms": {
+     "n": 30,
+     "p50": 27.44,
+     "p95": 67.46,
+     "max": 71.41
+    },
+    "reference": "Terminal.app (.command via open)",
+    "lat": {
+     "key_to_paint": {
+      "measurement_mode": "interleaved",
+      "phosphor": {
+       "n": 30,
+       "p50": 33.28,
+       "p95": 37.05,
+       "max": 38.91
+      },
+      "reference": {
+       "n": 30,
+       "p50": 27.44,
+       "p95": 67.46,
+       "max": 71.41
+      },
+      "reference_name": "Terminal.app (.command via open)",
+      "budget_ms": 10.0,
+      "budget_kind": "overhead",
+      "floor_ms": 140.63095767050982,
+      "notes": [
+       "kl3 measures post-to-first-changed-pixel at 240 Hz in each terminal's own window; reference interleaved with Phosphor in blocks of 5 (A/B/A/B, same session)"
+      ],
+      "per_side": {
+       "phosphor": {
+        "n": 30,
+        "se_median_ms": 0.59
+       },
+       "reference": {
+        "n": 30,
+        "se_median_ms": 1.53
+       }
+      },
+      "overhead_ms": 5.84,
+      "overhead_se_ms": 1.7,
+      "pane_shell": null,
+      "reference_shell": null,
+      "drift_ms": {
+       "phosphor": 0.62,
+       "reference": -1.77
+      },
+      "budget_verdict": "pass",
+      "prev": null,
+      "baseline": {
+       "status": "ok",
+       "p50": 43.99,
+       "p95": 53.71,
+       "delta_ms": -10.71,
+       "delta_pct": -24.3,
+       "verdict": "pass"
+      },
+      "regress_basis": "median",
+      "prev_verdict": "none",
+      "baseline_verdict": "pass",
+      "verdict": "pass"
+     }
+    },
+    "injector": {
+     "sent": 53,
+     "enters_sent": 0,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 53,
+     "unbound": 20,
+     "bound": 26,
+     "enters_bound": 0,
+     "os_keys": 53,
+     "undispatched": 0,
+     "cmd_chords": 0,
+     "menu": 7,
+     "menu_cmd": 0,
+     "cmd_allowed": 0,
+     "app_undelivered": 0,
+     "seen": 53,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 0
+    },
+    "enter_taint": {
+     "taps": 1,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 1
+    },
+    "host_load": "loadavg1=3.23 cpus=8"
+   },
+   "shots": [
+    "shots/terminal_latency_paint.png"
+   ]
+  },
+  {
+   "name": "latency_first_key_after_idle",
+   "mode": "terminal",
+   "status": "noref",
+   "ran_mode": "terminal",
+   "seconds": 754.3,
+   "evidence": [
+    "host load after the case: loadavg1=1.91 cpus=8"
+   ],
+   "tainted": false,
+   "wall": [
+    1794487189.712,
+    1794487944.022
+   ],
+   "detail": [
+    "First key after 1 s idle: first key after 1 s idle, kl3 post-to-first-changed-pixel at 240 Hz (4.17 ms quantum, not applied as a resolution veto: the SE of the median difference is); Phosphor and Terminal.app in blocks of 10, the first side alternating per gap",
+    "NO-REFERENCE: First key after 2 s idle: the reference measured implausibly slow (overhead -6.55 ms): INCONCLUSIVE/NO-COMPARE, the overhead budget was NOT judged (not a pass)",
+    "First key after 2 s idle: first key after 2 s idle, kl3 post-to-first-changed-pixel at 240 Hz (4.17 ms quantum, not applied as a resolution veto: the SE of the median difference is); Phosphor and Terminal.app in blocks of 10, the first side alternating per gap",
+    "First key after 2 s idle: IMPLAUSIBLE reference: Phosphor is 6.55 ms FASTER than the reference (> 5 ms, beyond 2 SE of 2.3524511120302347): an ordering / focus / idle-wake artifact of the reference window, not a Phosphor figure; NOREF, no verdict (a PASS here would rest on a mis-measured reference)",
+    "NO-REFERENCE: First key after 5 s idle: the reference measured implausibly slow (overhead -16.49 ms): INCONCLUSIVE/NO-COMPARE, the overhead budget was NOT judged (not a pass)",
+    "First key after 5 s idle: first key after 5 s idle, kl3 post-to-first-changed-pixel at 240 Hz (4.17 ms quantum, not applied as a resolution veto: the SE of the median difference is); Phosphor and Terminal.app in blocks of 10, the first side alternating per gap",
+    "First key after 5 s idle: IMPLAUSIBLE reference: Phosphor is 16.49 ms FASTER than the reference (> 5 ms, beyond 2 SE of 1.8355549113993883): an ordering / focus / idle-wake artifact of the reference window, not a Phosphor figure; NOREF, no verdict (a PASS here would rest on a mis-measured reference)",
+    "injector accounting: injector sent 119; app saw 119; lost-before-app 0 (Enter: sent 0, app saw 0); of the app's: 51 unbound keydown/typed, 58 taken by a key binding, 0 Enter by a binding; macOS: 119 key-down(s) reached NSApplication, 119 dispatched as key events (10 of them a menu key equivalent), 0 not (0 Cmd chord(s) injected)"
+   ],
+   "metrics": {
+    "first_key_paint_gap1s": {
+     "n": 30,
+     "p50": 34.2,
+     "p95": 90.59,
+     "max": 99.83
+    },
+    "reference_first_key_paint_gap1s": {
+     "n": 30,
+     "p50": 36.78,
+     "p95": 90.51,
+     "max": 95.06
+    },
+    "lat": {
+     "gap1s": {
+      "measurement_mode": "interleaved",
+      "phosphor": {
+       "n": 30,
+       "p50": 34.2,
+       "p95": 90.59,
+       "max": 99.83
+      },
+      "reference": {
+       "n": 30,
+       "p50": 36.78,
+       "p95": 90.51,
+       "max": 95.06
+      },
+      "reference_name": "Terminal.app (.command via open)",
+      "budget_ms": 5.0,
+      "budget_kind": "overhead",
+      "floor_ms": 140.63095767050982,
+      "notes": [
+       "first key after 1 s idle, kl3 post-to-first-changed-pixel at 240 Hz (4.17 ms quantum, not applied as a resolution veto: the SE of the median difference is); Phosphor and Terminal.app in blocks of 10, the first side alternating per gap"
+      ],
+      "per_side": {
+       "phosphor": {
+        "n": 30,
+        "se_median_ms": 0.54
+       },
+       "reference": {
+        "n": 30,
+        "se_median_ms": 1.35
+       }
+      },
+      "overhead_ms": -2.58,
+      "overhead_se_ms": 1.46,
+      "pane_shell": "/bin/zsh",
+      "reference_shell": "/bin/zsh",
+      "drift_ms": {
+       "phosphor": 2.29,
+       "reference": -2.88
+      },
+      "budget_verdict": "pass",
+      "prev": null,
+      "baseline": {
+       "status": "ok",
+       "p50": 45.55,
+       "p95": 116.91,
+       "delta_ms": -11.35,
+       "delta_pct": -24.9,
+       "verdict": "pass"
+      },
+      "regress_basis": "median",
+      "prev_verdict": "none",
+      "baseline_verdict": "pass",
+      "verdict": "pass"
+     },
+     "gap2s": {
+      "measurement_mode": "interleaved",
+      "phosphor": {
+       "n": 30,
+       "p50": 35.32,
+       "p95": 109.21,
+       "max": 109.48
+      },
+      "reference": {
+       "n": 30,
+       "p50": 41.87,
+       "p95": 102.59,
+       "max": 106.39
+      },
+      "reference_name": "Terminal.app (.command via open)",
+      "budget_ms": 5.0,
+      "budget_kind": "overhead",
+      "floor_ms": 140.63095767050982,
+      "notes": [
+       "first key after 2 s idle, kl3 post-to-first-changed-pixel at 240 Hz (4.17 ms quantum, not applied as a resolution veto: the SE of the median difference is); Phosphor and Terminal.app in blocks of 10, the first side alternating per gap",
+       "IMPLAUSIBLE reference: Phosphor is 6.55 ms FASTER than the reference (> 5 ms, beyond 2 SE of 2.3524511120302347): an ordering / focus / idle-wake artifact of the reference window, not a Phosphor figure; NOREF, no verdict (a PASS here would rest on a mis-measured reference)"
+      ],
+      "per_side": {
+       "phosphor": {
+        "n": 30,
+        "se_median_ms": 1.05
+       },
+       "reference": {
+        "n": 30,
+        "se_median_ms": 2.08
+       }
+      },
+      "overhead_ms": -6.55,
+      "overhead_se_ms": 2.35,
+      "pane_shell": "/bin/zsh",
+      "reference_shell": "/bin/zsh",
+      "implausible": true,
+      "drift_ms": {
+       "phosphor": -3.04,
+       "reference": 0.53
+      },
+      "budget_verdict": "no-compare",
+      "prev": null,
+      "baseline": {
+       "status": "ok",
+       "p50": 45.46,
+       "p95": 53.32,
+       "delta_ms": -10.14,
+       "delta_pct": -22.3,
+       "verdict": "pass"
+      },
+      "regress_basis": "median",
+      "prev_verdict": "none",
+      "baseline_verdict": "pass",
+      "verdict": "no-compare"
+     },
+     "gap5s": {
+      "measurement_mode": "interleaved",
+      "phosphor": {
+       "n": 30,
+       "p50": 34.84,
+       "p95": 98.77,
+       "max": 104.46
+      },
+      "reference": {
+       "n": 30,
+       "p50": 51.33,
+       "p95": 103.62,
+       "max": 123.34
+      },
+      "reference_name": "Terminal.app (.command via open)",
+      "budget_ms": 5.0,
+      "budget_kind": "overhead",
+      "floor_ms": 140.63095767050982,
+      "notes": [
+       "first key after 5 s idle, kl3 post-to-first-changed-pixel at 240 Hz (4.17 ms quantum, not applied as a resolution veto: the SE of the median difference is); Phosphor and Terminal.app in blocks of 10, the first side alternating per gap",
+       "IMPLAUSIBLE reference: Phosphor is 16.49 ms FASTER than the reference (> 5 ms, beyond 2 SE of 1.8355549113993883): an ordering / focus / idle-wake artifact of the reference window, not a Phosphor figure; NOREF, no verdict (a PASS here would rest on a mis-measured reference)"
+      ],
+      "per_side": {
+       "phosphor": {
+        "n": 30,
+        "se_median_ms": 1.58
+       },
+       "reference": {
+        "n": 30,
+        "se_median_ms": 0.94
+       }
+      },
+      "overhead_ms": -16.49,
+      "overhead_se_ms": 1.84,
+      "pane_shell": "/bin/zsh",
+      "reference_shell": "/bin/zsh",
+      "implausible": true,
+      "drift_ms": {
+       "phosphor": 4.21,
+       "reference": -0.55
+      },
+      "budget_verdict": "no-compare",
+      "prev": null,
+      "baseline": {
+       "status": "ok",
+       "p50": 46.75,
+       "p95": 53.31,
+       "delta_ms": -11.91,
+       "delta_pct": -25.5,
+       "verdict": "pass"
+      },
+      "regress_basis": "median",
+      "prev_verdict": "none",
+      "baseline_verdict": "pass",
+      "verdict": "no-compare"
+     }
+    },
+    "first_key_paint_gap2s": {
+     "n": 30,
+     "p50": 35.32,
+     "p95": 109.21,
+     "max": 109.48
+    },
+    "reference_first_key_paint_gap2s": {
+     "n": 30,
+     "p50": 41.87,
+     "p95": 102.59,
+     "max": 106.39
+    },
+    "first_key_paint_gap5s": {
+     "n": 30,
+     "p50": 34.84,
+     "p95": 98.77,
+     "max": 104.46
+    },
+    "reference_first_key_paint_gap5s": {
+     "n": 30,
+     "p50": 51.33,
+     "p95": 103.62,
+     "max": 123.34
+    },
+    "injector": {
+     "sent": 119,
+     "enters_sent": 0,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 119,
+     "unbound": 51,
+     "bound": 58,
+     "enters_bound": 0,
+     "os_keys": 119,
+     "undispatched": 0,
+     "cmd_chords": 0,
+     "menu": 10,
+     "menu_cmd": 0,
+     "cmd_allowed": 0,
+     "app_undelivered": 0,
+     "seen": 119,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 0
+    },
+    "enter_taint": {
+     "taps": 1,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 1
+    },
+    "host_load": "loadavg1=1.91 cpus=8"
+   },
+   "shots": [
+    "shots/terminal_latency_first_key_after_idle.png"
+   ]
+  },
+  {
+   "name": "ssh_drop_reconnect",
+   "mode": "terminal",
+   "status": "pass",
+   "ran_mode": "terminal",
+   "seconds": 49.7,
+   "evidence": [
+    "enter_route: 43 Enter(s) reached the input editor: Shell=43 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,...]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794487946.772,
+    1794487996.52
+   ],
+   "detail": [
+    "injector accounting: injector sent 1418; app saw 1418; lost-before-app 0 (Enter: sent 43, app saw 43); of the app's: 1373 unbound keydown/typed, 1 taken by a key binding, 43 Enter by a binding; macOS: 1418 key-down(s) reached NSApplication, 1418 dispatched as key events (1 of them a menu key equivalent), 0 not (0 Cmd chord(s) injected)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 43 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "injector": {
+     "sent": 1418,
+     "enters_sent": 43,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 1418,
+     "unbound": 1373,
+     "bound": 1,
+     "enters_bound": 43,
+     "os_keys": 1418,
+     "undispatched": 0,
+     "cmd_chords": 0,
+     "menu": 1,
+     "menu_cmd": 0,
+     "cmd_allowed": 0,
+     "app_undelivered": 0,
+     "seen": 1418,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 43
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 43
+    },
+    "enter_taint": {
+     "taps": 43,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_ssh_drop_reconnect.png"
+   ]
+  },
+  {
+   "name": "scroll_keys_position",
+   "mode": "terminal",
+   "status": "pass",
+   "ran_mode": "terminal",
+   "seconds": 38.5,
+   "evidence": [
+    "enter_route: 3 Enter(s) reached the input editor: Shell=3 [Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794488000.813,
+    1794488039.277
+   ],
+   "detail": [
+    "injector accounting: injector sent 193; app saw 193; lost-before-app 0 (Enter: sent 3, app saw 3); of the app's: 179 unbound keydown/typed, 6 taken by a key binding, 3 Enter by a binding; macOS: 193 key-down(s) reached NSApplication, 193 dispatched as key events (5 of them a menu key equivalent), 0 not (2 Cmd chord(s) injected)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 3 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "skp_lines_read_at_bottom": 35,
+    "skp_stream_drawn": {
+     "state": "drawn",
+     "printed": 27,
+     "read_on_screen": 12
+    },
+    "skp_after_pageup": {
+     "first": 385,
+     "last": 420,
+     "read": 35
+    },
+    "skp_pageup_hold": {
+     "verdict": "pass",
+     "new_lines": 26,
+     "read_before": 35,
+     "read_after": 35
+    },
+    "skp_top_hold": {
+     "new_lines": 26,
+     "anchor_words": 31,
+     "kept": 0.97,
+     "stream_lines_on_screen": 0
+    },
+    "skp_tail_lines_on_screen_after_key": 8,
+    "injector": {
+     "sent": 193,
+     "enters_sent": 3,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 193,
+     "unbound": 179,
+     "bound": 6,
+     "enters_bound": 3,
+     "os_keys": 193,
+     "undispatched": 0,
+     "cmd_chords": 2,
+     "menu": 5,
+     "menu_cmd": 2,
+     "cmd_allowed": 0,
+     "app_undelivered": 0,
+     "seen": 193,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 3
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 3
+    },
+    "enter_taint": {
+     "taps": 3,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_scroll_keys_position.png"
+   ]
+  },
+  {
+   "name": "intl_altgr_bash",
+   "mode": "terminal",
+   "status": "skip",
+   "ran_mode": "terminal",
+   "seconds": 1.7,
+   "evidence": [],
+   "tainted": false,
+   "wall": [
+    1794488042.145,
+    1794488043.819
+   ],
+   "detail": [
+    "Windows only: a per-window German keyboard layout + AltGr (Linux has intl_compose_linux, macOS intl_deadkey_option)",
+    "injector accounting: injector sent 2; app saw 2; lost-before-app 0 (Enter: sent 0, app saw 0); of the app's: 0 unbound keydown/typed, 1 taken by a key binding, 0 Enter by a binding; macOS: 2 key-down(s) reached NSApplication, 2 dispatched as key events (1 of them a menu key equivalent), 0 not (0 Cmd chord(s) injected)"
+   ],
+   "metrics": {
+    "injector": {
+     "sent": 2,
+     "enters_sent": 0,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 2,
+     "unbound": 0,
+     "bound": 1,
+     "enters_bound": 0,
+     "os_keys": 2,
+     "undispatched": 0,
+     "cmd_chords": 0,
+     "menu": 1,
+     "menu_cmd": 0,
+     "cmd_allowed": 0,
+     "app_undelivered": 0,
+     "seen": 2,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 0
+    },
+    "enter_taint": {
+     "taps": 0,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_intl_altgr_bash.png"
+   ]
+  },
+  {
+   "name": "link_and_path_click",
+   "mode": "terminal",
+   "status": "fail",
+   "ran_mode": "terminal",
+   "seconds": 57.9,
+   "evidence": [
+    "enter_route: 1 Enter(s) reached the input editor: Shell=1 [Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794488045.639,
+    1794488103.572
+   ],
+   "detail": [
+    "after_links: file has 0/4 lines, exact match False first diff: exp='t45_pobpzer9ee' got=None [first bad line 0: injector call #1265 posted its ENTER at 06:54:32.641]",
+    "macOS: this case has no trace of the app's own connections (strace is Linux; the per-platform network trace is r14-test-gaps T41): 'no other outbound connection' is NOT judged here",
+    "after_links: rec.log empty (PROMPT_COMMAND hook not run), effect file checked only",
+    "injector accounting: injector sent 188; app saw 188; lost-before-app 0 (Enter: sent 5, app saw 5); of the app's: 181 unbound keydown/typed, 1 taken by a key binding, 5 Enter by a binding; macOS: 188 key-down(s) reached NSApplication, 188 dispatched as key events (1 of them a menu key equivalent), 0 not (0 Cmd chord(s) injected)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 1 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "link_positions": {
+     "uay3rd3dc": [
+      1188,
+      1266
+     ],
+     "hac3tfwr2": [
+      900,
+      1330
+     ],
+     "papuadxdr": [
+      916,
+      1394
+     ]
+    },
+    "path_click_at": {
+     "found": [
+      916,
+      1394
+     ],
+     "clicked": [
+      916,
+      1394
+     ]
+    },
+    "path_opened_by": "pane",
+    "injector": {
+     "sent": 188,
+     "enters_sent": 5,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 188,
+     "unbound": 181,
+     "bound": 1,
+     "enters_bound": 5,
+     "os_keys": 188,
+     "undispatched": 0,
+     "cmd_chords": 0,
+     "menu": 1,
+     "menu_cmd": 0,
+     "cmd_allowed": 0,
+     "app_undelivered": 0,
+     "seen": 188,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 5
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 1
+    },
+    "enter_taint": {
+     "taps": 5,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_link_and_path_click_FAIL.png"
+   ]
+  },
+  {
+   "name": "pane_not_local_after_link_and_path_click",
+   "mode": "terminal",
+   "status": "fail",
+   "seconds": 0,
+   "shots": [
+    "/Users/<user>/builds/CR7LvsOfu/0/winters-phosphor/phosphor/appci-out/macos/run/shots/terminal_not_local_after_link_and_path_click.png"
+   ],
+   "detail": [
+    "after link_and_path_click the pane's shell was not the root shell (none; root pid 59251); the app is relaunched so later cases start clean"
+   ]
+  },
+  {
+   "name": "wheel_scroll",
+   "mode": "terminal",
+   "status": "pass",
+   "ran_mode": "terminal",
+   "seconds": 45.0,
+   "evidence": [
+    "enter_route: 6 Enter(s) reached the input editor: Shell=6 [Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794488128.134,
+    1794488173.152
+   ],
+   "detail": [
+    "injector accounting: injector sent 196; app saw 196; lost-before-app 0 (Enter: sent 6, app saw 6); of the app's: 185 unbound keydown/typed, 3 taken by a key binding, 6 Enter by a binding; macOS: 196 key-down(s) reached NSApplication, 196 dispatched as key events (2 of them a menu key equivalent), 0 not (0 Cmd chord(s) injected)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 6 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "wheel_scrollback": "lines 205-239 before, 181-216 after the wheel, 205-239 after the wheel back",
+    "wheel_less": "lines 0-43 before, 24-67 after the wheel, 0-43 after the wheel back",
+    "profile_reports_mouse_wheel": [
+     true,
+     true
+    ],
+    "injector": {
+     "sent": 196,
+     "enters_sent": 6,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 196,
+     "unbound": 185,
+     "bound": 3,
+     "enters_bound": 6,
+     "os_keys": 196,
+     "undispatched": 0,
+     "cmd_chords": 0,
+     "menu": 2,
+     "menu_cmd": 0,
+     "cmd_allowed": 0,
+     "app_undelivered": 0,
+     "seen": 196,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 6
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 6
+    },
+    "enter_taint": {
+     "taps": 6,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_wheel_scroll.png"
+   ]
+  },
+  {
+   "name": "editor_daily",
+   "mode": "terminal",
+   "status": "noref",
+   "ran_mode": "terminal",
+   "seconds": 54.5,
+   "evidence": [
+    "enter_route: 2 Enter(s) reached the input editor: Shell=2 [Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794488176.065,
+    1794488230.555
+   ],
+   "detail": [
+    "NO-REFERENCE: macOS: the close question was not played. NEEDS (harness, not built): a usable close key (Phosphor's is cmd-shift-W, which the frontmost-app guard refuses) and a way to answer the native dialog (r14-test-gaps T32)",
+    "injector accounting: injector sent 455; app saw 455; lost-before-app 0 (Enter: sent 8, app saw 8); of the app's: 256 unbound keydown/typed, 186 taken by a key binding, 8 Enter by a binding; macOS: 455 key-down(s) reached NSApplication, 455 dispatched as key events (5 of them a menu key equivalent), 0 not (18 Cmd chord(s) injected)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 2 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "replace_one_index": 0,
+    "external_under_edits": "flagged",
+    "save_while_flagged": "asked",
+    "save_ask_enter_alone": "cancelled",
+    "save_ask_overwrite": "wrote",
+    "injector": {
+     "sent": 455,
+     "enters_sent": 8,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 455,
+     "unbound": 256,
+     "bound": 186,
+     "enters_bound": 8,
+     "os_keys": 455,
+     "undispatched": 0,
+     "cmd_chords": 18,
+     "menu": 5,
+     "menu_cmd": 4,
+     "cmd_allowed": 14,
+     "app_undelivered": 0,
+     "seen": 455,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 8
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 2
+    },
+    "enter_taint": {
+     "taps": 8,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_editor_daily.png"
+   ]
+  },
+  {
+   "name": "editor_memory_7mb",
+   "mode": "terminal",
+   "status": "fail",
+   "ran_mode": "terminal",
+   "seconds": 374.6,
+   "evidence": [],
+   "tainted": false,
+   "wall": [
+    1794488233.65,
+    1794488608.291
+   ],
+   "detail": [
+    "txt: opening a 7 MB file cost 157 MB of rss (> 100 MB target)",
+    "judged memory figures: phys_footprint, rss (owner: each one is checked; macOS ps RSS also counts freed-but-reusable malloc pages)",
+    "txt: opening the 7.0 MB file added 93 MB of phys_footprint (13.3x the file), 157 MB of rss (22.5x the file)",
+    "txt: the app's own 'editor_memory open' breakdown walk took 0.51 ms on the main thread right after the load's layout (instrumentation: it runs only with editor_memory=debug, so a user's open does not pay it)",
+    "txt: at the close trim the app was 487 MB resident, 160 MB of it freed-but-reusable malloc pages (MADV_FREE_REUSABLE: out of phys_footprint, still in RSS until the kernel reclaims them; no trim returns them)",
+    "txt_c2: at the close trim the app was 545 MB resident, 160 MB of it freed-but-reusable malloc pages (MADV_FREE_REUSABLE: out of phys_footprint, still in RSS until the kernel reclaims them; no trim returns them)",
+    "txt_c3: memory grew only 1.0 MB but the app logged 'editor_memory open': the file opened into reused heap",
+    "txt_c3: at the close trim the app was 533 MB resident, 169 MB of it freed-but-reusable malloc pages (MADV_FREE_REUSABLE: out of phys_footprint, still in RSS until the kernel reclaims them; no trim returns them)",
+    "rss: +164 MB over the pre-open baseline after close (reported, not judged on macOS: freed pages marked reusable stay in RSS; phys_footprint is the judged figure)",
+    "rs: opening the 7.0 MB file added 56 MB of phys_footprint (7.9x the file), 58 MB of rss (8.2x the file)",
+    "rs: the app's own 'editor_memory open' breakdown walk took 0.21 ms on the main thread right after the load's layout (instrumentation: it runs only with editor_memory=debug, so a user's open does not pay it)",
+    "rs: at the close trim the app was 563 MB resident, 187 MB of it freed-but-reusable malloc pages (MADV_FREE_REUSABLE: out of phys_footprint, still in RSS until the kernel reclaims them; no trim returns them)",
+    "rss: +20 MB over the pre-open baseline after close (reported, not judged on macOS: freed pages marked reusable stay in RSS; phys_footprint is the judged figure)",
+    "EXPERIMENT (the opt-in open trim, PHOSPHOR_EDITOR_TRIM_AFTER_OPEN=1; owner 2026-11-10, #1340: reported, never a FAIL): inside the budget: trim A/B: the open trim put a 0.0 ms UI item on screen while it ran (budget 4 ms; control default: 0.0 ms)",
+    "trim A/B: the control no_trim is itself over the 4 ms UI budget after close (13.4 ms)",
+    "injector accounting: injector sent 952; app saw 952; lost-before-app 0 (Enter: sent 14, app saw 14); of the app's: 894 unbound keydown/typed, 15 taken by a key binding, 14 Enter by a binding; macOS: 952 key-down(s) reached NSApplication, 952 dispatched as key events (29 of them a menu key equivalent), 0 not (14 Cmd chord(s) injected)"
+   ],
+   "metrics": {
+    "mem_metrics": [
+     "phys_footprint",
+     "rss"
+    ],
+    "txt_rss_base_mb": 336.594,
+    "txt_rss_base_phys_footprint_mb": 166.751,
+    "txt_rss_open_mb": 493.781,
+    "txt_rss_open_delta_mb": 157.188,
+    "txt_rss_open_phys_footprint_mb": 260.063,
+    "txt_rss_open_phys_footprint_delta_mb": 93.312,
+    "txt_file_mb": 7.0,
+    "txt_open_cost_phys_footprint_x_file": 13.33,
+    "txt_open_cost_x_file": 22.455,
+    "txt_rss_closed_now_mb": 486.094,
+    "txt_rss_closed_now_delta_mb": 149.5,
+    "txt_rss_closed_now_phys_footprint_mb": 183.876,
+    "txt_rss_closed_now_phys_footprint_delta_mb": 17.125,
+    "txt_app_breakdown_open": {
+     "text_bytes": 7340089,
+     "lines": 115282,
+     "buffer_items": 230561,
+     "buffer_leaves": 19215,
+     "buffer_nodes_bytes": 53800800,
+     "buffer_item_size": 136,
+     "undo_entries": 0,
+     "render_items": 707,
+     "render_nodes_bytes": 1344672,
+     "parked_chunks": 450,
+     "parked_lines": 115024,
+     "parked_bytes": 9869879,
+     "hydrated": 4,
+     "dehydrated": 252,
+     "frame_bytes": 10208,
+     "source_bytes": 66257,
+     "other_items": 1,
+     "syntax_trees": 0,
+     "walk_ms": "0.51"
+    },
+    "txt_load_stages": [
+     {
+      "stage": "start",
+      "rss_kb": 370624,
+      "phys_footprint_kb": 212705,
+      "t": 1794488244144
+     },
+     {
+      "stage": "formatted_text",
+      "rss_kb": 377824,
+      "phys_footprint_kb": 219905,
+      "t": 1794488244149
+     },
+     {
+      "stage": "edit_applied",
+      "rss_kb": 503088,
+      "phys_footprint_kb": 328977,
+      "t": 1794488244189
+     },
+     {
+      "stage": "undo_reset",
+      "rss_kb": 503088,
+      "phys_footprint_kb": 328977,
+      "t": 1794488244189
+     },
+     {
+      "stage": "layout_start",
+      "rss_kb": 503088,
+      "phys_footprint_kb": 328977,
+      "t": 1794488244189
+     },
+     {
+      "stage": "layout_tasks_created",
+      "rss_kb": 515728,
+      "phys_footprint_kb": 341617,
+      "t": 1794488244192
+     },
+     {
+      "stage": "layout_chunk_done",
+      "start": 64,
+      "rss_kb": 538448,
+      "phys_footprint_kb": 364337,
+      "t": 1794488244195
+     },
+     {
+      "stage": "layout_chunk_done",
+      "start": 115280,
+      "rss_kb": 551296,
+      "phys_footprint_kb": 377201,
+      "t": 1794488244391
+     },
+     {
+      "stage": "layout_chunks_done",
+      "rss_kb": 551296,
+      "phys_footprint_kb": 377201,
+      "t": 1794488244392
+     },
+     {
+      "stage": "parker_finished",
+      "rss_kb": 551296,
+      "phys_footprint_kb": 377201,
+      "t": 1794488244392
+     },
+     {
+      "stage": "measure_widest_start",
+      "rss_kb": 551296,
+      "phys_footprint_kb": 377201,
+      "t": 1794488244392
+     },
+     {
+      "stage": "measure_widest_done",
+      "rss_kb": 551344,
+      "phys_footprint_kb": 377217,
+      "t": 1794488244394
+     }
+    ],
+    "txt_app_buffer_dropped": {
+     "file_id": "FileId(2)",
+     "registered": 0,
+     "trim": "true"
+    },
+    "txt_app_heap_trim_close": {
+     "why": "close",
+     "ms": "0.01",
+     "freed_estimate": 0,
+     "start": 1794488252381,
+     "released": 0,
+     "resident": 510148608,
+     "reusable": 167624704
+    },
+    "txt_app_heap_trim_freed_mb": 0.0,
+    "txt_app_reusable_mb": 159.859,
+    "txt_c2_rss_open_mb": 543.156,
+    "txt_c2_rss_open_delta_mb": 57.062,
+    "txt_c2_rss_open_phys_footprint_mb": 240.923,
+    "txt_c2_rss_open_phys_footprint_delta_mb": 57.047,
+    "txt_c2_rss_closed_now_mb": 544.078,
+    "txt_c2_rss_closed_now_delta_mb": 207.484,
+    "txt_c2_rss_closed_now_phys_footprint_mb": 241.735,
+    "txt_c2_rss_closed_now_phys_footprint_delta_mb": 74.984,
+    "txt_c2_app_breakdown_open": {
+     "text_bytes": 7340089,
+     "lines": 115282,
+     "buffer_items": 230561,
+     "buffer_leaves": 19215,
+     "buffer_nodes_bytes": 53800800,
+     "buffer_item_size": 136,
+     "undo_entries": 0,
+     "render_items": 707,
+     "render_nodes_bytes": 1344672,
+     "parked_chunks": 450,
+     "parked_lines": 115024,
+     "parked_bytes": 9869879,
+     "hydrated": 4,
+     "dehydrated": 252,
+     "frame_bytes": 10208,
+     "source_bytes": 66257,
+     "other_items": 1,
+     "syntax_trees": 0,
+     "walk_ms": "0.49"
+    },
+    "txt_c2_app_buffer_dropped": {
+     "file_id": "FileId(3)",
+     "registered": 0,
+     "trim": "true"
+    },
+    "txt_c2_app_heap_trim_close": {
+     "why": "close",
+     "ms": "0.03",
+     "freed_estimate": 0,
+     "start": 1794488274993,
+     "released": 0,
+     "resident": 571015168,
+     "reusable": 167657472
+    },
+    "txt_c2_app_heap_trim_freed_mb": 0.0,
+    "txt_c2_app_reusable_mb": 159.891,
+    "txt_c3_rss_open_mb": 531.703,
+    "txt_c3_rss_open_delta_mb": 0.969,
+    "txt_c3_rss_open_phys_footprint_mb": 220.47,
+    "txt_c3_rss_open_phys_footprint_delta_mb": -4.562,
+    "txt_c3_rss_closed_now_mb": 519.516,
+    "txt_c3_rss_closed_now_delta_mb": 182.922,
+    "txt_c3_rss_closed_now_phys_footprint_mb": 208.032,
+    "txt_c3_rss_closed_now_phys_footprint_delta_mb": 41.281,
+    "txt_c3_app_breakdown_open": {
+     "text_bytes": 7340089,
+     "lines": 115282,
+     "buffer_items": 230561,
+     "buffer_leaves": 19215,
+     "buffer_nodes_bytes": 53800800,
+     "buffer_item_size": 136,
+     "undo_entries": 0,
+     "render_items": 707,
+     "render_nodes_bytes": 1344672,
+     "parked_chunks": 450,
+     "parked_lines": 115024,
+     "parked_bytes": 9869879,
+     "hydrated": 4,
+     "dehydrated": 252,
+     "frame_bytes": 10208,
+     "source_bytes": 66257,
+     "other_items": 1,
+     "syntax_trees": 0,
+     "walk_ms": "0.50"
+    },
+    "txt_c3_app_buffer_dropped": {
+     "file_id": "FileId(4)",
+     "registered": 0,
+     "trim": "true"
+    },
+    "txt_c3_app_heap_trim_close": {
+     "why": "close",
+     "ms": "0.01",
+     "freed_estimate": 0,
+     "start": 1794488300955,
+     "released": 0,
+     "resident": 559202304,
+     "reusable": 177045504
+    },
+    "txt_c3_app_heap_trim_freed_mb": 0.0,
+    "txt_c3_app_reusable_mb": 168.844,
+    "txt_close_method": "palette cmd+p + 'Close Current Session'",
+    "txt_cycle_close_phys_footprint_mb": [
+     183.9,
+     241.7,
+     208.0
+    ],
+    "txt_cycle_open_phys_footprint_mb": [
+     260.1,
+     240.9,
+     220.5
+    ],
+    "txt_cycle_growth_phys_footprint_mb": 24.156,
+    "txt_cycle_close_mb": [
+     486.1,
+     544.1,
+     519.5
+    ],
+    "txt_cycle_open_mb": [
+     493.8,
+     543.2,
+     531.7
+    ],
+    "txt_cycle_growth_mb": 33.422,
+    "txt_rss_close_mb": 500.984,
+    "txt_rss_close_delta_mb": 164.391,
+    "txt_rss_close_phys_footprint_mb": 167.282,
+    "txt_rss_close_phys_footprint_delta_mb": 0.531,
+    "rs_rss_base_mb": 501.062,
+    "rs_rss_base_phys_footprint_mb": 171.36,
+    "rs_rss_open_mb": 558.797,
+    "rs_rss_open_delta_mb": 57.734,
+    "rs_rss_open_phys_footprint_mb": 227.002,
+    "rs_rss_open_phys_footprint_delta_mb": 55.642,
+    "rs_file_mb": 7.0,
+    "rs_open_cost_phys_footprint_x_file": 7.949,
+    "rs_open_cost_x_file": 8.248,
+    "rs_rss_closed_now_mb": 562.906,
+    "rs_rss_closed_now_delta_mb": 61.844,
+    "rs_rss_closed_now_phys_footprint_mb": 231.174,
+    "rs_rss_closed_now_phys_footprint_delta_mb": 59.813,
+    "rs_app_breakdown_open": {
+     "text_bytes": 7340216,
+     "lines": 34070,
+     "buffer_items": 102205,
+     "buffer_leaves": 8518,
+     "buffer_nodes_bytes": 23851200,
+     "buffer_item_size": 136,
+     "undo_entries": 0,
+     "render_items": 390,
+     "render_nodes_bytes": 391552,
+     "parked_chunks": 133,
+     "parked_lines": 33812,
+     "parked_bytes": 8034011,
+     "hydrated": 4,
+     "dehydrated": 252,
+     "frame_bytes": 29280,
+     "source_bytes": 105504,
+     "other_items": 1,
+     "syntax_trees": 0,
+     "walk_ms": "0.21"
+    },
+    "rs_load_stages": [
+     {
+      "stage": "start",
+      "rss_kb": 543328,
+      "phys_footprint_kb": 219810,
+      "t": 1794488396695
+     },
+     {
+      "stage": "formatted_text",
+      "rss_kb": 550528,
+      "phys_footprint_kb": 227010,
+      "t": 1794488396700
+     },
+     {
+      "stage": "edit_applied",
+      "rss_kb": 563872,
+      "phys_footprint_kb": 240370,
+      "t": 1794488396719
+     },
+     {
+      "stage": "undo_reset",
+      "rss_kb": 563872,
+      "phys_footprint_kb": 240370,
+      "t": 1794488396719
+     },
+     {
+      "stage": "layout_start",
+      "rss_kb": 563872,
+      "phys_footprint_kb": 240370,
+      "t": 1794488396720
+     },
+     {
+      "stage": "layout_tasks_created",
+      "rss_kb": 566368,
+      "phys_footprint_kb": 242866,
+      "t": 1794488396721
+     },
+     {
+      "stage": "layout_chunk_done",
+      "start": 64,
+      "rss_kb": 570464,
+      "phys_footprint_kb": 246962,
+      "t": 1794488396722
+     },
+     {
+      "stage": "layout_chunk_done",
+      "start": 34068,
+      "rss_kb": 570896,
+      "phys_footprint_kb": 247394,
+      "t": 1794488396786
+     },
+     {
+      "stage": "layout_chunks_done",
+      "rss_kb": 570896,
+      "phys_footprint_kb": 247394,
+      "t": 1794488396786
+     },
+     {
+      "stage": "parker_finished",
+      "rss_kb": 570896,
+      "phys_footprint_kb": 247394,
+      "t": 1794488396786
+     },
+     {
+      "stage": "measure_widest_start",
+      "rss_kb": 570896,
+      "phys_footprint_kb": 247394,
+      "t": 1794488396786
+     },
+     {
+      "stage": "measure_widest_done",
+      "rss_kb": 570896,
+      "phys_footprint_kb": 247394,
+      "t": 1794488396789
+     }
+    ],
+    "rs_app_buffer_dropped": {
+     "file_id": "FileId(5)",
+     "registered": 0,
+     "trim": "true"
+    },
+    "rs_app_heap_trim_close": {
+     "why": "close",
+     "ms": "0.01",
+     "freed_estimate": 0,
+     "start": 1794488404853,
+     "released": 0,
+     "resident": 590725120,
+     "reusable": 196182016
+    },
+    "rs_app_heap_trim_freed_mb": 0.0,
+    "rs_app_reusable_mb": 187.094,
+    "rs_close_method": "palette cmd+p + 'Close Current Session'",
+    "rs_rss_close_mb": 520.891,
+    "rs_rss_close_delta_mb": 19.828,
+    "rs_rss_close_phys_footprint_mb": 163.61,
+    "rs_rss_close_phys_footprint_delta_mb": -7.75,
+    "trim_ab": {
+     "default": {
+      "open_max_ms": 0.0,
+      "open_over": 0,
+      "load_frame_ms": null,
+      "close_max_ms": 13.72,
+      "close_over": 3,
+      "trim_open_max_ms": 0.0,
+      "trim_close_max_ms": 0.0,
+      "trims": [
+       [
+        "close",
+        0.02
+       ]
+      ],
+      "audit": {
+       "over_4ms": 4,
+       "over_16ms": 0,
+       "max_ms": 13.72,
+       "by_kind": {
+        "frame": [
+         4,
+         13.72
+        ]
+       }
+      }
+     },
+     "no_trim": {
+      "open_max_ms": 0.0,
+      "open_over": 0,
+      "load_frame_ms": null,
+      "close_max_ms": 13.43,
+      "close_over": 1,
+      "trim_open_max_ms": 0.0,
+      "trim_close_max_ms": 0.0,
+      "trims": [],
+      "audit": {
+       "over_4ms": 2,
+       "over_16ms": 0,
+       "max_ms": 13.43,
+       "by_kind": {
+        "frame": [
+         2,
+         13.43
+        ]
+       }
+      }
+     },
+     "trim_after_open": {
+      "open_max_ms": 0.0,
+      "open_over": 0,
+      "load_frame_ms": null,
+      "close_max_ms": 9.82,
+      "close_over": 2,
+      "trim_open_max_ms": 0.0,
+      "trim_close_max_ms": 0.0,
+      "trims": [
+       [
+        "open",
+        0.01
+       ],
+       [
+        "close",
+        0.01
+       ]
+      ],
+      "audit": {
+       "over_4ms": 3,
+       "over_16ms": 0,
+       "max_ms": 9.82,
+       "by_kind": {
+        "frame": [
+         3,
+         9.82
+        ]
+       }
+      }
+     }
+    },
+    "trim_open_experiment": {
+     "measured": true,
+     "trim_ran": true,
+     "trim_item_ms": 0.0,
+     "control_item_ms": 0.0,
+     "trim_item_over_budget": false
+    },
+    "injector": {
+     "sent": 952,
+     "enters_sent": 14,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 952,
+     "unbound": 894,
+     "bound": 15,
+     "enters_bound": 14,
+     "os_keys": 952,
+     "undispatched": 0,
+     "cmd_chords": 14,
+     "menu": 29,
+     "menu_cmd": 14,
+     "cmd_allowed": 0,
+     "app_undelivered": 0,
+     "seen": 952,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 14
+    },
+    "enter_taint": {
+     "taps": 14,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 14
+    }
+   },
+   "shots": [
+    "shots/terminal_editor_memory_7mb_FAIL.png"
+   ]
+  },
+  {
+   "name": "tab_pointer_use",
+   "mode": "terminal",
+   "status": "noref",
+   "ran_mode": "terminal",
+   "seconds": 97.7,
+   "evidence": [
+    "enter_route: 20 Enter(s) reached the input editor: Shell=20 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794488611.62,
+    1794488709.296
+   ],
+   "detail": [
+    "vertical panel: tab 2 at (461, 413), tab 3 at (461, 538), tab 4 at (461, 662)",
+    "tab 3's title was located by OCR (no `appci_find` line for 'vt2x33cnu2')",
+    "NO-REFERENCE: UNVERIFIABLE: horizontal bar: the tabs' titles could not be located in the strip (the topmost sightings are not on one row (a title is not drawn in the tab bar): tab 2 at (1818, 992), tab 3 at (1065, 138)): the hook saw no title with the tab's directory name, or the layout shows neither the directory nor the command; the pointer actions in this layout are NOT judged",
+    "no close key on this platform: the throw-away tab was ended with Ctrl-D (unverified that the tab disappears)",
+    "no close key on this platform: the throw-away tab was ended with Ctrl-D (unverified that the tab disappears)",
+    "injector accounting: injector sent 1662; app saw 1662; lost-before-app 0 (Enter: sent 20, app saw 20); of the app's: 1626 unbound keydown/typed, 12 taken by a key binding, 20 Enter by a binding; macOS: 1662 key-down(s) reached NSApplication, 1662 dispatched as key events (4 of them a menu key equivalent), 0 not (12 Cmd chord(s) injected)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 20 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "tp_cleanup_closes": 2,
+    "injector": {
+     "sent": 1662,
+     "enters_sent": 20,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 1662,
+     "unbound": 1626,
+     "bound": 12,
+     "enters_bound": 20,
+     "os_keys": 1662,
+     "undispatched": 0,
+     "cmd_chords": 12,
+     "menu": 4,
+     "menu_cmd": 3,
+     "cmd_allowed": 9,
+     "app_undelivered": 0,
+     "seen": 1662,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 20
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 20
+    },
+    "enter_taint": {
+     "taps": 20,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_tab_pointer_use.png"
+   ]
+  },
+  {
+   "name": "network_gate_switch",
+   "mode": "terminal",
+   "status": "noref",
+   "ran_mode": "terminal",
+   "seconds": 67.8,
+   "evidence": [],
+   "tainted": false,
+   "wall": [
+    1794488712.702,
+    1794488780.542
+   ],
+   "detail": [
+    "Escape left the settings page open (the shell did not take the probe line); closed it with palette cmd+p + 'Close Current Session'",
+    "NO-REFERENCE: UNVERIFIABLE: the denial notice (toast naming the purpose and host), its 'Allow this origin' link and the log row's 'Allow' button need a request the gate refuses, which no setting this case writes can cause (every setting that names an origin also allows it); agent_gate_deny_allow and network_gate_notice trigger one and judge those rows",
+    "SETTINGS LEFT CHANGED: the settings file differs from the one this case started on, in: network.allowed_origins, network.gate_enabled",
+    "injector accounting: injector sent 179; app saw 179; lost-before-app 0 (Enter: sent 6, app saw 6); of the app's: 156 unbound keydown/typed, 9 taken by a key binding, 6 Enter by a binding; macOS: 179 key-down(s) reached NSApplication, 179 dispatched as key events (8 of them a menu key equivalent), 0 not (5 Cmd chord(s) injected)"
+   ],
+   "metrics": {
+    "ngs_absent_quit": {
+     "exited": true,
+     "confirm_to_exit_s": 0.0,
+     "total_s": 0.45,
+     "dialog": false,
+     "attempt": 0,
+     "how": "stop-by-pid"
+    },
+    "ngs_off_quit": {
+     "exited": true,
+     "confirm_to_exit_s": 0.0,
+     "total_s": 0.4,
+     "dialog": false,
+     "attempt": 0,
+     "how": "stop-by-pid"
+    },
+    "ngs_on_quit": {
+     "exited": true,
+     "confirm_to_exit_s": 0.0,
+     "total_s": 0.4,
+     "dialog": false,
+     "attempt": 0,
+     "how": "stop-by-pid"
+    },
+    "gate_lines_last_launch": 0,
+    "ngs_restore_quit": {
+     "exited": true,
+     "confirm_to_exit_s": 0.0,
+     "total_s": 0.44,
+     "dialog": false,
+     "attempt": 0,
+     "how": "stop-by-pid"
+    },
+    "injector": {
+     "sent": 179,
+     "enters_sent": 6,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 179,
+     "unbound": 156,
+     "bound": 9,
+     "enters_bound": 6,
+     "os_keys": 179,
+     "undispatched": 0,
+     "cmd_chords": 5,
+     "menu": 8,
+     "menu_cmd": 5,
+     "cmd_allowed": 0,
+     "app_undelivered": 0,
+     "seen": 179,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 6
+    },
+    "enter_taint": {
+     "taps": 6,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 6
+    }
+   },
+   "shots": [
+    "shots/terminal_network_gate_switch.png"
+   ]
+  },
+  {
+   "name": "tabs_two_windows",
+   "mode": "terminal",
+   "status": "pass",
+   "ran_mode": "terminal",
+   "seconds": 110.6,
+   "evidence": [
+    "enter_route: 44 Enter(s) reached the input editor: Shell=44 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,...]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794488782.179,
+    1794488892.757
+   ],
+   "detail": [
+    "the app log says terminal but the screen reads as agent (OCR); the log decides",
+    "no close key on this platform: the throw-away tab was ended with Ctrl-D (unverified that the tab disappears)",
+    "no close key on this platform: the throw-away tab was ended with Ctrl-D (unverified that the tab disappears)",
+    "no close key on this platform: the throw-away tab was ended with Ctrl-D (unverified that the tab disappears)",
+    "no close key on this platform: the throw-away tab was ended with Ctrl-D (unverified that the tab disappears)",
+    "no close key on this platform: the throw-away tab was ended with Ctrl-D (unverified that the tab disappears)",
+    "no close key on this platform: the throw-away tab was ended with Ctrl-D (unverified that the tab disappears)",
+    "no close key on this platform: the throw-away tab was ended with Ctrl-D (unverified that the tab disappears)",
+    "no close key on this platform: the throw-away tab was ended with Ctrl-D (unverified that the tab disappears)",
+    "no close key on this platform: the throw-away tab was ended with Ctrl-D (unverified that the tab disappears)",
+    "no close key on this platform: the throw-away tab was ended with Ctrl-D (unverified that the tab disappears)",
+    "no close key on this platform: the throw-away tab was ended with Ctrl-D (unverified that the tab disappears)",
+    "no close key on this platform: the throw-away tab was ended with Ctrl-D (unverified that the tab disappears)",
+    "no close key on this platform: the throw-away tab was ended with Ctrl-D (unverified that the tab disappears)",
+    "injector accounting: injector sent 3247; app saw 3247; lost-before-app 0 (Enter: sent 44, app saw 44); of the app's: 3159 unbound keydown/typed, 27 taken by a key binding, 44 Enter by a binding; macOS: 3247 key-down(s) reached NSApplication, 3247 dispatched as key events (17 of them a menu key equivalent), 0 not (14 Cmd chord(s) injected)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 44 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "windows": 2,
+    "injector": {
+     "sent": 3247,
+     "enters_sent": 44,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 3247,
+     "unbound": 3159,
+     "bound": 27,
+     "enters_bound": 44,
+     "os_keys": 3247,
+     "undispatched": 0,
+     "cmd_chords": 14,
+     "menu": 17,
+     "menu_cmd": 14,
+     "cmd_allowed": 0,
+     "app_undelivered": 0,
+     "seen": 3247,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 44
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 44
+    },
+    "enter_taint": {
+     "taps": 44,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_tabs_two_windows.png"
+   ]
+  },
+  {
+   "name": "tabs_streaming",
+   "mode": "terminal",
+   "status": "pass",
+   "ran_mode": "terminal",
+   "seconds": 94.6,
+   "evidence": [
+    "enter_route: 37 Enter(s) reached the input editor: Shell=37 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794488894.336,
+    1794488988.902
+   ],
+   "detail": [
+    "no close key on this platform: the throw-away tab was ended with Ctrl-D (unverified that the tab disappears)",
+    "no close key on this platform: the throw-away tab was ended with Ctrl-D (unverified that the tab disappears)",
+    "no close key on this platform: the throw-away tab was ended with Ctrl-D (unverified that the tab disappears)",
+    "no close key on this platform: the throw-away tab was ended with Ctrl-D (unverified that the tab disappears)",
+    "no close key on this platform: the throw-away tab was ended with Ctrl-D (unverified that the tab disappears)",
+    "no close key on this platform: the throw-away tab was ended with Ctrl-D (unverified that the tab disappears)",
+    "no close key on this platform: the throw-away tab was ended with Ctrl-D (unverified that the tab disappears)",
+    "no close key on this platform: the throw-away tab was ended with Ctrl-D (unverified that the tab disappears)",
+    "no close key on this platform: the throw-away tab was ended with Ctrl-D (unverified that the tab disappears)",
+    "no close key on this platform: the throw-away tab was ended with Ctrl-D (unverified that the tab disappears)",
+    "no close key on this platform: the throw-away tab was ended with Ctrl-D (unverified that the tab disappears)",
+    "no close key on this platform: the throw-away tab was ended with Ctrl-D (unverified that the tab disappears)",
+    "no close key on this platform: the throw-away tab was ended with Ctrl-D (unverified that the tab disappears)",
+    "injector accounting: injector sent 2639; app saw 2639; lost-before-app 0 (Enter: sent 37, app saw 37); of the app's: 2559 unbound keydown/typed, 27 taken by a key binding, 37 Enter by a binding; macOS: 2639 key-down(s) reached NSApplication, 2639 dispatched as key events (16 of them a menu key equivalent), 0 not (13 Cmd chord(s) injected)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 37 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "injector": {
+     "sent": 2639,
+     "enters_sent": 37,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 2639,
+     "unbound": 2559,
+     "bound": 27,
+     "enters_bound": 37,
+     "os_keys": 2639,
+     "undispatched": 0,
+     "cmd_chords": 13,
+     "menu": 16,
+     "menu_cmd": 13,
+     "cmd_allowed": 0,
+     "app_undelivered": 0,
+     "seen": 2639,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 37
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 37
+    },
+    "enter_taint": {
+     "taps": 37,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_tabs_streaming.png"
+   ]
+  },
+  {
+   "name": "cb_ui_action_latency",
+   "mode": "terminal",
+   "status": "pass",
+   "ran_mode": "terminal",
+   "seconds": 30.1,
+   "evidence": [
+    "enter_route: 12 Enter(s) reached the input editor: Shell=12 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794488990.729,
+    1794489020.875
+   ],
+   "detail": [
+    "no close key on this platform: the throw-away tab was ended with Ctrl-D (unverified that the tab disappears)",
+    "injector accounting: injector sent 672; app saw 672; lost-before-app 0 (Enter: sent 12, app saw 12); of the app's: 647 unbound keydown/typed, 8 taken by a key binding, 12 Enter by a binding; macOS: 672 key-down(s) reached NSApplication, 672 dispatched as key events (5 of them a menu key equivalent), 0 not (3 Cmd chord(s) injected)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 12 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "tab_completion_s": 0.427,
+    "tab_completion_max_change": 0.002,
+    "new_tab_ui_work": {
+     "count": 1,
+     "max_ms": 4.69,
+     "kinds": [
+      "action"
+     ]
+    },
+    "new_tab_s": 0.363,
+    "tab_switch_ui_work": {
+     "count": 0,
+     "max_ms": 0.0,
+     "kinds": []
+    },
+    "tab_switch_s": 0.428,
+    "throwaway_tab_close": "closed",
+    "injector": {
+     "sent": 672,
+     "enters_sent": 12,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 672,
+     "unbound": 647,
+     "bound": 8,
+     "enters_bound": 12,
+     "os_keys": 672,
+     "undispatched": 0,
+     "cmd_chords": 3,
+     "menu": 5,
+     "menu_cmd": 1,
+     "cmd_allowed": 2,
+     "app_undelivered": 0,
+     "seen": 672,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 12
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 12
+    },
+    "enter_taint": {
+     "taps": 12,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_cb_ui_action_latency.png"
+   ]
+  },
+  {
+   "name": "mode_proof",
+   "mode": "agent",
+   "status": "pass",
+   "ran_mode": "agent",
+   "seconds": 2.8,
+   "evidence": [
+    "mode_proof: log_view_mode=agent ocr_agent_markers=True ocr_terminal_hint=False queue_destination=table"
+   ],
+   "tainted": false,
+   "wall": [
+    1794489029.55,
+    1794489032.302
+   ],
+   "detail": [],
+   "metrics": {
+    "log_view_mode": "agent",
+    "queue_destination": "table",
+    "ocr_agent_markers": true,
+    "ocr_terminal_hint": false,
+    "ocr_model_chip_gpt_oss": true,
+    "enter_taint": {
+     "taps": 0,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/agent_mode_proof.png"
+   ]
+  },
+  {
+   "name": "ctrl_c_d",
+   "mode": "agent",
+   "status": "pass",
+   "ran_mode": "agent",
+   "seconds": 557.3,
+   "evidence": [
+    "enter_route: 78 Enter(s) reached the input editor: AI=1 Shell=77 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,...]",
+    "host load after the case: loadavg1=2.34 cpus=8"
+   ],
+   "tainted": false,
+   "wall": [
+    1794489033.771,
+    1794489591.096
+   ],
+   "detail": [
+    "Ctrl-C: same trap/timestamp command typed in both terminals; reference measured after Phosphor in the same session; absolute Phosphor median 208.37 ms includes the input-tool spawn (harness floor 142.98462495207787 ms)",
+    "measurement mode: interleaved, blocks of 5 kept samples (+1 discarded lead per block), 12 blocks",
+    "Ctrl-C under flood, app side (#1606): ctrl_event_age p50 2.94 max 9.08 (n=45); key_to_write p50 0.22 max 0.26 (n=39); drawable_wait p50 3.21 max 4.12 (n=2)",
+    "Ctrl-C under flood: Ctrl-C while `yes` floods the terminal; the plain-sleep ctrl_c measurement is the control; reference interleaved with Phosphor in blocks of 5 (A/B/A/B, same session)",
+    "injector accounting: injector sent 9107; app saw 9107; lost-before-app 0 (Enter: sent 80, app saw 80); of the app's: 8944 unbound keydown/typed, 82 taken by a key binding, 78 Enter by a binding; macOS: 9107 key-down(s) reached NSApplication, 9107 dispatched as key events (3 of them a menu key equivalent), 0 not (0 Cmd chord(s) injected)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 78 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "ctrl_c_ms": {
+     "n": 30,
+     "p50": 208.37,
+     "p95": 218.78,
+     "max": 221.99
+    },
+    "ctrl_c_app_segments": {
+     "n": 30,
+     "keydown->ctrl_c_keydown": {
+      "n": 0,
+      "p50": null,
+      "p95": null,
+      "max": null
+     },
+     "ctrl_c_keydown->ctrl_c_to_event_loop": {
+      "n": 30,
+      "p50": 0.35,
+      "p95": 0.42,
+      "max": 0.46
+     },
+     "ctrl_c_to_event_loop->ctrl_c_received": {
+      "n": 30,
+      "p50": 0.03,
+      "p95": 0.05,
+      "max": 0.53
+     },
+     "ctrl_c_received->ctrl_c_pty_write": {
+      "n": 30,
+      "p50": 0.07,
+      "p95": 0.17,
+      "max": 1.85
+     },
+     "keydown_to_write": {
+      "n": 0,
+      "p50": null,
+      "p95": null,
+      "max": null
+     },
+     "handler_to_write": {
+      "n": 30,
+      "p50": 0.45,
+      "p95": 0.9,
+      "max": 2.32
+     }
+    },
+    "harness_floor_ms": 142.985,
+    "reference_ctrl_c_ms": {
+     "n": 30,
+     "p50": 200.57,
+     "p95": 205.47,
+     "max": 211.17
+    },
+    "reference": "Terminal.app (.command via open)",
+    "lat": {
+     "ctrl_c": {
+      "measurement_mode": "sequential",
+      "phosphor": {
+       "n": 30,
+       "p50": 208.37,
+       "p95": 218.78,
+       "max": 221.99
+      },
+      "reference": {
+       "n": 30,
+       "p50": 200.57,
+       "p95": 205.47,
+       "max": 211.17
+      },
+      "reference_name": "Terminal.app (.command via open)",
+      "budget_ms": 20.0,
+      "budget_kind": "overhead",
+      "floor_ms": 142.98462495207787,
+      "notes": [
+       "same trap/timestamp command typed in both terminals; reference measured after Phosphor in the same session; absolute Phosphor median 208.37 ms includes the input-tool spawn (harness floor 142.98462495207787 ms)"
+      ],
+      "per_side": {
+       "phosphor": {
+        "n": 30,
+        "se_median_ms": 0.44
+       },
+       "reference": {
+        "n": 30,
+        "se_median_ms": 1.2
+       }
+      },
+      "overhead_ms": 7.8,
+      "overhead_se_ms": 1.23,
+      "pane_shell": null,
+      "reference_shell": null,
+      "drift_ms": {
+       "phosphor": -0.19,
+       "reference": -4.99
+      },
+      "budget_verdict": "pass",
+      "prev": null,
+      "baseline": {
+       "status": "ok",
+       "p50": 212.26,
+       "p95": 224.95,
+       "delta_ms": -3.89,
+       "delta_pct": -1.8,
+       "verdict": "pass"
+      },
+      "regress_basis": "median",
+      "prev_verdict": "none",
+      "baseline_verdict": "pass",
+      "verdict": "pass"
+     },
+     "ctrl_c_flood": {
+      "measurement_mode": "interleaved",
+      "phosphor": {
+       "n": 30,
+       "p50": 182.56,
+       "p95": 190.48,
+       "max": 192.27
+      },
+      "reference": {
+       "n": 30,
+       "p50": 212.87,
+       "p95": 225.83,
+       "max": 229.24
+      },
+      "reference_name": "Terminal.app (.command via open)",
+      "budget_ms": 20.0,
+      "budget_kind": "overhead",
+      "floor_ms": 142.98462495207787,
+      "notes": [
+       "Ctrl-C while `yes` floods the terminal; the plain-sleep ctrl_c measurement is the control; reference interleaved with Phosphor in blocks of 5 (A/B/A/B, same session)"
+      ],
+      "per_side": {
+       "phosphor": {
+        "n": 30,
+        "se_median_ms": 1.4
+       },
+       "reference": {
+        "n": 30,
+        "se_median_ms": 3.16
+       }
+      },
+      "overhead_ms": -30.31,
+      "overhead_se_ms": 3.61,
+      "pane_shell": "/bin/zsh",
+      "reference_shell": "/bin/zsh",
+      "drift_ms": {
+       "phosphor": -0.58,
+       "reference": 10.26
+      },
+      "budget_verdict": "pass",
+      "prev": null,
+      "baseline": {
+       "status": "ok",
+       "p50": 244.93,
+       "p95": 259.76,
+       "delta_ms": -62.37,
+       "delta_pct": -25.5,
+       "verdict": "pass"
+      },
+      "regress_basis": "median",
+      "prev_verdict": "none",
+      "baseline_verdict": "pass",
+      "verdict": "pass"
+     }
+    },
+    "measurement_mode": "interleaved",
+    "interleave_block": 5,
+    "block_medians_ms": [
+     [
+      "phosphor",
+      176.67
+     ],
+     [
+      "reference",
+      212.67
+     ],
+     [
+      "phosphor",
+      182.89
+     ],
+     [
+      "reference",
+      201.32
+     ],
+     [
+      "phosphor",
+      184.24
+     ],
+     [
+      "reference",
+      209.31
+     ],
+     [
+      "phosphor",
+      183.71
+     ],
+     [
+      "reference",
+      214.77
+     ],
+     [
+      "phosphor",
+      182.8
+     ],
+     [
+      "reference",
+      217.91
+     ],
+     [
+      "phosphor",
+      179.14
+     ],
+     [
+      "reference",
+      220.06
+     ]
+    ],
+    "ctrl_c_flood_ms": {
+     "n": 30,
+     "p50": 182.56,
+     "p95": 190.48,
+     "max": 192.27
+    },
+    "ctrl_c_flood_app_split": {
+     "ctrl_event_age_ms": {
+      "n": 45,
+      "p50": 2.94,
+      "p95": 5.47,
+      "max": 9.08
+     },
+     "key_to_write_ms": {
+      "n": 39,
+      "p50": 0.22,
+      "p95": 0.25,
+      "max": 0.26
+     },
+     "drawable_wait_ms": {
+      "n": 2,
+      "p50": 3.21,
+      "p95": 4.12,
+      "max": 4.12
+     }
+    },
+    "reference_ctrl_c_flood_ms": {
+     "n": 30,
+     "p50": 212.87,
+     "p95": 225.83,
+     "max": 229.24
+    },
+    "ctrl_c_line_integrity": {
+     "phosphor": {
+      "n": 33,
+      "got": 33,
+      "bad": 0,
+      "examples": []
+     },
+     "reference": {
+      "n": 33,
+      "got": 33,
+      "bad": 0,
+      "examples": []
+     }
+    },
+    "injector": {
+     "sent": 9107,
+     "enters_sent": 80,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 9107,
+     "unbound": 8944,
+     "bound": 82,
+     "enters_bound": 78,
+     "os_keys": 9107,
+     "undispatched": 0,
+     "cmd_chords": 0,
+     "menu": 3,
+     "menu_cmd": 0,
+     "cmd_allowed": 0,
+     "app_undelivered": 0,
+     "seen": 9107,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 80
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 78
+    },
+    "enter_taint": {
+     "taps": 154,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 74
+    },
+    "host_load": "loadavg1=2.34 cpus=8"
+   },
+   "shots": [
+    "shots/agent_ctrl_c_d.png"
+   ]
+  },
+  {
+   "name": "gitbash_subshell",
+   "mode": "agent",
+   "status": "skip",
+   "ran_mode": "agent",
+   "seconds": 1.5,
+   "evidence": [],
+   "tainted": false,
+   "wall": [
+    1794489593.209,
+    1794489594.723
+   ],
+   "detail": [
+    "Windows only: Git for Windows' bash.exe as a subshell of the pane's PowerShell (POSIX hosts: the subshells case)",
+    "injector accounting: injector sent 2; app saw 2; lost-before-app 0 (Enter: sent 0, app saw 0); of the app's: 0 unbound keydown/typed, 1 taken by a key binding, 0 Enter by a binding; macOS: 2 key-down(s) reached NSApplication, 2 dispatched as key events (1 of them a menu key equivalent), 0 not (0 Cmd chord(s) injected)"
+   ],
+   "metrics": {
+    "injector": {
+     "sent": 2,
+     "enters_sent": 0,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 2,
+     "unbound": 0,
+     "bound": 1,
+     "enters_bound": 0,
+     "os_keys": 2,
+     "undispatched": 0,
+     "cmd_chords": 0,
+     "menu": 1,
+     "menu_cmd": 0,
+     "cmd_allowed": 0,
+     "app_undelivered": 0,
+     "seen": 2,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 0
+    },
+    "enter_taint": {
+     "taps": 0,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/agent_gitbash_subshell.png"
+   ]
+  },
+  {
+   "name": "latency_enter",
+   "mode": "agent",
+   "status": "pass",
+   "ran_mode": "agent",
+   "seconds": 413.1,
+   "evidence": [
+    "enter_route: 75 Enter(s) reached the input editor: Shell=75 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,...]",
+    "host load after the case: loadavg1=2.49 cpus=8"
+   ],
+   "tainted": false,
+   "wall": [
+    1794489596.875,
+    1794490010.022
+   ],
+   "detail": [
+    "measurement mode: interleaved, blocks of 5 kept samples (+1 discarded lead per block), 24 blocks",
+    "app share of Enter->start: enter_begin -> pty_write median 1.45 ms (from the app's input_order log); the remaining overhead is shell/ConPTY side",
+    "shell side: pty_write -> first pty_read median 1.70 ms (n=73)",
+    "Enter split (Phosphor - reference, medians ms, #1606): t0_to_inj +4.58, inj_to_post +0.04, t0_to_post +4.57, post_to_lf +2.00, lf_to_px +1.50, px_to_stamp -0.29, post_to_stamp +3.08, post_to_px +3.38, t0_to_lf +6.99, lf_to_stamp +1.20, lf_to_ah +0.42, ah_to_p0 +0.72, p0_to_px +0.23; Phosphor app: event_age 0.90, event_to_enter 0.77, enter_to_write 1.45, submit_bookkeeping 0.03, effect_flush 0.87, pty_lock_wait 0.00",
+    "OS split (#1606, medians ms on the OS event clock): phosphor  75, n_matc 75, post_to_evts 46.62, evts_to_tap 0.26, evts_to_app 0.9, evts_to_lf 4.47; reference  75, n_matc 75, post_to_evts 47.18, evts_to_tap 0.43, evts_to_lf 2.08; delta post_to_evts -0.56, evts_to_tap -0.17, evts_to_lf 2.39",
+    "app segment per hop (enter_begin -> pty_write 1.45 ms; medians ms, #2114): enter_to_execute 0.35, submit_bookkeeping 0.03, effect_flush 0.87, command_to_pty 0.19 (sum of the hop medians 1.44); vs the terminal-mode arm of this run: whole +0.66, enter_to_execute +0.01, submit_bookkeeping +0.01, effect_flush +0.66, command_to_pty -0.02 -> the hop that grew most: effect_flush (+0.66 ms: enter_submit_done -> write_command (the queued ExecuteCommand effect))",
+    "REPORT-ONLY: Enter to command start: Phosphor overhead 3.61 +/- 0.26 ms (SE) over Terminal.app (.command via open) vs the 2 ms budget, NOT judged (macOS-bound; #1606 closed by owner 2026-11-05); the app's own share and the OS split are in the notes/metrics",
+    "Enter to command start: reference interleaved with Phosphor in blocks of 5 (A/B/A/B, same session); Linux headless-GPU numbers compare builds, not absolute vs hand-measured baselines",
+    "injector accounting: injector sent 6481; app saw 6481; lost-before-app 0 (Enter: sent 75, app saw 75); of the app's: 6375 unbound keydown/typed, 16 taken by a key binding, 75 Enter by a binding; macOS: 6481 key-down(s) reached NSApplication, 6481 dispatched as key events (15 of them a menu key equivalent), 0 not (0 Cmd chord(s) injected)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 75 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "pane_shell": "/bin/zsh",
+    "stamp_line": "zmodload zsh/datetime; print -r -- $EPOCHREALTIME ${__pa_px:-0} ${__pa_lf:-0} > lat_%d",
+    "enter_sample_start": "injector_spawn",
+    "host_load": "loadavg1=2.49 cpus=8",
+    "measurement_mode": "interleaved",
+    "interleave_block": 5,
+    "block_medians_ms": [
+     [
+      "phosphor",
+      80.5
+     ],
+     [
+      "reference",
+      75.44
+     ],
+     [
+      "phosphor",
+      78.11
+     ],
+     [
+      "reference",
+      75.98
+     ],
+     [
+      "phosphor",
+      79.2
+     ],
+     [
+      "reference",
+      74.92
+     ],
+     [
+      "phosphor",
+      79.61
+     ],
+     [
+      "reference",
+      74.51
+     ],
+     [
+      "phosphor",
+      78.56
+     ],
+     [
+      "reference",
+      75.72
+     ],
+     [
+      "phosphor",
+      77.96
+     ],
+     [
+      "reference",
+      75.53
+     ],
+     [
+      "phosphor",
+      79.11
+     ],
+     [
+      "reference",
+      75.14
+     ],
+     [
+      "phosphor",
+      78.3
+     ],
+     [
+      "reference",
+      75.38
+     ],
+     [
+      "phosphor",
+      79.08
+     ],
+     [
+      "reference",
+      76.59
+     ],
+     [
+      "phosphor",
+      79.16
+     ],
+     [
+      "reference",
+      75.72
+     ],
+     [
+      "phosphor",
+      78.4
+     ],
+     [
+      "reference",
+      75.22
+     ],
+     [
+      "phosphor",
+      81.49
+     ],
+     [
+      "reference",
+      75.31
+     ]
+    ],
+    "enter_to_start_ms": {
+     "n": 60,
+     "p50": 79.02,
+     "p95": 83.32,
+     "max": 100.93
+    },
+    "app_enter_to_pty_write_ms": 1.45,
+    "app_segments_ms": {
+     "event_age_ms": 0.9,
+     "event_age_n": 75,
+     "event_to_enter_ms": 0.77,
+     "event_to_enter_n": 75,
+     "enter_to_write_ms": 1.45,
+     "enter_to_write_n": 75,
+     "submit_bookkeeping_ms": 0.03,
+     "submit_bookkeeping_n": 75,
+     "effect_flush_ms": 0.87,
+     "effect_flush_n": 75,
+     "write_to_first_read_ms": 1.7,
+     "write_to_first_read_n": 73,
+     "write_to_preexec_ms": 2.81,
+     "write_to_preexec_n": 75,
+     "pty_lock_wait_ms": 0.0,
+     "pty_lock_wait_n": 75,
+     "enter_to_execute_ms": 0.35,
+     "enter_to_execute_n": 75,
+     "command_to_pty_ms": 0.19,
+     "command_to_pty_n": 75,
+     "platform": "macos"
+    },
+    "harness_floor_ms": 142.985,
+    "reference_enter_to_start_ms": {
+     "n": 60,
+     "p50": 75.41,
+     "p95": 79.91,
+     "max": 86.68
+    },
+    "reference": "Terminal.app (.command via open)",
+    "reference_shell": "/bin/zsh",
+    "enter_split_ms": {
+     "phosphor": {
+      "n": 75,
+      "t0_to_inj_ms": 128.05,
+      "inj_to_post_ms": 25.16,
+      "t0_to_post_ms": 153.28,
+      "post_to_lf_ms": 51.47,
+      "lf_to_px_ms": 1.93,
+      "px_to_stamp_ms": 0.17,
+      "post_to_stamp_ms": 53.53,
+      "post_to_px_ms": 53.33,
+      "t0_to_lf_ms": 205.12,
+      "lf_to_stamp_ms": 2.11,
+      "lf_to_ah_ms": 0.62,
+      "ah_to_p0_ms": 0.76,
+      "p0_to_px_ms": 0.42
+     },
+     "reference": {
+      "n": 75,
+      "t0_to_inj_ms": 123.47,
+      "inj_to_post_ms": 25.12,
+      "t0_to_post_ms": 148.71,
+      "post_to_lf_ms": 49.47,
+      "lf_to_px_ms": 0.43,
+      "px_to_stamp_ms": 0.46,
+      "post_to_stamp_ms": 50.45,
+      "post_to_px_ms": 49.95,
+      "t0_to_lf_ms": 198.13,
+      "lf_to_stamp_ms": 0.91,
+      "lf_to_ah_ms": 0.2,
+      "ah_to_p0_ms": 0.04,
+      "p0_to_px_ms": 0.19
+     },
+     "delta": {
+      "t0_to_inj_ms": 4.58,
+      "inj_to_post_ms": 0.04,
+      "t0_to_post_ms": 4.57,
+      "post_to_lf_ms": 2.0,
+      "lf_to_px_ms": 1.5,
+      "px_to_stamp_ms": -0.29,
+      "post_to_stamp_ms": 3.08,
+      "post_to_px_ms": 3.38,
+      "t0_to_lf_ms": 6.99,
+      "lf_to_stamp_ms": 1.2,
+      "lf_to_ah_ms": 0.42,
+      "ah_to_p0_ms": 0.72,
+      "p0_to_px_ms": 0.23
+     },
+     "phosphor_app": {
+      "event_age_ms": 0.9,
+      "event_to_enter_ms": 0.77,
+      "enter_to_write_ms": 1.45,
+      "submit_bookkeeping_ms": 0.03,
+      "effect_flush_ms": 0.87,
+      "pty_lock_wait_ms": 0.0
+     }
+    },
+    "enter_os_split_ms": {
+     "phosphor": {
+      "n": 75,
+      "n_matched": 75,
+      "post_to_evts_ms": 46.62,
+      "evts_to_tap_ms": 0.26,
+      "evts_to_app_ms": 0.9,
+      "evts_to_lf_ms": 4.47
+     },
+     "reference": {
+      "n": 75,
+      "n_matched": 75,
+      "post_to_evts_ms": 47.18,
+      "evts_to_tap_ms": 0.43,
+      "evts_to_lf_ms": 2.08
+     },
+     "delta": {
+      "post_to_evts_ms": -0.56,
+      "evts_to_tap_ms": -0.17,
+      "evts_to_lf_ms": 2.39
+     }
+    },
+    "enter_hops_ms": {
+     "hops": {
+      "enter_to_execute_ms": 0.35,
+      "submit_bookkeeping_ms": 0.03,
+      "effect_flush_ms": 0.87,
+      "command_to_pty_ms": 0.19
+     },
+     "whole_ms": 1.45,
+     "sum_ms": 1.44,
+     "vs": [
+      {
+       "name": "the terminal-mode arm of this run",
+       "whole_delta_ms": 0.66,
+       "delta": {
+        "enter_to_execute_ms": 0.01,
+        "submit_bookkeeping_ms": 0.01,
+        "effect_flush_ms": 0.66,
+        "command_to_pty_ms": -0.02
+       },
+       "grew": "effect_flush_ms",
+       "missing": []
+      }
+     ]
+    },
+    "lat": {
+     "enter_to_start": {
+      "measurement_mode": "interleaved",
+      "phosphor": {
+       "n": 60,
+       "p50": 79.02,
+       "p95": 83.32,
+       "max": 100.93
+      },
+      "reference": {
+       "n": 60,
+       "p50": 75.41,
+       "p95": 79.91,
+       "max": 86.68
+      },
+      "reference_name": "Terminal.app (.command via open)",
+      "budget_ms": 2.0,
+      "budget_kind": "overhead",
+      "floor_ms": 142.98462495207787,
+      "notes": [
+       "reference interleaved with Phosphor in blocks of 5 (A/B/A/B, same session); Linux headless-GPU numbers compare builds, not absolute vs hand-measured baselines"
+      ],
+      "per_side": {
+       "phosphor": {
+        "n": 60,
+        "se_median_ms": 0.2
+       },
+       "reference": {
+        "n": 60,
+        "se_median_ms": 0.16
+       }
+      },
+      "overhead_ms": 3.61,
+      "overhead_se_ms": 0.26,
+      "pane_shell": "/bin/zsh",
+      "reference_shell": "/bin/zsh",
+      "drift_ms": {
+       "phosphor": -0.28,
+       "reference": -0.14
+      },
+      "budget_verdict": "fail",
+      "prev": null,
+      "baseline": {
+       "status": "ok",
+       "p50": 93.32,
+       "p95": 109.68,
+       "delta_ms": -14.3,
+       "delta_pct": -15.3,
+       "verdict": "pass"
+      },
+      "regress_basis": "median",
+      "prev_verdict": "none",
+      "baseline_verdict": "pass",
+      "verdict": "fail"
+     }
+    },
+    "injector": {
+     "sent": 6481,
+     "enters_sent": 75,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 6481,
+     "unbound": 6375,
+     "bound": 16,
+     "enters_bound": 75,
+     "os_keys": 6481,
+     "undispatched": 0,
+     "cmd_chords": 0,
+     "menu": 15,
+     "menu_cmd": 0,
+     "cmd_allowed": 0,
+     "app_undelivered": 0,
+     "seen": 6481,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 75
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 75
+    },
+    "enter_taint": {
+     "taps": 151,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 76
+    }
+   },
+   "shots": [
+    "shots/agent_latency_enter.png"
+   ]
+  },
+  {
+   "name": "latency_key_log",
+   "mode": "agent",
+   "status": "pass",
+   "ran_mode": "agent",
+   "seconds": 29.9,
+   "evidence": [
+    "enter_route: 1 Enter(s) reached the input editor: Shell=1 [Shell]",
+    "host load after the case: loadavg1=2.49 cpus=8"
+   ],
+   "tainted": false,
+   "wall": [
+    1794490012.79,
+    1794490042.74
+   ],
+   "detail": [
+    "#2037 key to frame without the wait for the display pass (the app's own share): median 1.47 ms (p95 2.17, n=60); the wait itself: median 0.04 ms (max 5.28)",
+    "#1176 key -> pty write median 0.37 ms (p95 0.45, n=60): within the 1 ms target",
+    "#1995 notifies logged before 13 of 77 key frame build(s): Input:new_10 x20, Input:handle_completion_suggestions_results_3 x10, Input:agent::rerender_agent_input_if_facts_changed x3, Input:new_11 x3 (+11 more)",
+    "#1958 platform samples while typing 63 key(s): 1 (median 70 us, max 70 us, 0 at or over 1 ms); foreground-group lookups by path: none logged",
+    "key to frame: no reference terminal exists for this measurement, so the overhead budget was not judged; JUDGED on the app's own share (key_to_frame_less_display_wait): 1.47 ms against its 2.0 ms budget (n=60): PASS",
+    "key to frame: Phosphor-side keydown to first frame; no same-method reference exists",
+    "key to frame: baseline: no app-share figure (key_to_frame_less_display_wait) in that record: not compared on the app share (median delta -5.19 ms recorded, not judged)",
+    "injector accounting: injector sent 84; app saw 84; lost-before-app 0 (Enter: sent 1, app saw 1); of the app's: 78 unbound keydown/typed, 4 taken by a key binding, 1 Enter by a binding; macOS: 84 key-down(s) reached NSApplication, 84 dispatched as key events (1 of them a menu key equivalent), 0 not (0 Cmd chord(s) injected)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 1 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "key_to_frame_ms": {
+     "n": 60,
+     "p50": 1.51,
+     "p95": 4.64,
+     "max": 10.78
+    },
+    "key_to_frame_own_ms": {
+     "n": 60,
+     "p50": 1.47,
+     "p95": 2.17,
+     "max": 10.72
+    },
+    "key_frame_display_wait_ms": {
+     "n": 60,
+     "p50": 0.04,
+     "p95": 1.86,
+     "max": 5.28
+    },
+    "key_to_pty_write_ms": {
+     "n": 60,
+     "p50": 0.37,
+     "p95": 0.45,
+     "max": 0.71
+    },
+    "typing_ui_items": {
+     "over_4ms": 0,
+     "over_16ms": 0,
+     "max_ms": 0.0,
+     "by_kind": {}
+    },
+    "typing_lock_holds": {},
+    "key_submit_to_presented_ms": {
+     "n": 73,
+     "p50": 19.4,
+     "p95": 26.49,
+     "max": 32.29
+    },
+    "key_to_presented_ms_hop": {
+     "n": 73,
+     "p50": 22.24,
+     "p95": 47.09,
+     "max": 53.72
+    },
+    "key_presented_wait_ms": {
+     "n": 73,
+     "p50": 0.4,
+     "p95": 0.98,
+     "max": 1.25
+    },
+    "key_frame_sched_ms": {
+     "n": 80,
+     "p50": 0.04,
+     "p95": 2.89,
+     "max": 7.69
+    },
+    "key_frame_now_ms": {
+     "n": 9,
+     "p50": 2.64,
+     "p95": 3.74,
+     "max": 3.74
+    },
+    "echo_frame_now_ms": {
+     "n": 59,
+     "p50": 2.49,
+     "p95": 3.06,
+     "max": 3.52
+    },
+    "echo_frame_key_age_ms": {
+     "n": 59,
+     "p50": 0.92,
+     "p95": 1.63,
+     "max": 79.52
+    },
+    "key_frame_builds": 77,
+    "key_frame_builds_multi_pass": 0,
+    "key_frame_build_render_ms": {
+     "n": 77,
+     "p50": 0.0,
+     "p95": 0.22,
+     "max": 0.32
+    },
+    "key_frame_build_layout_ms": {
+     "n": 77,
+     "p50": 0.21,
+     "p95": 0.75,
+     "max": 1.47
+    },
+    "key_frame_build_after_layout_ms": {
+     "n": 77,
+     "p50": 0.02,
+     "p95": 0.03,
+     "max": 0.06
+    },
+    "key_frame_build_paint_ms": {
+     "n": 77,
+     "p50": 0.48,
+     "p95": 0.55,
+     "max": 1.02
+    },
+    "key_frame_build_hover_ms": {
+     "n": 77,
+     "p50": 0.0,
+     "p95": 0.0,
+     "max": 0.0
+    },
+    "key_frame_build_total_ms": {
+     "n": 77,
+     "p50": 0.86,
+     "p95": 1.59,
+     "max": 2.37
+    },
+    "key_frame_build_other_ms": {
+     "n": 77,
+     "p50": 0.13,
+     "p95": 0.21,
+     "max": 0.3
+    },
+    "key_frame_build_views": {
+     "n": 77,
+     "p50": 0,
+     "p95": 5,
+     "max": 10
+    },
+    "key_frame_build_mounted": {
+     "n": 77,
+     "p50": 15,
+     "p95": 27,
+     "max": 27
+    },
+    "key_frame_build_layout_top_ms": {
+     "Terminal": 0.134,
+     "EditorView": 0.069,
+     "InputSuggestions": 0.034,
+     "Workspace": 0.025
+    },
+    "key_frame_build_paint_top_ms": {
+     "Terminal": 0.318,
+     "Workspace": 0.083,
+     "ActionButton": 0.011,
+     "EditorView": 0.01,
+     "InputSuggestions": 0.001
+    },
+    "input_notify_causes": {
+     "Input:new_10": 20,
+     "Input:handle_completion_suggestions_results_3": 10,
+     "Input:agent::rerender_agent_input_if_facts_changed": 3,
+     "Input:new_11": 3,
+     "Input:update_ai_context_menu": 3,
+     "Input:update_image_context_options": 3,
+     "Input:update_voice_transcription_options": 3,
+     "Input:handle_editor_event_inner_6": 2,
+     "Input:clear_selected_workflow": 1,
+     "Input:close_input_suggestions": 1,
+     "Input:notify_and_notify_children": 1,
+     "Input:notify_and_notify_children_2": 1,
+     "Input:set_prompt_suggestions_banner_state_2": 1,
+     "Input:try_execute_command_from_source": 1,
+     "Input:try_execute_command_from_source_2": 1
+    },
+    "input_notify_frames": 13,
+    "key_presented_sync_on": 5,
+    "key_presented_sync_off": 68,
+    "key_frames_skipped": 12,
+    "skip_runs": 22,
+    "key_frames_now": 9,
+    "key_frames_now_drawn": 9,
+    "echo_frames_now": 59,
+    "echo_frames_now_drawn": 59,
+    "typing_prompt_samples": {
+     "samples": 1,
+     "max_us": 70,
+     "p50_us": 70,
+     "over_1ms": 0,
+     "lookups": {}
+    },
+    "lat": {
+     "key_to_frame": {
+      "measurement_mode": "sequential",
+      "phosphor": {
+       "n": 60,
+       "p50": 1.51,
+       "p95": 4.64,
+       "max": 10.78
+      },
+      "reference": null,
+      "reference_name": null,
+      "budget_ms": 2.0,
+      "budget_kind": "overhead",
+      "floor_ms": null,
+      "notes": [
+       "Phosphor-side keydown to first frame; no same-method reference exists",
+       "baseline: no app-share figure (key_to_frame_less_display_wait) in that record: not compared on the app share (median delta -5.19 ms recorded, not judged)"
+      ],
+      "per_side": {
+       "phosphor": {
+        "n": 60,
+        "se_median_ms": 0.01
+       }
+      },
+      "overhead_ms": null,
+      "budget_verdict": "no-reference",
+      "prev": null,
+      "baseline": {
+       "status": "ok",
+       "p50": 6.7,
+       "p95": 9.28,
+       "delta_ms": -5.19,
+       "delta_pct": -77.5,
+       "verdict": "none",
+       "median_verdict": "pass",
+       "judged_on": "app_share"
+      },
+      "regress_basis": "app_share",
+      "app_share": {
+       "what": "key_to_frame_less_display_wait",
+       "p50": 1.47,
+       "n": 60,
+       "budget_ms": 2.0,
+       "usable": true,
+       "budget_verdict": "pass",
+       "prev": {
+        "p50": null,
+        "delta_ms": null,
+        "delta_pct": null,
+        "verdict": "none"
+       },
+       "baseline": {
+        "p50": null,
+        "delta_ms": null,
+        "delta_pct": null,
+        "verdict": "none"
+       }
+      },
+      "prev_verdict": "none",
+      "baseline_verdict": "none",
+      "verdict": "no-reference",
+      "tail": {
+       "prev": {
+        "p95": null,
+        "delta_ms": null,
+        "delta_pct": null,
+        "verdict": "none"
+       },
+       "baseline": {
+        "p95": 9.28,
+        "delta_ms": -4.64,
+        "delta_pct": -50.0,
+        "verdict": "pass"
+       }
+      }
+     },
+     "ui_work": {
+      "phosphor": {
+       "n": 0,
+       "p50": null,
+       "p95": null,
+       "max": 0.0
+      },
+      "reference": null,
+      "budget_ms": 4,
+      "budget_kind": "ui-item-log",
+      "overhead_ms": null,
+      "prev": null,
+      "baseline": {
+       "status": "n/a"
+      },
+      "budget_verdict": "pass",
+      "verdict": "pass",
+      "notes": [
+       "hop=ui_item logs every main-thread item >= 4 ms: pass = none while typing; warn = frame items (raster-bound on software GL) or a few logic items; fail = more than max(2, 5 %% of the keys) event/action items; >= 16 ms is a dropped frame"
+      ]
+     }
+    },
+    "ui_slow_ops": {
+     "count": 0,
+     "worst_ms": 0,
+     "ops": []
+    },
+    "ui_items_over_4ms": {
+     "logic_count": 0,
+     "logic_max_ms": 0.0,
+     "frame_count": 0,
+     "frame_max_ms": 0.0,
+     "allowed": 3,
+     "source": "none logged (nothing over 4 ms, or a build older than #1191)"
+    },
+    "injector": {
+     "sent": 84,
+     "enters_sent": 1,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 84,
+     "unbound": 78,
+     "bound": 4,
+     "enters_bound": 1,
+     "os_keys": 84,
+     "undispatched": 0,
+     "cmd_chords": 0,
+     "menu": 1,
+     "menu_cmd": 0,
+     "cmd_allowed": 0,
+     "app_undelivered": 0,
+     "seen": 84,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 1
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 1
+    },
+    "enter_taint": {
+     "taps": 1,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    },
+    "host_load": "loadavg1=2.49 cpus=8"
+   },
+   "shots": [
+    "shots/agent_latency_key_log.png"
+   ]
+  },
+  {
+   "name": "latency_paint",
+   "mode": "agent",
+   "status": "pass",
+   "ran_mode": "agent",
+   "seconds": 126.3,
+   "evidence": [
+    "host load after the case: loadavg1=2.17 cpus=8"
+   ],
+   "tainted": false,
+   "wall": [
+    1794490045.486,
+    1794490171.736
+   ],
+   "detail": [
+    "measurement mode: interleaved, blocks of 5 kept samples (+1 discarded lead per block), 12 blocks",
+    "Key to paint: kl3 measures post-to-first-changed-pixel at 240 Hz in each terminal's own window; reference interleaved with Phosphor in blocks of 5 (A/B/A/B, same session)",
+    "injector accounting: injector sent 53; app saw 53; lost-before-app 0 (Enter: sent 0, app saw 0); of the app's: 20 unbound keydown/typed, 26 taken by a key binding, 0 Enter by a binding; macOS: 53 key-down(s) reached NSApplication, 53 dispatched as key events (7 of them a menu key equivalent), 0 not (0 Cmd chord(s) injected)"
+   ],
+   "metrics": {
+    "measurement_mode": "interleaved",
+    "interleave_block": 5,
+    "block_medians_ms": [
+     [
+      "phosphor",
+      28.7
+     ],
+     [
+      "reference",
+      30.55
+     ],
+     [
+      "phosphor",
+      31.32
+     ],
+     [
+      "reference",
+      30.58
+     ],
+     [
+      "phosphor",
+      35.81
+     ],
+     [
+      "reference",
+      27.73
+     ],
+     [
+      "phosphor",
+      34.03
+     ],
+     [
+      "reference",
+      26.82
+     ],
+     [
+      "phosphor",
+      34.07
+     ],
+     [
+      "reference",
+      27.98
+     ],
+     [
+      "phosphor",
+      27.02
+     ],
+     [
+      "reference",
+      25.15
+     ]
+    ],
+    "key_to_paint_ms": {
+     "n": 30,
+     "p50": 33.21,
+     "p95": 38.65,
+     "max": 40.97
+    },
+    "key_event_age_ms": {
+     "n": 39,
+     "p50": 3.29,
+     "p95": 4.62,
+     "max": 6.59
+    },
+    "key_submit_to_presented_ms": {
+     "n": 45,
+     "p50": 28.39,
+     "p95": 33.89,
+     "max": 34.94
+    },
+    "key_to_presented_ms_hop": {
+     "n": 45,
+     "p50": 33.2,
+     "p95": 39.47,
+     "max": 40.17
+    },
+    "key_presented_wait_ms": {
+     "n": 45,
+     "p50": 0.09,
+     "p95": 1.73,
+     "max": 1.85
+    },
+    "key_frame_sched_ms": {
+     "n": 45,
+     "p50": 0.08,
+     "p95": 0.14,
+     "max": 0.15
+    },
+    "key_frame_now_ms": {
+     "n": 45,
+     "p50": 4.19,
+     "p95": 5.28,
+     "max": 5.43
+    },
+    "key_frame_builds": 20,
+    "key_frame_builds_multi_pass": 0,
+    "key_frame_build_render_ms": {
+     "n": 20,
+     "p50": 0.26,
+     "p95": 0.28,
+     "max": 0.28
+    },
+    "key_frame_build_layout_ms": {
+     "n": 20,
+     "p50": 0.53,
+     "p95": 1.0,
+     "max": 1.0
+    },
+    "key_frame_build_after_layout_ms": {
+     "n": 20,
+     "p50": 0.04,
+     "p95": 0.07,
+     "max": 0.07
+    },
+    "key_frame_build_paint_ms": {
+     "n": 20,
+     "p50": 0.98,
+     "p95": 1.05,
+     "max": 1.05
+    },
+    "key_frame_build_hover_ms": {
+     "n": 20,
+     "p50": 0.0,
+     "p95": 0.0,
+     "max": 0.0
+    },
+    "key_frame_build_total_ms": {
+     "n": 20,
+     "p50": 2.17,
+     "p95": 2.39,
+     "max": 2.39
+    },
+    "key_frame_build_other_ms": {
+     "n": 20,
+     "p50": 0.32,
+     "p95": 0.38,
+     "max": 0.38
+    },
+    "key_frame_build_views": {
+     "n": 20,
+     "p50": 3.0,
+     "p95": 4,
+     "max": 4
+    },
+    "key_frame_build_mounted": {
+     "n": 20,
+     "p50": 26.0,
+     "p95": 26,
+     "max": 26
+    },
+    "key_frame_build_layout_top_ms": {
+     "Terminal": 0.243,
+     "EditorView": 0.124,
+     "Workspace": 0.059,
+     "AgentMessageBar": 0.005
+    },
+    "key_frame_build_paint_top_ms": {
+     "Terminal": 0.472,
+     "Workspace": 0.179,
+     "EditorView": 0.066
+    },
+    "input_notify_causes": {
+     "Input:agent::rerender_agent_input_if_facts_changed": 77,
+     "Input:handle_editor_event_inner_6": 39,
+     "Input:new_11": 1,
+     "Input:update_ai_context_menu": 1,
+     "Input:update_image_context_options": 1,
+     "Input:update_voice_transcription_options": 1
+    },
+    "input_notify_frames": 20,
+    "key_presented_sync_on": 0,
+    "key_presented_sync_off": 45,
+    "key_frames_skipped": 0,
+    "skip_runs": 7,
+    "key_frames_now": 45,
+    "key_frames_now_drawn": 45,
+    "reference_key_to_paint_ms": {
+     "n": 30,
+     "p50": 28.53,
+     "p95": 61.54,
+     "max": 63.75
+    },
+    "reference": "Terminal.app (.command via open)",
+    "lat": {
+     "key_to_paint": {
+      "measurement_mode": "interleaved",
+      "phosphor": {
+       "n": 30,
+       "p50": 33.21,
+       "p95": 38.65,
+       "max": 40.97
+      },
+      "reference": {
+       "n": 30,
+       "p50": 28.53,
+       "p95": 61.54,
+       "max": 63.75
+      },
+      "reference_name": "Terminal.app (.command via open)",
+      "budget_ms": 10.0,
+      "budget_kind": "overhead",
+      "floor_ms": 142.98462495207787,
+      "notes": [
+       "kl3 measures post-to-first-changed-pixel at 240 Hz in each terminal's own window; reference interleaved with Phosphor in blocks of 5 (A/B/A/B, same session)"
+      ],
+      "per_side": {
+       "phosphor": {
+        "n": 30,
+        "se_median_ms": 1.51
+       },
+       "reference": {
+        "n": 30,
+        "se_median_ms": 1.32
+       }
+      },
+      "overhead_ms": 4.68,
+      "overhead_se_ms": 2.03,
+      "pane_shell": null,
+      "reference_shell": null,
+      "drift_ms": {
+       "phosphor": 1.85,
+       "reference": -2.32
+      },
+      "budget_verdict": "pass",
+      "prev": null,
+      "baseline": {
+       "status": "ok",
+       "p50": 46.47,
+       "p95": 53.97,
+       "delta_ms": -13.26,
+       "delta_pct": -28.5,
+       "verdict": "pass"
+      },
+      "regress_basis": "median",
+      "prev_verdict": "none",
+      "baseline_verdict": "pass",
+      "verdict": "pass"
+     }
+    },
+    "injector": {
+     "sent": 53,
+     "enters_sent": 0,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 53,
+     "unbound": 20,
+     "bound": 26,
+     "enters_bound": 0,
+     "os_keys": 53,
+     "undispatched": 0,
+     "cmd_chords": 0,
+     "menu": 7,
+     "menu_cmd": 0,
+     "cmd_allowed": 0,
+     "app_undelivered": 0,
+     "seen": 53,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 0
+    },
+    "enter_taint": {
+     "taps": 1,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 1
+    },
+    "host_load": "loadavg1=2.17 cpus=8"
+   },
+   "shots": [
+    "shots/agent_latency_paint.png"
+   ]
+  },
+  {
+   "name": "latency_first_key_after_idle",
+   "mode": "agent",
+   "status": "noref",
+   "ran_mode": "agent",
+   "seconds": 754.2,
+   "evidence": [
+    "host load after the case: loadavg1=1.23 cpus=8"
+   ],
+   "tainted": false,
+   "wall": [
+    1794490174.537,
+    1794490928.776
+   ],
+   "detail": [
+    "First key after 1 s idle: first key after 1 s idle, kl3 post-to-first-changed-pixel at 240 Hz (4.17 ms quantum, not applied as a resolution veto: the SE of the median difference is); Phosphor and Terminal.app in blocks of 10, the first side alternating per gap",
+    "First key after 2 s idle: first key after 2 s idle, kl3 post-to-first-changed-pixel at 240 Hz (4.17 ms quantum, not applied as a resolution veto: the SE of the median difference is); Phosphor and Terminal.app in blocks of 10, the first side alternating per gap",
+    "NO-REFERENCE: First key after 5 s idle: the reference measured implausibly slow (overhead -15.24 ms): INCONCLUSIVE/NO-COMPARE, the overhead budget was NOT judged (not a pass)",
+    "First key after 5 s idle: first key after 5 s idle, kl3 post-to-first-changed-pixel at 240 Hz (4.17 ms quantum, not applied as a resolution veto: the SE of the median difference is); Phosphor and Terminal.app in blocks of 10, the first side alternating per gap",
+    "First key after 5 s idle: IMPLAUSIBLE reference: Phosphor is 15.24 ms FASTER than the reference (> 5 ms, beyond 2 SE of 2.0568908734453113): an ordering / focus / idle-wake artifact of the reference window, not a Phosphor figure; NOREF, no verdict (a PASS here would rest on a mis-measured reference)",
+    "injector accounting: injector sent 119; app saw 119; lost-before-app 0 (Enter: sent 0, app saw 0); of the app's: 51 unbound keydown/typed, 58 taken by a key binding, 0 Enter by a binding; macOS: 119 key-down(s) reached NSApplication, 119 dispatched as key events (10 of them a menu key equivalent), 0 not (0 Cmd chord(s) injected)"
+   ],
+   "metrics": {
+    "first_key_paint_gap1s": {
+     "n": 30,
+     "p50": 34.44,
+     "p95": 102.56,
+     "max": 106.52
+    },
+    "reference_first_key_paint_gap1s": {
+     "n": 30,
+     "p50": 35.96,
+     "p95": 93.48,
+     "max": 102.22
+    },
+    "lat": {
+     "gap1s": {
+      "measurement_mode": "interleaved",
+      "phosphor": {
+       "n": 30,
+       "p50": 34.44,
+       "p95": 102.56,
+       "max": 106.52
+      },
+      "reference": {
+       "n": 30,
+       "p50": 35.96,
+       "p95": 93.48,
+       "max": 102.22
+      },
+      "reference_name": "Terminal.app (.command via open)",
+      "budget_ms": 5.0,
+      "budget_kind": "overhead",
+      "floor_ms": 142.98462495207787,
+      "notes": [
+       "first key after 1 s idle, kl3 post-to-first-changed-pixel at 240 Hz (4.17 ms quantum, not applied as a resolution veto: the SE of the median difference is); Phosphor and Terminal.app in blocks of 10, the first side alternating per gap"
+      ],
+      "per_side": {
+       "phosphor": {
+        "n": 30,
+        "se_median_ms": 0.53
+       },
+       "reference": {
+        "n": 30,
+        "se_median_ms": 1.28
+       }
+      },
+      "overhead_ms": -1.52,
+      "overhead_se_ms": 1.36,
+      "pane_shell": "/bin/zsh",
+      "reference_shell": "/bin/zsh",
+      "drift_ms": {
+       "phosphor": -0.69,
+       "reference": -1.14
+      },
+      "budget_verdict": "pass",
+      "prev": null,
+      "baseline": {
+       "status": "ok",
+       "p50": 44.57,
+       "p95": 110.93,
+       "delta_ms": -10.13,
+       "delta_pct": -22.7,
+       "verdict": "pass"
+      },
+      "regress_basis": "median",
+      "prev_verdict": "none",
+      "baseline_verdict": "pass",
+      "verdict": "pass"
+     },
+     "gap2s": {
+      "measurement_mode": "interleaved",
+      "phosphor": {
+       "n": 30,
+       "p50": 35.35,
+       "p95": 104.49,
+       "max": 105.81
+      },
+      "reference": {
+       "n": 30,
+       "p50": 39.37,
+       "p95": 99.76,
+       "max": 129.75
+      },
+      "reference_name": "Terminal.app (.command via open)",
+      "budget_ms": 5.0,
+      "budget_kind": "overhead",
+      "floor_ms": 142.98462495207787,
+      "notes": [
+       "first key after 2 s idle, kl3 post-to-first-changed-pixel at 240 Hz (4.17 ms quantum, not applied as a resolution veto: the SE of the median difference is); Phosphor and Terminal.app in blocks of 10, the first side alternating per gap"
+      ],
+      "per_side": {
+       "phosphor": {
+        "n": 30,
+        "se_median_ms": 0.6
+       },
+       "reference": {
+        "n": 30,
+        "se_median_ms": 2.5
+       }
+      },
+      "overhead_ms": -4.02,
+      "overhead_se_ms": 2.6,
+      "pane_shell": "/bin/zsh",
+      "reference_shell": "/bin/zsh",
+      "drift_ms": {
+       "phosphor": -0.98,
+       "reference": -3.26
+      },
+      "budget_verdict": "pass",
+      "prev": null,
+      "baseline": {
+       "status": "ok",
+       "p50": 44.33,
+       "p95": 54.83,
+       "delta_ms": -8.98,
+       "delta_pct": -20.3,
+       "verdict": "pass"
+      },
+      "regress_basis": "median",
+      "prev_verdict": "none",
+      "baseline_verdict": "pass",
+      "verdict": "pass"
+     },
+     "gap5s": {
+      "measurement_mode": "interleaved",
+      "phosphor": {
+       "n": 30,
+       "p50": 37.55,
+       "p95": 104.89,
+       "max": 109.02
+      },
+      "reference": {
+       "n": 30,
+       "p50": 52.79,
+       "p95": 116.05,
+       "max": 119.05
+      },
+      "reference_name": "Terminal.app (.command via open)",
+      "budget_ms": 5.0,
+      "budget_kind": "overhead",
+      "floor_ms": 142.98462495207787,
+      "notes": [
+       "first key after 5 s idle, kl3 post-to-first-changed-pixel at 240 Hz (4.17 ms quantum, not applied as a resolution veto: the SE of the median difference is); Phosphor and Terminal.app in blocks of 10, the first side alternating per gap",
+       "IMPLAUSIBLE reference: Phosphor is 15.24 ms FASTER than the reference (> 5 ms, beyond 2 SE of 2.0568908734453113): an ordering / focus / idle-wake artifact of the reference window, not a Phosphor figure; NOREF, no verdict (a PASS here would rest on a mis-measured reference)"
+      ],
+      "per_side": {
+       "phosphor": {
+        "n": 30,
+        "se_median_ms": 1.43
+       },
+       "reference": {
+        "n": 30,
+        "se_median_ms": 1.28
+       }
+      },
+      "overhead_ms": -15.24,
+      "overhead_se_ms": 2.06,
+      "pane_shell": "/bin/zsh",
+      "reference_shell": "/bin/zsh",
+      "implausible": true,
+      "drift_ms": {
+       "phosphor": 0.77,
+       "reference": -0.8
+      },
+      "budget_verdict": "no-compare",
+      "prev": null,
+      "baseline": {
+       "status": "ok",
+       "p50": 50.29,
+       "p95": 57.58,
+       "delta_ms": -12.74,
+       "delta_pct": -25.3,
+       "verdict": "pass"
+      },
+      "regress_basis": "median",
+      "prev_verdict": "none",
+      "baseline_verdict": "pass",
+      "verdict": "no-compare"
+     }
+    },
+    "first_key_paint_gap2s": {
+     "n": 30,
+     "p50": 35.35,
+     "p95": 104.49,
+     "max": 105.81
+    },
+    "reference_first_key_paint_gap2s": {
+     "n": 30,
+     "p50": 39.37,
+     "p95": 99.76,
+     "max": 129.75
+    },
+    "first_key_paint_gap5s": {
+     "n": 30,
+     "p50": 37.55,
+     "p95": 104.89,
+     "max": 109.02
+    },
+    "reference_first_key_paint_gap5s": {
+     "n": 30,
+     "p50": 52.79,
+     "p95": 116.05,
+     "max": 119.05
+    },
+    "injector": {
+     "sent": 119,
+     "enters_sent": 0,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 119,
+     "unbound": 51,
+     "bound": 58,
+     "enters_bound": 0,
+     "os_keys": 119,
+     "undispatched": 0,
+     "cmd_chords": 0,
+     "menu": 10,
+     "menu_cmd": 0,
+     "cmd_allowed": 0,
+     "app_undelivered": 0,
+     "seen": 119,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 0
+    },
+    "enter_taint": {
+     "taps": 1,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 1
+    },
+    "host_load": "loadavg1=1.23 cpus=8"
+   },
+   "shots": [
+    "shots/agent_latency_first_key_after_idle.png"
+   ]
+  },
+  {
+   "name": "scroll_keys_position",
+   "mode": "agent",
+   "status": "fail",
+   "ran_mode": "agent",
+   "seconds": 38.7,
+   "evidence": [
+    "enter_route: 3 Enter(s) reached the input editor: Shell=3 [Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794490931.573,
+    1794490970.232
+   ],
+   "detail": [
+    "after one typed key none of the job's last lines is on screen: the key did not bring the view back to the bottom (the job's last 8 lines were looked for; shots/*skp_5_after_key.png)",
+    "injector accounting: injector sent 191; app saw 191; lost-before-app 0 (Enter: sent 3, app saw 3); of the app's: 177 unbound keydown/typed, 7 taken by a key binding, 3 Enter by a binding; macOS: 191 key-down(s) reached NSApplication, 191 dispatched as key events (4 of them a menu key equivalent), 0 not (1 Cmd chord(s) injected)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 3 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "skp_lines_read_at_bottom": 32,
+    "skp_stream_drawn": {
+     "state": "drawn",
+     "printed": 28,
+     "read_on_screen": 1
+    },
+    "skp_after_pageup": {
+     "first": 368,
+     "last": 400,
+     "read": 33
+    },
+    "skp_pageup_hold": {
+     "verdict": "pass",
+     "new_lines": 26,
+     "read_before": 33,
+     "read_after": 33
+    },
+    "skp_top_hold": {
+     "new_lines": 26,
+     "anchor_words": 33,
+     "kept": 1.0,
+     "stream_lines_on_screen": 0
+    },
+    "skp_tail_lines_on_screen_after_key": 0,
+    "injector": {
+     "sent": 191,
+     "enters_sent": 3,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 191,
+     "unbound": 177,
+     "bound": 7,
+     "enters_bound": 3,
+     "os_keys": 191,
+     "undispatched": 0,
+     "cmd_chords": 1,
+     "menu": 4,
+     "menu_cmd": 1,
+     "cmd_allowed": 0,
+     "app_undelivered": 0,
+     "seen": 191,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 3
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 3
+    },
+    "enter_taint": {
+     "taps": 3,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/agent_scroll_keys_position_FAIL.png"
+   ]
+  },
+  {
+   "name": "intl_altgr_bash",
+   "mode": "agent",
+   "status": "skip",
+   "ran_mode": "agent",
+   "seconds": 1.6,
+   "evidence": [],
+   "tainted": false,
+   "wall": [
+    1794490975.206,
+    1794490976.831
+   ],
+   "detail": [
+    "Windows only: a per-window German keyboard layout + AltGr (Linux has intl_compose_linux, macOS intl_deadkey_option)",
+    "injector accounting: injector sent 2; app saw 2; lost-before-app 0 (Enter: sent 0, app saw 0); of the app's: 0 unbound keydown/typed, 1 taken by a key binding, 0 Enter by a binding; macOS: 2 key-down(s) reached NSApplication, 2 dispatched as key events (1 of them a menu key equivalent), 0 not (0 Cmd chord(s) injected)"
+   ],
+   "metrics": {
+    "injector": {
+     "sent": 2,
+     "enters_sent": 0,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 2,
+     "unbound": 0,
+     "bound": 1,
+     "enters_bound": 0,
+     "os_keys": 2,
+     "undispatched": 0,
+     "cmd_chords": 0,
+     "menu": 1,
+     "menu_cmd": 0,
+     "cmd_allowed": 0,
+     "app_undelivered": 0,
+     "seen": 2,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 0
+    },
+    "enter_taint": {
+     "taps": 0,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/agent_intl_altgr_bash.png"
+   ]
+  },
+  {
+   "name": "link_and_path_click",
+   "mode": "agent",
+   "status": "fail",
+   "ran_mode": "agent",
+   "seconds": 57.9,
+   "evidence": [
+    "enter_route: 1 Enter(s) reached the input editor: Shell=1 [Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794490978.964,
+    1794491036.846
+   ],
+   "detail": [
+    "after_links: file has 0/4 lines, exact match False first diff: exp='t12_prhlwsekkq' got=None [first bad line 0: injector call #2802 posted its ENTER at 07:43:25.255]",
+    "macOS: this case has no trace of the app's own connections (strace is Linux; the per-platform network trace is r14-test-gaps T41): 'no other outbound connection' is NOT judged here",
+    "after_links: rec.log empty (PROMPT_COMMAND hook not run), effect file checked only",
+    "injector accounting: injector sent 187; app saw 187; lost-before-app 0 (Enter: sent 5, app saw 5); of the app's: 180 unbound keydown/typed, 1 taken by a key binding, 5 Enter by a binding; macOS: 187 key-down(s) reached NSApplication, 187 dispatched as key events (1 of them a menu key equivalent), 0 not (0 Cmd chord(s) injected)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 1 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "link_positions": {
+     "ua7tx33cx": [
+      1188,
+      1246
+     ],
+     "hahy3rpau": [
+      900,
+      1310
+     ],
+     "pan73224t": [
+      916,
+      1374
+     ]
+    },
+    "path_click_at": {
+     "found": [
+      916,
+      1374
+     ],
+     "clicked": [
+      916,
+      1374
+     ]
+    },
+    "path_opened_by": "pane",
+    "injector": {
+     "sent": 187,
+     "enters_sent": 5,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 187,
+     "unbound": 180,
+     "bound": 1,
+     "enters_bound": 5,
+     "os_keys": 187,
+     "undispatched": 0,
+     "cmd_chords": 0,
+     "menu": 1,
+     "menu_cmd": 0,
+     "cmd_allowed": 0,
+     "app_undelivered": 0,
+     "seen": 187,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 5
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 1
+    },
+    "enter_taint": {
+     "taps": 5,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/agent_link_and_path_click_FAIL.png"
+   ]
+  },
+  {
+   "name": "pane_not_local_after_link_and_path_click",
+   "mode": "agent",
+   "status": "fail",
+   "seconds": 0,
+   "shots": [
+    "/Users/<user>/builds/CR7LvsOfu/0/winters-phosphor/phosphor/appci-out/macos/run/shots/agent_not_local_after_link_and_path_click.png"
+   ],
+   "detail": [
+    "after link_and_path_click the pane's shell was not the root shell (none; root pid 58488); the app is relaunched so later cases start clean"
+   ]
+  },
+  {
+   "name": "wheel_scroll",
+   "mode": "agent",
+   "status": "pass",
+   "ran_mode": "agent",
+   "seconds": 44.8,
+   "evidence": [
+    "enter_route: 6 Enter(s) reached the input editor: Shell=6 [Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794491061.521,
+    1794491106.311
+   ],
+   "detail": [
+    "injector accounting: injector sent 196; app saw 196; lost-before-app 0 (Enter: sent 6, app saw 6); of the app's: 185 unbound keydown/typed, 3 taken by a key binding, 6 Enter by a binding; macOS: 196 key-down(s) reached NSApplication, 196 dispatched as key events (2 of them a menu key equivalent), 0 not (0 Cmd chord(s) injected)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 6 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "wheel_scrollback": "lines 208-239 before, 184-216 after the wheel, 208-239 after the wheel back",
+    "wheel_less": "lines 0-41 before, 24-65 after the wheel, 0-41 after the wheel back",
+    "profile_reports_mouse_wheel": [
+     true,
+     true
+    ],
+    "injector": {
+     "sent": 196,
+     "enters_sent": 6,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 196,
+     "unbound": 185,
+     "bound": 3,
+     "enters_bound": 6,
+     "os_keys": 196,
+     "undispatched": 0,
+     "cmd_chords": 0,
+     "menu": 2,
+     "menu_cmd": 0,
+     "cmd_allowed": 0,
+     "app_undelivered": 0,
+     "seen": 196,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 6
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 6
+    },
+    "enter_taint": {
+     "taps": 6,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/agent_wheel_scroll.png"
+   ]
+  },
+  {
+   "name": "editor_daily",
+   "mode": "agent",
+   "status": "noref",
+   "ran_mode": "agent",
+   "seconds": 54.1,
+   "evidence": [
+    "enter_route: 2 Enter(s) reached the input editor: Shell=2 [Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794491109.376,
+    1794491163.457
+   ],
+   "detail": [
+    "NO-REFERENCE: macOS: the close question was not played. NEEDS (harness, not built): a usable close key (Phosphor's is cmd-shift-W, which the frontmost-app guard refuses) and a way to answer the native dialog (r14-test-gaps T32)",
+    "injector accounting: injector sent 455; app saw 455; lost-before-app 0 (Enter: sent 8, app saw 8); of the app's: 256 unbound keydown/typed, 186 taken by a key binding, 8 Enter by a binding; macOS: 455 key-down(s) reached NSApplication, 455 dispatched as key events (5 of them a menu key equivalent), 0 not (18 Cmd chord(s) injected)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 2 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "replace_one_index": 0,
+    "external_under_edits": "flagged",
+    "save_while_flagged": "asked",
+    "save_ask_enter_alone": "cancelled",
+    "save_ask_overwrite": "wrote",
+    "injector": {
+     "sent": 455,
+     "enters_sent": 8,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 455,
+     "unbound": 256,
+     "bound": 186,
+     "enters_bound": 8,
+     "os_keys": 455,
+     "undispatched": 0,
+     "cmd_chords": 18,
+     "menu": 5,
+     "menu_cmd": 4,
+     "cmd_allowed": 14,
+     "app_undelivered": 0,
+     "seen": 455,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 8
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 2
+    },
+    "enter_taint": {
+     "taps": 8,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/agent_editor_daily.png"
+   ]
+  },
+  {
+   "name": "tab_pointer_use",
+   "mode": "agent",
+   "status": "noref",
+   "ran_mode": "agent",
+   "seconds": 50.8,
+   "evidence": [
+    "enter_route: 15 Enter(s) reached the input editor: Shell=15 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794491166.726,
+    1794491217.509
+   ],
+   "detail": [
+    "NO-REFERENCE: UNVERIFIABLE: vertical panel: the tabs' titles could not be located in the strip (the rows are not top to bottom in tab order: tab 2 at (890, 1205), tab 3 at (890, 1205), tab 4 at (890, 1339)): the hook saw no title with the tab's directory name, or the layout shows neither the directory nor the command; the pointer actions in this layout are NOT judged",
+    "NO-REFERENCE: UNVERIFIABLE: horizontal bar: the tabs' titles could not be located in the strip (the title of tab(s) [2, 3, 4] was never seen drawn): the hook saw no title with the tab's directory name, or the layout shows neither the directory nor the command; the pointer actions in this layout are NOT judged",
+    "no close key on this platform: the throw-away tab was ended with Ctrl-D (unverified that the tab disappears)",
+    "no close key on this platform: the throw-away tab was ended with Ctrl-D (unverified that the tab disappears)",
+    "no close key on this platform: the throw-away tab was ended with Ctrl-D (unverified that the tab disappears)",
+    "injector accounting: injector sent 1151; app saw 1151; lost-before-app 0 (Enter: sent 15, app saw 15); of the app's: 1123 unbound keydown/typed, 9 taken by a key binding, 15 Enter by a binding; macOS: 1151 key-down(s) reached NSApplication, 1151 dispatched as key events (4 of them a menu key equivalent), 0 not (8 Cmd chord(s) injected)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 15 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "tp_cleanup_closes": 3,
+    "injector": {
+     "sent": 1151,
+     "enters_sent": 15,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 1151,
+     "unbound": 1123,
+     "bound": 9,
+     "enters_bound": 15,
+     "os_keys": 1151,
+     "undispatched": 0,
+     "cmd_chords": 8,
+     "menu": 4,
+     "menu_cmd": 3,
+     "cmd_allowed": 5,
+     "app_undelivered": 0,
+     "seen": 1151,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 15
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 15
+    },
+    "enter_taint": {
+     "taps": 15,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/agent_tab_pointer_use.png"
+   ]
+  },
+  {
+   "name": "tabs_two_windows",
+   "mode": "agent",
+   "status": "pass",
+   "ran_mode": "agent",
+   "seconds": 134.1,
+   "evidence": [
+    "enter_route: 43 Enter(s) reached the input editor: Shell=43 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,...]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794491220.915,
+    1794491354.994
+   ],
+   "detail": [
+    "no close key on this platform: the throw-away tab was ended with Ctrl-D (unverified that the tab disappears)",
+    "no close key on this platform: the throw-away tab was ended with Ctrl-D (unverified that the tab disappears)",
+    "no close key on this platform: the throw-away tab was ended with Ctrl-D (unverified that the tab disappears)",
+    "no close key on this platform: the throw-away tab was ended with Ctrl-D (unverified that the tab disappears)",
+    "no close key on this platform: the throw-away tab was ended with Ctrl-D (unverified that the tab disappears)",
+    "no close key on this platform: the throw-away tab was ended with Ctrl-D (unverified that the tab disappears)",
+    "no close key on this platform: the throw-away tab was ended with Ctrl-D (unverified that the tab disappears)",
+    "no close key on this platform: the throw-away tab was ended with Ctrl-D (unverified that the tab disappears)",
+    "no close key on this platform: the throw-away tab was ended with Ctrl-D (unverified that the tab disappears)",
+    "no close key on this platform: the throw-away tab was ended with Ctrl-D (unverified that the tab disappears)",
+    "no close key on this platform: the throw-away tab was ended with Ctrl-D (unverified that the tab disappears)",
+    "no close key on this platform: the throw-away tab was ended with Ctrl-D (unverified that the tab disappears)",
+    "no close key on this platform: the throw-away tab was ended with Ctrl-D (unverified that the tab disappears)",
+    "injector accounting: injector sent 3344; app saw 3344; lost-before-app 0 (Enter: sent 46, app saw 46); of the app's: 3251 unbound keydown/typed, 33 taken by a key binding, 43 Enter by a binding; macOS: 3344 key-down(s) reached NSApplication, 3344 dispatched as key events (17 of them a menu key equivalent), 0 not (14 Cmd chord(s) injected)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 43 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "windows": 2,
+    "injector": {
+     "sent": 3344,
+     "enters_sent": 46,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 3344,
+     "unbound": 3251,
+     "bound": 33,
+     "enters_bound": 43,
+     "os_keys": 3344,
+     "undispatched": 0,
+     "cmd_chords": 14,
+     "menu": 17,
+     "menu_cmd": 14,
+     "cmd_allowed": 0,
+     "app_undelivered": 0,
+     "seen": 3344,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 46
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 43
+    },
+    "enter_taint": {
+     "taps": 46,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/agent_tabs_two_windows.png"
+   ]
+  },
+  {
+   "name": "tabs_streaming",
+   "mode": "agent",
+   "status": "pass",
+   "ran_mode": "agent",
+   "seconds": 92.8,
+   "evidence": [
+    "enter_route: 37 Enter(s) reached the input editor: Shell=37 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794491357.439,
+    1794491450.275
+   ],
+   "detail": [
+    "no close key on this platform: the throw-away tab was ended with Ctrl-D (unverified that the tab disappears)",
+    "no close key on this platform: the throw-away tab was ended with Ctrl-D (unverified that the tab disappears)",
+    "no close key on this platform: the throw-away tab was ended with Ctrl-D (unverified that the tab disappears)",
+    "no close key on this platform: the throw-away tab was ended with Ctrl-D (unverified that the tab disappears)",
+    "no close key on this platform: the throw-away tab was ended with Ctrl-D (unverified that the tab disappears)",
+    "no close key on this platform: the throw-away tab was ended with Ctrl-D (unverified that the tab disappears)",
+    "no close key on this platform: the throw-away tab was ended with Ctrl-D (unverified that the tab disappears)",
+    "no close key on this platform: the throw-away tab was ended with Ctrl-D (unverified that the tab disappears)",
+    "no close key on this platform: the throw-away tab was ended with Ctrl-D (unverified that the tab disappears)",
+    "no close key on this platform: the throw-away tab was ended with Ctrl-D (unverified that the tab disappears)",
+    "no close key on this platform: the throw-away tab was ended with Ctrl-D (unverified that the tab disappears)",
+    "no close key on this platform: the throw-away tab was ended with Ctrl-D (unverified that the tab disappears)",
+    "no close key on this platform: the throw-away tab was ended with Ctrl-D (unverified that the tab disappears)",
+    "injector accounting: injector sent 2614; app saw 2614; lost-before-app 0 (Enter: sent 37, app saw 37); of the app's: 2534 unbound keydown/typed, 27 taken by a key binding, 37 Enter by a binding; macOS: 2614 key-down(s) reached NSApplication, 2614 dispatched as key events (16 of them a menu key equivalent), 0 not (13 Cmd chord(s) injected)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 37 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "injector": {
+     "sent": 2614,
+     "enters_sent": 37,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 2614,
+     "unbound": 2534,
+     "bound": 27,
+     "enters_bound": 37,
+     "os_keys": 2614,
+     "undispatched": 0,
+     "cmd_chords": 13,
+     "menu": 16,
+     "menu_cmd": 13,
+     "cmd_allowed": 0,
+     "app_undelivered": 0,
+     "seen": 2614,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 37
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 37
+    },
+    "enter_taint": {
+     "taps": 37,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/agent_tabs_streaming.png"
+   ]
+  }
+ ]
+}

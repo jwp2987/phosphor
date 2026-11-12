@@ -1,0 +1,19 @@
+{
+ "summary_line": "Summary [  41.267s] 3547 tests run: 3547 passed, 24 skipped",
+ "duration_s": 41.267,
+ "run": 3547,
+ "passed": 3547,
+ "failed": 0,
+ "timed_out": 0,
+ "skipped": 24,
+ "slow": 0,
+ "flaky": 0,
+ "failures": [],
+ "regressions": [],
+ "notes": [
+  "tests: ok (0 known failure(s), no regressions)"
+ ],
+ "job": "test-workspace-rest-windows",
+ "status": "success",
+ "duration": 425.801488
+}

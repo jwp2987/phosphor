@@ -1,0 +1,117 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="appci-macos" tests="36" failures="6" skipped="11">
+<testcase classname="terminal" name="mode_proof" time="3.70">
+</testcase>
+<testcase classname="terminal" name="ctrl_c_d" time="560.80">
+</testcase>
+<testcase classname="terminal" name="gitbash_subshell" time="1.50">
+<skipped message="Windows only: Git for Windows' bash.exe as a subshell of the pane's PowerShell (POSIX hosts: the subshells case)"/>
+</testcase>
+<testcase classname="terminal" name="latency_enter" time="493.90">
+</testcase>
+<testcase classname="terminal" name="latency_key_log" time="30.20">
+</testcase>
+<testcase classname="terminal" name="latency_paint" time="126.90">
+</testcase>
+<testcase classname="terminal" name="latency_first_key_after_idle" time="754.30">
+<skipped message="NO-REFERENCE (not a pass): First key after 1 s idle: first key after 1 s idle, kl3 post-to-first-changed-pixel at 240 Hz (4.17 ms quantum, not applied as a resolution veto: the SE of the median difference is"/>
+</testcase>
+<testcase classname="terminal" name="ssh_drop_reconnect" time="49.70">
+</testcase>
+<testcase classname="terminal" name="scroll_keys_position" time="38.50">
+</testcase>
+<testcase classname="terminal" name="intl_altgr_bash" time="1.70">
+<skipped message="Windows only: a per-window German keyboard layout + AltGr (Linux has intl_compose_linux, macOS intl_deadkey_option)"/>
+</testcase>
+<testcase classname="terminal" name="link_and_path_click" time="57.90">
+<failure message="after_links: file has 0/4 lines, exact match False first diff: exp='t45_pobpzer9ee' got=None [first bad line 0: injector call #1265 posted its ENTER at 06:54:32.641]">after_links: file has 0/4 lines, exact match False first diff: exp='t45_pobpzer9ee' got=None [first bad line 0: injector call #1265 posted its ENTER at 06:54:32.641]
+macOS: this case has no trace of the app's own connections (strace is Linux; the per-platform network trace is r14-test-gaps T41): 'no other outbound connection' is NOT judged here
+after_links: rec.log empty (PROMPT_COMMAND hook not run), effect file checked only
+injector accounting: injector sent 188; app saw 188; lost-before-app 0 (Enter: sent 5, app saw 5); of the app's: 181 unbound keydown/typed, 1 taken by a key binding, 5 Enter by a binding; macOS: 188 key-down(s) reached NSApplication, 188 dispatched as key events (1 of them a menu key equivalent), 0 not (0 Cmd chord(s) injected)
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 1 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="terminal" name="pane_not_local_after_link_and_path_click" time="0.00">
+<failure message="after link_and_path_click the pane's shell was not the root shell (none; root pid 59251); the app is relaunched so later cases start clean">after link_and_path_click the pane's shell was not the root shell (none; root pid 59251); the app is relaunched so later cases start clean</failure>
+</testcase>
+<testcase classname="terminal" name="wheel_scroll" time="45.00">
+</testcase>
+<testcase classname="terminal" name="editor_daily" time="54.50">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: macOS: the close question was not played. NEEDS (harness, not built): a usable close key (Phosphor's is cmd-shift-W, which the frontmost-app guard refuses) and a way "/>
+</testcase>
+<testcase classname="terminal" name="editor_memory_7mb" time="374.60">
+<failure message="txt: opening a 7 MB file cost 157 MB of rss (&gt; 100 MB target)">txt: opening a 7 MB file cost 157 MB of rss (&gt; 100 MB target)
+judged memory figures: phys_footprint, rss (owner: each one is checked; macOS ps RSS also counts freed-but-reusable malloc pages)
+txt: opening the 7.0 MB file added 93 MB of phys_footprint (13.3x the file), 157 MB of rss (22.5x the file)
+txt: the app's own 'editor_memory open' breakdown walk took 0.51 ms on the main thread right after the load's layout (instrumentation: it runs only with editor_memory=debug, so a user's open does not pay it)
+txt: at the close trim the app was 487 MB resident, 160 MB of it freed-but-reusable malloc pages (MADV_FREE_REUSABLE: out of phys_footprint, still in RSS until the kernel reclaims them; no trim returns them)
+txt_c2: at the close trim the app was 545 MB resident, 160 MB of it freed-but-reusable malloc pages (MADV_FREE_REUSABLE: out of phys_footprint, still in RSS until the kernel reclaims them; no trim returns them)
+txt_c3: memory grew only 1.0 MB but the app logged 'editor_memory open': the file opened into reused heap
+txt_c3: at the close trim the app was 533 MB resident, 169 MB of it freed-but-reusable malloc pages (MADV_FREE_REUSABLE: out of phys_footprint, still in RSS until the kernel reclaims them; no trim returns them)
+rss: +164 MB over the pre-open baseline after close (reported, not judged on macOS: freed pages marked reusable stay in RSS; phys_footprint is the judged figure)
+rs: opening the 7.0 MB file added 56 MB of phys_footprint (7.9x the file), 58 MB of rss (8.2x the file)
+rs: the app's own 'editor_memory open' breakdown walk took 0.21 ms on the main thread right after the load's layout (instrumentation: it runs only with editor_memory=debug, so a user's open does not pay it)
+rs: at the close trim the app was 563 MB resident, 187 MB of it freed-but-reusable malloc pages (MADV_FREE_REUSABLE: out of phys_footprint, still in RSS until the kernel reclaims them; no trim returns them)
+rss: +20 MB over the pre-open baseline after close (reported, not judged on macOS: freed pages marked reusable stay in RSS; phys_footprint is the judged figure)
+EXPERIMENT (the opt-in open trim, PHOSPHOR_EDITOR_TRIM_AFTER_OPEN=1; owner 2026-11-10, #1340: reported, never a FAIL): inside the budget: trim A/B: the open trim put a 0.0 ms UI item on screen while it ran (budget 4 ms; control default: 0.0 ms)
+trim A/B: the control no_trim is itself over the 4 ms UI budget after close (13.4 ms)
+injector accounting: injector sent 952; app saw 952; lost-before-app 0 (Enter: sent 14, app saw 14); of the app's: 894 unbound keydown/typed, 15 taken by a key binding, 14 Enter by a binding; macOS: 952 key-down(s) reached NSApplication, 952 dispatched as key events (29 of them a menu key equivalent), 0 not (14 Cmd chord(s) injected)</failure>
+</testcase>
+<testcase classname="terminal" name="tab_pointer_use" time="97.70">
+<skipped message="NO-REFERENCE (not a pass): vertical panel: tab 2 at (461, 413), tab 3 at (461, 538), tab 4 at (461, 662)"/>
+</testcase>
+<testcase classname="terminal" name="network_gate_switch" time="67.80">
+<skipped message="NO-REFERENCE (not a pass): Escape left the settings page open (the shell did not take the probe line); closed it with palette cmd+p + 'Close Current Session'"/>
+</testcase>
+<testcase classname="terminal" name="tabs_two_windows" time="110.60">
+</testcase>
+<testcase classname="terminal" name="tabs_streaming" time="94.60">
+</testcase>
+<testcase classname="terminal" name="cb_ui_action_latency" time="30.10">
+</testcase>
+<testcase classname="agent" name="mode_proof" time="2.80">
+</testcase>
+<testcase classname="agent" name="ctrl_c_d" time="557.30">
+</testcase>
+<testcase classname="agent" name="gitbash_subshell" time="1.50">
+<skipped message="Windows only: Git for Windows' bash.exe as a subshell of the pane's PowerShell (POSIX hosts: the subshells case)"/>
+</testcase>
+<testcase classname="agent" name="latency_enter" time="413.10">
+</testcase>
+<testcase classname="agent" name="latency_key_log" time="29.90">
+</testcase>
+<testcase classname="agent" name="latency_paint" time="126.30">
+</testcase>
+<testcase classname="agent" name="latency_first_key_after_idle" time="754.20">
+<skipped message="NO-REFERENCE (not a pass): First key after 1 s idle: first key after 1 s idle, kl3 post-to-first-changed-pixel at 240 Hz (4.17 ms quantum, not applied as a resolution veto: the SE of the median difference is"/>
+</testcase>
+<testcase classname="agent" name="scroll_keys_position" time="38.70">
+<failure message="after one typed key none of the job's last lines is on screen: the key did not bring the view back to the bottom (the job's last 8 lines were looked for; shots/*skp_5_after_key.png)">after one typed key none of the job's last lines is on screen: the key did not bring the view back to the bottom (the job's last 8 lines were looked for; shots/*skp_5_after_key.png)
+injector accounting: injector sent 191; app saw 191; lost-before-app 0 (Enter: sent 3, app saw 3); of the app's: 177 unbound keydown/typed, 7 taken by a key binding, 3 Enter by a binding; macOS: 191 key-down(s) reached NSApplication, 191 dispatched as key events (4 of them a menu key equivalent), 0 not (1 Cmd chord(s) injected)
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 3 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="agent" name="intl_altgr_bash" time="1.60">
+<skipped message="Windows only: a per-window German keyboard layout + AltGr (Linux has intl_compose_linux, macOS intl_deadkey_option)"/>
+</testcase>
+<testcase classname="agent" name="link_and_path_click" time="57.90">
+<failure message="after_links: file has 0/4 lines, exact match False first diff: exp='t12_prhlwsekkq' got=None [first bad line 0: injector call #2802 posted its ENTER at 07:43:25.255]">after_links: file has 0/4 lines, exact match False first diff: exp='t12_prhlwsekkq' got=None [first bad line 0: injector call #2802 posted its ENTER at 07:43:25.255]
+macOS: this case has no trace of the app's own connections (strace is Linux; the per-platform network trace is r14-test-gaps T41): 'no other outbound connection' is NOT judged here
+after_links: rec.log empty (PROMPT_COMMAND hook not run), effect file checked only
+injector accounting: injector sent 187; app saw 187; lost-before-app 0 (Enter: sent 5, app saw 5); of the app's: 180 unbound keydown/typed, 1 taken by a key binding, 5 Enter by a binding; macOS: 187 key-down(s) reached NSApplication, 187 dispatched as key events (1 of them a menu key equivalent), 0 not (0 Cmd chord(s) injected)
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 1 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="agent" name="pane_not_local_after_link_and_path_click" time="0.00">
+<failure message="after link_and_path_click the pane's shell was not the root shell (none; root pid 58488); the app is relaunched so later cases start clean">after link_and_path_click the pane's shell was not the root shell (none; root pid 58488); the app is relaunched so later cases start clean</failure>
+</testcase>
+<testcase classname="agent" name="wheel_scroll" time="44.80">
+</testcase>
+<testcase classname="agent" name="editor_daily" time="54.10">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: macOS: the close question was not played. NEEDS (harness, not built): a usable close key (Phosphor's is cmd-shift-W, which the frontmost-app guard refuses) and a way "/>
+</testcase>
+<testcase classname="agent" name="tab_pointer_use" time="50.80">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: vertical panel: the tabs' titles could not be located in the strip (the rows are not top to bottom in tab order: tab 2 at (890, 1205), tab 3 at (890, 12"/>
+</testcase>
+<testcase classname="agent" name="tabs_two_windows" time="134.10">
+</testcase>
+<testcase classname="agent" name="tabs_streaming" time="92.80">
+</testcase>
+</testsuite>

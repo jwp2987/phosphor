@@ -1,0 +1,19 @@
+{
+ "summary_line": "Summary [   6.881s] 857 tests run: 857 passed, 7 skipped",
+ "duration_s": 6.881,
+ "run": 857,
+ "passed": 857,
+ "failed": 0,
+ "timed_out": 0,
+ "skipped": 7,
+ "slow": 0,
+ "flaky": 0,
+ "failures": [],
+ "regressions": [],
+ "notes": [
+  "tests: ok (0 known failure(s), no regressions)"
+ ],
+ "job": "test-warpui-core-macos",
+ "status": "success",
+ "duration": 66.397363
+}

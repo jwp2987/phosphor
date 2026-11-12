@@ -1,0 +1,130 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="appci-linux-wayland" tests="43" failures="2" skipped="24">
+<testcase classname="terminal" name="mode_proof" time="1.50">
+</testcase>
+<testcase classname="terminal" name="ctrl_c_d" time="435.20">
+</testcase>
+<testcase classname="terminal" name="gitbash_subshell" time="0.60">
+<skipped message="Windows only: Git for Windows' bash.exe as a subshell of the pane's PowerShell (POSIX hosts: the subshells case)"/>
+</testcase>
+<testcase classname="terminal" name="latency_enter" time="163.80">
+<skipped message="NO-REFERENCE (not a pass): measurement mode: interleaved, blocks of 5 kept samples (+1 discarded lead per block), 24 blocks"/>
+</testcase>
+<testcase classname="terminal" name="latency_key_log" time="15.20">
+</testcase>
+<testcase classname="terminal" name="latency_paint" time="0.70">
+<skipped message="kl3 (ScreenCaptureKit) is macOS only; no key-&gt;paint read-back exists on this platform, so there is nothing to compare"/>
+</testcase>
+<testcase classname="terminal" name="latency_first_key_after_idle" time="311.20">
+</testcase>
+<testcase classname="terminal" name="intl_compose_linux" time="26.60">
+<skipped message="NO-REFERENCE (not a pass): injector accounting: injector sent 703; app saw 695; lost-before-app 8 (Enter: sent 6, app saw 6); of the app's: 682 unbound keydown/typed, 7 taken by a key binding, 6 Enter by a b"/>
+</testcase>
+<testcase classname="terminal" name="ssh_drop_reconnect" time="41.10">
+</testcase>
+<testcase classname="terminal" name="scroll_keys_position" time="4.80">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: OCR read 0 of the numbered lines on a screen that shows the last of 500 (shots/*skp_0_bottom.png): the scroll position cannot be read, nothing was judge"/>
+</testcase>
+<testcase classname="terminal" name="ime_compose" time="53.40">
+<skipped message="NO-REFERENCE (not a pass): injector accounting: injector sent 334; app saw 316; lost-before-app 18 (Enter: sent 6, app saw 6); of the app's: 303 unbound keydown/typed, 7 taken by a key binding, 6 Enter by a "/>
+</testcase>
+<testcase classname="terminal" name="intl_altgr_bash" time="1.50">
+<skipped message="Windows only: a per-window German keyboard layout + AltGr (Linux has intl_compose_linux, macOS intl_deadkey_option)"/>
+</testcase>
+<testcase classname="terminal" name="drag_drop_file" time="10.40">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: the drag source reported no drag at all (events []): the pointer press and motion did not start a drag on it. The app was never offered the file; nothin"/>
+</testcase>
+<testcase classname="terminal" name="editor_memory_7mb" time="357.00">
+<failure message="txt: opening a 7 MB file cost 129 MB of rss (&gt; 100 MB target)">txt: opening a 7 MB file cost 129 MB of rss (&gt; 100 MB target)
+txt: opening the 7.0 MB file added 129 MB of rss (18.4x the file)
+txt: the app's own 'editor_memory open' breakdown walk took 0.62 ms on the main thread right after the load's layout (instrumentation: it runs only with editor_memory=debug, so a user's open does not pay it)
+rs: opening the 7.0 MB file added 77 MB of rss (11.0x the file)
+rs: the app's own 'editor_memory open' breakdown walk took 0.26 ms on the main thread right after the load's layout (instrumentation: it runs only with editor_memory=debug, so a user's open does not pay it)
+EXPERIMENT (the opt-in open trim, PHOSPHOR_EDITOR_TRIM_AFTER_OPEN=1; owner 2026-11-10, #1340: reported, never a FAIL): inside the budget: trim A/B: the open trim put a 0.0 ms UI item on screen while it ran (budget 4 ms; control default: 0.0 ms)
+EXPERIMENT (the opt-in open trim, PHOSPHOR_EDITOR_TRIM_AFTER_OPEN=1; owner 2026-11-10, #1340: reported, never a FAIL): OUTSIDE the budget: trim A/B: the load's layout frame took 15.3 ms with the open trim (4 ms budget; control default: 10.8 ms)
+injector accounting: injector sent 833; app saw 833; lost-before-app 0 (Enter: sent 7, app saw 7); of the app's: 782 unbound keydown/typed, 44 taken by a key binding, 7 Enter by a binding</failure>
+</testcase>
+<testcase classname="terminal" name="ui_vertical_tabs_panel_click" time="41.80">
+</testcase>
+<testcase classname="terminal" name="tab_pointer_use" time="95.00">
+<skipped message="NO-REFERENCE (not a pass): vertical panel: tab 2 at (122, 155), tab 3 at (122, 218), tab 4 at (122, 280)"/>
+</testcase>
+<testcase classname="terminal" name="network_gate_switch" time="71.20">
+<skipped message="NO-REFERENCE (not a pass): Escape left the settings page open (the shell did not take the probe line); closed it with key ctrl+shift+w"/>
+</testcase>
+<testcase classname="terminal" name="gpu_real_render" time="75.60">
+<skipped message="NO-REFERENCE (not a pass): 'a lost device recovers' (the third oracle of r14-test-gaps T48; #2091) is judged by its own case, gpu_lost_device_recovers (a renderer test hook reports the loss; the kernel's res"/>
+</testcase>
+<testcase classname="terminal" name="gpu_lost_device_recovers" time="45.60">
+<skipped message="NO-REFERENCE (not a pass): the app log says terminal but the screen reads as agent (OCR); the log decides"/>
+</testcase>
+<testcase classname="terminal" name="tabs_two_windows" time="97.60">
+</testcase>
+<testcase classname="terminal" name="upgrade_over_previous" time="45.30">
+<skipped message="NO-REFERENCE (not a pass): the previous build's state is packed in /home/<user>/builds/r_hQtIdMf/0/winters-phosphor/phosphor/appci-out/wayland/run/fixtures/prev-state.tar.gz (keep it as a CI artifact "/>
+</testcase>
+<testcase classname="terminal" name="tabs_streaming" time="80.10">
+</testcase>
+<testcase classname="terminal" name="cb_ui_action_latency" time="24.30">
+</testcase>
+<testcase classname="terminal" name="meta_and_word_keys" time="32.60">
+</testcase>
+<testcase classname="agent" name="mode_proof" time="0.60">
+</testcase>
+<testcase classname="agent" name="ctrl_c_d" time="435.10">
+</testcase>
+<testcase classname="agent" name="gitbash_subshell" time="0.60">
+<skipped message="Windows only: Git for Windows' bash.exe as a subshell of the pane's PowerShell (POSIX hosts: the subshells case)"/>
+</testcase>
+<testcase classname="agent" name="latency_enter" time="164.00">
+<failure message="Enter to command start: Phosphor overhead 4.64 +/- 0.34 ms (SE) over foot exceeds the 2 ms budget (overhead - 2 SE &gt; budget)">Enter to command start: Phosphor overhead 4.64 +/- 0.34 ms (SE) over foot exceeds the 2 ms budget (overhead - 2 SE &gt; budget)
+measurement mode: interleaved, blocks of 5 kept samples (+1 discarded lead per block), 24 blocks
+app share of Enter-&gt;start: enter_begin -&gt; pty_write median 1.87 ms (from the app's input_order log); the remaining overhead is shell/ConPTY side
+shell side: pty_write -&gt; first pty_read median 0.70 ms (n=75)
+Enter split (Phosphor - reference, medians ms, #1606): t0_to_inj +0.00; Phosphor app: enter_to_write 1.87, submit_bookkeeping 0.06, effect_flush 0.97, pty_lock_wait 0.00
+app segment per hop (enter_begin -&gt; pty_write 1.87 ms; medians ms, #2114): enter_to_execute 0.59, submit_bookkeeping 0.06, effect_flush 0.97, command_to_pty 0.25 (sum of the hop medians 1.87); vs the terminal-mode arm of this run: whole +0.68, enter_to_execute -0.08, submit_bookkeeping +0.03, effect_flush +0.76, command_to_pty -0.01 -&gt; the hop that grew most: effect_flush (+0.76 ms: enter_submit_done -&gt; write_command (the queued ExecuteCommand effect))
+Enter to command start: reference interleaved with Phosphor in blocks of 5 (A/B/A/B, same session); Linux headless-GPU numbers compare builds, not absolute vs hand-measured baselines
+injector accounting: injector sent 1529; app saw 1529; lost-before-app 0 (Enter: sent 75, app saw 75); of the app's: 1425 unbound keydown/typed, 29 taken by a key binding, 75 Enter by a binding
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 75 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="agent" name="latency_key_log" time="15.10">
+</testcase>
+<testcase classname="agent" name="latency_paint" time="0.70">
+<skipped message="kl3 (ScreenCaptureKit) is macOS only; no key-&gt;paint read-back exists on this platform, so there is nothing to compare"/>
+</testcase>
+<testcase classname="agent" name="latency_first_key_after_idle" time="311.00">
+</testcase>
+<testcase classname="agent" name="intl_compose_linux" time="26.20">
+<skipped message="NO-REFERENCE (not a pass): injector accounting: injector sent 703; app saw 695; lost-before-app 8 (Enter: sent 6, app saw 6); of the app's: 682 unbound keydown/typed, 7 taken by a key binding, 6 Enter by a b"/>
+</testcase>
+<testcase classname="agent" name="scroll_keys_position" time="23.10">
+<skipped message="NO-REFERENCE (not a pass): control: the job printed 16 lines and none is on screen at the bottom of the agent view (shots/*skp_0_stream.png): the agent view does not draw a background job's output (#2145)"/>
+</testcase>
+<testcase classname="agent" name="ime_compose" time="52.10">
+<skipped message="NO-REFERENCE (not a pass): injector accounting: injector sent 329; app saw 311; lost-before-app 18 (Enter: sent 6, app saw 6); of the app's: 300 unbound keydown/typed, 5 taken by a key binding, 6 Enter by a "/>
+</testcase>
+<testcase classname="agent" name="intl_altgr_bash" time="1.50">
+<skipped message="Windows only: a per-window German keyboard layout + AltGr (Linux has intl_compose_linux, macOS intl_deadkey_option)"/>
+</testcase>
+<testcase classname="agent" name="drag_drop_file" time="10.30">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: the drag source reported no drag at all (events []): the pointer press and motion did not start a drag on it. The app was never offered the file; nothin"/>
+</testcase>
+<testcase classname="agent" name="ui_vertical_tabs_panel_click" time="27.90">
+<skipped message="NO-REFERENCE (not a pass): vertical tabs: on in the profile's settings (the owner's layout)"/>
+</testcase>
+<testcase classname="agent" name="tab_pointer_use" time="41.40">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: vertical panel: the tabs' titles could not be located in the strip (the rows are not top to bottom in tab order: tab 2 at (329, 459), tab 3 at (329, 459"/>
+</testcase>
+<testcase classname="agent" name="gpu_real_render" time="74.40">
+<skipped message="NO-REFERENCE (not a pass): 'a lost device recovers' (the third oracle of r14-test-gaps T48; #2091) is judged by its own case, gpu_lost_device_recovers (a renderer test hook reports the loss; the kernel's res"/>
+</testcase>
+<testcase classname="agent" name="gpu_lost_device_recovers" time="45.90">
+<skipped message="NO-REFERENCE (not a pass): device reported lost once; renderer rebuilt on Intel(R) UHD Graphics 630 (CFL GT2) (Vulkan); 18 frame(s) drawn after the rebuild"/>
+</testcase>
+<testcase classname="agent" name="tabs_two_windows" time="96.70">
+</testcase>
+<testcase classname="agent" name="tabs_streaming" time="79.20">
+</testcase>
+<testcase classname="agent" name="meta_and_word_keys" time="32.10">
+</testcase>
+</testsuite>

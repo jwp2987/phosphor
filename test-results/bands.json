@@ -1,122 +1,122 @@
 {
  "macos/agent/ctrl_c_d/ctrl_c": {
   "kind": "ms",
-  "lower": 5.57,
-  "mad": 0.4,
-  "median": 6.79,
+  "lower": 4.94,
+  "mad": 0.68,
+  "median": 6.99,
   "n": 8,
   "provisional": false,
   "runs": [
-   "2026-11-09_build_r18w7_3046481170",
    "2026-11-09_build_r18w8_3047198675",
    "2026-11-10_build_r18w9_3047937983",
    "2026-11-10_build_r10a_3048440714",
    "2026-11-10_build_r11a_3049602519",
    "2026-11-10_build_r12a_3050758880",
    "2026-11-10_build_r13a_3051722998",
-   "2026-11-12_build_r24a_3057403889"
+   "2026-11-12_build_r24a_3057403889",
+   "2026-11-12_build_r25a_3059029972"
   ],
   "set_by": "data",
   "upper": 8.64,
   "values": [
-   6.73,
    6.4,
    6.37,
    8.61,
    6.85,
    8.64,
    7.14,
-   6.25
+   6.25,
+   7.8
   ]
  },
  "macos/agent/ctrl_c_d/ctrl_c_flood": {
   "kind": "ms",
-  "lower": -35.09,
-  "mad": 1.95,
-  "median": -29.23,
+  "lower": -34.26,
+  "mad": 1.34,
+  "median": -29.99,
   "n": 8,
   "provisional": false,
   "runs": [
-   "2026-11-09_build_r18w7_3046481170",
    "2026-11-09_build_r18w8_3047198675",
    "2026-11-10_build_r18w9_3047937983",
    "2026-11-10_build_r10a_3048440714",
    "2026-11-10_build_r11a_3049602519",
    "2026-11-10_build_r12a_3050758880",
    "2026-11-10_build_r13a_3051722998",
-   "2026-11-12_build_r24a_3057403889"
+   "2026-11-12_build_r24a_3057403889",
+   "2026-11-12_build_r25a_3059029972"
   ],
   "set_by": "data",
-  "upper": -20.62,
+  "upper": -25.95,
   "values": [
-   -20.62,
    -28.8,
    -34.26,
    -31.49,
    -27.85,
    -30.88,
    -26.84,
-   -29.67
+   -29.67,
+   -30.31
   ]
  },
  "macos/agent/latency_enter/enter_to_start": {
   "kind": "ms",
-  "lower": 2.92,
-  "mad": 0.42,
-  "median": 4.19,
+  "lower": 3.05,
+  "mad": 0.33,
+  "median": 4.04,
   "n": 8,
   "provisional": false,
   "runs": [
-   "2026-11-09_build_r18w7_3046481170",
    "2026-11-09_build_r18w8_3047198675",
    "2026-11-10_build_r18w9_3047937983",
    "2026-11-10_build_r10a_3048440714",
    "2026-11-10_build_r11a_3049602519",
    "2026-11-10_build_r12a_3050758880",
    "2026-11-10_build_r13a_3051722998",
-   "2026-11-12_build_r24a_3057403889"
+   "2026-11-12_build_r24a_3057403889",
+   "2026-11-12_build_r25a_3059029972"
   ],
   "set_by": "data",
-  "upper": 5.45,
+  "upper": 5.03,
   "values": [
-   4.97,
    3.11,
    3.95,
    3.58,
    4.27,
    4.24,
    4.97,
-   4.13
+   4.13,
+   3.61
   ]
  },
  "macos/agent/latency_enter/enter_to_start#app": {
   "kind": "ms",
   "lower": 0.73,
-  "mad": 0.03,
-  "median": 1.43,
+  "mad": 0.02,
+  "median": 1.44,
   "n": 8,
   "provisional": false,
   "runs": [
-   "2026-11-09_build_r18w7_3046481170",
    "2026-11-09_build_r18w8_3047198675",
    "2026-11-10_build_r18w9_3047937983",
    "2026-11-10_build_r10a_3048440714",
    "2026-11-10_build_r11a_3049602519",
    "2026-11-10_build_r12a_3050758880",
    "2026-11-10_build_r13a_3051722998",
-   "2026-11-12_build_r24a_3057403889"
+   "2026-11-12_build_r24a_3057403889",
+   "2026-11-12_build_r25a_3059029972"
   ],
   "set_by": "data",
   "upper": 1.73,
   "values": [
-   1.37,
    0.73,
    1.43,
    1.43,
    1.45,
    1.42,
    1.47,
-   1.47
+   1.47,
+   1.45
   ]
  },
  "macos/agent/latency_enter_ssh/ssh_enter_to_start": {
@@ -137,122 +137,132 @@
  },
  "macos/agent/latency_first_key_after_idle/gap1s": {
   "kind": "ms",
-  "lower": -1.72,
-  "mad": 0.06,
-  "median": -1.56,
-  "n": 2,
+  "lower": -1.61,
+  "mad": 0.02,
+  "median": -1.52,
+  "n": 3,
   "provisional": true,
   "runs": [
    "2026-11-03_build_r18e4_3021881600",
-   "2026-11-12_build_r24a_3057403889"
+   "2026-11-12_build_r24a_3057403889",
+   "2026-11-12_build_r25a_3059029972"
   ],
   "set_by": "data",
   "upper": -1.25,
   "values": [
    -1.61,
-   -1.5
+   -1.5,
+   -1.52
   ]
  },
  "macos/agent/latency_first_key_after_idle/gap2s": {
   "kind": "ms",
-  "lower": -8.15,
-  "mad": 1.53,
-  "median": -3.56,
-  "n": 2,
+  "lower": -7.23,
+  "mad": 1.07,
+  "median": -4.02,
+  "n": 3,
   "provisional": true,
   "runs": [
    "2026-11-03_build_r18e4_3021881600",
-   "2026-11-12_build_r24a_3057403889"
+   "2026-11-12_build_r24a_3057403889",
+   "2026-11-12_build_r25a_3059029972"
   ],
   "set_by": "data",
-  "upper": 1.03,
+  "upper": -0.81,
   "values": [
    -2.03,
-   -5.09
+   -5.09,
+   -4.02
   ]
  },
  "macos/agent/latency_first_key_after_idle/gap5s": {
   "kind": "ms",
-  "lower": -22.77,
-  "mad": 2.7,
-  "median": -14.67,
-  "n": 2,
+  "lower": -21.63,
+  "mad": 2.13,
+  "median": -15.24,
+  "n": 3,
   "provisional": true,
   "runs": [
    "2026-11-03_build_r18e4_3021881600",
-   "2026-11-12_build_r24a_3057403889"
+   "2026-11-12_build_r24a_3057403889",
+   "2026-11-12_build_r25a_3059029972"
   ],
   "set_by": "data",
-  "upper": -6.57,
+  "upper": -8.85,
   "values": [
    -17.37,
-   -11.97
+   -11.97,
+   -15.24
   ]
  },
  "macos/agent/latency_key_log/key_to_frame": {
   "kind": "ms",
-  "lower": 1.57,
-  "mad": 0.0,
-  "median": 1.57,
-  "n": 1,
+  "lower": 1.45,
+  "mad": 0.03,
+  "median": 1.54,
+  "n": 2,
   "provisional": true,
   "runs": [
-   "2026-11-12_build_r24a_3057403889"
+   "2026-11-12_build_r24a_3057403889",
+   "2026-11-12_build_r25a_3059029972"
   ],
   "set_by": "data",
-  "upper": 1.87,
+  "upper": 1.84,
   "values": [
-   1.57
+   1.57,
+   1.51
   ]
  },
  "macos/agent/latency_key_log/key_to_frame#app": {
   "kind": "ms",
-  "lower": 1.45,
-  "mad": 0.04,
-  "median": 1.57,
-  "n": 3,
+  "lower": 1.41,
+  "mad": 0.05,
+  "median": 1.55,
+  "n": 4,
   "provisional": true,
   "runs": [
    "2026-11-10_build_r12a_3050758880",
    "2026-11-10_build_r13a_3051722998",
-   "2026-11-12_build_r24a_3057403889"
+   "2026-11-12_build_r24a_3057403889",
+   "2026-11-12_build_r25a_3059029972"
   ],
   "set_by": "data",
-  "upper": 1.87,
+  "upper": 1.85,
   "values": [
    1.57,
    1.62,
-   1.53
+   1.53,
+   1.47
   ]
  },
  "macos/agent/latency_paint/key_to_paint": {
   "kind": "ms",
   "lower": -0.44,
-  "mad": 0.95,
-  "median": 5.45,
+  "mad": 0.9,
+  "median": 5.05,
   "n": 8,
   "provisional": false,
   "runs": [
-   "2026-11-09_build_r18w7_3046481170",
    "2026-11-09_build_r18w8_3047198675",
    "2026-11-10_build_r18w9_3047937983",
    "2026-11-10_build_r10a_3048440714",
    "2026-11-10_build_r11a_3049602519",
    "2026-11-10_build_r12a_3050758880",
    "2026-11-10_build_r13a_3051722998",
-   "2026-11-12_build_r24a_3057403889"
+   "2026-11-12_build_r24a_3057403889",
+   "2026-11-12_build_r25a_3059029972"
   ],
   "set_by": "data",
-  "upper": 8.3,
+  "upper": 7.75,
   "values": [
-   6.66,
    5.47,
    2.05,
    5.42,
    6.13,
    -0.44,
    1.62,
-   5.77
+   5.77,
+   4.68
   ]
  },
  "macos/agent/subshell_line_editor_proof/lep_inner_line_after_enter_s": {
@@ -467,122 +477,122 @@
  },
  "macos/terminal/ctrl_c_d/ctrl_c": {
   "kind": "ms",
-  "lower": 5.07,
-  "mad": 0.67,
-  "median": 7.06,
+  "lower": 5.51,
+  "mad": 0.52,
+  "median": 7.09,
   "n": 8,
   "provisional": false,
   "runs": [
-   "2026-11-09_build_r18w7_3046481170",
    "2026-11-09_build_r18w8_3047198675",
    "2026-11-10_build_r18w9_3047937983",
    "2026-11-10_build_r10a_3048440714",
    "2026-11-10_build_r11a_3049602519",
    "2026-11-10_build_r12a_3050758880",
    "2026-11-10_build_r13a_3051722998",
-   "2026-11-12_build_r24a_3057403889"
+   "2026-11-12_build_r24a_3057403889",
+   "2026-11-12_build_r25a_3059029972"
   ],
   "set_by": "data",
-  "upper": 9.06,
+  "upper": 8.67,
   "values": [
-   5.98,
    7.79,
    8.27,
    7.32,
    5.93,
    7.51,
    6.46,
-   6.81
+   6.81,
+   6.86
   ]
  },
  "macos/terminal/ctrl_c_d/ctrl_c_flood": {
   "kind": "ms",
-  "lower": -31.55,
-  "mad": 1.44,
-  "median": -27.21,
+  "lower": -33.94,
+  "mad": 1.97,
+  "median": -28.05,
   "n": 8,
   "provisional": false,
   "runs": [
-   "2026-11-09_build_r18w7_3046481170",
    "2026-11-09_build_r18w8_3047198675",
    "2026-11-10_build_r18w9_3047937983",
    "2026-11-10_build_r10a_3048440714",
    "2026-11-10_build_r11a_3049602519",
    "2026-11-10_build_r12a_3050758880",
    "2026-11-10_build_r13a_3051722998",
-   "2026-11-12_build_r24a_3057403889"
+   "2026-11-12_build_r24a_3057403889",
+   "2026-11-12_build_r25a_3059029972"
   ],
   "set_by": "data",
   "upper": -22.88,
   "values": [
-   -27.15,
    -25.56,
    -28.81,
    -27.28,
    -30.69,
    -29.48,
    -26.24,
-   -25.92
+   -25.92,
+   -32.85
   ]
  },
  "macos/terminal/latency_enter/enter_to_start": {
   "kind": "ms",
-  "lower": 3.18,
+  "lower": 3.11,
   "mad": 0.17,
-  "median": 3.74,
+  "median": 3.66,
   "n": 8,
   "provisional": false,
   "runs": [
-   "2026-11-09_build_r18w8_3047198675",
    "2026-11-10_build_r18w9_3047937983",
    "2026-11-10_build_r10a_3048440714",
    "2026-11-10_build_r11a_3049602519",
    "2026-11-10_build_r12a_3050758880",
    "2026-11-10_build_r13a_3051722998",
    "2026-11-11_build_r15a_3054716634",
-   "2026-11-12_build_r24a_3057403889"
+   "2026-11-12_build_r24a_3057403889",
+   "2026-11-12_build_r25a_3059029972"
   ],
   "set_by": "data",
-  "upper": 4.25,
+  "upper": 4.15,
   "values": [
-   4.24,
    3.18,
    3.75,
    3.73,
    3.89,
    3.58,
    3.95,
-   3.56
+   3.56,
+   3.11
   ]
  },
  "macos/terminal/latency_enter/enter_to_start#app": {
   "kind": "ms",
-  "lower": 0.74,
+  "lower": 0.75,
   "mad": 0.01,
   "median": 0.78,
   "n": 8,
   "provisional": false,
   "runs": [
-   "2026-11-09_build_r18w8_3047198675",
    "2026-11-10_build_r18w9_3047937983",
    "2026-11-10_build_r10a_3048440714",
    "2026-11-10_build_r11a_3049602519",
    "2026-11-10_build_r12a_3050758880",
    "2026-11-10_build_r13a_3051722998",
    "2026-11-11_build_r15a_3054716634",
-   "2026-11-12_build_r24a_3057403889"
+   "2026-11-12_build_r24a_3057403889",
+   "2026-11-12_build_r25a_3059029972"
   ],
   "set_by": "data",
   "upper": 1.08,
   "values": [
-   0.78,
    0.77,
    0.77,
    0.77,
    0.8,
    0.79,
    0.82,
-   0.76
+   0.76,
+   0.79
   ]
  },
  "macos/terminal/latency_enter_ssh/ssh_enter_to_start": {
@@ -604,127 +614,137 @@
  "macos/terminal/latency_first_key_after_idle/gap1s": {
   "kind": "ms",
   "lower": -22.54,
-  "mad": 1.46,
-  "median": -1.88,
-  "n": 3,
+  "mad": 1.08,
+  "median": -2.23,
+  "n": 4,
   "provisional": true,
   "runs": [
    "2026-11-03_build_r18e4_3021881600",
    "2026-11-11_build_r15a_3054716634",
-   "2026-11-12_build_r24a_3057403889"
+   "2026-11-12_build_r24a_3057403889",
+   "2026-11-12_build_r25a_3059029972"
   ],
   "set_by": "data",
-  "upper": 2.5,
+  "upper": 1.01,
   "values": [
    -22.54,
    -0.42,
-   -1.88
+   -1.88,
+   -2.58
   ]
  },
  "macos/terminal/latency_first_key_after_idle/gap2s": {
   "kind": "ms",
   "lower": -13.58,
-  "mad": 1.76,
-  "median": -5.46,
-  "n": 3,
+  "mad": 1.42,
+  "median": -6.0,
+  "n": 4,
   "provisional": true,
   "runs": [
    "2026-11-03_build_r18e4_3021881600",
    "2026-11-11_build_r15a_3054716634",
-   "2026-11-12_build_r24a_3057403889"
+   "2026-11-12_build_r24a_3057403889",
+   "2026-11-12_build_r25a_3059029972"
   ],
   "set_by": "data",
-  "upper": -0.18,
+  "upper": -1.73,
   "values": [
    -13.58,
    -3.7,
-   -5.46
+   -5.46,
+   -6.55
   ]
  },
  "macos/terminal/latency_first_key_after_idle/gap5s": {
   "kind": "ms",
   "lower": -28.85,
-  "mad": 1.59,
-  "median": -16.3,
-  "n": 3,
+  "mad": 0.89,
+  "median": -16.39,
+  "n": 4,
   "provisional": true,
   "runs": [
    "2026-11-03_build_r18e4_3021881600",
    "2026-11-11_build_r15a_3054716634",
-   "2026-11-12_build_r24a_3057403889"
+   "2026-11-12_build_r24a_3057403889",
+   "2026-11-12_build_r25a_3059029972"
   ],
   "set_by": "data",
-  "upper": -11.53,
+  "upper": -13.72,
   "values": [
    -28.85,
    -16.3,
-   -14.71
+   -14.71,
+   -16.49
   ]
  },
  "macos/terminal/latency_key_log/key_to_frame": {
   "kind": "ms",
-  "lower": 1.58,
-  "mad": 0.0,
-  "median": 1.58,
-  "n": 1,
+  "lower": 1.42,
+  "mad": 0.04,
+  "median": 1.54,
+  "n": 2,
   "provisional": true,
   "runs": [
-   "2026-11-12_build_r24a_3057403889"
+   "2026-11-12_build_r24a_3057403889",
+   "2026-11-12_build_r25a_3059029972"
   ],
   "set_by": "data",
-  "upper": 1.88,
+  "upper": 1.84,
   "values": [
-   1.58
+   1.58,
+   1.5
   ]
  },
  "macos/terminal/latency_key_log/key_to_frame#app": {
   "kind": "ms",
-  "lower": 1.49,
-  "mad": 0.02,
-  "median": 1.55,
-  "n": 3,
+  "lower": 1.42,
+  "mad": 0.04,
+  "median": 1.52,
+  "n": 4,
   "provisional": true,
   "runs": [
    "2026-11-10_build_r12a_3050758880",
    "2026-11-10_build_r13a_3051722998",
-   "2026-11-12_build_r24a_3057403889"
+   "2026-11-12_build_r24a_3057403889",
+   "2026-11-12_build_r25a_3059029972"
   ],
   "set_by": "data",
-  "upper": 1.85,
+  "upper": 1.83,
   "values": [
    1.57,
    1.5,
-   1.55
+   1.55,
+   1.46
   ]
  },
  "macos/terminal/latency_paint/key_to_paint": {
   "kind": "ms",
-  "lower": -1.35,
-  "mad": 2.08,
+  "lower": -0.36,
+  "mad": 1.75,
   "median": 4.88,
   "n": 8,
   "provisional": false,
   "runs": [
-   "2026-11-09_build_r18w7_3046481170",
    "2026-11-09_build_r18w8_3047198675",
    "2026-11-10_build_r18w9_3047937983",
    "2026-11-10_build_r10a_3048440714",
    "2026-11-10_build_r11a_3049602519",
    "2026-11-10_build_r12a_3050758880",
    "2026-11-10_build_r13a_3051722998",
-   "2026-11-12_build_r24a_3057403889"
+   "2026-11-12_build_r24a_3057403889",
+   "2026-11-12_build_r25a_3059029972"
   ],
   "set_by": "data",
-  "upper": 11.11,
+  "upper": 10.12,
   "values": [
-   6.96,
    7.45,
    3.46,
    3.94,
    0.45,
    5.82,
    1.88,
-   6.95
+   6.95,
+   5.84
   ]
  },
  "macos/terminal/subshell_line_editor_proof/lep_inner_line_after_enter_s": {
@@ -837,116 +857,116 @@
   "n": 8,
   "provisional": false,
   "runs": [
-   "2026-11-09_build_r18w7_3046481170",
    "2026-11-09_build_r18w8_3047198675",
    "2026-11-10_build_r18w9b_3048013125",
    "2026-11-10_build_r10a_3048440714",
    "2026-11-10_build_r11a_3049602519",
    "2026-11-10_build_r12a_3050758880",
    "2026-11-10_build_r13a_3051722998",
-   "2026-11-12_build_r24a_3057403889"
+   "2026-11-12_build_r24a_3057403889",
+   "2026-11-12_build_r25a_3059029972"
   ],
   "set_by": "data",
-  "upper": 6.12,
+  "upper": 5.99,
   "values": [
-   6.12,
    5.99,
    1.51,
    -0.88,
    -0.84,
    -0.54,
    -0.82,
-   -0.8
+   -0.8,
+   4.08
   ]
  },
  "wayland/agent/ctrl_c_d/ctrl_c_flood": {
   "kind": "ms",
-  "lower": -0.4,
-  "mad": 0.21,
+  "lower": -0.33,
+  "mad": 0.18,
   "median": 0.21,
   "n": 8,
   "provisional": false,
   "runs": [
-   "2026-11-09_build_r18w7_3046481170",
    "2026-11-09_build_r18w8_3047198675",
    "2026-11-10_build_r18w9b_3048013125",
    "2026-11-10_build_r10a_3048440714",
    "2026-11-10_build_r11a_3049602519",
    "2026-11-10_build_r12a_3050758880",
    "2026-11-10_build_r13a_3051722998",
-   "2026-11-12_build_r24a_3057403889"
+   "2026-11-12_build_r24a_3057403889",
+   "2026-11-12_build_r25a_3059029972"
   ],
   "set_by": "data",
   "upper": 7.8,
   "values": [
-   6.87,
    7.8,
    0.43,
    0.1,
    0.19,
    0.02,
    0.24,
-   -0.03
+   -0.03,
+   0.38
   ]
  },
  "wayland/agent/latency_enter/enter_to_start": {
   "kind": "ms",
-  "lower": 2.56,
-  "mad": 0.11,
-  "median": 3.98,
+  "lower": 3.65,
+  "mad": 0.12,
+  "median": 4.01,
   "n": 8,
   "provisional": false,
   "runs": [
-   "2026-11-09_build_r18w8_3047198675",
    "2026-11-10_build_r18w9b_3048013125",
    "2026-11-10_build_r10a_3048440714",
    "2026-11-10_build_r11a_3049602519",
    "2026-11-10_build_r12a_3050758880",
    "2026-11-10_build_r13a_3051722998",
    "2026-11-11_build_r15a_3054716634",
-   "2026-11-12_build_r24a_3057403889"
+   "2026-11-12_build_r24a_3057403889",
+   "2026-11-12_build_r25a_3059029972"
   ],
   "set_by": "data",
   "upper": 4.51,
   "values": [
-   2.56,
    4.04,
    3.98,
    3.98,
    4.51,
    3.89,
    3.85,
-   4.13
+   4.13,
+   4.64
   ]
  },
  "wayland/agent/latency_enter/enter_to_start#app": {
   "kind": "ms",
-  "lower": 1.39,
-  "mad": 0.11,
-  "median": 1.72,
+  "lower": 1.49,
+  "mad": 0.1,
+  "median": 1.79,
   "n": 8,
   "provisional": false,
   "runs": [
-   "2026-11-09_build_r18w8_3047198675",
    "2026-11-10_build_r18w9b_3048013125",
    "2026-11-10_build_r10a_3048440714",
    "2026-11-10_build_r11a_3049602519",
    "2026-11-10_build_r12a_3050758880",
    "2026-11-10_build_r13a_3051722998",
    "2026-11-11_build_r15a_3054716634",
-   "2026-11-12_build_r24a_3057403889"
+   "2026-11-12_build_r24a_3057403889",
+   "2026-11-12_build_r25a_3059029972"
   ],
   "set_by": "data",
   "upper": 2.05,
   "values": [
-   1.53,
    1.81,
    1.65,
    1.67,
    1.94,
    1.77,
    1.58,
-   1.85
+   1.85,
+   1.87
   ]
  },
  "wayland/agent/latency_enter_ssh/ssh_enter_to_start": {
@@ -986,89 +1006,98 @@
   "lower": -0.04,
   "mad": 0.0,
   "median": -0.04,
-  "n": 2,
+  "n": 3,
   "provisional": true,
   "runs": [
    "2026-11-11_build_r15a_3054716634",
-   "2026-11-12_build_r24a_3057403889"
+   "2026-11-12_build_r24a_3057403889",
+   "2026-11-12_build_r25a_3059029972"
   ],
   "set_by": "data",
   "upper": 0.26,
   "values": [
+   -0.04,
    -0.04,
    -0.04
   ]
  },
  "wayland/agent/latency_first_key_after_idle/gap2s": {
   "kind": "ms",
-  "lower": -0.03,
-  "mad": 0.01,
-  "median": -0.01,
-  "n": 2,
+  "lower": -0.02,
+  "mad": 0.0,
+  "median": -0.02,
+  "n": 3,
   "provisional": true,
   "runs": [
    "2026-11-11_build_r15a_3054716634",
-   "2026-11-12_build_r24a_3057403889"
+   "2026-11-12_build_r24a_3057403889",
+   "2026-11-12_build_r25a_3059029972"
   ],
   "set_by": "data",
-  "upper": 0.29,
+  "upper": 0.28,
   "values": [
    -0.02,
-   -0.01
+   -0.01,
+   -0.02
   ]
  },
  "wayland/agent/latency_first_key_after_idle/gap5s": {
   "kind": "ms",
-  "lower": -0.15,
-  "mad": 0.04,
-  "median": -0.03,
-  "n": 2,
+  "lower": -0.23,
+  "mad": 0.08,
+  "median": 0.01,
+  "n": 3,
   "provisional": true,
   "runs": [
    "2026-11-11_build_r15a_3054716634",
-   "2026-11-12_build_r24a_3057403889"
+   "2026-11-12_build_r24a_3057403889",
+   "2026-11-12_build_r25a_3059029972"
   ],
   "set_by": "data",
   "upper": 0.27,
   "values": [
    0.01,
-   -0.07
+   -0.07,
+   0.4
   ]
  },
  "wayland/agent/latency_key_log/key_to_frame": {
   "kind": "ms",
   "lower": 2.64,
-  "mad": 0.03,
-  "median": 2.72,
-  "n": 4,
-  "provisional": true,
+  "mad": 0.02,
+  "median": 2.7,
+  "n": 5,
+  "provisional": false,
   "runs": [
    "2026-11-10_build_r11a_3049602519",
    "2026-11-10_build_r12a_3050758880",
    "2026-11-10_build_r13a_3051722998",
-   "2026-11-12_build_r24a_3057403889"
+   "2026-11-12_build_r24a_3057403889",
+   "2026-11-12_build_r25a_3059029972"
   ],
   "set_by": "data",
-  "upper": 3.02,
+  "upper": 3.0,
   "values": [
    2.69,
    2.7,
    2.74,
-   2.77
+   2.77,
+   2.68
   ]
  },
  "wayland/agent/latency_key_log/key_to_frame#app": {
   "kind": "ms",
-  "lower": 0.62,
+  "lower": 0.61,
   "mad": 0.01,
   "median": 0.64,
-  "n": 4,
-  "provisional": true,
+  "n": 5,
+  "provisional": false,
   "runs": [
    "2026-11-10_build_r11a_3049602519",
    "2026-11-10_build_r12a_3050758880",
    "2026-11-10_build_r13a_3051722998",
-   "2026-11-12_build_r24a_3057403889"
+   "2026-11-12_build_r24a_3057403889",
+   "2026-11-12_build_r25a_3059029972"
   ],
   "set_by": "data",
   "upper": 0.94,
@@ -1076,7 +1105,8 @@
    0.64,
    0.64,
    0.63,
-   0.67
+   0.67,
+   0.61
   ]
  },
  "wayland/agent/subshell_line_editor_proof/lep_inner_line_after_enter_s": {
@@ -1297,116 +1327,116 @@
   "n": 8,
   "provisional": false,
   "runs": [
-   "2026-11-09_build_r18w7_3046481170",
    "2026-11-09_build_r18w8_3047198675",
    "2026-11-10_build_r18w9b_3048013125",
    "2026-11-10_build_r10a_3048440714",
    "2026-11-10_build_r11a_3049602519",
    "2026-11-10_build_r12a_3050758880",
    "2026-11-10_build_r13a_3051722998",
-   "2026-11-12_build_r24a_3057403889"
+   "2026-11-12_build_r24a_3057403889",
+   "2026-11-12_build_r25a_3059029972"
   ],
   "set_by": "data",
-  "upper": 10.65,
+  "upper": 10.08,
   "values": [
-   10.65,
    10.08,
    0.3,
    -1.54,
    -1.55,
    -1.11,
    0.86,
-   -1.23
+   -1.23,
+   0.88
   ]
  },
  "wayland/terminal/ctrl_c_d/ctrl_c_flood": {
   "kind": "ms",
   "lower": -0.7,
-  "mad": 0.31,
-  "median": 0.23,
+  "mad": 0.21,
+  "median": 0.09,
   "n": 8,
   "provisional": false,
   "runs": [
-   "2026-11-09_build_r18w7_3046481170",
    "2026-11-09_build_r18w8_3047198675",
    "2026-11-10_build_r18w9b_3048013125",
    "2026-11-10_build_r10a_3048440714",
    "2026-11-10_build_r11a_3049602519",
    "2026-11-10_build_r12a_3050758880",
    "2026-11-10_build_r13a_3051722998",
-   "2026-11-12_build_r24a_3057403889"
+   "2026-11-12_build_r24a_3057403889",
+   "2026-11-12_build_r25a_3059029972"
   ],
   "set_by": "data",
   "upper": 7.73,
   "values": [
-   6.68,
    7.73,
    -0.06,
    0.02,
    -0.7,
    0.36,
    0.1,
-   0.56
+   0.56,
+   0.07
   ]
  },
  "wayland/terminal/latency_enter/enter_to_start": {
   "kind": "ms",
-  "lower": 1.47,
-  "mad": 0.24,
-  "median": 2.21,
+  "lower": 1.7,
+  "mad": 0.15,
+  "median": 2.17,
   "n": 8,
   "provisional": false,
   "runs": [
-   "2026-11-09_build_r18w8_3047198675",
    "2026-11-10_build_r18w9b_3048013125",
    "2026-11-10_build_r10a_3048440714",
    "2026-11-10_build_r11a_3049602519",
    "2026-11-10_build_r12a_3050758880",
    "2026-11-10_build_r13a_3051722998",
    "2026-11-11_build_r15a_3054716634",
-   "2026-11-12_build_r24a_3057403889"
+   "2026-11-12_build_r24a_3057403889",
+   "2026-11-12_build_r25a_3059029972"
   ],
   "set_by": "data",
-  "upper": 6.78,
+  "upper": 3.49,
   "values": [
-   6.78,
    3.49,
    2.23,
    1.97,
    2.19,
    1.96,
    1.95,
-   2.28
+   2.28,
+   2.15
   ]
  },
  "wayland/terminal/latency_enter/enter_to_start#app": {
   "kind": "ms",
   "lower": 0.43,
-  "mad": 0.1,
-  "median": 1.0,
+  "mad": 0.06,
+  "median": 1.04,
   "n": 8,
   "provisional": false,
   "runs": [
-   "2026-11-09_build_r18w8_3047198675",
    "2026-11-10_build_r18w9b_3048013125",
    "2026-11-10_build_r10a_3048440714",
    "2026-11-10_build_r11a_3049602519",
    "2026-11-10_build_r12a_3050758880",
    "2026-11-10_build_r13a_3051722998",
    "2026-11-11_build_r15a_3054716634",
-   "2026-11-12_build_r24a_3057403889"
+   "2026-11-12_build_r24a_3057403889",
+   "2026-11-12_build_r25a_3059029972"
   ],
   "set_by": "data",
   "upper": 1.3,
   "values": [
-   0.45,
    0.43,
    1.1,
    1.07,
    1.01,
    0.99,
    1.1,
-   0.86
+   0.86,
+   1.19
   ]
  },
  "wayland/terminal/latency_enter_ssh/ssh_enter_to_start": {
@@ -1446,97 +1476,107 @@
   "lower": -0.05,
   "mad": 0.0,
   "median": -0.05,
-  "n": 2,
+  "n": 3,
   "provisional": true,
   "runs": [
    "2026-11-11_build_r15a_3054716634",
-   "2026-11-12_build_r24a_3057403889"
+   "2026-11-12_build_r24a_3057403889",
+   "2026-11-12_build_r25a_3059029972"
   ],
   "set_by": "data",
   "upper": 0.25,
   "values": [
    -0.05,
-   -0.05
+   -0.05,
+   -0.04
   ]
  },
  "wayland/terminal/latency_first_key_after_idle/gap2s": {
   "kind": "ms",
-  "lower": -0.18,
-  "mad": 0.04,
-  "median": -0.06,
-  "n": 2,
+  "lower": -0.1,
+  "mad": 0.02,
+  "median": -0.04,
+  "n": 3,
   "provisional": true,
   "runs": [
    "2026-11-11_build_r15a_3054716634",
-   "2026-11-12_build_r24a_3057403889"
+   "2026-11-12_build_r24a_3057403889",
+   "2026-11-12_build_r25a_3059029972"
   ],
   "set_by": "data",
   "upper": 0.24,
   "values": [
    -0.1,
-   -0.02
+   -0.02,
+   -0.04
   ]
  },
  "wayland/terminal/latency_first_key_after_idle/gap5s": {
   "kind": "ms",
-  "lower": -0.11,
-  "mad": 0.03,
-  "median": -0.02,
-  "n": 2,
+  "lower": -0.07,
+  "mad": 0.01,
+  "median": -0.04,
+  "n": 3,
   "provisional": true,
   "runs": [
    "2026-11-11_build_r15a_3054716634",
-   "2026-11-12_build_r24a_3057403889"
+   "2026-11-12_build_r24a_3057403889",
+   "2026-11-12_build_r25a_3059029972"
   ],
   "set_by": "data",
-  "upper": 0.28,
+  "upper": 0.26,
   "values": [
    0.01,
-   -0.05
+   -0.05,
+   -0.04
   ]
  },
  "wayland/terminal/latency_key_log/key_to_frame": {
   "kind": "ms",
-  "lower": 2.61,
+  "lower": 2.57,
   "mad": 0.05,
-  "median": 2.76,
-  "n": 4,
-  "provisional": true,
+  "median": 2.72,
+  "n": 5,
+  "provisional": false,
   "runs": [
    "2026-11-10_build_r11a_3049602519",
    "2026-11-10_build_r12a_3050758880",
    "2026-11-10_build_r13a_3051722998",
-   "2026-11-12_build_r24a_3057403889"
+   "2026-11-12_build_r24a_3057403889",
+   "2026-11-12_build_r25a_3059029972"
   ],
   "set_by": "data",
-  "upper": 3.06,
+  "upper": 3.02,
   "values": [
    2.72,
    2.69,
    2.8,
-   2.82
+   2.82,
+   2.67
   ]
  },
  "wayland/terminal/latency_key_log/key_to_frame#app": {
   "kind": "ms",
-  "lower": 0.6,
+  "lower": 0.58,
   "mad": 0.02,
-  "median": 0.65,
-  "n": 4,
-  "provisional": true,
+  "median": 0.64,
+  "n": 5,
+  "provisional": false,
   "runs": [
    "2026-11-10_build_r11a_3049602519",
    "2026-11-10_build_r12a_3050758880",
    "2026-11-10_build_r13a_3051722998",
-   "2026-11-12_build_r24a_3057403889"
+   "2026-11-12_build_r24a_3057403889",
+   "2026-11-12_build_r25a_3059029972"
   ],
   "set_by": "data",
-  "upper": 0.95,
+  "upper": 0.94,
   "values": [
    0.64,
    0.61,
    0.67,
-   0.66
+   0.66,
+   0.64
   ]
  },
  "wayland/terminal/subshell_line_editor_proof/lep_inner_line_after_enter_s": {
