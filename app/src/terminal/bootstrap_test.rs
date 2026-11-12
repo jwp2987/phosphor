@@ -1829,6 +1829,8 @@ fn ssh_wrapper_decides_after_connecting_over_one_master() {
         login: &'static str,
         /// The exit status of the first probe's ssh (0 unless stated).
         probe_status: i32,
+        /// PHOSPHOR_SSH_FISH_NU_MANAGED for the wrapper ("" = not set: the default, managed).
+        fishnu_switch: &'static str,
     }
     let cases = [
         Case {
@@ -2016,12 +2018,35 @@ fn ssh_wrapper_decides_after_connecting_over_one_master() {
         // refuses the POSIX bootstrap as a whole (`warp_rb=false` is a syntax error in fish), so
         // the managed session ended at once with exit 127. Asked for its login shell it names
         // fish: the plain interactive session over the same master, as for cmd.exe.
+        //
+        // #2019 follow-up (owner 2026-11-12): that is now a MANAGED session whose remote command
+        // is the staged shim (`sh -c '<shim>' sh 'fish' ...`), which fish parses as a whole and
+        // runs; the plain session is what PHOSPHOR_SSH_FISH_NU_MANAGED=0 gives (the next cases).
         Case {
             name: "fish-login",
             master: "ok",
             probe: "",
+            session: "fishnu",
+            login: "warp-login-/usr/bin/fish-",
+            ..Case::default()
+        },
+        Case {
+            name: "fish-login-kill-switch",
+            master: "ok",
+            probe: "",
             session: "plain",
             login: "warp-login-/usr/bin/fish-",
+            fishnu_switch: "0",
+            ..Case::default()
+        },
+        Case {
+            name: "nu-login-kill-switch",
+            master: "ok",
+            probe: "",
+            session: "plain",
+            login: "warp-login-/usr/local/bin/nu-",
+            probe_status: 1,
+            fishnu_switch: "0",
             ..Case::default()
         },
         // nushell: the first probe is a parse error (`$PSVersionTable` is not a variable), so
@@ -2030,7 +2055,7 @@ fn ssh_wrapper_decides_after_connecting_over_one_master() {
             name: "nu-login",
             master: "ok",
             probe: "",
-            session: "plain",
+            session: "fishnu",
             login: "warp-login-/usr/local/bin/nu-",
             probe_status: 1,
             ..Case::default()
@@ -2288,6 +2313,10 @@ exit 0
                 .env("PROBE", case.probe)
                 .env("PROBE_STATUS", case.probe_status.to_string())
                 .env("LOGIN", case.login)
+                .envs(
+                    (!case.fishnu_switch.is_empty())
+                        .then_some(("PHOSPHOR_SSH_FISH_NU_MANAGED", case.fishnu_switch)),
+                )
                 .env("MUX", &mux)
                 .env("EXIT_FAILS", if case.exit_fails { "1" } else { "" })
                 .stdin(std::process::Stdio::null())
@@ -2509,7 +2538,27 @@ exit 0
                         "{name}/{}: -O exit comes last: {recorded:?}",
                         case.name
                     );
-                    if kind_of_session == "plain" {
+                    if kind_of_session == "fishnu" {
+                        // #2019 follow-up: the staged shim as ONE ssh argument, every argument
+                        // single-quoted, the login shell's kind named; none of the POSIX
+                        // bootstrap that fish and nu refuse.
+                        let shell = if case.name.starts_with("nu") {
+                            "nu"
+                        } else {
+                            "fish"
+                        };
+                        assert!(
+                            session.contains("\nsh -c 'k=$1; ls=$2;")
+                                && session.contains(&format!("' sh '{shell}' '")),
+                            "{name}/{}: the staged shim, naming {shell}: {session:?}",
+                            case.name
+                        );
+                        assert!(
+                            !session.contains("warp_rb=") && !session.contains("${SHELL##*/}"),
+                            "{name}/{}: the POSIX bootstrap text must not reach a fish or nu login shell: {session:?}",
+                            case.name
+                        );
+                    } else if kind_of_session == "plain" {
                         assert!(
                             !session.contains("export TERM_PROGRAM"),
                             "{name}/{}: a non-POSIX remote must not get the POSIX bootstrap: {session:?}",
@@ -6010,5 +6059,131 @@ fn bash_arm_of_the_ssh_remote_command_does_not_resolve_bash_through_path() {
                 "fallback\n"
             );
         }
+    }
+}
+
+/// #2019 follow-up: the line each wrapper holds the staged shim on, with its text: the part
+/// between the quotes of `warp_fishnu_shim='...'` (or fish's `set -l warp_fishnu_shim '...'`).
+fn fishnu_shim_of(wrapper: &str) -> String {
+    let line = wrapper
+        .lines()
+        .find(|line| {
+            let line = line.trim_start();
+            line.starts_with("local warp_fishnu_shim='")
+                || line.starts_with("set -l warp_fishnu_shim '")
+        })
+        .expect("the wrapper holds the staged shim");
+    let first = line.find('\'').expect("an opening quote");
+    let last = line.rfind('\'').expect("a closing quote");
+    line[first + 1..last].to_owned()
+}
+
+/// The shim is the remote command's whole program for a login shell that is not POSIX: sshd hands
+/// the command to fish or nu, which parse all of it, so the shim has to read the same under sh,
+/// fish and nu. The three wrappers carry one copy each and they must be the same text. Inside a
+/// single-quoted string fish treats only `\\` and `\'` as escapes, nu none, and a newline would
+/// make nu's parse of the string depend on its version: so no quote, no doubled backslash, no
+/// newline.
+#[test]
+fn the_staged_ssh_shim_is_one_line_and_the_same_in_all_three_wrappers() {
+    let bash = fishnu_shim_of(include_str!("../../assets/bundled/bootstrap/bash_body.sh"));
+    let zsh = fishnu_shim_of(include_str!("../../assets/bundled/bootstrap/zsh_body.sh"));
+    let fish = fishnu_shim_of(include_str!("../../assets/bundled/bootstrap/fish.sh"));
+    assert_eq!(bash, zsh);
+    assert_eq!(bash, fish);
+    assert!(bash.len() > 500, "the shim looks truncated: {bash}");
+    assert!(
+        !bash.contains('\''),
+        "a single quote ends the string in fish and nu"
+    );
+    assert!(
+        !bash.contains("\\\\"),
+        "fish reads a doubled backslash as one"
+    );
+    assert!(!bash.contains('\n') && !bash.contains('\r'));
+    // The five things it exists for, so a rewrite cannot quietly drop one.
+    for needle in [
+        "\\\"hook\\\": \\\"SSH\\\"",
+        "\\\"hook\\\": \\\"InitShell\\\"",
+        "\\\"hook\\\": \\\"ExitShell\\\"",
+        "\\\"hook\\\": \\\"PlainSSHFallback\\\"",
+        "head -c \"$n\"",
+    ] {
+        assert!(bash.contains(needle), "the shim has no {needle}");
+    }
+}
+
+/// The shim's own pieces are the app's rule: the SSH hook it prints names a shell the app
+/// bootstraps (`ssh_remote_command_bootstraps`), and says the app writes the bootstrap.
+#[test]
+fn the_staged_ssh_shim_announces_a_session_the_app_bootstraps() {
+    let shim = fishnu_shim_of(include_str!("../../assets/bundled/bootstrap/bash_body.sh"));
+    assert!(shim.contains("\\\"remote_shell\\\": \\\"$k\\\""));
+    assert!(shim.contains("\\\"bootstrap_in_command\\\": false"));
+    assert!(shim.contains("\\\"raw_bootstrap\\\": false"));
+    assert!(shim.contains("\\\"single_connection\\\": false"));
+    for shell in ["fish", "nu"] {
+        assert!(super::input_queue::ssh_remote_command_bootstraps(shell));
+    }
+}
+
+/// The app side of the staged delivery: it applies to a fish or nu that an ssh `SSH` hook
+/// announced and to nothing else, and the payload is the byte count, a newline, the bytes.
+#[test]
+fn staged_ssh_bootstrap_applies_to_ssh_fish_and_nu_only() {
+    let ssh = |shell| {
+        SessionInfo::new_for_test()
+            .with_ssh_socket_path(std::path::PathBuf::from("/tmp/sock"))
+            .with_shell_type(shell)
+    };
+    assert!(staged_ssh_bootstrap_applies(&ssh(ShellType::Fish)));
+    assert!(staged_ssh_bootstrap_applies(&ssh(ShellType::Nu)));
+    // bash and zsh keep their own delivery.
+    assert!(!staged_ssh_bootstrap_applies(&ssh(ShellType::Bash)));
+    assert!(!staged_ssh_bootstrap_applies(&ssh(ShellType::Zsh)));
+    // A local fish, and an ssh whose remote carried the bootstrap itself.
+    assert!(!staged_ssh_bootstrap_applies(
+        &SessionInfo::new_for_test().with_shell_type(ShellType::Fish)
+    ));
+    assert!(!staged_ssh_bootstrap_applies(
+        &ssh(ShellType::Fish).with_bootstrap_in_command(true)
+    ));
+    // The app does write for it: the in-command rule is not the staged rule.
+    assert!(app_writes_bootstrap(&ssh(ShellType::Fish)));
+}
+
+#[test]
+fn the_staged_payload_is_a_count_line_then_the_bytes() {
+    let fish = staged_ssh_bootstrap_payload(b"echo hi\n", ShellType::Fish);
+    assert_eq!(fish, b"8\necho hi\n".to_vec());
+    let nu = staged_ssh_bootstrap_payload(b"print 1\n", ShellType::Nu);
+    let text = String::from_utf8(nu).unwrap();
+    let (count, body) = text.split_once('\n').unwrap();
+    assert_eq!(count.parse::<usize>().unwrap(), body.len());
+    assert!(body.starts_with("$env.config.show_banner = false\n"));
+    assert!(body.ends_with("print 1\n"));
+}
+
+/// The real fish and nu bootstraps are what the app sends: the count line must equal the bytes
+/// that follow, for the assets as shipped.
+#[test]
+fn the_staged_payload_of_the_shipped_bootstraps_is_counted_exactly() {
+    for (shell, script) in [
+        (
+            ShellType::Fish,
+            include_bytes!("../../assets/bundled/bootstrap/fish.sh").as_slice(),
+        ),
+        (
+            ShellType::Nu,
+            include_bytes!("../../assets/bundled/bootstrap/nu.nu").as_slice(),
+        ),
+    ] {
+        let payload = staged_ssh_bootstrap_payload(script, shell);
+        let newline = payload.iter().position(|b| *b == b'\n').unwrap();
+        let count: usize = std::str::from_utf8(&payload[..newline])
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert_eq!(count, payload.len() - newline - 1, "{shell:?}");
     }
 }

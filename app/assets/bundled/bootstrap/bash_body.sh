@@ -2652,7 +2652,21 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
                 # managed session below; the idle background master expires via ControlPersist.
             fi
             if [[ $warp_owns_master -eq 1 || "$external_control_master" == "true" ]]; then
+                warp_ssh_login_kind=""
                 if warp_ssh_remote_is_non_posix_cached "$control_path" "${@:1}"; then
+                    # #2019 follow-up (docs/design/ssh-fish-nu-managed.md): a fish or nu login shell gets
+                    # a managed session; PHOSPHOR_SSH_FISH_NU_MANAGED=0 keeps the plain one below.
+                    if [[ -n "$warp_ssh_login_kind" && "${PHOSPHOR_SSH_FISH_NU_MANAGED:-1}" != "0" ]] \
+                        && warp_ssh_fishnu_command "$warp_ssh_login_kind" "$control_path" "$external_control_master" "$remote_session_id"; then
+                        warp_send_json_message "{\"hook\": \"ManagedSSHSessionStarting\", \"value\": {\"session_id\": ${WARP_SESSION_ID:-}}}"
+                        command ssh ${warp_ipqos_args[@]+"${warp_ipqos_args[@]}"} -o ControlMaster=$control_master_mode -o ControlPath="$control_path" \
+                        -t "${@:1}" "$warp_ssh_fishnu_cmd"
+                        local warp_fishnu_rc=$?
+                        if [[ $warp_owns_master -eq 1 ]]; then
+                            warp_ssh_stop_master "$control_path"
+                        fi
+                        return $warp_fishnu_rc
+                    fi
                     warp_send_json_message "{\"hook\": \"PlainSSHFallback\", \"value\": {\"session_id\": ${WARP_SESSION_ID:-}}}"
                     command ssh -o ControlMaster=no -o ControlPath="$control_path" -t "${@:1}"
                     local warp_plain_rc=$?
@@ -3192,10 +3206,35 @@ fi
             local warp_ssh_login_shell=""
             warp_ssh_remote_login_shell "$control_path" "$@"
             case "$warp_ssh_login_shell" in
-                fish | nu | csh | tcsh | xonsh | elvish) warp_ssh_probe_verdict="nonposix"; return 0 ;;
+                # #2019 follow-up (owner 2026-11-12): fish and nu get a managed session. The answer is
+                # still "not POSIX" (return 0: the bootstrap below cannot run in them); the kind
+                # tells warp_ssh_helper which bootstrap to deliver, and its kill switch restores the
+                # plain session.
+                fish | nu) warp_ssh_probe_verdict="nonposix-$warp_ssh_login_shell"; warp_ssh_login_kind="$warp_ssh_login_shell"; return 0 ;;
+                csh | tcsh | xonsh | elvish) warp_ssh_probe_verdict="nonposix"; return 0 ;;
                 bash | zsh) warp_ssh_probe_verdict="posix" ;;
             esac
             return 1
+        }
+
+        # #2019 follow-up (docs/design/ssh-fish-nu-managed.md): the remote command of a managed
+        # session whose login shell is fish or nu ($1: "fish" or "nu"; $2 the control path, $3 "true"
+        # or "false" for an external master, $4 the remote session id), into warp_ssh_fishnu_cmd.
+        # sshd hands a remote command to the LOGIN shell, which parses all of it, so the command is
+        # `sh -c '<shim>' sh <arguments>` with every argument single-quoted: no quote or backslash
+        # inside the shim, so sh, fish and nu read the same text. The shim is one line, the same in
+        # bash_body.sh, zsh_body.sh and fish.sh (a unit test keeps them equal). Returns 1, with
+        # nothing set, for a control path or kind that cannot be quoted that way.
+        function warp_ssh_fishnu_command() {
+            warp_ssh_fishnu_cmd=""
+            local kind="$1" sp="$2" ext="$3" rid="$4"
+            local cv="${WARP_CLIENT_VERSION-}" pv="${WARP_CLI_AGENT_PROTOCOL_VERSION-}"
+            case "$kind" in fish | nu) ;; *) return 1 ;; esac
+            case "$sp$ext$rid$cv$pv" in *\'* | *\\* | *$'\n'*) return 1 ;; esac
+            [[ "$cv" =~ ^[A-Za-z0-9._+-]*$ ]] || cv=""
+            [[ "$pv" =~ ^[A-Za-z0-9._+-]*$ ]] || pv=""
+            local warp_fishnu_shim='k=$1; ls=$2; rs=$3; sp=$4; ex=$5; TERM_PROGRAM=WarpTerminal; WARP_IS_SSH=1; WARP_SESSION_ID=$rs; WARP_USING_WINDOWS_CON_PTY=false; WARP_IN_MSYS2=false; export TERM_PROGRAM WARP_IS_SSH WARP_SESSION_ID WARP_USING_WINDOWS_CON_PTY WARP_IN_MSYS2; if test -n "$6"; then WARP_CLIENT_VERSION=$6; export WARP_CLIENT_VERSION; fi; if test -n "$7"; then WARP_CLI_AGENT_PROTOCOL_VERSION=$7; export WARP_CLI_AGENT_PROTOCOL_VERSION; fi; hk() { printf "\033]9278;d;%s\007" "$(printf "%s" "$1" | command -p od -An -v -tx1 | command -p tr -d " \n")"; }; md() { if test ! -e "$HOME/.hushlogin"; then for m in /etc/motd /run/motd /run/motd.dynamic /usr/lib/motd /usr/lib/motd.dynamic; do if test -r "$m"; then command -p cat "$m"; break; fi; done; fi; }; pl() { hk "{\"hook\": \"PlainSSHFallback\", \"value\": {\"session_id\": $ls}}"; md; exec "$SHELL" -l; exit 1; }; d=$(command -p mktemp -d "${TMPDIR:-/tmp}/phosphor-bs.XXXXXX" 2>/dev/null); case "$d" in ""|*[!A-Za-z0-9._/-]*) pl;; esac; printf x | command -p head -c 1 >/dev/null 2>&1 || pl; hk "{\"hook\": \"SSH\", \"value\": {\"socket_path\": \"$sp\", \"remote_shell\": \"$k\", \"session_id\": $ls, \"remote_session_id\": $rs, \"external_control_master\": $ex, \"single_connection\": false, \"raw_bootstrap\": false, \"bootstrap_in_command\": false}}"; md; o=$(command -p stty -g 2>/dev/null); command -p stty raw -echo min 0 time 200 2>/dev/null; u=$(command -p id -un 2>/dev/null | command -p tr -cd "A-Za-z0-9._@+-"); h=$(command -p hostname 2>/dev/null || command -p uname -n); h=$(printf "%s" "$h" | command -p tr -cd "A-Za-z0-9._-"); hk "{\"hook\": \"InitShell\", \"value\": {\"session_id\": $rs, \"shell\": \"$k\", \"user\": \"$u\", \"hostname\": \"$h\"}}"; IFS= read -r n; n=$(printf "%s" "$n" | command -p tr -cd 0-9); if test -n "$n"; then command -p head -c "$n" > "$d/b" 2>/dev/null; fi; if test -n "$o"; then command -p stty "$o" 2>/dev/null; else command -p stty sane 2>/dev/null; fi; w=$(command -p wc -c < "$d/b" 2>/dev/null | command -p tr -cd 0-9); if test -z "$n" || test "$w" != "$n"; then command -p rm -rf "$d"; pl; fi; case "$k" in fish) set -- -l -C "source $d/b; command rm -rf $d";; *) set -- -l -e "source $d/b; ^rm -rf $d";; esac; "$SHELL" "$@"; r=$?; command -p rm -rf "$d"; hk "{\"hook\": \"ExitShell\", \"value\": {\"session_id\": $rs}}"; exit $r'
+            warp_ssh_fishnu_cmd="sh -c '$warp_fishnu_shim' sh '$kind' '${WARP_SESSION_ID:-}' '$rid' '$sp' '$ext' '$cv' '$pv'"
         }
 
         # Runs the remote command "$2" over the already-authenticated master at "$1" (the user's
@@ -3350,6 +3389,7 @@ fi
             WARP_SSH_PROBE_CACHE="$kept"
             case "$verdict" in
                 nonposix) return 0 ;;
+                nonposix-fish | nonposix-nu) warp_ssh_login_kind="${verdict#nonposix-}"; return 0 ;;
                 posix) return 1 ;;
                 noanswer) [[ -z "$control_path" ]] && return 0 ;;
             esac

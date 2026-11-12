@@ -1,0 +1,215 @@
+#!/usr/bin/env python3
+"""A fish or nu login shell on an ssh host gets a MANAGED session (#2019 follow-up, owner
+2026-11-12; docs/design/ssh-fish-nu-managed.md). Needs python3; fish and nu are used where
+installed (a missing one is reported and skipped; PHOSPHOR_TEST_NU or --nu PATH names a nu).
+
+What it checks, on the shipped text:
+  1. the one-line shim is the same in bash_body.sh, zsh_body.sh and fish.sh, and holds no quote,
+     doubled backslash or newline (what a fish or nu login shell would read differently);
+  2. warp_ssh_fishnu_command, cut out of each wrapper and run by its own shell (bash, zsh, fish),
+     builds the SAME remote command, and refuses a control path with a quote or backslash;
+  3. that command, handed to a real login shell as sshd does (`<shell> -c <command>`) on a pty,
+     prints the SSH hook (remote_shell fish|nu, not bootstrap_in_command), then InitShell, takes
+     the counted bootstrap the app writes (byte count line, then the bytes), has the shell source
+     it (the real fish.sh / nu.nu: the Bootstrapped hook arrives), and prints ExitShell when the
+     shell exits, leaving no temp directory behind; parsed by fish, by bash and by sh;
+  4. a host that cannot stage the file (no usable temp dir) answers with PlainSSHFallback and a
+     plain login shell, never a hang.
+
+USAGE  script/test_ssh_fish_nu_managed [--nu PATH]
+"""
+import os, pty, re, select, shutil, subprocess, sys, time, tempfile, glob, termios
+
+ROOT = os.path.realpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+BOOT = os.path.join(ROOT, "app/assets/bundled/bootstrap")
+SCRATCH = os.path.join(ROOT, ".scratch")
+os.makedirs(SCRATCH, exist_ok=True)
+failures = []
+
+
+def check(ok, what):
+    print(("ok   " if ok else "FAIL ") + what)
+    if not ok:
+        failures.append(what)
+
+
+def read(name):
+    with open(os.path.join(BOOT, name), encoding="utf-8") as f:
+        return f.read()
+
+
+# ---- 1. the shim -----------------------------------------------------------------------------
+def shim_of(text):
+    for line in text.splitlines():
+        t = line.strip()
+        if t.startswith("local warp_fishnu_shim='") or t.startswith("set -l warp_fishnu_shim '"):
+            return t[t.index("'") + 1:t.rindex("'")]
+    return None
+
+
+shims = {n: shim_of(read(n)) for n in ("bash_body.sh", "zsh_body.sh", "fish.sh")}
+check(all(shims.values()), "every wrapper holds the shim")
+check(len(set(shims.values())) == 1, "the shim is the same text in all three wrappers")
+SHIM = shims["bash_body.sh"] or ""
+check("'" not in SHIM and "\\\\" not in SHIM and "\n" not in SHIM,
+      "the shim has no quote, doubled backslash or newline")
+
+
+# ---- 2. the command builder, run by each wrapper's own shell ---------------------------------
+def function_text(name, start_re, end_line):
+    lines = read(name).splitlines()
+    start = next(i for i, l in enumerate(lines) if re.match(start_re, l))
+    indent = re.match(r"\s*", lines[start]).group(0)
+    end = next(i for i in range(start + 1, len(lines)) if lines[i] == indent + end_line)
+    return "\n".join(lines[start:end + 1])
+
+
+def build(shellname, name, start_re, end_line, sp):
+    fn = function_text(name, start_re, end_line)
+    env = dict(os.environ, WARP_SESSION_ID="111", WARP_CLIENT_VERSION="v0.1.2", WARP_CLI_AGENT_PROTOCOL_VERSION="", SP=sp)
+    if shellname == "fish":
+        prog = fn + "\nif warp_ssh_fishnu_command fish \"$SP\" false 222\n  printf '%s' $warp_ssh_fishnu_cmd\nelse\n  printf REFUSED\nend\n"
+        argv = ["fish", "--no-config", "-c", prog]
+    else:
+        prog = fn + "\nif warp_ssh_fishnu_command fish \"$SP\" false 222; then printf '%s' \"$warp_ssh_fishnu_cmd\"; else printf REFUSED; fi\n"
+        argv = [shellname, "-c", prog]
+    return subprocess.run(argv, env=env, capture_output=True, text=True).stdout
+
+
+SPEC = [
+    ("bash", "bash_body.sh", r"\s*function warp_ssh_fishnu_command\(\)", "}"),
+    ("zsh", "zsh_body.sh", r"\s*function warp_ssh_fishnu_command\(\)", "}"),
+    ("fish", "fish.sh", r"\s*function warp_ssh_fishnu_command$", "end"),
+]
+cmds = {}
+for shellname, name, start_re, end_line in SPEC:
+    if not shutil.which(shellname):
+        print("%s not installed: skipped" % shellname)
+        continue
+    cmds[shellname] = build(shellname, name, start_re, end_line, "/run/user/1000/ssh/111")
+    refused = build(shellname, name, start_re, end_line, "/a'b")
+    check(cmds[shellname].startswith("sh -c '") and cmds[shellname].endswith(
+        "' sh 'fish' '111' '222' '/run/user/1000/ssh/111' 'false' 'v0.1.2' ''"), "%s builds the command" % shellname)
+    check(refused == "REFUSED", "%s refuses a control path with a quote" % shellname)
+    check(build(shellname, name, start_re, end_line, "/a\\b") == "REFUSED", "%s refuses a control path with a backslash" % shellname)
+check(len(set(cmds.values())) <= 1, "all shells build the same command")
+COMMAND = next(iter(cmds.values()), None)
+if COMMAND is None:
+    print("no shell to build with"); sys.exit(1)
+check(SHIM in COMMAND, "the command carries the shim")
+
+# ---- 3. run it the way sshd does ---------------------------------------------------------------
+HOOK_RES = [re.compile(rb"\x1b\]9278;d;([0-9a-f]+)\x07"), re.compile(rb"\x1bP\$d([0-9a-f]+)\x9c")]
+
+
+def hooks_of(buf):
+    found = []
+    for rx in HOOK_RES:
+        for m in rx.finditer(buf):
+            found.append((m.start(), bytes.fromhex(m.group(1).decode()).decode("utf-8", "replace")))
+    return [h for _, h in sorted(found)]
+
+
+def run_session(login, kind, kind_bin, payload, tmpdir, home, send_exit):
+    """`<login> -c COMMAND` on a pty, the app's part played by this function."""
+    cmd = COMMAND.replace("'fish'", "'%s'" % kind, 1)
+    pid, fd = pty.fork()
+    if pid == 0:
+        env = {"PATH": os.environ["PATH"], "HOME": home, "SHELL": kind_bin, "TERM": "xterm-256color",
+               "TMPDIR": tmpdir, "LANG": "C.UTF-8", "XDG_CONFIG_HOME": home + "/.config",
+               "XDG_DATA_HOME": home + "/.local/share", "XDG_CACHE_HOME": home + "/.cache"}
+        os.execve(login, [login, "-c", cmd], env)
+    buf = b""
+    sent = False
+    exited = False
+    t0 = time.time()
+    t_sent = None
+    while time.time() - t0 < 45:
+        r, _, _ = select.select([fd], [], [], 0.3)
+        if r:
+            try:
+                d = os.read(fd, 65536)
+            except OSError:
+                break
+            if not d:
+                break
+            buf += d
+        hooks = hooks_of(buf)
+        if payload is not None and not sent and any('"hook": "InitShell"' in h for h in hooks):
+            time.sleep(0.1)
+            os.write(fd, payload)
+            sent = True
+            t_sent = time.time()
+        if sent and not exited and any('"hook": "Bootstrapped"' in h for h in hooks) and time.time() - t_sent > 0.5:
+            os.write(fd, send_exit)
+            exited = True
+        if not payload and any('"hook": "PlainSSHFallback"' in h for h in hooks) and time.time() - t0 > 3:
+            os.write(fd, b"exit\r")
+    try:
+        os.kill(pid, 9)
+    except OSError:
+        pass
+    try:
+        os.waitpid(pid, 0)
+    except OSError:
+        pass
+    return hooks_of(buf), buf
+
+
+def counted(path_to_script, prefix=b""):
+    with open(path_to_script, "rb") as f:
+        body = prefix + f.read()
+    return str(len(body)).encode() + b"\n" + body
+
+
+nu_bin = None
+if len(sys.argv) == 3 and sys.argv[1] == "--nu":
+    nu_bin = sys.argv[2]
+else:
+    nu_bin = os.environ.get("PHOSPHOR_TEST_NU") or shutil.which("nu") or next(
+        iter(sorted(glob.glob(os.path.expanduser("~/tmp-r18/perf-nushell/nu/*/nu")))), None)
+
+cases = []
+if shutil.which("fish"):
+    fish_bin = shutil.which("fish")
+    for login in (fish_bin, shutil.which("bash"), shutil.which("sh")):
+        if login:
+            cases.append(("fish", fish_bin, login, counted(os.path.join(BOOT, "fish.sh")), b"exit\r"))
+else:
+    print("fish not installed: skipped")
+if nu_bin and os.path.exists(nu_bin):
+    for login in (nu_bin, shutil.which("bash")):
+        if login:
+            cases.append(("nu", nu_bin, login, counted(os.path.join(BOOT, "nu.nu"), b"$env.config.show_banner = false\n"), b"exit\r"))
+else:
+    print("nu not installed: skipped (set PHOSPHOR_TEST_NU or pass --nu PATH)")
+
+for kind, kind_bin, login, payload, send_exit in cases:
+    work = tempfile.mkdtemp(prefix="fishnu.", dir=SCRATCH)
+    tmpdir = os.path.join(work, "tmp"); home = os.path.join(work, "home")
+    os.makedirs(tmpdir); os.makedirs(home)
+    hooks, raw = run_session(login, kind, kind_bin, payload, tmpdir, home, send_exit)
+    tag = "%s session parsed by %s" % (kind, os.path.basename(login))
+    names = [re.search(r'"hook": "(\w+)"', h).group(1) for h in hooks if re.search(r'"hook": "(\w+)"', h)]
+    check(names[:2] == ["SSH", "InitShell"], tag + ": SSH then InitShell (got %s)" % names[:4])
+    ssh = next((h for h in hooks if '"hook": "SSH"' in h), "")
+    check('"remote_shell": "%s"' % kind in ssh and '"bootstrap_in_command": false' in ssh
+          and '"session_id": 111' in ssh and '"remote_session_id": 222' in ssh, tag + ": the SSH hook names the shell")
+    check('"shell": "%s"' % kind in next((h for h in hooks if '"hook": "InitShell"' in h), ""), tag + ": InitShell names the shell")
+    check("Bootstrapped" in names, tag + ": the bootstrap the app wrote ran (Bootstrapped hook)")
+    check("ExitShell" in names, tag + ": ExitShell when the shell exits")
+    check(os.listdir(tmpdir) == [], tag + ": no staging directory left behind")
+    shutil.rmtree(work, ignore_errors=True)
+
+# ---- 4. a host that cannot stage the file ------------------------------------------------------
+if shutil.which("fish"):
+    work = tempfile.mkdtemp(prefix="fishnu.", dir=SCRATCH)
+    home = os.path.join(work, "home"); os.makedirs(home)
+    hooks, raw = run_session(shutil.which("fish"), "fish", shutil.which("fish"), None, os.path.join(work, "missing"), home, b"")
+    names = [re.search(r'"hook": "(\w+)"', h).group(1) for h in hooks if re.search(r'"hook": "(\w+)"', h)]
+    check(names[:1] == ["PlainSSHFallback"] and "SSH" not in names, "no temp dir: PlainSSHFallback, no managed hook (got %s)" % names)
+    shutil.rmtree(work, ignore_errors=True)
+
+if failures:
+    print("test_ssh_fish_nu_managed: %d FAILED" % len(failures)); sys.exit(1)
+print("test_ssh_fish_nu_managed: ok")

@@ -1871,6 +1871,19 @@ impl<T: EventLoopSender> PtyController<T> {
             return;
         }
 
+        // #2019 follow-up: a fish or nu the wrapper's shim started waits for its bootstrap as a
+        // counted read from the tty (byte count line, then the bytes); it writes them to a file
+        // on the remote host and sources it.
+        if bootstrap::staged_ssh_bootstrap_applies(pending_session_info) {
+            let script = bootstrap::script_for_shell(shell_type, &crate::ASSETS);
+            let payload = bootstrap::staged_ssh_bootstrap_payload(&script, shell_type);
+            warpui::input_order::log_hop("bootstrap_staged", || {
+                format!("shell={shell_type:?} bytes={}", payload.len())
+            });
+            self.write_bytes(payload, ctx);
+            return;
+        }
+
         #[cfg(feature = "local_fs")]
         if let Some(path) = permanent_bootstrap_file(shell_type, pending_session_info) {
             // If there is a permanent bootstrap file, source it directly. We
