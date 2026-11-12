@@ -7208,6 +7208,20 @@ fn an_ssh_escape_after_a_request_or_reply_with_no_report_gets_a_carriage_return(
     assert_eq!(handoff.ssh_escape_line_start(), SshEscapeLineStart::AddCr);
 }
 
+/// #2186: while the hand-off waits for the shell's report, the remote line may hold the user's
+/// typed-ahead bytes (it asks only then, or after an interrupt): a `\r` could run them, so the
+/// escape goes unprefixed even though the last byte written (the request) is not a newline.
+#[test]
+fn an_ssh_escape_while_a_report_is_awaited_for_typed_bytes_gets_no_carriage_return() {
+    let mut handoff = awaiting_report();
+    handoff.set_ssh_escape_cr_line_start_rule(true);
+    assert!(!handoff.pty_write_count().tail_is_newline());
+    assert_eq!(
+        handoff.ssh_escape_line_start(),
+        SshEscapeLineStart::Skipped("awaiting_report")
+    );
+}
+
 /// #2186: where the last byte written was a newline ssh is at its line start: the escape goes
 /// alone, no extra `\r`.
 #[test]

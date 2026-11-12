@@ -1498,11 +1498,11 @@ impl TypeaheadHandoff {
                 ..
             } => return Some("pty_owned_user_bytes"),
             HandoffState::PtyOwned { .. } => {}
-            // The editor owns input while a request is out: what the user types waits in the
-            // editor, and bytes that reached the line some other way are `untracked_line_bytes`.
-            // A request still out is no reason to leave the escape unprefixed (nu never answers
-            // the last one).
-            HandoffState::AwaitingReport => {}
+            // A request is out because the shell's line may hold bytes the user typed ahead
+            // (the hand-off only asks when user bytes were written or after an interrupt): a CR
+            // could run them as a partial line, so the escape goes unprefixed, as with any
+            // possibly typed line. (#2186's nu failure was EditorOwned with no request out.)
+            HandoffState::AwaitingReport => return Some("awaiting_report"),
             HandoffState::HoldAfterEnter { .. } => return Some("hold_after_enter"),
         }
         if self.untracked_line_bytes {
