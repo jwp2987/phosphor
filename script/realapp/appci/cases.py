@@ -6350,6 +6350,15 @@ def median_open_cost(pairs):
     return out
 
 
+def worst_open_cost(pairs):
+    """#2185: the open cost the verdict is made on = the WORST cycle, per figure, of (after-open - pre-open): every cycle must meet the target, so
+    the verdict is never looser than the old cycle-1-only check. [(opened, pre)] -> {metric: MB}."""
+    out = {}
+    for k in sorted({k for o, p in pairs for k in o if k in p}):
+        out[k] = max(o[k] - p[k] for o, p in pairs if k in o and k in p)
+    return out
+
+
 def editor_cycle_note(tag, pre, opened, app_open):
     """#2185: one note per cycle with the figures a reader needs to see how the number was made: the base (pre-open) and after-open memory, the
     cost, and the app's own 'editor_memory open' breakdown (identical in r24a and r25a while the RSS cost differed: the cost depends on the
@@ -6639,14 +6648,17 @@ def c_editor_mem(ctx, r):
                 else:
                     r.note("%s: close trim not run (trim=%s: a PHOSPHOR_HEAP_TRIM* kill switch)" % (tag, dropped[-1].get("trim")))
             ctx.reset()
-        # #2185: the target is judged on the MEDIAN open cost over all cycles, each measured from its own settled pre-open (post-close-trim) base, not on
-        # cycle 1 alone: one cycle's cost swings with the heap it starts from (r24a 97 / 202 / 205 MB, r25a 129 / 145 / 147 MB). The limits are unchanged.
+        # #2185: the target is judged on EVERY cycle (the worst one), each measured from its own settled pre-open (post-close-trim) base, not on
+        # cycle 1 alone: one cycle's cost swings with the heap it starts from (r24a 97 / 202 / 205 MB, r25a 129 / 145 / 147 MB). The limits are
+        # unchanged; the median is reported, not judged.
         if cost_pairs:
             med = median_open_cost(cost_pairs)
+            worst = worst_open_cost(cost_pairs)
             r.metric("%s_open_cost_median_mb" % kind, {k: round(v, 1) for k, v in med.items()})
+            r.metric("%s_open_cost_worst_mb" % kind, {k: round(v, 1) for k, v in worst.items()})
             r.metric("%s_open_cost_cycles_mb" % kind, [{k: round(o[k] - p[k], 1) for k in o if k in p} for o, p in cost_pairs])
-            mem_judge_known(r, med, {k: 0.0 for k in med}, limits[kind],
-                            "%s: opening a %d MB file cost %%.0f MB of %%s (median of %d cycle(s); > %.0f MB target)" % (kind, size >> 20, len(cost_pairs), limits[kind]),
+            mem_judge_known(r, worst, {k: 0.0 for k in worst}, limits[kind],
+                            "%s: opening a %d MB file cost %%.0f MB of %%s (worst of %d cycle(s); > %.0f MB target)" % (kind, size >> 20, len(cost_pairs), limits[kind]),
                             "editor_open_cost")
         if not opens or not how:
             continue

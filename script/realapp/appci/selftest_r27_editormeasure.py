@@ -74,9 +74,19 @@ def r27_prime_opens_closes_waits_for_the_trim_and_reports_the_post_trim_heap():
 
 @check
 def r27_case_wires_the_prime_median_and_unchanged_limits():
-    """the case source takes its base after the prime, judges the median, and keeps the owner's 100 / 150 / 60 / 40 MB limits"""
+    """the case source takes its base after the prime, judges the worst cycle, and keeps the owner's 100 / 150 / 60 / 40 MB limits"""
     src = open(os.path.join(HERE, "cases.py"), encoding="utf-8").read()
     body = src[src.index('def c_editor_mem(ctx, r):'):src.index('@case("gitbash_subshell"')]
-    assert body.index("editor_prime(") < body.index("base = settle_rss(ctx)") < body.index("median_open_cost(cost_pairs)")
+    assert body.index("editor_prime(") < body.index("base = settle_rss(ctx)") < body.index("worst_open_cost(cost_pairs)")
+    assert "mem_judge_known(r, worst," in body     # every cycle is judged (the worst), the median is only reported
     for frag in ('"APPCI_EDITOR_MEM_TXT_MAX_MB", "100"', '"APPCI_EDITOR_MEM_RS_MAX_MB", "150"', '"APPCI_EDITOR_MEM_CLOSE_MAX_MB", "60"', '"APPCI_EDITOR_MEM_CYCLE_GROWTH_MAX_MB", "40"'):
         assert frag in body, frag
+
+
+@check
+def r27_worst_open_cost_judges_every_cycle():
+    """the verdict is the worst cycle: one bad cycle out of three fails the row (never looser than the old cycle-1 check)"""
+    import cases
+    pairs = [({"rss": 580.0}, {"rss": 500.0}), ({"rss": 590.0}, {"rss": 500.0}), ({"rss": 640.0}, {"rss": 500.0})]
+    assert cases.worst_open_cost(pairs) == {"rss": 140.0}
+    assert cases.median_open_cost(pairs) == {"rss": 90.0}
