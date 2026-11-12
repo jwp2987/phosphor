@@ -697,3 +697,25 @@ fn test_shell_with_other_args_subshell_detection_fail() {
         )
     });
 }
+
+/// #2179: the ssh hosts denylist reaches the shell's ssh wrapper as `WARP_SSH_HOSTS_DENYLIST`
+/// (one pattern per line); nothing is exported when there is nothing to enforce, and a pattern
+/// that does not compile is left out rather than breaking the wrapper.
+#[test]
+fn ssh_hosts_denylist_env_value_lists_valid_patterns_only() {
+    let none: Vec<String> = Vec::new();
+    assert_eq!(WarpifySettings::denylist_env_value(&none), None);
+
+    let only_junk = vec!["".to_owned(), "   ".to_owned(), "([unclosed".to_owned()];
+    assert_eq!(WarpifySettings::denylist_env_value(&only_junk), None);
+
+    let patterns = vec![
+        " build-.*\\.example\\.com ".to_owned(),
+        "([unclosed".to_owned(),
+        "^bastion$".to_owned(),
+    ];
+    assert_eq!(
+        WarpifySettings::denylist_env_value(&patterns).as_deref(),
+        Some("build-.*\\.example\\.com\n^bastion$")
+    );
+}

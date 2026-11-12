@@ -42670,3 +42670,7 @@ mod queued_prompts_tests;
 #[cfg(test)]
 #[path = "view/shared_queue_tests.rs"]
 mod shared_queue_tests;
+
+#[cfg(test)]
+#[path = "view/completions_banner_tests.rs"]
+mod completions_banner_tests;

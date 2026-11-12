@@ -262,7 +262,9 @@ non-interactive and ignored.
 
 **Denylisting a host** (the banner's "don't ask again", or Settings →
 Phosphorize → SSH → *Denylisted hosts*) writes a regex to
-`warpify.ssh.ssh_hosts_denylist`.
+`warpify.ssh.ssh_hosts_denylist`. A typed `ssh` to a host that matches gets a plain ssh
+session, never a managed one; the list is read when a shell starts, so a host added later
+applies to new tabs.
 
 #### The `enable_legacy_ssh_wrapper` trap
 

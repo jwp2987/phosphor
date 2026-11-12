@@ -600,13 +600,13 @@ then probes the remote host and re-enters the session under tmux. It gives up af
 
 Enabling the tmux wrapper **disables** the legacy ControlMaster wrapper — they
 are mutually exclusive. If your completions have stopped working over SSH,
-Phosphor raises a banner suggesting exactly this: *"Enabling tmux phosphorization
-in settings may resolve this issue."*
+Phosphor raises a banner about it, which now points at the SSH extension: *"Allowing
+the SSH extension to install in settings may resolve this issue."*
 
 When the remote side cannot be phosphorized you get a specific message —
 tmux not installed, tmux older than 3.0, tmux failed to execute, a timeout, or an
 unsupported shell (only bash, zsh and fish work; PowerShell does not) — plus two
-escape hatches: **Phosphorize without TMUX** and **Continue without
+escape hatches: **Phosphorize this session** and **Continue without
 Phosphorization**.
 
 > **The "More info" and "Learn more" links in these banners open this manual.**

@@ -779,6 +779,16 @@ impl<S> TerminalManager<S> {
             );
         }
 
+        // #2179: hosts on the user's ssh denylist get a plain ssh session, never a managed one.
+        // The ssh wrapper runs in the shell, so it reads the list from the environment (set
+        // when the shell starts; a host added later applies to new tabs).
+        if let Some(denylist) = WarpifySettings::as_ref(ctx).ssh_hosts_denylist_env_value() {
+            env_vars.insert(
+                OsString::from("WARP_SSH_HOSTS_DENYLIST"),
+                OsString::from(denylist),
+            );
+        }
+
         // Only meaningful when the legacy ControlMaster wrapper is active.
         let reuse_ssh_control_master = enable_ssh_wrapper
             && *SshSettings::as_ref(ctx)
