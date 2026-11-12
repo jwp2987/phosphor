@@ -247,7 +247,7 @@ def c_upgrade_from_v0_1_17(ctx, r):
         ctx.shot("uf_new1_started")
         UI = CB.U
         UI.exact_burst(ctx, r, "uf_new1", 4)
-        log1 = open(ctx.log_path, errors="replace").read() if ctx.log_path and os.path.exists(ctx.log_path) else ""
+        log1 = C.app_log_clean(open(ctx.log_path, errors="replace").read()) if ctx.log_path and os.path.exists(ctx.log_path) else ""
         probs = upgrade_log_problems(log1)
         r.check(not probs, "launch 1: the app log shows a failed upgrade: %s" % probs[:3])
         r.check(ctx.app.alive(), "launch 1: the new build died on the v0.1.17 profile")
@@ -273,7 +273,7 @@ def c_upgrade_from_v0_1_17(ctx, r):
             time.sleep(2)
             ctx.be.key("Escape")
             UI.exact_burst(ctx, r, "uf_new2", 4)
-            log2 = open(ctx.log_path, errors="replace").read() if ctx.log_path and os.path.exists(ctx.log_path) else ""
+            log2 = C.app_log_clean(open(ctx.log_path, errors="replace").read()) if ctx.log_path and os.path.exists(ctx.log_path) else ""
             probs2 = upgrade_log_problems(log2)
             r.check(not probs2, "U70-U72 / launch 2: the app log shows a failure on the second launch: %s" % probs2[:3])
             R.keep_log(ctx, "uf_new2")
@@ -297,7 +297,7 @@ def c_upgrade_from_v0_1_17(ctx, r):
             R.use_app(ctx, CB.old_app_like(new_app, prev_bin))
             _n, reached = R.start_app(ctx, r, "uf_down", restored_min=1, timeout=60)
             time.sleep(2)
-            log_d = open(ctx.log_path, errors="replace").read() if ctx.log_path and os.path.exists(ctx.log_path) else ""
+            log_d = C.app_log_clean(open(ctx.log_path, errors="replace").read()) if ctx.log_path and os.path.exists(ctx.log_path) else ""
             ctx.app.stop()
             R.use_app(ctx, new_app)
             after_down = open(p["settings"], encoding="utf-8", errors="replace").read()

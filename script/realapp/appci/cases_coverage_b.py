@@ -346,7 +346,7 @@ def c_settings_migration(ctx, r):
                 r.note("%s settings file: the burst did not land in the shell; view before it %r, after it %r; %d of its Enters submitted to the agent %s" % (
                     name, view0, ctx.log_view_mode(), len(subs), [b[:60] for b, _t in subs[:4]]))
                 r.metric("%s_burst_agent_submits" % name, len(subs))
-            log_text = open(ctx.log_path, errors="replace").read() if ctx.log_path and os.path.exists(ctx.log_path) else ""
+            log_text = C.app_log_clean(open(ctx.log_path, errors="replace").read()) if ctx.log_path and os.path.exists(ctx.log_path) else ""
             probs = startup_log_problems(log_text, broken_settings=(name == "truncated"))
             r.check(not probs, "%s settings file: the app log shows a failed start: %s" % (name, probs[:2]))
             r.check(ctx.app.alive(), "app died on the %s settings file" % name)
@@ -612,7 +612,7 @@ def c_no_autoupdate(ctx, r):
     app/src/autoupdate/gitlab_tests.rs; running it against a real signed release needs the release pipeline (a recorded gap, docs 2.14)."""
     if not ctx.log_path or not os.path.exists(ctx.log_path):
         r.skip("no app log at %s" % ctx.log_path)
-    txt = open(ctx.log_path, errors="replace").read()
+    txt = C.app_log_clean(open(ctx.log_path, errors="replace").read())
     r.metric("log_bytes", len(txt))
     hits = autoupdate_lines(txt)
     r.check(not hits, "the app log mentions the updater although this build ships without it: %s" % hits[:3])

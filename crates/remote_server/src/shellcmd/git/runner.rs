@@ -123,3 +123,40 @@ pub async fn gh_text(runner: &dyn GitRunner, cwd: &Path, args: &[&str]) -> Resul
         Err(anyhow!("gh command failed: {}", output.stderr_lossy()))
     }
 }
+
+/// The longest piece of a git error's own text that may reach the app log.
+const GIT_ERROR_LOG_DETAIL_MAX_CHARS: usize = 160;
+
+/// What of a git failure may be written to the app log (#2191). `git_text` builds
+/// `Git command failed: <stderr>, <stdout>`, and for `git diff` the stdout IS the file's diff: file
+/// contents (a diffed file can hold credentials) must never reach a log. The message carries the
+/// error kind, git's own first stderr line when it is a `fatal:` / `error:` / `warning:` line, and
+/// the sizes (bytes and lines) of what was left out. Never the output body.
+pub fn git_error_for_log(error: &str) -> String {
+    let bytes = error.len();
+    let lines = error.lines().count();
+    let (kind, detail) = if let Some(rest) = error.strip_prefix("Git command failed: ") {
+        let first = rest.lines().next().unwrap_or("");
+        let own = ["fatal: ", "error: ", "warning: "]
+            .iter()
+            .any(|p| first.starts_with(p));
+        ("git_failed", if own { first } else { "" })
+    } else if let Some(rest) = error.strip_prefix("Failed to execute git command: ") {
+        ("spawn_failed", rest.lines().next().unwrap_or(""))
+    } else {
+        ("other", "")
+    };
+    let detail: String = detail
+        .chars()
+        .take(GIT_ERROR_LOG_DETAIL_MAX_CHARS)
+        .collect();
+    if detail.is_empty() {
+        format!("kind={kind} bytes={bytes} lines={lines}")
+    } else {
+        format!("kind={kind} detail={detail:?} bytes={bytes} lines={lines}")
+    }
+}
+
+#[cfg(test)]
+#[path = "runner_tests.rs"]
+mod tests;

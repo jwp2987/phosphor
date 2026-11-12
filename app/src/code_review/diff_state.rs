@@ -2508,8 +2508,10 @@ impl LocalDiffStateModel {
             Ok(output) => output,
             Err(error) => {
                 log::info!(
-                    "Failed to get file diff for {file_path:?}{}: {error}",
-                    commit.map(|c| format!(" vs {c}")).unwrap_or_default()
+                    "Failed to get file diff for {file_path:?}{}: {}",
+                    commit.map(|c| format!(" vs {c}")).unwrap_or_default(),
+                    // Never the error text itself: it carries the diff body (#2191).
+                    remote_server::shellcmd::git::git_error_for_log(&error.to_string())
                 );
                 // If diff fails, treat as binary or empty
                 return Ok(FileDiff {

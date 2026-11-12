@@ -40,7 +40,7 @@ pub use ops::*;
 pub use parse::*;
 pub use runner::{
     GIT_BASE_ARGS, GIT_ENV, GIT_NOPROMPT_ENV, GIT_SSH_COMMAND_SH_ASSIGNMENT, GIT_UNSET_ENV,
-    GitOutput, GitRunner, gh_text, git_ssh_command, git_text, git_text_stdin,
+    GitOutput, GitRunner, gh_text, git_error_for_log, git_ssh_command, git_text, git_text_stdin,
 };
 pub use types::*;
 

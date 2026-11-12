@@ -232,11 +232,11 @@ def app_log_readers():
         log = os.path.join(d, "phosphor.log")
         c = _ctx(d, log)
         assert c.log_view_mode() is None and c.log_size() == 0 and c.log_since(0) == ""
-        open(log + ".in_session.1", "w").write("x input_order hop=view_mode mode=terminal pane=1\n")
-        open(log + ".in_session.0", "w").write("x input_order hop=view_mode mode=agent pane=1\n")      # N=0 is the newest rotated chunk
+        open(log + ".in_session.1", "w").write("2026-11-12T19:35:37Z [DEBUG] input_order hop=view_mode mode=terminal pane=1\n")
+        open(log + ".in_session.0", "w").write("2026-11-12T19:35:37Z [DEBUG] input_order hop=view_mode mode=agent pane=1\n")      # N=0 is the newest rotated chunk
         open(log, "w").write("plain line\n")
         assert c.log_view_mode() == "agent", "rotated chunks are read oldest first, N=0 newest"
-        open(log, "a").write("y input_order hop=view_mode mode=terminal pane=1\n")
+        open(log, "a").write("2026-11-12T19:35:37Z [DEBUG] input_order hop=view_mode mode=terminal pane=1\n")
         assert c.log_view_mode() == "terminal", "the active file is the newest"
         off = c.log_size()
         open(log, "a").write("tail\n")
@@ -272,7 +272,7 @@ def app_log_readers():
         assert cases.same_log_file(h, ("head", b"2026-11-05T00:00:00Z [INFO] a longer head"))
         assert not cases.same_log_file(h, ("head", b"2026-11-05T00:00:01Z [INFO] b"))
         assert not cases.same_log_file(None, h) and not cases.same_log_file(("ino", 1, 2), ("ino", 1, 3))
-        open(log, "a").write("y input_order hop=view_mode mode=terminal pane=1\n")      # the rotations above dropped the view_mode lines
+        open(log, "a").write("2026-11-12T19:35:37Z [DEBUG] input_order hop=view_mode mode=terminal pane=1\n")      # the rotations above dropped the view_mode lines
         # mode_now prefers the log; it must not need OCR when the log answers
         c.ocr = lambda tag: (_ for _ in ()).throw(AssertionError("OCR used although the log has a view_mode line"))
         assert cases.Ctx.mode_now(c, "t") == "terminal"
@@ -5791,7 +5791,7 @@ def replay_error_allowlist_and_hops():
     got = RP.error_lines(log)
     assert got == ["2026 [ERROR] boom here", "thread panicked at a.rs:1"], got
     assert RP.error_lines(log, extra_allow=["boom"]) == [got[1]]
-    h = RP.agent_hops('hop=enter_begin deferred=false buffer="Reply with the word R1abc" input_type=AI\nhop=view_mode mode=agent pane=1\n[byop] opening stream\nqueue_actions\n')
+    h = RP.agent_hops('2026-11-12T19:35:37Z [DEBUG] input_order hop=enter_begin deferred=false buffer="Reply with the word R1abc" input_type=AI\n2026-11-12T19:35:37Z [DEBUG] input_order hop=view_mode mode=agent pane=1\n[byop] opening stream\nqueue_actions\n')
     assert h["enters"] == [("Reply with the word R1abc", "AI")] and h["streams"] == 1 and h["cards"] == 1 and h["views"] == ["agent"], h
     st = [dict(idx=0, tok="R1abc", ask="Reply with the word R1abc")]
     assert RP.judge_agent(h, st) == []
@@ -9445,3 +9445,5 @@ import selftest_r27_recallorder  # noqa: E402  (#2107 history_up_recall long-his
 CHECKS.extend(selftest_r27_recallorder.CHECKS)
 import selftest_r27_remotetabenter  # noqa: E402  (#2188 lab_tab_remote_dir fast Enter: received-line verdict, the app's remote_tab_wait note, kill switch name; own file)
 CHECKS.extend(selftest_r27_remotetabenter.CHECKS)
+import selftest_r27_loganchors  # noqa: E402  (r27 loganchors: hop patterns anchored at a real log line, diff-body echo, focus-lost hops, the pane path always closes; own file)
+CHECKS.extend(selftest_r27_loganchors.CHECKS)

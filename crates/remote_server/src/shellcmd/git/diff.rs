@@ -659,7 +659,10 @@ async fn file_diff(
     let diff_output = match git_text(runner, repo, &args).await {
         Ok(output) => output,
         Err(error) => {
-            log::info!("Failed to get file diff for {path_str}: {error}");
+            log::info!(
+                "Failed to get file diff for {path_str}: {}",
+                super::runner::git_error_for_log(&error.to_string())
+            );
             // A failed diff is treated as binary: nothing to render.
             return Ok(plain_file(path, status, staged, true, DiffSize::Normal));
         }
@@ -742,7 +745,10 @@ pub async fn compute_file_deltas(
                 diff,
                 metadata: None,
             }),
-            Err(err) => log::warn!("Per-file diff-state delta failed for {file}: {err}"),
+            Err(err) => log::warn!(
+                "Per-file diff-state delta failed for {file}: {}",
+                super::runner::git_error_for_log(&err.to_string())
+            ),
         }
     }
     deltas
