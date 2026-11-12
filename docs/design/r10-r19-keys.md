@@ -85,6 +85,34 @@ the PSReadLine history file.
 Not fixed here: the fix holds editor keys behind a pending recall, which is the input's key path (`terminal/input.rs`) and a
 second patch on #874's path: design first. The case now records the history size.
 
+**Round 27 (#2107): decided and done.** Cause as read above, confirmed: a history above `INLINE_BUILD_MAX_ENTRIES` is listed
+on a background thread, so Up opens the menu with no rows and the recalled line enters the buffer only when the list lands and
+its first row is selected (`SelectCommand`); `KeyGate` holds only Up / Down / accept, so BackSpace, text and Enter acted on the
+empty buffer first and the recalled line then replaced them.
+Fix (Option A, one queue, no second one): `GateKind::HistoryRecall` on the pane's input queue.
+- The menu emits `InlineHistoryMenuEvent::ListPending` from `open_with_current_buffer` when the new query's list is pending
+  (`is_pending()`), after the mode change has run the query; a small history answers inline and never emits it, so its Up stays
+  instant. The input opens the gate then (`input/history_recall.rs`, same pattern as `open_enter_gate_with`).
+- The queue holds every editor key behind the gate as `EditorKey` entries in the existing FIFO; keys with no replayable form
+  (Escape, Vim Escape, the page keys ...) are queued behind it too, so none overtakes an earlier key. The H8 matrix has no
+  exemption for this gate (`table::gate_holds`).
+- Closing events: the first row's `Select*` event (released from the input's handler after the buffer is set; there is no separate
+  list-ready event: one would reach the input BEFORE the row's select event, which travels two more event hops, and a "list ready"
+  release would replay the keys onto the empty buffer again), `NoResults`, and the menu leaving its mode (`ModeChanged`: Close, Escape, an
+  accept). The drain replays the held keys in order; Up / Down then pass through the ready `KeyGate`.
+- Replay order: the effects of an Enter, Escape, Up, Down, Tab or ^C are events delivered after the update that applies the key,
+  so the drain yields after such a key (`EditorKeyPayload::new_with_deferred_effects`, `Host::yield_after` on both hosts). Without
+  that, a key typed after an Escape was applied before the Escape's buffer restore ran and was overwritten by it.
+- ^C (coordinator decision): no Enter held ahead of it: the recall is cancelled (the queue's `DiscardThenSignal` drops the edits
+  typed meanwhile, the menu closes, a list landing later is ignored), the ^C acts at once; an Enter held ahead: the ^C is queued in
+  order behind the held keys and the Enter, whose line runs first. The hop line `history_recall_ctrl_c` names the choice. The pre-Up
+  buffer is not restored: ^C clears the line, as it always did with the menu open.
+- Give-up net: 125 s (the mixer waits at most 120 s), WARN, menu closed first (no restore), then the keys replay in order on the
+  unchanged buffer. Kill switch `PHOSPHOR_HOLD_KEYS_BEHIND_RECALL=0` restores the old behaviour exactly.
+- Evidence: Rust tests in `input_queue/tests.rs` and `terminal/input_test.rs`; `history_up_recall` seeds 6000 lines on Linux and
+  macOS so step (b) runs on the background path (`docs/testing.md`, Round 27). Rejected: holding in `KeyGate` (a second queue, and
+  the menu would need to know editor keys); a timer to wait for the list (a timer must not decide).
+
 ## 6. keybinding_rebind (Git Bash both modes): not decided
 
 Arm B "ctrl+shift+F9 did not open command search" and arm C "Alt-R did not open the history search"; controls passed; the

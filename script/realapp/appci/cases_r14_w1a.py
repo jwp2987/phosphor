@@ -206,12 +206,70 @@ def hist_file_lines(ctx, rec):
     return None
 
 
+HIST_SEED_LINES = 6000                 # r27 (#2107): lines the Linux / macOS arm adds to the pane shell's history file: above HIST_INLINE_MAX on its own
+HOLD_KEYS_BEHIND_RECALL_ENV = "PHOSPHOR_HOLD_KEYS_BEHIND_RECALL"   # app/src/terminal/input_queue/switches.rs: =0 restores the pre-#2107 behaviour
+
+
+def hist_seed_lines(n=HIST_SEED_LINES):
+    """pure (r27, #2107): n distinct, inert history lines (a comment each, so nothing in them can run or be recalled by mistake for a case token)"""
+    return ["# hseed%05d recalled-order-seed" % i for i in range(n)]
+
+
+def hist_file_path(ctx):
+    """the history file hist_file_lines counts (bash / zsh of the profile's home), None when the pane has none"""
+    home = ctx.prof.home
+    for name in (".bash_history", ".zsh_history", os.path.join(".zdot", ".zsh_history")):
+        p = os.path.join(home, name)
+        if os.path.isfile(p):
+            return p
+    return None
+
+
+def hist_seed_long_history(ctx, r):
+    """r27 (#2107), Linux / macOS panes: stops the app, appends HIST_SEED_LINES distinct lines to the pane shell's history file and starts the app
+    again, so the app loads a history above HIST_INLINE_MAX (5000) and the Up arrow lists it on a background thread, as a long-lived history does.
+    The keys of step (b) are then typed while that list is being built (Up, BackSpace x3, an edit, Enter at the typing rate): the exact lines the
+    shell receives (got == want) are what proves the keys were applied to the recalled line, in order. -> the line count of the file, or None when
+    nothing was seeded (no app process, a Windows pane, no history file to seed)"""
+    if ctx.app is None or ctx.win:
+        return None
+    path = hist_file_path(ctx)
+    if path is None:
+        r.note("history_up_recall: the pane's shell has no history file to seed (%s): the Up-arrow list is the short one in this run" % ctx.prof.home)
+        return None
+    ctx.snapshot_log()                                    # the next launch overwrites phosphor.log
+    ctx.app.stop()                                        # the shell writes its history on exit: seed after it, or the exit write drops the seed
+    with open(path, "a", newline="\n") as f:
+        f.write("\n".join(hist_seed_lines()) + "\n")
+    base = ctx.prompts()
+    ctx.app.start()
+    if not ctx.until(lambda: ctx.prompts() >= base + 1 and ctx.app.alive(), 90, step=0.5):
+        r.check(False, "history_up_recall: no shell prompt within 90 s after the relaunch with the long history (alive %s)" % ctx.app.alive())
+        return None
+    last, since = ctx.prompts(), time.time()
+    while time.time() - since < 4.0:                      # prompt count stable for 4 s = every restored shell has started
+        time.sleep(0.5)
+        if ctx.prompts() != last:
+            last, since = ctx.prompts(), time.time()
+    time.sleep(2.0)
+    ctx.be.guard()
+    return hist_file_lines(ctx, None)
+
+
 @case("history_up_recall", order=64, gui=True)
 def c_history_up_recall(ctx, r):
     """T1: Up-arrow history recall in the pane's own shell. Three commands, then (a) Up, Up, Enter: the second command runs again, once; (b) Up, an
     edit at the end of the line, Enter: the edited line runs; (c) Up then Down: the line is empty again and a new command runs alone. The shell's
     record holds exactly those six lines and the effect files hold exactly their tokens: a wrong, doubled, merged or empty line fails."""
     shell = ctx.pane_shell()
+    # r27 (#2107): on Linux / macOS the pane's history is made long enough (above HIST_INLINE_MAX) that the Up arrow lists it on a background thread,
+    # so step (b)'s fast keys are typed while the list is built: the app holds them behind the recall gate and applies them to the recalled line.
+    seeded_n = hist_seed_long_history(ctx, r)
+    if seeded_n is not None:
+        r.metric("seeded_history_lines", seeded_n)
+        if not r.check(seeded_n > HIST_INLINE_MAX, "the seeded history holds %d lines, not more than the %d the app lists inline: the case would not take the "
+                       "background path (#%d)" % (seeded_n, HIST_INLINE_MAX, ISSUE_UP_RECALL_ASYNC)):
+            return
     fname = "hu.txt"
     toks = [ctx.tok(8).lower() for _ in range(4)]
     plan = hist_edit_plan(shell, fname, toks[1])

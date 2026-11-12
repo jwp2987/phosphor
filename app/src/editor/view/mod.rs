@@ -3349,11 +3349,30 @@ impl EditorView {
         }
         let queue = self.paste_hold.queue();
         if matches!(action, EditorAction::CtrlC) {
+            // #2107: behind the history-recall gate, a ^C with an Enter held ahead of it waits in
+            // order (the held keys and the Enter go first, then the ^C acts), so the Enter's line
+            // runs before the interrupt as typed. Without an Enter ahead it cancels the recall
+            // below (the edits typed meanwhile are discarded, as a shell's ^C discards the line).
+            if recall_interrupt_waits_in_order(&queue) {
+                warpui::input_order::log_hop("history_recall_ctrl_c", || {
+                    "choice=wait_in_order enter_held=true".to_owned()
+                });
+                let kind = recall_held_entry(HeldPasteKey::Action(EditorAction::CtrlC));
+                self.offer_recall_held_entry(&queue, kind, ctx);
+                return true;
+            }
             // The signal rules concern the gates that wait on the editor's own input (a paste it
             // reads, an Enter waiting for its verdict or report, the display map). Other gates
             // (an ssh connect, a subshell setup, ...) are ended by their own events and the
             // terminal's interrupt handling, not by an interrupt typed in the editor.
             if editor_interrupt_meets_gate(&queue) {
+                if queue.try_peek().is_some_and(|held| {
+                    held.has_gate_kind(crate::terminal::input_queue::GateKind::HistoryRecall)
+                }) {
+                    warpui::input_order::log_hop("history_recall_ctrl_c", || {
+                        "choice=cancel_recall enter_held=false".to_owned()
+                    });
+                }
                 let kind = EntryKind::Signal(SignalKind::Interrupt);
                 match queue.try_lock_ordered() {
                     Some(mut guard) => {
@@ -3513,6 +3532,26 @@ impl EditorView {
                 return true;
             }
         }
+        // #2107: the inline history menu's list is still being built, so the recalled line is not
+        // in the buffer yet. Every key typed meanwhile waits in the queue, in order, and acts on
+        // the recalled line once it is there: Escape and the other keys with no replayable form
+        // included, so none overtakes an earlier key.
+        if queue.try_peek().is_some_and(|held| {
+            held.has_gate_kind(crate::terminal::input_queue::GateKind::HistoryRecall)
+        }) {
+            let kind = match paste_hold::held_form(action) {
+                Some(key) => Some(recall_held_entry(key)),
+                None if recall_holds_other_key(action) => {
+                    Some(recall_held_entry(HeldPasteKey::Action(action.clone())))
+                }
+                None => None,
+            };
+            if let Some(kind) = kind {
+                self.offer_recall_held_entry(&queue, kind, ctx);
+                return true;
+            }
+            return false;
+        }
         let Some(key) = paste_hold::held_form(action) else {
             return false;
         };
@@ -3573,6 +3612,27 @@ impl EditorView {
                 warpui::input_order::describe_text(&self.buffer_text(ctx))
             )
         });
+    }
+
+    /// Offers `kind` to the pane queue behind the history-recall gate (or defers it in order when
+    /// the queue is busy), exactly as every other key held behind a gate is.
+    fn offer_recall_held_entry(
+        &mut self,
+        queue: &crate::terminal::input_queue::PaneQueue,
+        kind: crate::terminal::input_queue::EntryKind,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        match queue.try_lock_ordered() {
+            Some(mut guard) => {
+                let mut host = paste_hold::EditorQueueHost { editor: self, ctx };
+                guard.offer(&mut host, kind);
+            }
+            None => queue.defer(crate::terminal::input_queue::Deferred::Offer {
+                kind,
+                origin: crate::terminal::input_queue::Origin::Keyboard,
+                stamp: queue.stamp_now(),
+            }),
+        }
     }
 
     /// An ssh connect is in flight (#1292) and its gate holds the pane's keys: the editor key joins
@@ -9896,6 +9956,9 @@ fn editor_interrupt_meets_gate(queue: &crate::terminal::input_queue::PaneQueue) 
         held.gates().iter().any(|gate| match gate.kind {
             GateKind::PasteReading => is_editor_paste_id(gate.key),
             GateKind::EnterVerdict | GateKind::TabCompletion | GateKind::EditorDisplayMap => true,
+            // #2107: ^C cancels the recall (the plan discards the edits typed meanwhile); the
+            // with-an-Enter-held case never gets here (`recall_interrupt_waits_in_order`).
+            GateKind::HistoryRecall => true,
             // Not `HandoffReport`: an interrupt meeting an Enter deferred for the shell's report
             // cancels that Enter and voids the keys behind its gate (`TerminalView::ctrl_c`,
             // through the editor's own event), which a signal offered to the queue would flush
@@ -9903,6 +9966,86 @@ fn editor_interrupt_meets_gate(queue: &crate::terminal::input_queue::PaneQueue) 
             _ => false,
         })
     })
+}
+
+/// #2107: a ^C typed behind the history-recall gate waits in order when an Enter is already held
+/// ahead of it: the keys and the Enter replay first, then the ^C acts.
+fn recall_interrupt_waits_in_order(queue: &crate::terminal::input_queue::PaneQueue) -> bool {
+    use crate::terminal::input_queue::GateKind;
+    queue.try_peek().is_some_and(|held| {
+        held.gates().iter().any(|gate| {
+            gate.kind == GateKind::HistoryRecall
+                && held.holds_enter_behind_gate(gate.kind, gate.key)
+        })
+    })
+}
+
+/// #2107: the queue entry of a key held behind the history-recall gate. A key whose effect is an
+/// event processed after the update that delivers it (an Enter submits, Escape closes the menu
+/// and restores the buffer, Up and Down move the menu, ^C clears) makes the drain yield after it,
+/// so the key typed next acts on the result and is never overwritten by it.
+fn recall_held_entry(key: HeldPasteKey) -> crate::terminal::input_queue::EntryKind {
+    use crate::terminal::input_queue::{EditorKeyPayload, EntryKind};
+    let deferred_effects = matches!(
+        &key,
+        HeldPasteKey::Action(
+            EditorAction::Enter
+                | EditorAction::CmdEnter
+                | EditorAction::CtrlEnter
+                | EditorAction::ShiftEnter
+                | EditorAction::AltEnter
+                | EditorAction::Up
+                | EditorAction::Down
+                | EditorAction::Tab
+                | EditorAction::ShiftTab
+                | EditorAction::Escape
+                | EditorAction::VimEscape
+                | EditorAction::CtrlC
+                | EditorAction::PageUp
+                | EditorAction::PageDown
+                | EditorAction::CmdUp
+                | EditorAction::CmdDown
+                | EditorAction::InsertAutosuggestion
+        )
+    );
+    EntryKind::EditorKey(if deferred_effects {
+        EditorKeyPayload::new_with_deferred_effects(key)
+    } else {
+        EditorKeyPayload::new(key)
+    })
+}
+
+/// #2107: the keys with no replayable form (`paste_hold::held_form`) that still wait behind the
+/// history-recall gate so they never overtake an earlier key. Pointer, scroll, focus and other
+/// non-key actions are not keys of the line and act at once.
+fn recall_holds_other_key(action: &EditorAction) -> bool {
+    matches!(
+        action,
+        EditorAction::Escape
+            | EditorAction::VimEscape
+            | EditorAction::VimBackspace
+            | EditorAction::VimUserInsert(_)
+            | EditorAction::ImeCommit(_)
+            | EditorAction::PageUp
+            | EditorAction::PageDown
+            | EditorAction::CmdUp
+            | EditorAction::CmdDown
+            | EditorAction::ClearLines
+            | EditorAction::ClearAndCopyLines
+            | EditorAction::SelectToLineStart
+            | EditorAction::SelectToLineEnd
+            | EditorAction::MoveToParagraphStart
+            | EditorAction::MoveToParagraphEnd
+            | EditorAction::MoveToAndSelectBufferStart
+            | EditorAction::MoveToAndSelectBufferEnd
+            | EditorAction::SelectRightByWord
+            | EditorAction::SelectLeftByWord
+            | EditorAction::SelectRightBySubword
+            | EditorAction::SelectLeftBySubword
+            | EditorAction::InsertLastWordPrevCommand
+            | EditorAction::InsertNonExpandingSpace
+            | EditorAction::InsertAutosuggestion
+    )
 }
 
 #[cfg(test)]

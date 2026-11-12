@@ -48,4 +48,8 @@ fn the_switch_names_are_stable() {
         SSH_UNBOOTSTRAPPED_PLAIN_ENV,
         "PHOSPHOR_SSH_UNBOOTSTRAPPED_PLAIN"
     );
+    assert_eq!(
+        HOLD_KEYS_BEHIND_RECALL_ENV,
+        "PHOSPHOR_HOLD_KEYS_BEHIND_RECALL"
+    );
 }

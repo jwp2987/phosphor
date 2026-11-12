@@ -1246,7 +1246,7 @@ const SIGNALS: [SignalKind; 4] = [
 fn the_gate_by_signal_plan_matrix() {
     use GateSignalPlan::*;
     // [Interrupt, Eof, Suspend, Quit] per gate kind: the 14 x 4 plan of design revision 3.
-    let expected: [(GateKind, [GateSignalPlan; 4]); 12] = [
+    let expected: [(GateKind, [GateSignalPlan; 4]); 13] = [
         (GateKind::PasteReading, [CancelPasteThenFlush; 4]),
         (GateKind::CliSubmit, [CancelPasteThenFlush; 4]),
         (GateKind::EnterVerdict, [DiscardThenSignal; 4]),
@@ -1280,6 +1280,17 @@ fn the_gate_by_signal_plan_matrix() {
             ],
         ),
         (GateKind::EditorDisplayMap, [FlushThenSignal; 4]),
+        // #2107: ^C (and ^Z, ^\) cancels the recall and discards the edits typed meanwhile; ^D is
+        // not flushed by the tty, so it waits in order like a key.
+        (
+            GateKind::HistoryRecall,
+            [
+                DiscardThenSignal,
+                WaitInOrder,
+                DiscardThenSignal,
+                DiscardThenSignal,
+            ],
+        ),
         (GateKind::SubshellSetup, [SignalThenRelease; 4]),
         (
             GateKind::SubshellBootstrapWrite,
