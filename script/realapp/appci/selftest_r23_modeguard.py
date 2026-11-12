@@ -259,3 +259,18 @@ def r23_intl_row_says_what_it_verified_when_rec_log_is_empty():
     r3 = FakeR()
     I.check_cmd(FakeIntlCtx(None, ["echo a日b"]), r3, 0, "echo a日b", "typed")
     assert not r3.fails and r3.metrics.get("intl_checked_received_command_line") == 1, r3.metrics
+
+
+@check
+def r24_a_terminal_case_that_ends_in_agent_view_is_blamed():
+    """owner 2026-11-12: after a TERMINAL case the pane must be in terminal mode; ending in agent view is a FAIL row naming that case, unless the case
+    declares enters_agent=True"""
+    import cases
+    src = open(os.path.join(HERE, "run.py"), encoding="utf-8").read()
+    assert 'ctx.mode == "terminal" and c["name"] != "mode_proof" and not c.get("enters_agent")' in src
+    assert '"entered_agent_view_in_" + c["name"]' in src and 'seen_t == "agent"' in src
+    i_guard = src.index('"entered_agent_view_in_"')
+    i_agent_check = src.index('"left_agent_mode_after_"')
+    assert i_agent_check < i_guard, "both post-case mode checks exist (agent pass and terminal pass)"
+    import inspect
+    assert "enters_agent" in inspect.signature(cases.case).parameters, "cases.case() takes enters_agent (cases registered another way read it as False via c.get)"

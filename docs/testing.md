@@ -1202,6 +1202,9 @@ returned []); checked in the built image: bash, zsh, fish, nu and pwsh all retur
 unit suites first (they never need the release build), then its build, then its app/lab jobs. A unit suite that does not succeed stops that machine's build
 and its app and lab jobs (rows "not built (unit suite ...)" / "not run (unit suite ... failed)"); the other machines go on. Fix the unit failures, rebuild, then app tests. Self-test: "a red unit suite stops
 that machine's app jobs".
+**A terminal case must END in terminal mode** (owner 2026-11-12, #2170 follow-up): run.py checks the pane's mode after every terminal-pass case, as it
+already did after agent-pass cases; agent view there is a FAIL row `entered_agent_view_in_<case>` (candidate APP: input routed to the agent), unless the
+case declares `enters_agent=True` in `cases.case()`. Before, the pre-case guard quietly fixed the pane and the case that switched it passed.
 **Every targeted app job plays `mode_proof` first** (ci_seq `targeted_vars`; not lab jobs), whatever the cases file lists: the round 15 Windows targeted
 run had no `mode_proof` row, so nothing proved the app was in the mode its rows claimed (owner 2026-11-11, raised repeatedly). Self-test: "every targeted
 app job plays mode_proof first".

@@ -249,9 +249,10 @@ LAB_NOT_IN_FIX_TIER = {
 }
 
 
-def case(name, modes=("terminal", "agent"), gui=False, order=50):
+def case(name, modes=("terminal", "agent"), gui=False, order=50, enters_agent=False):
+    """enters_agent: a terminal-mode case that opens agent view ON PURPOSE (run.py then does not fail it for ending in agent view, #2170 follow-up)"""
     def deco(f):
-        CASES.append(dict(name=name, modes=modes, gui=gui, order=order, fn=f))
+        CASES.append(dict(name=name, modes=modes, gui=gui, order=order, fn=f, enters_agent=enters_agent))
         return f
     return deco
 

@@ -711,6 +711,18 @@ def main():
                         exit_fail = True
                         instance, proved = relaunch(ctx, app, prof, be, win, a, run, label, ollama_url, instance, emit, "left_agent_mode_after_" + c["name"])
                         continue
+                if ctx.mode == "terminal" and c["name"] != "mode_proof" and not c.get("enters_agent"):
+                    # owner 2026-11-12 (#2170 follow-up): a TERMINAL case must also END in terminal mode. Round 15 Windows: a terminal case's typed line went
+                    # to an agent conversation ("make a PR") and every later [terminal] case ran in agent view; the pre-case guard fixed the pane but
+                    # nothing blamed the case that switched it. A case that enters agent view on purpose declares enters_agent=True (cases.case()).
+                    seen_t = ctx.mode_now("mode_after_" + c["name"])
+                    if seen_t == "agent":
+                        emit(dict(name="entered_agent_view_in_" + c["name"], mode=label, status="fail", seconds=0,
+                                  shots=[os.path.relpath(p, run) for p in [ctx.shot("entered_agent_after_" + c["name"])] if p],
+                                  detail=["after the TERMINAL case %s the pane shows AGENT view: something the case typed was sent to the agent instead of the "
+                                          "shell (candidate APP finding: input routing), or the case enters agent view on purpose and must say so "
+                                          "(enters_agent=True). The mode guard puts the pane back before the next case." % c["name"]]))
+                        exit_fail = True
                 # audit #12 (#1919): after ANY failing case on every platform (Windows-only before): on POSIX a program left in the foreground that ignores
                 # Ctrl-C (vim, less, cat) silently failed every later case. pane_responsive is an effect probe and platform-neutral.
                 alive = ctx.pane_responsive() if (not sim and (status == "fail" or (win and c["name"] in ("ctrl_c_d", "cadence")))) else 0
