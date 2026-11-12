@@ -87,23 +87,58 @@ def dbg(s):
     return "%r [utf8 %s]" % (s, s.encode("utf-8", "surrogatepass").hex())
 
 
+def intl_file_verdict(got, text):
+    """pure (#2171): (ok, message) for the bytes an effect file holds against the exact UTF-8 of `text` + LF. Any difference fails; a '?' standing where
+    the text has a non-ASCII character (the console code page / ConPTY input encoding replacing it, round 15 Windows PowerShell pane) is named as such."""
+    want = (text + "\n").encode("utf-8")
+    if got == want:
+        return True, "file bytes are exactly the UTF-8 of the text (%d bytes)" % len(want)
+    if got is None:
+        return False, "no effect file (the command did not run or wrote elsewhere); expected %s" % want.hex()
+    msg = "file bytes %s, expected %s (text %s)" % (hexs(got), want.hex(), dbg(text))
+    q = b"?"
+    if q in got and q not in want:
+        msg = "'?' SUBSTITUTION: the shell received '?' in place of non-ASCII text: " + msg
+    return False, msg
+
+
 def check_file(ctx, r, name, text, label, timeout=12):
-    """the effect file holds exactly text + newline in UTF-8"""
+    """the effect file holds exactly text + newline in UTF-8 (byte comparison; '?' substitution and any other difference FAIL)"""
     want = (text + "\n").encode("utf-8")
     ctx.until(lambda: (fbytes(ctx, name) or b"") != b"" and len(fbytes(ctx, name)) >= len(want), timeout)
     time.sleep(0.3)
-    got = fbytes(ctx, name)
-    return r.check(got == want, "%s: file bytes %s, expected %s (text %s)" % (label, hexs(got), want.hex(), dbg(text)))
+    ok, why = intl_file_verdict(fbytes(ctx, name), text)
+    note_verified(r, "file_bytes", ok)
+    return r.check(ok, "%s: %s" % (label, why))
+
+
+def note_verified(r, what, ok):
+    """count what this row verified, by kind, so the row says what it actually checked (metrics intl_checked / intl_unchecked)"""
+    key = "intl_checked_" + what if ok is not None else "intl_unchecked_" + what
+    r.metrics[key] = r.metrics.get(key, 0) + 1
+
+
+def verified_summary(r):
+    """pure (#2171): one line saying what the row actually verified"""
+    m = r.metrics
+    got = m.get("intl_checked_file_bytes", 0)
+    cmd_ok = m.get("intl_checked_received_command_line", 0)
+    cmd_no = m.get("intl_unchecked_received_command_line", 0)
+    return ("verified: %d effect-file byte comparison(s) against the exact UTF-8 of the text; received command line verified %d time(s), NOT verified %d time(s) "
+            "(no rec.log)" % (got, cmd_ok, cmd_no))
 
 
 def check_cmd(ctx, r, mark, want_cmd, label):
-    """the shell's own record of the command line it received (rec.log); rec.log empty => note only"""
+    """the shell's own record of the command line it received (rec.log). rec.log empty (the Windows PowerShell pane has no rc hook): the received command
+    line was NOT verified, and the row says so (#2171): only the effect file's bytes were."""
     have = ctx.await_commands(mark, lambda cs: want_cmd in cs)       # the C line arrives with the prompt, after the effect file (audit #7)
     if not have:
-        r.note("%s: rec.log empty (hook not run), effect file checked only" % label)
+        note_verified(r, "received_command_line", None)
+        r.note("%s: rec.log empty (hook not run): the command line the shell RECEIVED was NOT verified; only the effect file's bytes were" % label)
         return
     # exact string, compared as UTF-8 bytes (a ZWJ or variation selector must not be dropped, escaped or normalised on the way)
-    r.check(want_cmd in have, "%s: shell received %s, expected %s" % (label, " | ".join(dbg(h) for h in have[-3:]), dbg(want_cmd)))
+    ok = r.check(want_cmd in have, "%s: shell received %s, expected %s" % (label, " | ".join(dbg(h) for h in have[-3:]), dbg(want_cmd)))
+    note_verified(r, "received_command_line", ok)
 
 
 # ---------------------------------------------------------------- wide characters, typed
@@ -155,6 +190,7 @@ def c_wide_paste(ctx, r):
         ctx.be.paste(enter=True)
         check_file(ctx, r, f2, text, "paste + instant Enter " + tag)
     ctx.shot("wide_pasted")
+    r.note(verified_summary(r))
 
 
 # ---------------------------------------------------------------- editing across wide characters

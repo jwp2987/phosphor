@@ -992,6 +992,22 @@ def depth_probe_cmd(pane, tok):
     return "sh -c 'echo %s:$PPID >> ~/.appci_pid'" % tok
 
 
+def pid_probe_kinds(pane, observed):
+    """pure (#2170): the probe syntaxes to try, in order, for the shell in front of `pane`. `observed` is the kind the last answering probe was
+    ('powershell' | 'posix' | None = not known yet). Only the Windows PowerShell pane can have a different shell in front (a Git Bash started from it);
+    [] for a pane with no PID probe (cmd.exe, WSL); every other pane has one syntax (`sh -c`, which every POSIX shell and PowerShell-on-Linux runs)."""
+    if depth_probe_cmd(pane, "x") is None:
+        return []
+    if pane != "powershell":
+        return ["default"]
+    return ["posix", "powershell"] if observed == "posix" else ["powershell", "posix"]
+
+
+def pid_probe_line(pane, kind, tok):
+    """pure (#2170): the PID probe line of syntax `kind` (see pid_probe_kinds)"""
+    return posix_probe_cmd(tok) if kind == "posix" else depth_probe_cmd(pane, tok)
+
+
 def posix_probe_cmd(tok):
     """pure: a line only a bash or zsh can run, which records `tok:<its pid>` in ~/.appci_pid. For a Windows PowerShell pane (#2114): there the PID probe
     is PowerShell syntax, which a Git Bash started from the pane cannot run, and the where probe (`echo tok >> ~/.appci_where`) runs in both shells and
@@ -1449,15 +1465,25 @@ class Ctx:
 
     def shell_pid(self, timeout=8):
         """The PID of the shell in front, proven by an effect (a fresh `tok:PID` appended to `~/.appci_pid`), or None when nothing answered or the
-        pane has no PID probe (cmd.exe). `where_now` cannot tell a LOCAL nested shell from the pane's root shell (same HOME); a PID can."""
-        probe = "p" + self.ptok(8)
-        cmd = depth_probe_cmd(getattr(self, "pane", None), probe)
-        if cmd is None:
+        pane has no PID probe (cmd.exe). `where_now` cannot tell a LOCAL nested shell from the pane's root shell (same HOME); a PID can.
+        #2170: the probe is typed in the syntax of the shell OBSERVED in front (self.shell_kind, set by the last probe that answered), not always the
+        pane's own: round 15 typed `Add-Content ...` into a Git Bash started from the PowerShell pane ("bash: Add-Content: command not found"). In a
+        PowerShell pane with no answer, the other syntax is tried once before giving up, and the one that answers is remembered."""
+        pane = getattr(self, "pane", None)
+        kinds = pid_probe_kinds(pane, getattr(self, "shell_kind", None))
+        if not kinds:
             return None
-        # only what THIS probe appended counts (probe() snapshots the file size first): a `pT3_xxx:4711` an earlier run left in the real home's
-        # ~/.appci_pid once became the "root pid" of a later run, and every leave_nested after it typed `exit` at the root shell (audit #1)
-        _where, toks = self.probe(cmd, probe, ".appci_pid", timeout=timeout)
-        return parse_depth_probe(toks, probe)
+        for kind in kinds:
+            probe = "p" + self.ptok(8)
+            # only what THIS probe appended counts (probe() snapshots the file size first): a `pT3_xxx:4711` an earlier run left in the real home's
+            # ~/.appci_pid once became the "root pid" of a later run, and every later leave_nested after it typed `exit` at the root shell (audit #1)
+            _where, toks = self.probe(pid_probe_line(pane, kind, probe), probe, ".appci_pid", timeout=timeout)
+            pid = parse_depth_probe(toks, probe)
+            if pid is not None:
+                if pane == "powershell":
+                    self.shell_kind = kind
+                return pid
+        return None
 
     def posix_shell_in_front(self, timeout=8):
         """#2114, Windows PowerShell pane only: True when a line that only bash/zsh can run (posix_probe_cmd) had its effect, i.e. a POSIX shell
@@ -1488,6 +1514,7 @@ class Ctx:
                     before = self.prof.prompts()
                     t_exit = time.time()
                     self.be.type("exit", 12, enter=True)
+                    self.shell_kind = None          # #2170: whatever is in front now is not the shell that was probed
                     self.wait_prompt_after_exit(before, t_exit, 10)
                     continue
                 if pid is None:
@@ -1526,6 +1553,7 @@ class Ctx:
             before = self.prof.prompts()         # after the second probe's own prompt (probe()): the next prompt is the `exit`'s
             t_exit = time.time()
             self.be.type("exit", 12, enter=True)
+            self.shell_kind = None          # #2170: whatever is in front now is not the shell that was probed
             self.wait_prompt_after_exit(before, t_exit, 10)
         return "nested"
 
