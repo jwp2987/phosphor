@@ -1276,6 +1276,9 @@ fn run_internal(mut launch_mode: LaunchMode) -> Result<()> {
     );
 
     app_builder.run(move |ctx| {
+        // #2173: a log file opened after the panes exist, or replaced mid-session, still gets one `hop=view_mode` line per pane.
+        warp_logging::set_on_log_reopened(crate::ai::blocklist::agent_view::relog_view_modes);
+        crate::ai::blocklist::agent_view::relog_view_modes();
         // Rotate the log files in the background.
         ctx.background_executor()
             .spawn(warp_logging::rotate_log_files())

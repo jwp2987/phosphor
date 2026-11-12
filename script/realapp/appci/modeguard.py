@@ -13,32 +13,54 @@ def wrong_mode_text(seen, want):
     return "wrong mode: ran in %s, case is %s" % (seen, want)
 
 
-def screen_mode(ctx, tag):
-    """'agent' | 'terminal' | None from an OCR read of the screen; None when the backend has no engine (the log alone then decides)"""
+def unproven_text(want, notes):
+    return "mode unproven: the pane's view mode before the case could not be established (case is %s). %s" % (want, "; ".join(notes) or "no log line, no screen read")
+
+
+def screen_read(ctx, tag):
+    """-> (mode, why). mode is 'agent' | 'terminal' | None from an OCR read of the screen through ctx.ocr(): the one OCR path of every backend (Apple Vision on
+    macOS, Windows.Media.Ocr on Windows, tesseract elsewhere). why says what a None means: 'no OCR engine' (ctx.ocr gave None), 'no marker' (text was read
+    and shows neither mode) or 'ocr failed: ...'. The markers are cases.ocr_agent_markers (the slash-less terminal hint is not an agent header)."""
     try:
         import cases
         txt = ctx.ocr(tag)
-        if txt is None:
-            return None
+    except Exception as e:
+        return None, "ocr failed: %r" % (e,)
+    if txt is None:
+        return None, "no OCR engine"
+    try:
         low = " ".join(txt.lower().split())
         is_agent, hint = cases.ocr_agent_markers(low)
         if is_agent:
-            return "agent"
-        return "terminal" if hint or "new terminal session" in low else None
-    except Exception:
-        return None
+            return "agent", ""
+        if hint or "new terminal session" in low:
+            return "terminal", ""
+        return None, "no marker"
+    except Exception as e:
+        return None, "ocr failed: %r" % (e,)
+
+
+def screen_mode(ctx, tag):
+    """'agent' | 'terminal' | None from an OCR read of the screen; None when the backend has no engine or the text shows no marker"""
+    return screen_read(ctx, tag)[0]
 
 
 def observe(ctx, tag):
-    """-> (mode, source note). mode is 'agent' | 'terminal' | None (nothing could say). The primary source is ctx.mode_now (app log first, OCR when the
-    log is silent). With the log deciding, the screen is read as well: a disagreement is NOT hidden, it is returned as the note."""
+    """-> (mode, source note). mode is 'agent' | 'terminal' | None (nothing could say). The app log (ctx.mode_now) is read first. With the log deciding, the
+    screen is read as well: a disagreement is NOT hidden, it is returned as the note. With the log silent (a relaunched app whose new log has no
+    hop=view_mode line yet, #2173) the screen decides through the same ctx.ocr() every backend uses, with cases.ocr_agent_markers (which also reads
+    the markers mode_now's own text test misses); the note says it was the screen, or why even that could not say."""
     logged = ctx.mode_now(tag)
     note = None
     if logged in MODES:
         scr = screen_mode(ctx, tag + "_screen")
         if scr in MODES and scr != logged:
             note = "the app log says %s but the screen reads as %s (OCR); the log decides" % (logged, scr)
-    return logged, note
+        return logged, note
+    scr, why = screen_read(ctx, tag + "_screen")
+    if scr in MODES:
+        return scr, "no hop=view_mode line in the app log: the mode is read from the screen (OCR): %s" % scr
+    return None, "no hop=view_mode line in the app log and the screen read gave no mode (%s)" % why
 
 
 def escape_to_terminal(ctx):
@@ -66,7 +88,9 @@ def ensure(ctx, want, name, relaunch=None, exempt=False):
     """Establish the pane's mode before case `name`, recovering when it differs.
     -> dict(ok, ran_mode, fail (text or None), notes [str], recovered [step names]).
     exempt (mode_proof, which asserts the mode itself and sends its own Escape): observed and recorded, never recovered or failed.
-    A mode nothing can read (no log line, no OCR engine) is recorded as 'unknown' with a note: it is not a mismatch, and it is not a pass of the mode."""
+    A mode nothing can read (no log line, and the OCR read of the screen shows no mode) is ran_mode 'unknown' and the row is a FAIL "mode unproven" (#2173:
+    the app now logs hop=view_mode for every pane whenever its log is opened or replaced, and the screen is read with the same OCR as every case, so
+    an unknown mode is a harness or app fault, never a pass). exempt rows (mode_proof) record it instead."""
     notes, steps = [], []
     seen, note = observe(ctx, "mode_before_" + name)
     if note:
@@ -74,8 +98,7 @@ def ensure(ctx, want, name, relaunch=None, exempt=False):
     if exempt:
         return dict(ok=True, ran_mode=seen or "unknown", fail=None, notes=notes, recovered=steps)
     if seen is None:
-        notes.append("mode before the case could not be established (no hop=view_mode line in the app log and no OCR engine): ran_mode unknown")
-        return dict(ok=True, ran_mode="unknown", fail=None, notes=notes, recovered=steps)
+        return dict(ok=False, ran_mode="unknown", fail=unproven_text(want, notes), notes=notes, recovered=steps)
     first = seen
     for step in plan(want):
         if seen == want:

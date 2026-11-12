@@ -136,3 +136,24 @@ fn zero_max_bytes_disables_rotation_entirely() {
     assert!(!tmp.path().join("warp.log.in_session.0").exists());
     assert_eq!(read(&tmp.path().join("warp.log")).len(), 500);
 }
+
+static REOPEN_HOOK_CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+#[test]
+fn rotation_runs_the_log_reopened_hook() {
+    // #2173: a rotated-in fresh file has none of the state lines the harness reads; the hook is how the app writes them again.
+    assert!(set_on_log_reopened(|| {
+        REOPEN_HOOK_CALLS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }));
+    let tmp = tempfile::tempdir().unwrap();
+    let mut w = RotatingFileWriter::open(tmp.path(), "warp.log", 8, 3).unwrap();
+    w.write_all(b"aaaaaaaaa\n").unwrap();
+    w.write_all(b"bbbbbbbbb\n").unwrap(); // rotates
+    for _ in 0..200 {
+        if REOPEN_HOOK_CALLS.load(std::sync::atomic::Ordering::SeqCst) >= 1 {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(REOPEN_HOOK_CALLS.load(std::sync::atomic::Ordering::SeqCst) >= 1);
+}
