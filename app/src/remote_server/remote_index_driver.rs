@@ -9,10 +9,14 @@
 //!   `http_client::Client::for_purpose(AI_ENDPOINT)`) with the user's own BYOP `/embeddings`
 //!   provider. The key is read from the keychain on this machine and goes to the provider
 //!   and nowhere else: not to the helper, not to the shell, not into a request to the host.
-//! * [`RemoteIndexDriver`] triggers syncs on EVENTS only, never a timer: navigating into a git
+//! * [`RemoteIndexDriver`] triggers syncs on EVENTS only: navigating into a git
 //!   repository, the app's own write to the host, a prompt that follows a HEAD-changing git
 //!   command, the user asking, and the setting being turned on. One sync per repository runs at
-//!   a time; events that arrive meanwhile queue exactly one more.
+//!   a time; events that arrive meanwhile queue exactly one more. The two PROMPT events
+//!   (navigating, a HEAD-changing command) do not start the scan at once (#2156): a scan is many
+//!   exec channels on a host without the helper, and a prompt may cost at most one. They start
+//!   it once the repository has been quiet for [`PROMPT_SYNC_DELAY`], a later prompt event
+//!   replacing the pending start, so any number of prompts in a row cost one scan, after them.
 //!
 //! The feature is off unless the user turned it on (`should_use_codebase_indexing`: the
 //! `FullSourceCodeEmbedding` flag AND the codebase-context setting): with it off nothing here
@@ -20,6 +24,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use ::ai::index::full_source_code_embedding::EmbeddingConfig;
 use ::ai::index::full_source_code_embedding::local_store_client::EmbeddingProvider;
@@ -31,6 +36,7 @@ use remote_server::backend::{Family, RoutedBackend};
 use remote_server::manager::{RemoteServerManager, RemoteServerManagerEvent};
 use remote_server::shellcmd::predicates::command_may_change_head;
 use warp_core::{HostId, SessionId};
+use warpui::r#async::SpawnedFutureHandle;
 use warpui::{Entity, ModelContext, SingletonEntity};
 
 use crate::ai::agent_providers::embeddings::{HttpEmbeddingProvider, resolve_embedding_endpoints};
@@ -120,6 +126,30 @@ pub enum SyncReason {
     SettingEnabled,
 }
 
+/// How long a repository must be quiet (no further navigation or HEAD-changing prompt) before a
+/// sync that a prompt asked for starts. It keeps the scan's exec channels out of the prompt that
+/// caused them (#2156: one prompt, at most one side exec on a host with no helper).
+pub const PROMPT_SYNC_DELAY: Duration = Duration::from_secs(15);
+
+/// `PHOSPHOR_REMOTE_INDEX_DEFER=0` (read once) starts prompt-driven syncs at once again.
+fn defer_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| {
+        std::env::var("PHOSPHOR_REMOTE_INDEX_DEFER").map_or(true, |v| v.trim() != "0")
+    })
+}
+
+/// The delay before a sync for `reason` starts: only the prompt-driven reasons wait.
+pub fn start_delay(reason: SyncReason) -> Option<Duration> {
+    if !defer_enabled() {
+        return None;
+    }
+    match reason {
+        SyncReason::Navigated | SyncReason::HeadChanged => Some(PROMPT_SYNC_DELAY),
+        SyncReason::OwnWrite | SyncReason::UserAction | SyncReason::SettingEnabled => None,
+    }
+}
+
 /// What the driver knows about one repository's index.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RemoteIndexStatus {
@@ -146,6 +176,9 @@ struct RepoState {
     dirty: bool,
     /// The storage key of the last completed sync, to keep it across provider-list edits.
     storage_key: Option<String>,
+    /// A prompt-driven sync waiting for the repository to be quiet; replaced by a later one,
+    /// dropped when a sync starts.
+    pending: Option<SpawnedFutureHandle>,
 }
 
 type RepoKey = (HostId, String);
@@ -255,8 +288,44 @@ impl RemoteIndexDriver {
             return;
         }
         if let Some(repo) = self.active.get(&session_id).cloned() {
-            self.request_sync(session_id, repo, SyncReason::HeadChanged, ctx);
+            self.request_sync_soon(session_id, repo, SyncReason::HeadChanged, ctx);
         }
+    }
+
+    /// [`Self::request_sync`] after the repository has been quiet for the reason's delay (see
+    /// [`start_delay`]); a newer request for the same repository replaces the pending one.
+    fn request_sync_soon(
+        &mut self,
+        session_id: SessionId,
+        repo: String,
+        reason: SyncReason,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        let Some(delay) = start_delay(reason) else {
+            self.request_sync(session_id, repo, reason, ctx);
+            return;
+        };
+        let host = RemoteServerManager::as_ref(ctx).host_for_session_or_shell_mode(session_id);
+        let key: RepoKey = (host, repo.clone());
+        let state = self.repos.entry(key.clone()).or_default();
+        if let Some(previous) = state.pending.take() {
+            previous.abort();
+        }
+        log::info!(
+            "hop=remote_index_sync deferred reason={reason:?} delay_ms={}",
+            delay.as_millis()
+        );
+        state.pending = Some(ctx.spawn(
+            async move {
+                warpui::r#async::Timer::after(delay).await;
+            },
+            move |me, _, ctx| {
+                if let Some(state) = me.repos.get_mut(&key) {
+                    state.pending = None;
+                }
+                me.request_sync(session_id, repo, reason, ctx);
+            },
+        ));
     }
 
     fn on_manager_event(&mut self, event: &RemoteServerManagerEvent, ctx: &mut ModelContext<Self>) {
@@ -269,7 +338,7 @@ impl RemoteIndexDriver {
             } => {
                 self.active.insert(*session_id, indexed_path.clone());
                 if *is_git && should_auto_index_codebase(CodebaseAutoIndexingSurface::Remote, ctx) {
-                    self.request_sync(
+                    self.request_sync_soon(
                         *session_id,
                         indexed_path.clone(),
                         SyncReason::Navigated,
@@ -388,6 +457,10 @@ impl RemoteIndexDriver {
         let key: RepoKey = (host, repo.clone());
         let state = self.repos.entry(key.clone()).or_default();
         state.session_id = Some(session_id);
+        // A sync starting (or queued) now covers what a pending prompt-driven one would.
+        if let Some(pending) = state.pending.take() {
+            pending.abort();
+        }
         if state.running {
             state.dirty = true;
             return;

@@ -93,3 +93,22 @@ fn an_embedding_with_no_endpoint_fails_before_any_request() {
     let result = futures::executor::block_on(embedder.embed(vec!["x".to_string()]));
     assert!(result.is_err());
 }
+
+#[test]
+fn only_prompt_driven_syncs_wait_and_they_wait_past_a_lab_window() {
+    // A prompt must not carry the scan's exec channels (#2156): the two prompt events wait.
+    assert_eq!(start_delay(SyncReason::Navigated), Some(PROMPT_SYNC_DELAY));
+    assert_eq!(
+        start_delay(SyncReason::HeadChanged),
+        Some(PROMPT_SYNC_DELAY)
+    );
+    // The user's own actions and the app's own writes start at once.
+    for reason in [
+        SyncReason::OwnWrite,
+        SyncReason::UserAction,
+        SyncReason::SettingEnabled,
+    ] {
+        assert_eq!(start_delay(reason), None, "{reason:?}");
+    }
+    assert!(PROMPT_SYNC_DELAY >= Duration::from_secs(10));
+}

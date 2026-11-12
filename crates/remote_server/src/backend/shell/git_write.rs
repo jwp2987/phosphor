@@ -26,6 +26,8 @@ type Probe = Box<dyn Fn(PathBuf) -> BoxFuture<'static, anyhow::Result<bool>> + S
 
 impl ShellBackend {
     fn git_write_parts(&self) -> Result<(ShellGitRunner, Probe), BackendError> {
+        // A write changes what a batched read (#2156) would have answered.
+        self.git_batch.invalidate();
         let executor = self.executor.as_ref().ok_or_else(|| {
             BackendError::Unavailable(
                 "git writes need an out-of-band channel for remote commands, and this session has none"

@@ -13,6 +13,13 @@ use super::types::*;
 /// Maximum number of characters of diff content sent to AI for commit message / PR text.
 pub const MAX_DIFF_CHARS_FOR_AI: usize = 16_000;
 
+/// The names [`detect_main_branch`] tries, in order, when `origin/HEAD` is not set.
+pub const MAIN_BRANCH_CANDIDATES: [&str; 5] =
+    ["origin/main", "origin/master", "main", "master", "develop"];
+
+/// The `--format` argument of the unpushed-commits `git log` (a tab between hash and subject).
+pub const UNPUSHED_LOG_FORMAT: &str = "--format=COMMIT:%H\t%s";
+
 /// Fetches the current git branch. In detached HEAD state this is the literal string "HEAD".
 pub async fn detect_current_branch(runner: &dyn GitRunner, repo: &Path) -> Result<String> {
     log::debug!("[GIT OPERATION] git.rs detect_current_branch git rev-parse --abbrev-ref HEAD");
@@ -54,7 +61,7 @@ pub async fn detect_main_branch(runner: &dyn GitRunner, repo: &Path) -> Result<S
     }
 
     // Fallback: try common main branch names in order of preference.
-    for candidate in ["origin/main", "origin/master", "main", "master", "develop"] {
+    for candidate in MAIN_BRANCH_CANDIDATES {
         log::debug!(
             "[GIT OPERATION] git.rs detect_main_branch git rev-parse --verify {candidate}^{{}}"
         );
@@ -162,7 +169,7 @@ pub async fn get_unpushed_commits(
         git_text(
             runner,
             repo,
-            &["log", &range, "--format=COMMIT:%H\t%s", "--numstat"],
+            &["log", &range, UNPUSHED_LOG_FORMAT, "--numstat"],
         )
         .await?
     } else {
@@ -181,7 +188,7 @@ pub async fn get_unpushed_commits(
         git_text(
             runner,
             repo,
-            &["log", &range, "--format=COMMIT:%H\t%s", "--numstat"],
+            &["log", &range, UNPUSHED_LOG_FORMAT, "--numstat"],
         )
         .await
         .inspect_err(|e| log::warn!("Fallback unpushed-commits log failed: {e}"))

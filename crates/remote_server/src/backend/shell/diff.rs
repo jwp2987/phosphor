@@ -20,7 +20,9 @@ impl ShellBackend {
         request: GetDiffState,
     ) -> Result<GetDiffStateResponse, BackendError> {
         log::debug!("shell arm serving {:?}", Family::DiffState);
-        let runner = self.git_runner("get_diff_state")?;
+        let runner = self
+            .batched_git_runner("get_diff_state", &request.repo_path)
+            .await?;
         let repo = Path::new(&request.repo_path);
         // Is it a directory at all? (`cd` fails on the host when it is not.)
         let probe = runner

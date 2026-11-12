@@ -8,6 +8,7 @@
 mod agent_context;
 mod buffer;
 mod diff;
+mod git_batch;
 mod git_read;
 mod git_write;
 mod host_store;
@@ -22,6 +23,7 @@ use std::sync::{Arc, Mutex};
 
 pub use agent_context::AgentContextCache;
 pub use buffer::ShellBuffers;
+pub use git_batch::GitBatchStore;
 pub use index::ShellIndex;
 pub use status::PrLookup;
 pub use tree::{ShellPush, TreeCache};
@@ -34,6 +36,7 @@ use crate::proto::{
 };
 use crate::shellcmd::base64::{self, Base64Tool, DecodeTool};
 use crate::shellcmd::{Frame, FrameError, Script, ShellKind, StderrMode};
+use git_batch::BatchedGitRunner;
 
 #[derive(Clone, Default)]
 pub struct ShellBackend {
@@ -62,6 +65,11 @@ pub struct ShellBackend {
     /// The login-shell wrapping that worked after the default one did not (an old nushell
     /// without raw strings), so later calls skip the failed attempt.
     kind_override: Arc<Mutex<Option<ShellKind>>>,
+    /// The batched read-only git answers of this host's refreshes (#2156), shared by every
+    /// backend the router builds for the host so the producers of one precmd find each other.
+    git_batch: Arc<GitBatchStore>,
+    /// `PHOSPHOR_SHELL_BATCH_GIT=0` (or a test): every git call is its own exec again.
+    batch_git_off: bool,
 }
 
 impl std::fmt::Debug for ShellBackend {
@@ -86,7 +94,22 @@ impl ShellBackend {
             agent_cache: Arc::default(),
             buffers: Arc::default(),
             kind_override: Arc::default(),
+            git_batch: Arc::default(),
+            batch_git_off: !git_batch::batching_enabled(),
         }
+    }
+
+    /// Shares `store` (the host's batched git answers) with this backend.
+    pub fn with_git_batch(mut self, store: Arc<GitBatchStore>) -> Self {
+        self.git_batch = store;
+        self
+    }
+
+    /// Turns the one-exec-per-refresh git batching on or off for this backend, overriding the
+    /// `PHOSPHOR_SHELL_BATCH_GIT` kill switch (tests).
+    pub fn with_git_batching(mut self, on: bool) -> Self {
+        self.batch_git_off = !on;
+        self
     }
 
     /// Shares `cache` (the host's agent-context state) with this backend.
@@ -310,6 +333,36 @@ impl ShellBackend {
     /// A [`ShellGitRunner`] over this session's channel, or `Unavailable` naming `what`.
     pub(super) fn git_runner(&self, what: &'static str) -> Result<ShellGitRunner, BackendError> {
         Ok(ShellGitRunner::new(self.executor_for(what)?))
+    }
+
+    /// A git runner for one read-only refresh of `repo_path` (status chip, PR and repository
+    /// chips, diff state): the answers one batched script gives for the whole refresh (shared
+    /// with the other producers of the same precmd), and one exec for any call it does not
+    /// cover. Plain per-call exec on PowerShell hosts and with the kill switch off.
+    pub(super) async fn batched_git_runner(
+        &self,
+        what: &'static str,
+        repo_path: &str,
+    ) -> Result<BatchedGitRunner, BackendError> {
+        let inner = self.git_runner(what)?;
+        let data = if self.batch_git_off || self.shell_kind().is_powershell() {
+            None
+        } else {
+            self.git_batch.get(self, &inner, repo_path).await
+        };
+        Ok(BatchedGitRunner::new(inner, repo_path, data))
+    }
+
+    /// The batched answers of this refresh of `path`, whose tree sections (`canon`, `git`, `files`,
+    /// `ignoredpaths`, see [`git_batch::Prefetched::tree`]) the file tree reads instead of running
+    /// its own script. `None`: no batch (kill switch, PowerShell host, the script failed), so the
+    /// tree runs its own commands.
+    pub(super) async fn batched_tree(&self, path: &str) -> Option<Arc<git_batch::Prefetched>> {
+        if self.batch_git_off || self.shell_kind().is_powershell() {
+            return None;
+        }
+        let inner = self.git_runner("file tree").ok()?;
+        self.git_batch.get(self, &inner, path).await
     }
 
     /// The out-of-band executor, or `Unavailable` naming `what`.

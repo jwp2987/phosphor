@@ -34,7 +34,7 @@ use crate::shellcmd::tree::{
     parse_path_list, parse_stat_records, repo_files_command, repo_ignored_command,
     snapshot_entries, tree_from_paths,
 };
-use crate::shellcmd::{Script, StderrMode};
+use crate::shellcmd::{Frame, ParsedSection, Script, StderrMode};
 
 use super::super::BackendError;
 
@@ -136,27 +136,56 @@ fn children_from_frame(
 
 /// A repository's snapshot listings. A repository too big for one call is served lazily from
 /// the root only.
+///
+/// `listed` holds the lists already read for `root` (the navigation's batch); otherwise the
+/// refresh's batched script is asked (#2156). A list that is missing from what was read, or was
+/// cut by the batch's smaller cap, is read here by its own section, both missing ones in ONE exec.
 async fn git_snapshot(
     shell: &ShellBackend,
     root: &str,
+    listed: Option<&Frame>,
 ) -> Result<BTreeMap<String, Vec<TreeChild>>, BackendError> {
     let kind = shell.shell_kind();
-    let script = new_script()?
-        .section("files", repo_files_command(kind, root), StderrMode::Discard)?
-        .section(
-            "ignoredpaths",
-            repo_ignored_command(kind, root),
-            StderrMode::Discard,
-        )?;
-    let frame = shell.run_script(&script).await?;
-    let files = frame.section("files").filter(|s| s.success());
-    let too_big = files.is_some_and(|s| s.output.len() >= MAX_REPO_LIST_BYTES);
+    let fetched = if listed.is_none() {
+        shell.batched_tree(root).await
+    } else {
+        None
+    };
+    let listed = listed.or_else(|| fetched.as_ref().and_then(|b| b.tree()));
+    let have =
+        |name: &str| -> Option<ParsedSection> { listed.and_then(|f| f.section(name)).cloned() };
+    let mut files = have("files");
+    let mut ignored = have("ignoredpaths");
+    if files.is_none() || ignored.is_none() {
+        let mut script = new_script()?;
+        if files.is_none() {
+            script =
+                script.section("files", repo_files_command(kind, root), StderrMode::Discard)?;
+        }
+        if ignored.is_none() {
+            script = script.section(
+                "ignoredpaths",
+                repo_ignored_command(kind, root),
+                StderrMode::Discard,
+            )?;
+        }
+        let frame = shell.run_script(&script).await?;
+        if files.is_none() {
+            files = frame.section("files").cloned();
+        }
+        if ignored.is_none() {
+            ignored = frame.section("ignoredpaths").cloned();
+        }
+    }
+    let files = files.filter(|s| s.success());
+    let too_big = files
+        .as_ref()
+        .is_some_and(|s| s.output.len() >= MAX_REPO_LIST_BYTES);
     let Some(files) = files.filter(|_| !too_big) else {
         return lazy_root(shell, root, true).await;
     };
     let files = parse_path_list(&files.output, false);
-    let mut ignored = frame
-        .section("ignoredpaths")
+    let mut ignored = ignored
         .filter(|s| s.success())
         .map(|s| parse_path_list(&s.output, s.output.len() >= MAX_IGNORED_LIST_BYTES))
         .unwrap_or_default();
@@ -187,22 +216,38 @@ pub(super) async fn navigate_to_directory(
     path: String,
 ) -> Result<NavigatedToDirectoryResponse, BackendError> {
     let kind = shell.shell_kind();
-    let script = new_script()?
-        .section(
-            "canon",
-            canonical_dir_command(kind, &path),
-            StderrMode::Discard,
-        )?
-        .section("git", git_root_command(kind, &path), StderrMode::Discard)?;
-    let frame = shell.run_script(&script).await?;
-    let target = parse_nav_target(&frame)
+    // The probe and, in a repository, its lists come from the refresh's batched script when there
+    // is one (#2156): a `cd` into a repository is then one exec for all the side work.
+    let batch = shell.batched_tree(&path).await;
+    let pre = batch
+        .as_ref()
+        .and_then(|b| b.tree())
+        .filter(|f| f.section("canon").is_some() && f.section("git").is_some());
+    let own: Frame;
+    let frame: &Frame = match pre {
+        Some(frame) => frame,
+        None => {
+            let script = new_script()?
+                .section(
+                    "canon",
+                    canonical_dir_command(kind, &path),
+                    StderrMode::Discard,
+                )?
+                .section("git", git_root_command(kind, &path), StderrMode::Discard)?;
+            own = shell.run_script(&script).await?;
+            &own
+        }
+    };
+    let target = parse_nav_target(frame)
         .map_err(|m| server_error(ErrorCode::InvalidRequest, format!("Invalid path: {m}")))?;
     let (root, is_git) = match target.git_root {
         Some(git) if is_within(&git, &target.dir) => (git, true),
-        _ => (target.dir, false),
+        _ => (target.dir.clone(), false),
     };
     let dirs = if is_git {
-        git_snapshot(shell, &root).await?
+        // The batch listed `path` itself: its lists are the root's only when `path` is the root.
+        let listed = pre.filter(|_| root == target.dir);
+        git_snapshot(shell, &root, listed).await?
     } else {
         lazy_root(shell, &root, false).await?
     };
@@ -383,7 +428,7 @@ pub(super) async fn refresh_repo_tree(
         (cached.is_git, cached.dirs.keys().cloned().collect())
     };
     let fresh = if is_git {
-        git_snapshot(shell, repo_path).await?
+        git_snapshot(shell, repo_path, None).await?
     } else {
         let kind = shell.shell_kind();
         let dirs: Vec<&String> = known.iter().take(MAX_REFRESH_DIRS).collect();

@@ -1,7 +1,13 @@
 # #2156: batching the no-helper side calls to at most one exec per refresh
 
-Status: design only. Step 1 (a debug line per exec) is implemented; nothing below is built or
-measured (no cargo on the authoring machine). Related: #1800 (laggy no-helper typing), #1240 (the
+Status (round 25): step 1 (a debug line per exec) and levers A, B and C are implemented in
+`backend/shell/git_batch.rs` (tree sections, behind `PHOSPHOR_SHELL_BATCH_GIT=0`) and in
+`app/src/remote_server/remote_index_driver.rs` (the index debounce, behind
+`PHOSPHOR_REMOTE_INDEX_DEFER=0`), with unit tests; written but NOT compiled or run (no cargo on
+the authoring machine), and not measured in a lab. B as built differs from the section below: the
+index does not share the tree's `ls-files`, it is moved out of the prompt, see "What was built". The r24a lab artifacts had expired, so the
+per-producer split was not re-measured; the order of work followed the inventory estimates below
+(git_status 5-12 and diff_state 6-14 execs, the largest). Related: #1800 (laggy no-helper typing), #1240 (the
 unbounded mux clients; closed, its in-flight limit stays).
 
 ## The problem
@@ -167,3 +173,78 @@ helper's. That needs the box to compile and the lab to run. Order of work once a
 lab run with the Step 1 lines to replace the estimates above; (2) slice 1 = A for the git status
 family only (`compute_git_status_metadata` is the smallest consumer); (3) extend A to PR/repo and
 diff_state; (4) B; (5) C.
+
+## What was built (round 25, #2156)
+
+Levers A and C, in `backend/shell/git_batch.rs`; PowerShell hosts and the kill switch keep the
+per-call path.
+
+* **A. `BatchedGitRunner`** (the design's `PrefetchGitRunner`). `ShellBackend::batched_git_runner`
+  gives `git_status_shell`, `pr_info_shell`, `repository_info_shell` and `get_diff_state_shell` a
+  runner whose answers come from ONE framed `Script`. Sections: `gitdir`, `symref`,
+  `verify0..4`, `showcur`, `abbrev`, `shorthead`, `head`, `statuschip`, `statusfull`, `numstatz`,
+  `numstathead`, `upstream`, `counts`, `insidewt`, `symhead`, plus the dependent ones `unpushed`,
+  `forkunique`, `forkparent`, `forklog` (the unpushed-commits log against the upstream, or the fork
+  point chain when there is none) and `ghpath`. The five main-branch candidates are not
+  short-circuited in the script: they are cheap local `rev-parse`s and each section keeps its own
+  real answer. Every section reuses `ShellGitRunner::git_command_prefix` (the same `env -u ... git
+  -c ...`), so the environment and base arguments are the per-call ones. Lookup is by exact
+  `(repo, args)`; a call with other arguments, any stdin, or another directory is one ordinary exec
+  (per-file diffs, `merge-base`, a branch-mode `diff`). The argument lists are constants shared with
+  the algorithms (`MAIN_BRANCH_CANDIDATES`, `UNPUSHED_LOG_FORMAT` in `shellcmd/git/ops.rs`,
+  `STATUS_*_ARGS`).
+* **Dependent sections print the value they used.** `unpushed`, `forkunique`, `forkparent` and
+  `forklog` print the upstream range, the current branch, the fork target or the log range as their
+  first line; `assemble` files the rest under the key the Rust algorithm will ask for only if its
+  own computation of that value is equal. A mismatch is a miss (one exec), never a wrong answer.
+* **`gh`.** Not run in the batch. The script asks only `command -v gh`; when it is absent
+  `run_gh` returns exit 127 "not found" with no exec (what the host's `sh` says), so a host with
+  no `gh` costs no extra channel. With `gh` present the lookup stays its own exec, and runs only
+  when `pr_info_shell` decides a lookup is due.
+* **C. Generations.** `GitBatchStore` (one per host, shared by every backend the router builds)
+  keeps one generation per repo path: a `futures::Shared` future. A request for a repo whose
+  generation started less than `JOIN_WINDOW` (100 ms) earlier joins it, otherwise it starts its own;
+  the answer is never reused beyond that, and any write (`git_write_parts`, `write_file_outcome`,
+  `delete_file_expecting`) clears all generations. No timer: it compares instants. Joiners therefore
+  get answers read up to the window before their request; a second prompt inside 100 ms of the
+  first prompt's refresh is the only way to see an older answer, and the next refresh event
+  corrects it.
+* **Per-section failure.** Same contract as `agent_context.rs`: a section is a miss only for its own
+  calls when it is absent from the frame; a section that ran and failed holds the real failing
+  answer (no upstream, no HEAD). A script that fails as a whole (exec error, truncated output, no
+  frame) means no prefetch for that refresh and every call takes the per-call path.
+
+### B as built: the tree in the batch, the index out of the prompt
+
+* **Tree.** `build_script` is followed by `add_tree_sections`: `canon` and `git` (the navigation
+  probe, the same commands `navigate_to_directory` ran) and `files` / `ignoredpaths` (the two
+  `ls-files` lists) are sections of the same framed script. `navigate_to_directory` and
+  `refresh_repo_tree` ask `ShellBackend::batched_tree(path)` (the generation of that path, joined
+  like any other producer) and use its sections instead of running their own script. A `cd` into a
+  repository root, with the status chip, PR check, diff state and tree refresh of the same prompt,
+  is one exec. When the navigated directory is below the git root, the lists in the batch are for
+  the wrong directory and are not used: the snapshot of the root runs from the root's own
+  generation.
+* **Per-section cap and fallback.** The lists are cut at 1 MiB (`files`) and 256 KiB (`ignored`) in
+  the batch, far below the standalone 4 MiB / 512 KiB, so a big repository cannot push the git
+  answers over the exec output cap. A list that reaches its cap (checked after the framing newline
+  is removed) is dropped from the batch's answer; `git_snapshot` then runs just the missing
+  list(s) in ONE own exec with the standalone cap, as before. A section that is absent from the
+  frame is handled the same way; a script that fails as a whole means no tree sections and the old
+  commands. Kill switch: `PHOSPHOR_SHELL_BATCH_GIT=0` (the tree is its own two execs again).
+* **Cost.** Every batch now also runs `git ls-files` (twice, bounded by `head -c`) for the repo,
+  also for a status-only refresh that nobody asks a tree for. The tree refresh ran it every prompt
+  anyway; a host with no tree refresh pays the (capped) listing.
+* **Index.** The scan is content-dependent (list and hash page by page, read the new files, then
+  chunk, embed, store) and is many exec channels on a host without the helper, so it cannot be
+  folded into a prompt's one exec, and it does not share the tree's list (a different, hashed
+  listing). Instead the two PROMPT events that start it (`SyncReason::Navigated`,
+  `SyncReason::HeadChanged`) wait for `PROMPT_SYNC_DELAY` (15 s) of quiet per repository; a later
+  prompt event replaces the pending start (any number of prompts in a row cost ONE scan, after the
+  last), and a sync that starts for another reason (user action, own write, setting turned on)
+  drops the pending one. The 15 s is longer than the lab's exec-channel window (`c_chips` opens it
+  before the `cd` and closes it once the chip is seen, a few seconds), so the scan's channels are
+  outside any prompt's window. The scan itself is unchanged and still bounded as before (pages of
+  files, reads of 32 files per exec, halved on the output cap); it is background work, but it is
+  NOT one exec. If the owner wants the scan itself capped to one exec a prompt this is not that.
+* **The settle window of C** (waiting before the first script) is still not used.
