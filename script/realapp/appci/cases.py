@@ -993,7 +993,7 @@ def depth_probe_cmd(pane, tok):
     return "sh -c 'echo %s:$PPID >> ~/.appci_pid'" % tok
 
 
-def pid_probe_kinds(pane, observed):
+def pid_probe_kinds(pane, observed, nested_posix=False):
     """pure (#2170): the probe syntaxes to try, in order, for the shell in front of `pane`. `observed` is the kind the last answering probe was
     ('powershell' | 'posix' | None = not known yet). Only the Windows PowerShell pane can have a different shell in front (a Git Bash started from it);
     [] for a pane with no PID probe (cmd.exe, WSL); every other pane has one syntax (`sh -c`, which every POSIX shell and PowerShell-on-Linux runs)."""
@@ -1001,7 +1001,9 @@ def pid_probe_kinds(pane, observed):
         return []
     if pane != "powershell":
         return ["default"]
-    return ["posix", "powershell"] if observed == "posix" else ["powershell", "posix"]
+    # #2170 follow-up: a case that just started a nested POSIX shell (Git Bash from the PowerShell pane) says so (Ctx.note_nested_posix); the shell
+    # in front is then not known to be the pane's own, so the POSIX form goes first and no `Add-Content` line is typed into bash
+    return ["posix", "powershell"] if (observed == "posix" or (observed is None and nested_posix)) else ["powershell", "posix"]
 
 
 def pid_probe_line(pane, kind, tok):
@@ -1464,6 +1466,12 @@ class Ctx:
             self.wait_prompt_after_exit(before, t_exit, 10, remote_before=rbefore)
         return "remote"
 
+    def note_nested_posix(self):
+        """#2170 follow-up: call right after a case started a nested POSIX shell in this pane: the last observed shell is no longer known and the
+        post-case PID probe tries the POSIX form first. Cleared with shell_kind when `exit` leaves it or the app is relaunched."""
+        self.shell_kind = None
+        self.nested_posix = True
+
     def shell_pid(self, timeout=8):
         """The PID of the shell in front, proven by an effect (a fresh `tok:PID` appended to `~/.appci_pid`), or None when nothing answered or the
         pane has no PID probe (cmd.exe). `where_now` cannot tell a LOCAL nested shell from the pane's root shell (same HOME); a PID can.
@@ -1471,7 +1479,7 @@ class Ctx:
         pane's own: round 15 typed `Add-Content ...` into a Git Bash started from the PowerShell pane ("bash: Add-Content: command not found"). In a
         PowerShell pane with no answer, the other syntax is tried once before giving up, and the one that answers is remembered."""
         pane = getattr(self, "pane", None)
-        kinds = pid_probe_kinds(pane, getattr(self, "shell_kind", None))
+        kinds = pid_probe_kinds(pane, getattr(self, "shell_kind", None), getattr(self, "nested_posix", False))
         if not kinds:
             return None
         for kind in kinds:
@@ -1516,6 +1524,7 @@ class Ctx:
                     t_exit = time.time()
                     self.be.type("exit", 12, enter=True)
                     self.shell_kind = None          # #2170: whatever is in front now is not the shell that was probed
+                    self.nested_posix = False
                     self.wait_prompt_after_exit(before, t_exit, 10)
                     continue
                 if pid is None:
@@ -1555,6 +1564,7 @@ class Ctx:
             t_exit = time.time()
             self.be.type("exit", 12, enter=True)
             self.shell_kind = None          # #2170: whatever is in front now is not the shell that was probed
+            self.nested_posix = False
             self.wait_prompt_after_exit(before, t_exit, 10)
         return "nested"
 
@@ -6648,6 +6658,7 @@ def c_gitbash_subshell(ctx, r):
     names = ("gb_probe", "gb_ft", "gb_pe", "gb_cc", "gb_back")
     ctx.rm(*[n + ".txt" for n in names])
     ctx.be.type("& '%s' --noprofile --norc -i" % gb.replace("\\", "/"), 12, enter=True)
+    ctx.note_nested_posix()        # #2170 follow-up: the post-case PID probe tries the POSIX form first
     time.sleep(4)
     ready = False
     for _ in range(4):
@@ -6727,8 +6738,54 @@ def streaming_exact_lines(ctx, r, got, exp, what, log_off):
         r.check(False, msg + (" (a discard is logged or the log is unreadable)" if discarded else ""))
 
 
+def close_opened_tabs(ctx, r, own_pid, opened, what="tabs"):
+    """#2146 (round 24/25): close the `opened` tabs (or windows' last tab) a case opened and left streaming, newest first, each one PROVEN: Ctrl-C ends
+    the stream, the PID probe names the shell in front, and the close key is sent only when that shell is NOT the pass's own (`own_pid`, read before
+    the case opened anything). Stops as soon as the pass's own shell is in front. A tab that cannot be told apart from the own shell, or no shell
+    answering, is a FAIL naming the count left open (the close key is never sent blind). -> number of close keys sent. Never raises: it runs in a
+    `finally`, and a dead app has nothing to close."""
+    import cases_robust as R_
+    if own_pid is None:
+        return 0                      # no PID probe in this pane (cmd.exe, WSL): nothing can be proven; run.py's depth check stays the net
+    sent = 0
+    try:
+        for _ in range(int(opened)):
+            ctx.be.key("ctrl+c")
+            time.sleep(0.4)
+            pid = ctx.shell_pid()
+            if pid is None:
+                ctx.reset()
+                pid = ctx.shell_pid()
+            if pid is None:
+                r.check(False, "cleanup of %s: no shell answered the PID probe after Ctrl-C; %d close key(s) sent, the rest left open" % (what, sent))
+                return sent
+            if pid == own_pid:
+                return sent
+            R_.close_tab_best_effort(ctx, r)
+            sent += 1
+            time.sleep(0.8)
+        last = ctx.shell_pid()
+        r.check(last == own_pid, "cleanup of %s: after %d close key(s) the shell in front has pid %s, expected the pass's own shell %s (a tab is still "
+                                 "open: later cases would type into it)" % (what, sent, last, own_pid))
+    except Skip:
+        raise
+    except Exception as e:                                 # noqa: BLE001
+        r.note("cleanup of %s stopped: %s" % (what, e))
+    return sent
+
+
 @case("tabs_streaming", order=91, gui=True)
 def c_tabs_streaming(ctx, r):
+    own_pid = ctx.shell_pid()              # #2146: the pass's own shell, before any tab is opened (None: no PID probe in this pane)
+    st = {"opened": 0}
+    try:
+        _tabs_streaming(ctx, r, st)
+    finally:
+        # round 24/25: the 13 tabs stayed open and cb_ui_action_latency, then every later case, ran among them
+        close_opened_tabs(ctx, r, own_pid, st["opened"], "tabs_streaming")
+
+
+def _tabs_streaming(ctx, r, st):
     """12 tabs each streaming a line every 20 ms, then ONE more tab: 10 fast-typed commands in it arrive exactly, in order, and the app survives
     (the Windows tabs_streaming case of app_test.ps1, now on every platform; tabs_two_windows adds a second window and a paste)"""
     ntabs = int(os.environ.get("APPCI_TABS", "12"))
@@ -6736,11 +6793,13 @@ def c_tabs_streaming(ctx, r):
     ctx.reset()
     for i in range(ntabs):
         ctx.be.key(newtab)
+        st["opened"] += 1
         time.sleep(0.7)
         ctx.be.type(stream_cmd(ctx, i), 10, enter=True)
     ctx.rm("tw_s.txt")
     log_off = ctx.log_size()
     ctx.be.key(newtab)
+    st["opened"] += 1
     time.sleep(1.0)
     exp = []
     for _ in range(ctx.count(10)):
@@ -6757,12 +6816,23 @@ def c_tabs_streaming(ctx, r):
 
 @case("tabs_two_windows", order=90, gui=True)
 def c_tabs(ctx, r):
+    own_pid = ctx.shell_pid()              # #2146: the pass's own shell, before any tab or window is opened
+    st = {"opened": 0}
+    try:
+        _tabs_two_windows(ctx, r, st)
+    finally:
+        # the second window's tab goes first (it is in front), then the streaming tabs of the first window, newest first
+        close_opened_tabs(ctx, r, own_pid, st["opened"], "tabs_two_windows")
+
+
+def _tabs_two_windows(ctx, r, st):
     ntabs = int(os.environ.get("APPCI_TABS", "12"))
     newwin = os.environ.get("APPCI_KEY_NEWWIN", "ctrl+shift+n")
     newtab = os.environ.get("APPCI_KEY_NEWTAB", "ctrl+shift+t")
     ctx.reset()
     for i in range(ntabs):
         ctx.be.key(newtab)
+        st["opened"] += 1
         time.sleep(0.5)
         ctx.be.type(stream_cmd(ctx, i), 10, enter=True)
         time.sleep(0.2)
@@ -6770,6 +6840,7 @@ def c_tabs(ctx, r):
     alive = ctx.app.alive()
     r.check(alive, "app died while opening %d streaming tabs" % ntabs)
     ctx.be.key(newwin)
+    st["opened"] += 1                  # the new window's one tab: closing it closes the window
     time.sleep(3)
     w = ctx.be.windows()
     r.metric("windows", len(w))

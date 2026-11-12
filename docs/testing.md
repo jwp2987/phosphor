@@ -8202,3 +8202,25 @@ Self-tests (`selftest_r23_modeguard.py`, run by `run.py --self-test`): `r23_mode
 at once with an empty, well-formed answer (start and end marks, no candidate), print nothing to the terminal (no
 `_generic: command not found`), and leave the line clean. The bootstrap checks `warp_compsys_loaded`
 (`_generic` and `_main_complete` present) and never runs compinit.
+## Round 25 harness batch A: leaked tabs, the pointer fence's cursor window, nested-shell probe order, lab append lines (#2146, #2118, #2170; harness only, no app run when written)
+Self-tests: `selftest_r25_harness_a.py` (registered by two lines at the end of `selftest.py`) and the changed `r21_cb_ui_action_latency_closes_only_the_throwaway_tab` in `selftest_r21_wlpanes.py`. All "worked, unproven" until a run.
+- **Leaked tabs (#2146, r24a).** `tabs_streaming` opened 12+1 streaming tabs and `tabs_two_windows` 12 tabs and a window; neither closed them, so `cb_ui_action_latency`
+  saw 15 tabs and every later case typed into a streaming tab. Both cases now read the pass's own shell pid first and close what they opened in a `finally`
+  (`cases.close_opened_tabs`): newest first, Ctrl-C, PID probe, the close key only when the shell in front is not the pass's own; it stops at the own shell, FAILs
+  when no shell answers or a tab is still open after the counted closes, and sends nothing in a pane with no PID probe. `cb_ui_action_latency` records the
+  throw-away tab's pid right after opening it (`throw_pid`) and closes only when the front pid equals it; otherwise it presses previous-tab (at most twice) and
+  asks again, and refuses without sending the close key. The self-test's tab-ring model runs the close with 0, 1, 2 and 13 leaked tabs.
+- **`mptr` and the cursor sprite (#2118, r24a `wheel_scroll`).** `ownerAt` also looks through the window server's mouse-cursor window: owner `Window Server`, layer at or
+  above `CGWindowLevelForKey(.cursorWindow)` (2147483630), smaller than 64x64 pt. Any other Window Server window (a dialog, a larger or lower one) is still
+  refused. The window list of a refusal tags the cursor window "mouse-cursor sprite window, looked through"; the out file gets a `NOTE` line. The Swift is not
+  compiled by the self-test; it checks the rule's text and a Python mirror of it.
+- **Nested POSIX shell probe order (#2170 follow-up, r24a Windows `gb_*`).** `Ctx.note_nested_posix()` (called by `gitbash_subshell` and `intl_altgr_bash` right after
+  they start Git Bash from the PowerShell pane) forgets the observed shell and makes `pid_probe_kinds(pane, observed, nested_posix)` return the POSIX form first, so
+  no `Add-Content` line is typed into bash. It is cleared where `exit` leaves the shell and at a relaunch.
+- **Lab append lines on every shell (fish, nu).** `cases_lab.append_line` / `pwd_append_line` / `then_line` are the one place a lab case builds a line that appends to a
+  file (or joins `cd` to a following command) in the remote shell. fish runs `>>` and `&&` (fish >= 3.0; the lab image is Debian trixie, `apt-get install fish`, 4.x).
+  nu 0.116 gets `"text\n" | save --append f` (creates the file, appends exactly the text and the newline written in the string, the bytes `echo text >> f` writes),
+  `$"($env.PWD)\n" | save --append f` for the directory, and `;` instead of `&&`. Used by `tab_remote_dir`, `ssh_drop_reconnect` (stall), `nohelper_sh_login_profile`;
+  `codebase_index_remote`'s one-shot ssh edit goes through `sh -c` (that ssh command runs in the arm's login shell). A self-test scans every string constant of the
+  `cases_lab*.py` files and `lab.py` for `>>` and fails on any not in the helper, run by `sh`, zsh-only, or a bash/zsh stamp. The nu forms are not run against a
+  real nu here: the first lab run with a nu arm is their proof.

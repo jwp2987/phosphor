@@ -9148,6 +9148,13 @@ def r19_copy_window_pointer_faults():
     assert "return c.contains(p)" in mptr and "s.visibleFrame" in mptr and "CGWindowLevelForKey(.dockWindow)" in mptr
     assert "if isDockBacking(w.1, w.2, w.3, p) { lookedThroughDock = true; continue }" in mptr and "windows at the point, front to back" in mptr
     assert "ignoreOwners.contains(own)" in mptr, "APPCI_MAC_PTR_IGNORE_OWNERS is unchanged"
+    # r25 (#2118 follow-up): the mouse-cursor sprite window is looked through, no other Window Server window is (structure of the Swift text)
+    assert 'return own == "Window Server" && layer >= cursorLayer && r.width < 64 && r.height < 64' in mptr and "CGWindowLevelForKey(.cursorWindow)" in mptr
+    assert "if isCursorSprite(w.1, w.2, w.3) { lookedThroughCursor = true; continue }" in mptr and "mouse-cursor sprite window" in mptr
+    own_at = mptr[mptr.index("func ownerAt("):mptr.index("func describeWindowsAt(")]
+    assert own_at.index("isDockBacking") < own_at.index("isCursorSprite") < own_at.index("return (w.0, w.1, w.2)"), "both skips come before the verdict"
+    assert 'own == "Window Server"' in mptr and mptr.count("isCursorSprite(") >= 3, "the test is by owner, layer and size: not a blanket Window Server skip"
+    assert "own != \"Window Server\"" not in mptr and 'ignoreOwners.contains("Window Server")' not in mptr
     assert R_.flood_tail_on_screen("499999") and not R_.flood_tail_on_screen("500000;")
     doc = open(os.path.join(root, "docs", "testing.md"), encoding="utf-8").read()
     for needle in ("leave_block_selection", "#2117", "#2118", "#2119", "judge_fullscreen_off", "READER_PROG", "r10-r19-copy.md"):
@@ -9210,6 +9217,8 @@ import selftest_r23_modeguard  # noqa: E402  (#2170 view-mode guard before every
 CHECKS.extend(selftest_r23_modeguard.CHECKS)
 import selftest_r22_labcases  # noqa: E402  (round 22, #2160 #2163 #2164 #2165: the plain-session gate on managed-session lab cases, the self-match-proof daemon count, the helper-takeover wait and per-channel evidence, the chips OCR read; own file)
 CHECKS.extend(selftest_r22_labcases.CHECKS)
+import selftest_r25_harness_a  # noqa: E402  (round 25 harness A: #2146 leaked tabs, #2118 mptr cursor sprite, #2170 nested POSIX probe order, lab append lines for nu/fish; own file)
+CHECKS.extend(selftest_r25_harness_a.CHECKS)
 
 
 def missing_required(required, passed):
