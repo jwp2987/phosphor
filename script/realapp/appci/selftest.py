@@ -1025,7 +1025,7 @@ def ctrl_c_regression_is_judged_on_the_app_share():
         class Ctx:
             def __init__(s, win): s.win = win
         got = cases.ctrl_c_regress_basis(Ctx(True), dict(what="handler_to_write", p50=0.65, n=30), 30, 3)
-        assert got["budget_ms"] == cases.CTRLC_APP_SHARE_MAX_MS == 2.0 and got["metric"] == "ctrl_c_app_segments" and callable(got["remeasure"]), got
+        assert "budget_ms" not in got and got["metric"] == "ctrl_c_app_segments" and callable(got["remeasure"]), got
         assert cases.ctrl_c_regress_basis(Ctx(False), dict(what="handler_to_write", p50=0.65, n=30), 30, 3) is None, "other platforms keep the median gate"
         assert cases.ctrl_c_regress_basis(Ctx(True), None, 30, 3) is None
     finally:
@@ -1070,12 +1070,7 @@ def mac_key_to_frame_regression_is_judged_on_the_app_share_and_the_tail():
         # 3. where the basis applies, and its hard bound
         cases.plat = lambda: "macos"
         got = cases.key_frame_regress_basis(share(1.68), lambda: full)
-        assert got["budget_ms"] == 2.0 and got["what"] == "key_to_frame_less_display_wait" and got["remeasure"]()["p50"] == 1.61 and len(got["remeasure"]()["samples"]) == 60, got
-        os.environ["APPCI_KEY_BUDGET_MS"] = "3"
-        assert cases.key_frame_regress_basis(share(1.68), lambda: full)["budget_ms"] == 3.0
-        os.environ["APPCI_KEY_APP_SHARE_MAX_MS"] = "2.5"
-        assert cases.key_frame_regress_basis(share(1.68), lambda: full)["budget_ms"] == 2.5
-        os.environ.pop("APPCI_KEY_APP_SHARE_MAX_MS"), os.environ.pop("APPCI_KEY_BUDGET_MS")
+        assert "budget_ms" not in got and got["what"] == "key_to_frame_less_display_wait" and got["remeasure"]()["p50"] == 1.61 and len(got["remeasure"]()["samples"]) == 60, got
         assert cases.key_frame_regress_basis(None, lambda: full) is None, "no figure: the median gate"
         cases.plat = lambda: "linux-wayland"
         assert cases.key_frame_regress_basis(share(1.68), lambda: full) is None, "other platforms keep the median gate"
@@ -1085,6 +1080,8 @@ def mac_key_to_frame_regression_is_judged_on_the_app_share_and_the_tail():
             lat.load_baseline = lambda platform: ("ok", {rid: base})
             calls = []
             basis = cases.key_frame_regress_basis(share(sh_p50) if sh_p50 is not None else None, lambda: calls.append("share") or (share_again or full))
+            if basis:       # the fixed-budget path of lat.evaluate with a stand-in bound (production hands the band of "<id>#app", tests/selftest_r27_perfbands.py)
+                basis["budget_ms"] = float(os.environ.get("APPCI_KEY_APP_SHARE_MAX_MS", "2"))
             rec = lat.evaluate(rid, samples, None, 2.0, "overhead", "macos", remeasure=lambda: calls.append("median") or samples, app_share=basis)
             r = cases.Result("latency_key_log", "terminal")
             cases.lat_checks(r, rec, "key to frame")
@@ -1157,23 +1154,36 @@ def mac_key_to_frame_regression_is_judged_on_the_app_share_and_the_tail():
 
 @check
 def key_log_is_judged_on_the_key_to_pty_write_share_off_macos():
-    """owner 2026-11-11 (#2070, #1176): latency_key_log on Linux and Windows is JUDGED on the app's key -> pty write share (median against 1 ms) instead
-    of NOREF. A passing share judges the row (no NOREF, no failure); a failing one FAILs it; a missing or thin figure stays NOREF with the reason;
-    the regression basis stays the key -> frame median; macOS keeps its own gate (#2037) and is not touched."""
+    """owner 2026-11-11 (#2070, #1176) and 2026-11-12 (bands for all): latency_key_log on Linux and Windows is judged on its history bands: the key -> frame median
+    (band <id>) and the app's key -> pty write share (band <id>#app, was the fixed 1 ms). A share above its band FAILs whatever n is; a passing one passes; a
+    missing or thin figure is not judged (a note), the key -> frame band still decides; no band at all is NOREF; the previous-build comparison is a note;
+    macOS keeps its own gate (#2037) and the pty gate is not run there."""
     import inspect, statistics
-    import lat
+    import lat, bands
     st = lambda r_: "fail" if r_.fails else "noref" if r_.noref else "pass"      # a failed check wins over NOREF (run.py)
     rid = "terminal/latency_key_log/key_to_frame"
     kd = lambda t: "input_order keydown key=m ctrl=false alt=false shift=false cmd=false t=%.3f seq=1" % t
     log = lambda share: "\n".join("%s\ninput_order pty_write bytes=1 t=%.3f\ninput_order frame layout=true t=%.3f" % (kd(1000.0 * i), 1000.0 * i + share + 0.01 * (i % 3), 1000.0 * i + 6.0)
                                   for i in range(1, 61))
     frames = [5.0 + 0.1 * (i % 7) for i in range(60)]
+    tmp = tempfile.mkdtemp()
+    bf = os.path.join(tmp, "bands.json")
+    band = lambda up: {"n": 8, "median": up - 0.5, "mad": 0.05, "upper": up, "lower": 0.1, "values": [up - 0.5], "runs": ["r"], "provisional": False, "set_by": "data", "kind": "ms"}
     orig_p, orig_b, orig_prev = cases.plat, lat.load_baseline, lat.load_prev
-    env = {k: os.environ.pop(k, None) for k in ("APPCI_KEY_PTY_SHARE_MAX_MS", "APPCI_MIN_SAMPLES", "APPCI_PREV_RESULTS")}
+    env = {k: os.environ.pop(k, None) for k in ("APPCI_BANDS_FILE", "APPCI_MIN_SAMPLES", "APPCI_PREV_RESULTS")}
+    os.environ["APPCI_BANDS_FILE"] = bf
+
+    def write(platform, frame_up=20.0, share_up=1.0):
+        d = {}
+        if frame_up is not None:
+            d["%s/%s" % (bands.norm_platform(platform), rid)] = band(frame_up)
+        if share_up is not None:
+            d["%s/%s#app" % (bands.norm_platform(platform), rid)] = band(share_up)
+        json.dump(d, open(bf, "w"))
 
     def run(kw, expected=60, base=None, again=None):
         lat.load_baseline = lambda platform: ("ok", {rid: base} if base else {})
-        rec = lat.evaluate(rid, frames, None, 2.0, "overhead", cases.plat(), remeasure=lambda: again or frames, app_share=None)
+        rec = lat.evaluate(rid, frames, None, None, "overhead", cases.plat(), remeasure=lambda: again or frames, app_share=None, banded=True, band_on_median=True)
         sh = cases.key_pty_share_gate(rec, kw, expected)
         r = cases.Result("latency_key_log", "terminal")
         cases.lat_checks(r, rec, "key to frame", share_judges=True)
@@ -1182,54 +1192,51 @@ def key_log_is_judged_on_the_key_to_pty_write_share_off_macos():
         lat.load_prev = lambda: {}
         for platform in ("linux-wayland", "linux", "windows"):
             cases.plat = lambda p_=platform: p_
-            # 1. a passing share (the r12a range): judged, no NOREF, no failure; the record keeps the median as the regression basis
+            write(platform)
+            # 1. a passing share (the r12a range): judged, no NOREF, no failure; the key -> frame median is judged on its own band
             kw = cases.key_write_pairs(log(0.45))
             assert len(kw) == 60 and abs(statistics.median(kw) - 0.46) < 1e-6, kw[:4]
             rec, sh, r = run(kw)
-            assert sh == dict(what="key_to_pty_write", p50=0.46, n=60, budget_ms=1.0, gate_only=True, usable=True, budget_verdict="pass"), sh
-            assert rec["app_share"] is sh and rec["regress_basis"] == "median" and rec["verdict"] == "no-reference", rec
+            assert {k: sh[k] for k in ("what", "p50", "n", "budget_ms", "gate_only", "usable", "budget_verdict")} == dict(
+                what="key_to_pty_write", p50=0.46, n=60, budget_ms=1.0, gate_only=True, usable=True, budget_verdict="pass"), sh
+            assert rec["app_share"] is sh and rec["regress_basis"] == "median" and rec["verdict"] == "pass" and rec["budget_ms"] == 20.0, rec
             assert not r.noref and not r.fails and st(r) == "pass", (r.noref, r.fails, st(r))
-            assert any("JUDGED on the app's own share (key_to_pty_write): 0.46 ms against its 1.0 ms budget (n=60): PASS" in n for n in r.notes), r.notes
-            # 2. a failing share: FAIL (and no NOREF row hiding it); the record's verdict is fail
+            # 2. a share above its band: FAIL; the record's verdict is fail
             rec, sh, r = run(cases.key_write_pairs(log(1.30)))
             assert sh["budget_verdict"] == "fail" and sh["p50"] == 1.31 and rec["verdict"] == "fail" and not r.noref and st(r) == "fail", (sh, r.noref, st(r))
             assert any("the app's own share (key_to_pty_write) 1.31 ms exceeds its 1.0 ms budget (n=60)" in f for f in r.fails), r.fails
-            # exactly on the target passes; just over fails; the bound is the env's
+            # exactly on the band's upper passes; just over fails
             assert run([1.0] * 60)[1]["budget_verdict"] == "pass" and run([1.001] * 60)[1]["budget_verdict"] == "fail"
-            os.environ["APPCI_KEY_PTY_SHARE_MAX_MS"] = "1.5"
-            assert run(cases.key_write_pairs(log(1.30)))[2].fails == [] and not run(cases.key_write_pairs(log(1.30)))[2].noref == "pass"
-            os.environ.pop("APPCI_KEY_PTY_SHARE_MAX_MS")
-            # 3. no figure: NOREF with the reason, never a pass
+            write(platform, share_up=1.5)
+            assert run(cases.key_write_pairs(log(1.30)))[2].fails == []
+            write(platform)
+            # 3. no figure: the share is not judged; the key -> frame band still decides (a pass), the gap is said
             rec, sh, r = run([])
-            assert sh["usable"] is False and "budget_verdict" not in sh and st(r) == "noref" and len(r.noref) == 1 and not r.fails, (sh, r.noref, r.fails)
-            assert "(key_to_pty_write) is not usable (no figure: no keydown -> `input_order pty_write` pair" in r.noref[0] and "not a pass" in r.noref[0], r.noref
-            # 4. a thin figure under the target is not a pass (NOREF, reason given); a thin figure over it is still a FAIL
-            rec, sh, r = run([0.4] * 12)
-            assert st(r) == "noref" and "n=12 < 30 presses" in r.noref[0], r.noref
-            rec, sh, r = run([0.4] * 40)
-            assert st(r) == "noref" and "only 40 of 60 presses" in r.noref[0], r.noref
+            assert sh["usable"] is False and "budget_verdict" not in sh and not r.fails, (sh, r.noref, r.fails)
+            # 4. a thin figure over its band is still a FAIL
             rec, sh, r = run([1.4] * 12)
             assert st(r) == "fail" and any("exceeds its 1.0 ms budget (n=12)" in f for f in r.fails), (st(r), r.fails)
-            # 5. the regression gate is the key -> frame median, as before: a slower median than the baseline's FAILs with a passing share
+            # 5. owner 2026-11-12: the previous-build / baseline comparison is a NOTE; the band decides
             rec, sh, r = run(cases.key_write_pairs(log(0.45)), base={"n": 60, "p50": 3.0, "p95": 4.0})
-            assert rec["regress_basis"] == "median" and rec["baseline_verdict"] == "fail" and any(f.startswith("REGRESSION key to frame: median ") for f in r.fails), (rec, r.fails)
-            # 5b. a regression WARN (clean re-measure) makes the record's verdict `warn`: a missing share is still NOREF, a failing one still a FAIL,
-            #     and a passing one judges the row (the WARN is a note)
-            slow = {"n": 60, "p50": 3.0, "p95": 4.0}
-            rec, sh, r = run([], base=slow, again=[2.9] * 60)
-            assert rec["verdict"] == "warn" and rec["budget_verdict"] == "no-reference" and st(r) == "noref" and "is not usable (no figure" in r.noref[0], (rec["verdict"], r.noref)
-            rec, sh, r = run(cases.key_write_pairs(log(0.45)), base=slow, again=[2.9] * 60)
-            assert rec["verdict"] == "warn" and st(r) == "pass" and any("JUDGED on the app's own share" in n for n in r.notes) and any(n.startswith("WARN key to frame: median") for n in r.notes), r.notes
-            rec, sh, r = run(cases.key_write_pairs(log(1.30)), base=slow, again=[2.9] * 60)
-            assert rec["verdict"] == "fail" and st(r) == "fail" and not r.noref, (rec["verdict"], r.noref)
+            assert rec["baseline_verdict"] == "fail" and rec["verdict"] == "pass" and not r.fails, (rec, r.fails)
+            assert any(n.startswith("NOTE (not judged; the band decides): key to frame: median ") for n in r.notes), r.notes
+            # 5b. the key -> frame median above its band FAILs; no band for the pane is NOREF (never pass, never fail)
+            write(platform, frame_up=4.0)
+            rec, sh, r = run(cases.key_write_pairs(log(0.45)))
+            assert rec["verdict"] == "fail" and st(r) == "fail" and any("is outside its band" in f for f in r.fails), (rec["verdict"], r.fails)
+            write(platform, frame_up=None, share_up=None)
+            rec, sh, r = run(cases.key_write_pairs(log(0.45)))
+            assert rec["band"] == {"status": "none"} and st(r) == "noref" and not r.fails, (rec["band"], r.noref, r.fails)
         # 6. macOS is left alone: no key -> pty gate there, with or without its own figure
         cases.plat = lambda: "macos"
+        write("macos", share_up=None)
         rec, sh, r = run(cases.key_write_pairs(log(1.30)))
-        assert sh is None and "app_share" not in rec and st(r) == "noref" and "key_to_frame_less_display_wait) is not usable" in r.noref[0], (sh, r.noref)
+        assert sh is None and "app_share" not in rec and st(r) == "pass", (sh, r.noref)
         src = inspect.getsource(cases.c_lat_key)
         assert src.index("key_pty_share_gate(rec, kw, n)") < src.index('lat_checks(r, rec, "key to frame", share_judges=True)'), "the gate runs before the verdicts are read"
     finally:
         cases.plat, lat.load_baseline, lat.load_prev = orig_p, orig_b, orig_prev
+        shutil.rmtree(tmp)
         for k, v in env.items():
             os.environ.pop(k, None)
             if v is not None:
@@ -3996,34 +4003,55 @@ def latency_known_v0117_enter_and_flood():
 
 
 @check
-def latency_enter_macos_report_only():
-    """owner 2026-11-05 (#1606 closed): on macOS the Enter overhead is REPORT-ONLY (+20 ms is a note, not a FAIL); the app's own share over 2 ms or an overhead over 40 ms (gross regression, relative to the reference) still FAIL; a slow machine (median 90 ms, overhead +20) is not a FAIL;
-    Linux is judged as before (FAIL without an ACCEPTED entry)"""
-    rec = {"budget_verdict": "fail", "budget_kind": "overhead", "verdict": "fail", "overhead_ms": 20.0, "overhead_se_ms": 0.4, "reference_name": "Terminal.app",
-           "budget_ms": 2, "phosphor": {"p50": 30.0}}
-    orig_v, orig_p = cases.app_version, cases.plat
+def latency_enter_macos_is_judged_against_its_band():
+    """owner 2026-11-12 (bands for all): the macOS Enter report-only branch, its 2 ms own-share bound and its 40 ms gross-overhead bound are replaced by the band of
+    the metric: the overhead above its band FAILs, inside it passes, and the app's own share ("#app") is judged against its own band; no band is NOREF. Linux
+    is judged the same way (a band, not a fixed 2 ms)."""
+    import bands
+    tmp = tempfile.mkdtemp()
+    f = os.path.join(tmp, "bands.json")
+    ov = {"APPCI_BANDS_FILE": os.environ.get("APPCI_BANDS_FILE")}
+    band = lambda up, n=8: {"n": n, "median": up - 1, "mad": 0.1, "upper": up, "lower": up - 3, "values": [up - 1], "runs": ["r"], "provisional": n < 5, "set_by": "data", "kind": "ms"}
+    json.dump({"macos/terminal/latency_enter/enter_to_start": band(25.0), "macos/terminal/latency_enter/enter_to_start#app": band(1.6),
+               "wayland/terminal/latency_enter/enter_to_start": band(3.0, 3)}, open(f, "w"))
+    os.environ["APPCI_BANDS_FILE"] = f
+    orig_p = cases.plat
     try:
-        cases.app_version = lambda repo=None: "0.1.18"
-        for key in ("latency_enter_overhead", "latency_enter_ssh_overhead"):
-            cases.plat = lambda: "macos"
+        import lat
+        ref, ph = [60.0] * 40, [60.0 + 20.0 + (i % 3) * 0.1 for i in range(40)]
+        for platform, label in (("macos", "terminal"),):
+            cases.plat = lambda: platform
+            rec = lat.evaluate("terminal/latency_enter/enter_to_start", ph, ref, None, "overhead", platform, expected=40, banded=True)
+            assert rec["band_key"] == "macos/terminal/latency_enter/enter_to_start" and rec["budget_ms"] == 25.0 and rec["budget_verdict"] == "pass", rec
             r = cases.Result("t", "terminal")
-            cases.lat_checks(r, rec, "L", known_key=key, report_only_macos=True, app_share_ms=0.5, median_ms=30.0)
-            assert not r.fails and any(n.startswith("REPORT-ONLY: L:") and "#1606 closed by owner 2026-11-05" in n for n in r.notes), (key, r.fails, r.notes)
+            cases.lat_checks(r, rec, "L", known_key="latency_enter_overhead", report_only_macos=True, app_share_ms=1.2, median_ms=80.0)
+            assert not r.fails and not r.noref and any("band" in n_ and "from n=8" in n_ for n_ in r.notes), (r.fails, r.noref, r.notes)
+            r = cases.Result("t", "terminal")                                                       # the app's own share above ITS band
+            cases.lat_checks(r, rec, "L", known_key="latency_enter_overhead", report_only_macos=True, app_share_ms=3.0, median_ms=80.0)
+            assert len(r.fails) == 1 and "outside its band" in r.fails[0] and "#app" in r.fails[0], r.fails
+            slow = [x + 10.0 for x in ph]                                                          # overhead 30 ms: above the 25 ms band
+            rec = lat.evaluate("terminal/latency_enter/enter_to_start", slow, ref, None, "overhead", platform, expected=40, banded=True)
             r = cases.Result("t", "terminal")
-            cases.lat_checks(r, rec, "L", known_key=key, report_only_macos=True, app_share_ms=3.0, median_ms=30.0)
-            assert len(r.fails) == 1 and "own share" in r.fails[0], r.fails
-            r = cases.Result("t", "terminal")
-            cases.lat_checks(r, rec, "L", known_key=key, report_only_macos=True, app_share_ms=0.5, median_ms=90.0)
-            assert not r.fails, r.fails      # r18u30: the whole Mac slow, overhead unchanged -> not Phosphor's regression
-            r = cases.Result("t", "terminal")
-            cases.lat_checks(r, dict(rec, overhead_ms=45.0), "L", known_key=key, report_only_macos=True, app_share_ms=0.5, median_ms=90.0)
-            assert len(r.fails) == 1 and "gross-regression bound" in r.fails[0], r.fails
-            cases.plat = lambda: "linux-x11"
-            r = cases.Result("t", "terminal")
-            cases.lat_checks(r, rec, "L", known_key=key, report_only_macos=True, app_share_ms=0.5, median_ms=30.0)
-            assert len(r.fails) == 1 and "exceeds the 2 ms budget" in r.fails[0], r.fails
+            cases.lat_checks(r, rec, "L", known_key="latency_enter_overhead", report_only_macos=True, app_share_ms=1.2, median_ms=80.0)
+            assert len(r.fails) == 1 and "is outside its band" in r.fails[0] and "above 25" in r.fails[0], r.fails
+        # no band for the pane (a new pane / metric): NOREF, never a pass and never a fail
+        rec = lat.evaluate("terminal@fish/latency_enter/enter_to_start", ph, ref, None, "overhead", "macos", expected=40, banded=True)
+        r = cases.Result("t", "terminal")
+        cases.lat_checks(r, rec, "L", report_only_macos=True)
+        assert not r.fails and len(r.noref) == 1 and rec["band"] == {"status": "none"} and rec["budget_verdict"] == "no-reference", (r.fails, r.noref, rec)
+        # Linux: a provisional band still judges (and says so)
+        cases.plat = lambda: "linux-wayland"
+        rec = lat.evaluate("terminal/latency_enter/enter_to_start", [64.0] * 40, ref, None, "overhead", "linux-wayland", expected=40, banded=True)
+        r = cases.Result("t", "terminal")
+        cases.lat_checks(r, rec, "L", report_only_macos=True)
+        assert len(r.fails) == 1 and "PROVISIONAL" in r.fails[0] and "above 3" in r.fails[0], r.fails
     finally:
-        cases.app_version, cases.plat = orig_v, orig_p
+        cases.plat = orig_p
+        if ov["APPCI_BANDS_FILE"] is None:
+            os.environ.pop("APPCI_BANDS_FILE", None)
+        else:
+            os.environ["APPCI_BANDS_FILE"] = ov["APPCI_BANDS_FILE"]
+        shutil.rmtree(tmp)
 
 
 @check
@@ -7311,7 +7339,7 @@ def fakesshd_app_arm_da1_and_input_stats_2051():
     assert sr.setup_timeline("nothing") == "armed decision=not logged; no setup progress event logged"
     src = open(os.path.join(HERE, "cases_subshell_ready.py")).read()
     assert 'r.note("clear: setup " + setup_timeline(ctx.log_since(off)))' in src
-    assert src.count('r.check(dt < 2.0, "the first inner line ran %.2f s after its Enter (budget 2 s)') == 2     # the budget is not touched (r26 #2025 may only append a note)
+    assert src.count("inner_line_after_enter_s\" % ctx.label)") == 2 and "dt < 2.0" not in src     # owner 2026-11-12: the history band replaces the fixed 2 s budget
     doc = open(os.path.join(HERE, "..", "..", "..", "docs", "testing.md")).read()
     assert "fakesshd_app_arm_da1_and_input_stats_2051" in doc and "#2051" in doc
 
@@ -9409,3 +9437,5 @@ import selftest_r27_mactests  # noqa: E402  (r25a macOS test faults: in-app code
 CHECKS.extend(selftest_r27_mactests.CHECKS)
 import selftest_r27_editormeasure  # noqa: E402  (#2185 editor_memory_7mb: heap prime, median open cost, per-cycle notes; own file)
 CHECKS.extend(selftest_r27_editormeasure.CHECKS)
+import selftest_r27_perfbands  # noqa: E402  (owner 2026-11-12 bands for all: bands.judge, lat.evaluate(banded=True), every converted verdict; own file)
+CHECKS.extend(selftest_r27_perfbands.CHECKS)

@@ -1,0 +1,7 @@
+{
+ "_doc": "since: {fnmatch pattern on the band key: a run-directory substring}. History before that run is ignored for matching bands. Moving a 'since' so that a band loosens is a loosen (held back, owner OK needed: --allow-loosen KEY). See docs/testing.md 'Perf and memory bands'.",
+ "since": {
+  "wayland/*/latency_key_log/key_to_frame*": "build_r11a",
+  "macos/*/latency_key_log/key_to_frame": "build_r24a"
+ }
+}

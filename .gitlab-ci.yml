@@ -135,6 +135,9 @@ guards:
     - python3 script/ci/failed_cases.py --self-test
     # #1495: the release gate's offline fixtures (pass, failed job, wrong sha / tier, KNOWN, NOREF, missing platform).
     - python3 script/ci/test_check_release_gate.py
+    # owner 2026-11-12: the perf / memory bands (window, formula, ratchet) and bands.json current against the committed history
+    - python3 script/ci/test_perf_bands.py
+    - python3 script/ci/perf_bands.py --check
     # Large deletions. There are no pull requests here, so the base is the
     # previous tip of this branch (push), or the merge-base with main for a new
     # branch. The commit message stands in for the PR body: it is where a

@@ -1,0 +1,2402 @@
+{
+ "macos/agent/ctrl_c_d/ctrl_c": {
+  "kind": "ms",
+  "lower": 5.57,
+  "mad": 0.4,
+  "median": 6.79,
+  "n": 8,
+  "provisional": false,
+  "runs": [
+   "2026-11-09_build_r18w7_3046481170",
+   "2026-11-09_build_r18w8_3047198675",
+   "2026-11-10_build_r18w9_3047937983",
+   "2026-11-10_build_r10a_3048440714",
+   "2026-11-10_build_r11a_3049602519",
+   "2026-11-10_build_r12a_3050758880",
+   "2026-11-10_build_r13a_3051722998",
+   "2026-11-12_build_r24a_3057403889"
+  ],
+  "set_by": "data",
+  "upper": 8.64,
+  "values": [
+   6.73,
+   6.4,
+   6.37,
+   8.61,
+   6.85,
+   8.64,
+   7.14,
+   6.25
+  ]
+ },
+ "macos/agent/ctrl_c_d/ctrl_c_flood": {
+  "kind": "ms",
+  "lower": -35.09,
+  "mad": 1.95,
+  "median": -29.23,
+  "n": 8,
+  "provisional": false,
+  "runs": [
+   "2026-11-09_build_r18w7_3046481170",
+   "2026-11-09_build_r18w8_3047198675",
+   "2026-11-10_build_r18w9_3047937983",
+   "2026-11-10_build_r10a_3048440714",
+   "2026-11-10_build_r11a_3049602519",
+   "2026-11-10_build_r12a_3050758880",
+   "2026-11-10_build_r13a_3051722998",
+   "2026-11-12_build_r24a_3057403889"
+  ],
+  "set_by": "data",
+  "upper": -20.62,
+  "values": [
+   -20.62,
+   -28.8,
+   -34.26,
+   -31.49,
+   -27.85,
+   -30.88,
+   -26.84,
+   -29.67
+  ]
+ },
+ "macos/agent/latency_enter/enter_to_start": {
+  "kind": "ms",
+  "lower": 2.92,
+  "mad": 0.42,
+  "median": 4.19,
+  "n": 8,
+  "provisional": false,
+  "runs": [
+   "2026-11-09_build_r18w7_3046481170",
+   "2026-11-09_build_r18w8_3047198675",
+   "2026-11-10_build_r18w9_3047937983",
+   "2026-11-10_build_r10a_3048440714",
+   "2026-11-10_build_r11a_3049602519",
+   "2026-11-10_build_r12a_3050758880",
+   "2026-11-10_build_r13a_3051722998",
+   "2026-11-12_build_r24a_3057403889"
+  ],
+  "set_by": "data",
+  "upper": 5.45,
+  "values": [
+   4.97,
+   3.11,
+   3.95,
+   3.58,
+   4.27,
+   4.24,
+   4.97,
+   4.13
+  ]
+ },
+ "macos/agent/latency_enter/enter_to_start#app": {
+  "kind": "ms",
+  "lower": 0.73,
+  "mad": 0.03,
+  "median": 1.43,
+  "n": 8,
+  "provisional": false,
+  "runs": [
+   "2026-11-09_build_r18w7_3046481170",
+   "2026-11-09_build_r18w8_3047198675",
+   "2026-11-10_build_r18w9_3047937983",
+   "2026-11-10_build_r10a_3048440714",
+   "2026-11-10_build_r11a_3049602519",
+   "2026-11-10_build_r12a_3050758880",
+   "2026-11-10_build_r13a_3051722998",
+   "2026-11-12_build_r24a_3057403889"
+  ],
+  "set_by": "data",
+  "upper": 1.73,
+  "values": [
+   1.37,
+   0.73,
+   1.43,
+   1.43,
+   1.45,
+   1.42,
+   1.47,
+   1.47
+  ]
+ },
+ "macos/agent/latency_enter_ssh/ssh_enter_to_start": {
+  "kind": "ms",
+  "lower": 5.53,
+  "mad": 0.0,
+  "median": 5.53,
+  "n": 1,
+  "provisional": true,
+  "runs": [
+   "2026-11-03_build_r18e4_3021881600"
+  ],
+  "set_by": "data",
+  "upper": 5.83,
+  "values": [
+   5.53
+  ]
+ },
+ "macos/agent/latency_first_key_after_idle/gap1s": {
+  "kind": "ms",
+  "lower": -1.72,
+  "mad": 0.06,
+  "median": -1.56,
+  "n": 2,
+  "provisional": true,
+  "runs": [
+   "2026-11-03_build_r18e4_3021881600",
+   "2026-11-12_build_r24a_3057403889"
+  ],
+  "set_by": "data",
+  "upper": -1.25,
+  "values": [
+   -1.61,
+   -1.5
+  ]
+ },
+ "macos/agent/latency_first_key_after_idle/gap2s": {
+  "kind": "ms",
+  "lower": -8.15,
+  "mad": 1.53,
+  "median": -3.56,
+  "n": 2,
+  "provisional": true,
+  "runs": [
+   "2026-11-03_build_r18e4_3021881600",
+   "2026-11-12_build_r24a_3057403889"
+  ],
+  "set_by": "data",
+  "upper": 1.03,
+  "values": [
+   -2.03,
+   -5.09
+  ]
+ },
+ "macos/agent/latency_first_key_after_idle/gap5s": {
+  "kind": "ms",
+  "lower": -22.77,
+  "mad": 2.7,
+  "median": -14.67,
+  "n": 2,
+  "provisional": true,
+  "runs": [
+   "2026-11-03_build_r18e4_3021881600",
+   "2026-11-12_build_r24a_3057403889"
+  ],
+  "set_by": "data",
+  "upper": -6.57,
+  "values": [
+   -17.37,
+   -11.97
+  ]
+ },
+ "macos/agent/latency_key_log/key_to_frame": {
+  "kind": "ms",
+  "lower": 1.57,
+  "mad": 0.0,
+  "median": 1.57,
+  "n": 1,
+  "provisional": true,
+  "runs": [
+   "2026-11-12_build_r24a_3057403889"
+  ],
+  "set_by": "data",
+  "upper": 1.87,
+  "values": [
+   1.57
+  ]
+ },
+ "macos/agent/latency_key_log/key_to_frame#app": {
+  "kind": "ms",
+  "lower": 1.45,
+  "mad": 0.04,
+  "median": 1.57,
+  "n": 3,
+  "provisional": true,
+  "runs": [
+   "2026-11-10_build_r12a_3050758880",
+   "2026-11-10_build_r13a_3051722998",
+   "2026-11-12_build_r24a_3057403889"
+  ],
+  "set_by": "data",
+  "upper": 1.87,
+  "values": [
+   1.57,
+   1.62,
+   1.53
+  ]
+ },
+ "macos/agent/latency_paint/key_to_paint": {
+  "kind": "ms",
+  "lower": -0.44,
+  "mad": 0.95,
+  "median": 5.45,
+  "n": 8,
+  "provisional": false,
+  "runs": [
+   "2026-11-09_build_r18w7_3046481170",
+   "2026-11-09_build_r18w8_3047198675",
+   "2026-11-10_build_r18w9_3047937983",
+   "2026-11-10_build_r10a_3048440714",
+   "2026-11-10_build_r11a_3049602519",
+   "2026-11-10_build_r12a_3050758880",
+   "2026-11-10_build_r13a_3051722998",
+   "2026-11-12_build_r24a_3057403889"
+  ],
+  "set_by": "data",
+  "upper": 8.3,
+  "values": [
+   6.66,
+   5.47,
+   2.05,
+   5.42,
+   6.13,
+   -0.44,
+   1.62,
+   5.77
+  ]
+ },
+ "macos/agent/subshell_line_editor_proof/lep_inner_line_after_enter_s": {
+  "kind": "s",
+  "lower": 1.23,
+  "mad": 0.0,
+  "median": 1.23,
+  "n": 1,
+  "provisional": true,
+  "runs": [
+   "2026-11-12_build_r24a_3057403889"
+  ],
+  "set_by": "data",
+  "upper": 1.53,
+  "values": [
+   1.23
+  ]
+ },
+ "macos/agent/subshell_ready_rc_clear/clear_inner_line_after_enter_s": {
+  "kind": "s",
+  "lower": 0.8,
+  "mad": 0.04,
+  "median": 0.98,
+  "n": 8,
+  "provisional": false,
+  "runs": [
+   "2026-11-09_build_r18w7_3046481170",
+   "2026-11-09_build_r18w8_3047198675",
+   "2026-11-10_build_r18w9_3047937983",
+   "2026-11-10_build_r10a_3048440714",
+   "2026-11-10_build_r11a_3049602519",
+   "2026-11-10_build_r12a_3050758880",
+   "2026-11-10_build_r13a_3051722998",
+   "2026-11-12_build_r24a_3057403889"
+  ],
+  "set_by": "data",
+  "upper": 1.28,
+  "values": [
+   0.8,
+   0.84,
+   0.96,
+   1.0,
+   1.02,
+   1.02,
+   0.96,
+   1.23
+  ]
+ },
+ "macos/agent/subshell_ready_rc_questions/rcq_inner_line_after_enter_s": {
+  "kind": "s",
+  "lower": 0.84,
+  "mad": 0.05,
+  "median": 1.03,
+  "n": 8,
+  "provisional": false,
+  "runs": [
+   "2026-11-09_build_r18w7_3046481170",
+   "2026-11-09_build_r18w8_3047198675",
+   "2026-11-10_build_r18w9_3047937983",
+   "2026-11-10_build_r10a_3048440714",
+   "2026-11-10_build_r11a_3049602519",
+   "2026-11-10_build_r12a_3050758880",
+   "2026-11-10_build_r13a_3051722998",
+   "2026-11-12_build_r24a_3057403889"
+  ],
+  "set_by": "data",
+  "upper": 1.33,
+  "values": [
+   0.84,
+   0.91,
+   1.02,
+   1.08,
+   1.03,
+   1.07,
+   1.03,
+   1.22
+  ]
+ },
+ "macos/agent/subshell_sh_probe_empty_ps1/empty_ps1_inner_line_after_enter_s": {
+  "kind": "s",
+  "lower": 0.0,
+  "mad": 0.0,
+  "median": 0.0,
+  "n": 6,
+  "provisional": false,
+  "runs": [
+   "2026-11-10_build_r18w9_3047937983",
+   "2026-11-10_build_r10a_3048440714",
+   "2026-11-10_build_r11a_3049602519",
+   "2026-11-10_build_r12a_3050758880",
+   "2026-11-10_build_r13a_3051722998",
+   "2026-11-12_build_r24a_3057403889"
+  ],
+  "set_by": "data",
+  "upper": 0.3,
+  "values": [
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0
+  ]
+ },
+ "macos/agent@fake/agent_latency_enter/idle": {
+  "kind": "ms",
+  "lower": -0.03,
+  "mad": 0.0,
+  "median": -0.01,
+  "n": 6,
+  "provisional": false,
+  "runs": [
+   "2026-11-09_build_r18w8_3047198675",
+   "2026-11-10_build_r18w9_3047937983",
+   "2026-11-10_build_r10a_3048440714",
+   "2026-11-10_build_r11a_3049602519",
+   "2026-11-10_build_r12a_3050758880",
+   "2026-11-10_build_r13a_3051722998"
+  ],
+  "set_by": "data",
+  "upper": 0.29,
+  "values": [
+   -0.01,
+   -0.01,
+   -0.01,
+   -0.01,
+   -0.03,
+   -0.01
+  ]
+ },
+ "macos/agent@fake/agent_latency_enter/streaming": {
+  "kind": "ms",
+  "lower": -0.08,
+  "mad": 0.01,
+  "median": -0.03,
+  "n": 6,
+  "provisional": false,
+  "runs": [
+   "2026-11-09_build_r18w8_3047198675",
+   "2026-11-10_build_r18w9_3047937983",
+   "2026-11-10_build_r10a_3048440714",
+   "2026-11-10_build_r11a_3049602519",
+   "2026-11-10_build_r12a_3050758880",
+   "2026-11-10_build_r13a_3051722998"
+  ],
+  "set_by": "data",
+  "upper": 0.27,
+  "values": [
+   -0.03,
+   -0.05,
+   -0.03,
+   -0.01,
+   -0.05,
+   -0.02
+  ]
+ },
+ "macos/agent@fake/agent_latency_key/idle": {
+  "kind": "ms",
+  "lower": -0.91,
+  "mad": 0.02,
+  "median": -0.16,
+  "n": 7,
+  "provisional": false,
+  "runs": [
+   "2026-11-09_build_r18w7_3046481170",
+   "2026-11-09_build_r18w8_3047198675",
+   "2026-11-10_build_r18w9_3047937983",
+   "2026-11-10_build_r10a_3048440714",
+   "2026-11-10_build_r11a_3049602519",
+   "2026-11-10_build_r12a_3050758880",
+   "2026-11-10_build_r13a_3051722998"
+  ],
+  "set_by": "data",
+  "upper": 0.14,
+  "values": [
+   -0.72,
+   -0.91,
+   -0.14,
+   -0.12,
+   -0.16,
+   -0.17,
+   -0.14
+  ]
+ },
+ "macos/agent@fake/agent_latency_key/streaming": {
+  "kind": "ms",
+  "lower": -5.04,
+  "mad": 0.66,
+  "median": 1.62,
+  "n": 7,
+  "provisional": false,
+  "runs": [
+   "2026-11-09_build_r18w7_3046481170",
+   "2026-11-09_build_r18w8_3047198675",
+   "2026-11-10_build_r18w9_3047937983",
+   "2026-11-10_build_r10a_3048440714",
+   "2026-11-10_build_r11a_3049602519",
+   "2026-11-10_build_r12a_3050758880",
+   "2026-11-10_build_r13a_3051722998"
+  ],
+  "set_by": "data",
+  "upper": 3.6,
+  "values": [
+   -3.2,
+   -5.04,
+   2.13,
+   1.62,
+   2.28,
+   0.88,
+   1.87
+  ]
+ },
+ "macos/terminal/ctrl_c_d/ctrl_c": {
+  "kind": "ms",
+  "lower": 5.07,
+  "mad": 0.67,
+  "median": 7.06,
+  "n": 8,
+  "provisional": false,
+  "runs": [
+   "2026-11-09_build_r18w7_3046481170",
+   "2026-11-09_build_r18w8_3047198675",
+   "2026-11-10_build_r18w9_3047937983",
+   "2026-11-10_build_r10a_3048440714",
+   "2026-11-10_build_r11a_3049602519",
+   "2026-11-10_build_r12a_3050758880",
+   "2026-11-10_build_r13a_3051722998",
+   "2026-11-12_build_r24a_3057403889"
+  ],
+  "set_by": "data",
+  "upper": 9.06,
+  "values": [
+   5.98,
+   7.79,
+   8.27,
+   7.32,
+   5.93,
+   7.51,
+   6.46,
+   6.81
+  ]
+ },
+ "macos/terminal/ctrl_c_d/ctrl_c_flood": {
+  "kind": "ms",
+  "lower": -31.55,
+  "mad": 1.44,
+  "median": -27.21,
+  "n": 8,
+  "provisional": false,
+  "runs": [
+   "2026-11-09_build_r18w7_3046481170",
+   "2026-11-09_build_r18w8_3047198675",
+   "2026-11-10_build_r18w9_3047937983",
+   "2026-11-10_build_r10a_3048440714",
+   "2026-11-10_build_r11a_3049602519",
+   "2026-11-10_build_r12a_3050758880",
+   "2026-11-10_build_r13a_3051722998",
+   "2026-11-12_build_r24a_3057403889"
+  ],
+  "set_by": "data",
+  "upper": -22.88,
+  "values": [
+   -27.15,
+   -25.56,
+   -28.81,
+   -27.28,
+   -30.69,
+   -29.48,
+   -26.24,
+   -25.92
+  ]
+ },
+ "macos/terminal/latency_enter/enter_to_start": {
+  "kind": "ms",
+  "lower": 3.18,
+  "mad": 0.17,
+  "median": 3.74,
+  "n": 8,
+  "provisional": false,
+  "runs": [
+   "2026-11-09_build_r18w8_3047198675",
+   "2026-11-10_build_r18w9_3047937983",
+   "2026-11-10_build_r10a_3048440714",
+   "2026-11-10_build_r11a_3049602519",
+   "2026-11-10_build_r12a_3050758880",
+   "2026-11-10_build_r13a_3051722998",
+   "2026-11-11_build_r15a_3054716634",
+   "2026-11-12_build_r24a_3057403889"
+  ],
+  "set_by": "data",
+  "upper": 4.25,
+  "values": [
+   4.24,
+   3.18,
+   3.75,
+   3.73,
+   3.89,
+   3.58,
+   3.95,
+   3.56
+  ]
+ },
+ "macos/terminal/latency_enter/enter_to_start#app": {
+  "kind": "ms",
+  "lower": 0.74,
+  "mad": 0.01,
+  "median": 0.78,
+  "n": 8,
+  "provisional": false,
+  "runs": [
+   "2026-11-09_build_r18w8_3047198675",
+   "2026-11-10_build_r18w9_3047937983",
+   "2026-11-10_build_r10a_3048440714",
+   "2026-11-10_build_r11a_3049602519",
+   "2026-11-10_build_r12a_3050758880",
+   "2026-11-10_build_r13a_3051722998",
+   "2026-11-11_build_r15a_3054716634",
+   "2026-11-12_build_r24a_3057403889"
+  ],
+  "set_by": "data",
+  "upper": 1.08,
+  "values": [
+   0.78,
+   0.77,
+   0.77,
+   0.77,
+   0.8,
+   0.79,
+   0.82,
+   0.76
+  ]
+ },
+ "macos/terminal/latency_enter_ssh/ssh_enter_to_start": {
+  "kind": "ms",
+  "lower": 4.87,
+  "mad": 0.0,
+  "median": 4.87,
+  "n": 1,
+  "provisional": true,
+  "runs": [
+   "2026-11-03_build_r18e4_3021881600"
+  ],
+  "set_by": "data",
+  "upper": 5.17,
+  "values": [
+   4.87
+  ]
+ },
+ "macos/terminal/latency_first_key_after_idle/gap1s": {
+  "kind": "ms",
+  "lower": -22.54,
+  "mad": 1.46,
+  "median": -1.88,
+  "n": 3,
+  "provisional": true,
+  "runs": [
+   "2026-11-03_build_r18e4_3021881600",
+   "2026-11-11_build_r15a_3054716634",
+   "2026-11-12_build_r24a_3057403889"
+  ],
+  "set_by": "data",
+  "upper": 2.5,
+  "values": [
+   -22.54,
+   -0.42,
+   -1.88
+  ]
+ },
+ "macos/terminal/latency_first_key_after_idle/gap2s": {
+  "kind": "ms",
+  "lower": -13.58,
+  "mad": 1.76,
+  "median": -5.46,
+  "n": 3,
+  "provisional": true,
+  "runs": [
+   "2026-11-03_build_r18e4_3021881600",
+   "2026-11-11_build_r15a_3054716634",
+   "2026-11-12_build_r24a_3057403889"
+  ],
+  "set_by": "data",
+  "upper": -0.18,
+  "values": [
+   -13.58,
+   -3.7,
+   -5.46
+  ]
+ },
+ "macos/terminal/latency_first_key_after_idle/gap5s": {
+  "kind": "ms",
+  "lower": -28.85,
+  "mad": 1.59,
+  "median": -16.3,
+  "n": 3,
+  "provisional": true,
+  "runs": [
+   "2026-11-03_build_r18e4_3021881600",
+   "2026-11-11_build_r15a_3054716634",
+   "2026-11-12_build_r24a_3057403889"
+  ],
+  "set_by": "data",
+  "upper": -11.53,
+  "values": [
+   -28.85,
+   -16.3,
+   -14.71
+  ]
+ },
+ "macos/terminal/latency_key_log/key_to_frame": {
+  "kind": "ms",
+  "lower": 1.58,
+  "mad": 0.0,
+  "median": 1.58,
+  "n": 1,
+  "provisional": true,
+  "runs": [
+   "2026-11-12_build_r24a_3057403889"
+  ],
+  "set_by": "data",
+  "upper": 1.88,
+  "values": [
+   1.58
+  ]
+ },
+ "macos/terminal/latency_key_log/key_to_frame#app": {
+  "kind": "ms",
+  "lower": 1.49,
+  "mad": 0.02,
+  "median": 1.55,
+  "n": 3,
+  "provisional": true,
+  "runs": [
+   "2026-11-10_build_r12a_3050758880",
+   "2026-11-10_build_r13a_3051722998",
+   "2026-11-12_build_r24a_3057403889"
+  ],
+  "set_by": "data",
+  "upper": 1.85,
+  "values": [
+   1.57,
+   1.5,
+   1.55
+  ]
+ },
+ "macos/terminal/latency_paint/key_to_paint": {
+  "kind": "ms",
+  "lower": -1.35,
+  "mad": 2.08,
+  "median": 4.88,
+  "n": 8,
+  "provisional": false,
+  "runs": [
+   "2026-11-09_build_r18w7_3046481170",
+   "2026-11-09_build_r18w8_3047198675",
+   "2026-11-10_build_r18w9_3047937983",
+   "2026-11-10_build_r10a_3048440714",
+   "2026-11-10_build_r11a_3049602519",
+   "2026-11-10_build_r12a_3050758880",
+   "2026-11-10_build_r13a_3051722998",
+   "2026-11-12_build_r24a_3057403889"
+  ],
+  "set_by": "data",
+  "upper": 11.11,
+  "values": [
+   6.96,
+   7.45,
+   3.46,
+   3.94,
+   0.45,
+   5.82,
+   1.88,
+   6.95
+  ]
+ },
+ "macos/terminal/subshell_line_editor_proof/lep_inner_line_after_enter_s": {
+  "kind": "s",
+  "lower": 1.22,
+  "mad": 0.0,
+  "median": 1.22,
+  "n": 1,
+  "provisional": true,
+  "runs": [
+   "2026-11-12_build_r24a_3057403889"
+  ],
+  "set_by": "data",
+  "upper": 1.52,
+  "values": [
+   1.22
+  ]
+ },
+ "macos/terminal/subshell_ready_rc_clear/clear_inner_line_after_enter_s": {
+  "kind": "s",
+  "lower": 0.86,
+  "mad": 0.02,
+  "median": 1.0,
+  "n": 8,
+  "provisional": false,
+  "runs": [
+   "2026-11-09_build_r18w7_3046481170",
+   "2026-11-09_build_r18w8_3047198675",
+   "2026-11-10_build_r18w9_3047937983",
+   "2026-11-10_build_r10a_3048440714",
+   "2026-11-10_build_r11a_3049602519",
+   "2026-11-10_build_r12a_3050758880",
+   "2026-11-10_build_r13a_3051722998",
+   "2026-11-12_build_r24a_3057403889"
+  ],
+  "set_by": "data",
+  "upper": 1.3,
+  "values": [
+   0.9,
+   0.86,
+   1.0,
+   1.0,
+   1.0,
+   0.96,
+   1.0,
+   1.27
+  ]
+ },
+ "macos/terminal/subshell_ready_rc_questions/rcq_inner_line_after_enter_s": {
+  "kind": "s",
+  "lower": 0.85,
+  "mad": 0.03,
+  "median": 1.01,
+  "n": 8,
+  "provisional": false,
+  "runs": [
+   "2026-11-09_build_r18w7_3046481170",
+   "2026-11-09_build_r18w8_3047198675",
+   "2026-11-10_build_r18w9_3047937983",
+   "2026-11-10_build_r10a_3048440714",
+   "2026-11-10_build_r11a_3049602519",
+   "2026-11-10_build_r12a_3050758880",
+   "2026-11-10_build_r13a_3051722998",
+   "2026-11-12_build_r24a_3057403889"
+  ],
+  "set_by": "data",
+  "upper": 1.31,
+  "values": [
+   0.85,
+   0.9,
+   0.97,
+   1.02,
+   1.01,
+   1.01,
+   1.01,
+   1.24
+  ]
+ },
+ "macos/terminal/subshell_sh_probe_empty_ps1/empty_ps1_inner_line_after_enter_s": {
+  "kind": "s",
+  "lower": 0.0,
+  "mad": 0.0,
+  "median": 0.0,
+  "n": 6,
+  "provisional": false,
+  "runs": [
+   "2026-11-10_build_r18w9_3047937983",
+   "2026-11-10_build_r10a_3048440714",
+   "2026-11-10_build_r11a_3049602519",
+   "2026-11-10_build_r12a_3050758880",
+   "2026-11-10_build_r13a_3051722998",
+   "2026-11-12_build_r24a_3057403889"
+  ],
+  "set_by": "data",
+  "upper": 0.3,
+  "values": [
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0
+  ]
+ },
+ "wayland/agent/ctrl_c_d/ctrl_c": {
+  "kind": "ms",
+  "lower": -1.24,
+  "mad": 0.19,
+  "median": -0.67,
+  "n": 8,
+  "provisional": false,
+  "runs": [
+   "2026-11-09_build_r18w7_3046481170",
+   "2026-11-09_build_r18w8_3047198675",
+   "2026-11-10_build_r18w9b_3048013125",
+   "2026-11-10_build_r10a_3048440714",
+   "2026-11-10_build_r11a_3049602519",
+   "2026-11-10_build_r12a_3050758880",
+   "2026-11-10_build_r13a_3051722998",
+   "2026-11-12_build_r24a_3057403889"
+  ],
+  "set_by": "data",
+  "upper": 6.12,
+  "values": [
+   6.12,
+   5.99,
+   1.51,
+   -0.88,
+   -0.84,
+   -0.54,
+   -0.82,
+   -0.8
+  ]
+ },
+ "wayland/agent/ctrl_c_d/ctrl_c_flood": {
+  "kind": "ms",
+  "lower": -0.4,
+  "mad": 0.21,
+  "median": 0.21,
+  "n": 8,
+  "provisional": false,
+  "runs": [
+   "2026-11-09_build_r18w7_3046481170",
+   "2026-11-09_build_r18w8_3047198675",
+   "2026-11-10_build_r18w9b_3048013125",
+   "2026-11-10_build_r10a_3048440714",
+   "2026-11-10_build_r11a_3049602519",
+   "2026-11-10_build_r12a_3050758880",
+   "2026-11-10_build_r13a_3051722998",
+   "2026-11-12_build_r24a_3057403889"
+  ],
+  "set_by": "data",
+  "upper": 7.8,
+  "values": [
+   6.87,
+   7.8,
+   0.43,
+   0.1,
+   0.19,
+   0.02,
+   0.24,
+   -0.03
+  ]
+ },
+ "wayland/agent/latency_enter/enter_to_start": {
+  "kind": "ms",
+  "lower": 2.56,
+  "mad": 0.11,
+  "median": 3.98,
+  "n": 8,
+  "provisional": false,
+  "runs": [
+   "2026-11-09_build_r18w8_3047198675",
+   "2026-11-10_build_r18w9b_3048013125",
+   "2026-11-10_build_r10a_3048440714",
+   "2026-11-10_build_r11a_3049602519",
+   "2026-11-10_build_r12a_3050758880",
+   "2026-11-10_build_r13a_3051722998",
+   "2026-11-11_build_r15a_3054716634",
+   "2026-11-12_build_r24a_3057403889"
+  ],
+  "set_by": "data",
+  "upper": 4.51,
+  "values": [
+   2.56,
+   4.04,
+   3.98,
+   3.98,
+   4.51,
+   3.89,
+   3.85,
+   4.13
+  ]
+ },
+ "wayland/agent/latency_enter/enter_to_start#app": {
+  "kind": "ms",
+  "lower": 1.39,
+  "mad": 0.11,
+  "median": 1.72,
+  "n": 8,
+  "provisional": false,
+  "runs": [
+   "2026-11-09_build_r18w8_3047198675",
+   "2026-11-10_build_r18w9b_3048013125",
+   "2026-11-10_build_r10a_3048440714",
+   "2026-11-10_build_r11a_3049602519",
+   "2026-11-10_build_r12a_3050758880",
+   "2026-11-10_build_r13a_3051722998",
+   "2026-11-11_build_r15a_3054716634",
+   "2026-11-12_build_r24a_3057403889"
+  ],
+  "set_by": "data",
+  "upper": 2.05,
+  "values": [
+   1.53,
+   1.81,
+   1.65,
+   1.67,
+   1.94,
+   1.77,
+   1.58,
+   1.85
+  ]
+ },
+ "wayland/agent/latency_enter_ssh/ssh_enter_to_start": {
+  "kind": "ms",
+  "lower": -10.05,
+  "mad": 0.0,
+  "median": -10.05,
+  "n": 1,
+  "provisional": true,
+  "runs": [
+   "2026-11-11_build_r15a_3054716634"
+  ],
+  "set_by": "data",
+  "upper": -9.75,
+  "values": [
+   -10.05
+  ]
+ },
+ "wayland/agent/latency_enter_ssh/ssh_enter_to_start#app": {
+  "kind": "ms",
+  "lower": 0.33,
+  "mad": 0.0,
+  "median": 0.33,
+  "n": 1,
+  "provisional": true,
+  "runs": [
+   "2026-11-11_build_r15a_3054716634"
+  ],
+  "set_by": "data",
+  "upper": 0.63,
+  "values": [
+   0.33
+  ]
+ },
+ "wayland/agent/latency_first_key_after_idle/gap1s": {
+  "kind": "ms",
+  "lower": -0.04,
+  "mad": 0.0,
+  "median": -0.04,
+  "n": 2,
+  "provisional": true,
+  "runs": [
+   "2026-11-11_build_r15a_3054716634",
+   "2026-11-12_build_r24a_3057403889"
+  ],
+  "set_by": "data",
+  "upper": 0.26,
+  "values": [
+   -0.04,
+   -0.04
+  ]
+ },
+ "wayland/agent/latency_first_key_after_idle/gap2s": {
+  "kind": "ms",
+  "lower": -0.03,
+  "mad": 0.01,
+  "median": -0.01,
+  "n": 2,
+  "provisional": true,
+  "runs": [
+   "2026-11-11_build_r15a_3054716634",
+   "2026-11-12_build_r24a_3057403889"
+  ],
+  "set_by": "data",
+  "upper": 0.29,
+  "values": [
+   -0.02,
+   -0.01
+  ]
+ },
+ "wayland/agent/latency_first_key_after_idle/gap5s": {
+  "kind": "ms",
+  "lower": -0.15,
+  "mad": 0.04,
+  "median": -0.03,
+  "n": 2,
+  "provisional": true,
+  "runs": [
+   "2026-11-11_build_r15a_3054716634",
+   "2026-11-12_build_r24a_3057403889"
+  ],
+  "set_by": "data",
+  "upper": 0.27,
+  "values": [
+   0.01,
+   -0.07
+  ]
+ },
+ "wayland/agent/latency_key_log/key_to_frame": {
+  "kind": "ms",
+  "lower": 2.64,
+  "mad": 0.03,
+  "median": 2.72,
+  "n": 4,
+  "provisional": true,
+  "runs": [
+   "2026-11-10_build_r11a_3049602519",
+   "2026-11-10_build_r12a_3050758880",
+   "2026-11-10_build_r13a_3051722998",
+   "2026-11-12_build_r24a_3057403889"
+  ],
+  "set_by": "data",
+  "upper": 3.02,
+  "values": [
+   2.69,
+   2.7,
+   2.74,
+   2.77
+  ]
+ },
+ "wayland/agent/latency_key_log/key_to_frame#app": {
+  "kind": "ms",
+  "lower": 0.62,
+  "mad": 0.01,
+  "median": 0.64,
+  "n": 4,
+  "provisional": true,
+  "runs": [
+   "2026-11-10_build_r11a_3049602519",
+   "2026-11-10_build_r12a_3050758880",
+   "2026-11-10_build_r13a_3051722998",
+   "2026-11-12_build_r24a_3057403889"
+  ],
+  "set_by": "data",
+  "upper": 0.94,
+  "values": [
+   0.64,
+   0.64,
+   0.63,
+   0.67
+  ]
+ },
+ "wayland/agent/subshell_line_editor_proof/lep_inner_line_after_enter_s": {
+  "kind": "s",
+  "lower": 0.8,
+  "mad": 0.0,
+  "median": 0.8,
+  "n": 1,
+  "provisional": true,
+  "runs": [
+   "2026-11-12_build_r24a_3057403889"
+  ],
+  "set_by": "data",
+  "upper": 1.1,
+  "values": [
+   0.8
+  ]
+ },
+ "wayland/agent/subshell_ready_rc_clear/clear_inner_line_after_enter_s": {
+  "kind": "s",
+  "lower": 0.5,
+  "mad": 0.03,
+  "median": 0.62,
+  "n": 8,
+  "provisional": false,
+  "runs": [
+   "2026-11-09_build_r18w7_3046481170",
+   "2026-11-09_build_r18w8_3047198675",
+   "2026-11-10_build_r18w9b_3048013125",
+   "2026-11-10_build_r10a_3048440714",
+   "2026-11-10_build_r11a_3049602519",
+   "2026-11-10_build_r12a_3050758880",
+   "2026-11-10_build_r13a_3051722998",
+   "2026-11-12_build_r24a_3057403889"
+  ],
+  "set_by": "data",
+  "upper": 0.93,
+  "values": [
+   0.5,
+   0.5,
+   0.6,
+   0.6,
+   0.65,
+   0.65,
+   0.65,
+   0.75
+  ]
+ },
+ "wayland/agent/subshell_ready_rc_questions/rcq_inner_line_after_enter_s": {
+  "kind": "s",
+  "lower": 0.62,
+  "mad": 0.02,
+  "median": 0.7,
+  "n": 8,
+  "provisional": false,
+  "runs": [
+   "2026-11-09_build_r18w7_3046481170",
+   "2026-11-09_build_r18w8_3047198675",
+   "2026-11-10_build_r18w9b_3048013125",
+   "2026-11-10_build_r10a_3048440714",
+   "2026-11-10_build_r11a_3049602519",
+   "2026-11-10_build_r12a_3050758880",
+   "2026-11-10_build_r13a_3051722998",
+   "2026-11-12_build_r24a_3057403889"
+  ],
+  "set_by": "data",
+  "upper": 1.0,
+  "values": [
+   0.7,
+   0.65,
+   0.65,
+   0.65,
+   0.7,
+   0.7,
+   0.7,
+   0.8
+  ]
+ },
+ "wayland/agent/subshell_sh_probe_empty_ps1/empty_ps1_inner_line_after_enter_s": {
+  "kind": "s",
+  "lower": 0.0,
+  "mad": 0.0,
+  "median": 0.0,
+  "n": 6,
+  "provisional": false,
+  "runs": [
+   "2026-11-10_build_r18w9b_3048013125",
+   "2026-11-10_build_r10a_3048440714",
+   "2026-11-10_build_r11a_3049602519",
+   "2026-11-10_build_r12a_3050758880",
+   "2026-11-10_build_r13a_3051722998",
+   "2026-11-12_build_r24a_3057403889"
+  ],
+  "set_by": "data",
+  "upper": 0.3,
+  "values": [
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0
+  ]
+ },
+ "wayland/agent@fake/agent_latency_enter/idle": {
+  "kind": "ms",
+  "lower": -0.02,
+  "mad": 0.01,
+  "median": 0.0,
+  "n": 6,
+  "provisional": false,
+  "runs": [
+   "2026-11-09_build_r18w8_3047198675",
+   "2026-11-10_build_r18w9b_3048013125",
+   "2026-11-10_build_r10a_3048440714",
+   "2026-11-10_build_r11a_3049602519",
+   "2026-11-10_build_r12a_3050758880",
+   "2026-11-10_build_r13a_3051722998"
+  ],
+  "set_by": "data",
+  "upper": 0.3,
+  "values": [
+   -0.0,
+   -0.01,
+   0.0,
+   0.01,
+   0.0,
+   -0.01
+  ]
+ },
+ "wayland/agent@fake/agent_latency_enter/streaming": {
+  "kind": "ms",
+  "lower": -0.08,
+  "mad": 0.0,
+  "median": -0.06,
+  "n": 6,
+  "provisional": false,
+  "runs": [
+   "2026-11-09_build_r18w8_3047198675",
+   "2026-11-10_build_r18w9b_3048013125",
+   "2026-11-10_build_r10a_3048440714",
+   "2026-11-10_build_r11a_3049602519",
+   "2026-11-10_build_r12a_3050758880",
+   "2026-11-10_build_r13a_3051722998"
+  ],
+  "set_by": "data",
+  "upper": 0.24,
+  "values": [
+   -0.05,
+   -0.07,
+   -0.07,
+   -0.06,
+   -0.06,
+   -0.06
+  ]
+ },
+ "wayland/agent@fake/agent_latency_key/idle": {
+  "kind": "ms",
+  "lower": -0.18,
+  "mad": 0.03,
+  "median": -0.09,
+  "n": 7,
+  "provisional": false,
+  "runs": [
+   "2026-11-09_build_r18w7_3046481170",
+   "2026-11-09_build_r18w8_3047198675",
+   "2026-11-10_build_r18w9b_3048013125",
+   "2026-11-10_build_r10a_3048440714",
+   "2026-11-10_build_r11a_3049602519",
+   "2026-11-10_build_r12a_3050758880",
+   "2026-11-10_build_r13a_3051722998"
+  ],
+  "set_by": "data",
+  "upper": 0.21,
+  "values": [
+   0.01,
+   -0.01,
+   0.07,
+   -0.12,
+   -0.1,
+   -0.09,
+   -0.11
+  ]
+ },
+ "wayland/agent@fake/agent_latency_key/streaming": {
+  "kind": "ms",
+  "lower": -0.34,
+  "mad": 0.04,
+  "median": -0.22,
+  "n": 7,
+  "provisional": false,
+  "runs": [
+   "2026-11-09_build_r18w7_3046481170",
+   "2026-11-09_build_r18w8_3047198675",
+   "2026-11-10_build_r18w9b_3048013125",
+   "2026-11-10_build_r10a_3048440714",
+   "2026-11-10_build_r11a_3049602519",
+   "2026-11-10_build_r12a_3050758880",
+   "2026-11-10_build_r13a_3051722998"
+  ],
+  "set_by": "data",
+  "upper": 7.24,
+  "values": [
+   7.21,
+   7.24,
+   -0.05,
+   -0.22,
+   -0.22,
+   -0.26,
+   -0.23
+  ]
+ },
+ "wayland/terminal/ctrl_c_d/ctrl_c": {
+  "kind": "ms",
+  "lower": -3.83,
+  "mad": 1.14,
+  "median": -0.41,
+  "n": 8,
+  "provisional": false,
+  "runs": [
+   "2026-11-09_build_r18w7_3046481170",
+   "2026-11-09_build_r18w8_3047198675",
+   "2026-11-10_build_r18w9b_3048013125",
+   "2026-11-10_build_r10a_3048440714",
+   "2026-11-10_build_r11a_3049602519",
+   "2026-11-10_build_r12a_3050758880",
+   "2026-11-10_build_r13a_3051722998",
+   "2026-11-12_build_r24a_3057403889"
+  ],
+  "set_by": "data",
+  "upper": 10.65,
+  "values": [
+   10.65,
+   10.08,
+   0.3,
+   -1.54,
+   -1.55,
+   -1.11,
+   0.86,
+   -1.23
+  ]
+ },
+ "wayland/terminal/ctrl_c_d/ctrl_c_flood": {
+  "kind": "ms",
+  "lower": -0.7,
+  "mad": 0.31,
+  "median": 0.23,
+  "n": 8,
+  "provisional": false,
+  "runs": [
+   "2026-11-09_build_r18w7_3046481170",
+   "2026-11-09_build_r18w8_3047198675",
+   "2026-11-10_build_r18w9b_3048013125",
+   "2026-11-10_build_r10a_3048440714",
+   "2026-11-10_build_r11a_3049602519",
+   "2026-11-10_build_r12a_3050758880",
+   "2026-11-10_build_r13a_3051722998",
+   "2026-11-12_build_r24a_3057403889"
+  ],
+  "set_by": "data",
+  "upper": 7.73,
+  "values": [
+   6.68,
+   7.73,
+   -0.06,
+   0.02,
+   -0.7,
+   0.36,
+   0.1,
+   0.56
+  ]
+ },
+ "wayland/terminal/latency_enter/enter_to_start": {
+  "kind": "ms",
+  "lower": 1.47,
+  "mad": 0.24,
+  "median": 2.21,
+  "n": 8,
+  "provisional": false,
+  "runs": [
+   "2026-11-09_build_r18w8_3047198675",
+   "2026-11-10_build_r18w9b_3048013125",
+   "2026-11-10_build_r10a_3048440714",
+   "2026-11-10_build_r11a_3049602519",
+   "2026-11-10_build_r12a_3050758880",
+   "2026-11-10_build_r13a_3051722998",
+   "2026-11-11_build_r15a_3054716634",
+   "2026-11-12_build_r24a_3057403889"
+  ],
+  "set_by": "data",
+  "upper": 6.78,
+  "values": [
+   6.78,
+   3.49,
+   2.23,
+   1.97,
+   2.19,
+   1.96,
+   1.95,
+   2.28
+  ]
+ },
+ "wayland/terminal/latency_enter/enter_to_start#app": {
+  "kind": "ms",
+  "lower": 0.43,
+  "mad": 0.1,
+  "median": 1.0,
+  "n": 8,
+  "provisional": false,
+  "runs": [
+   "2026-11-09_build_r18w8_3047198675",
+   "2026-11-10_build_r18w9b_3048013125",
+   "2026-11-10_build_r10a_3048440714",
+   "2026-11-10_build_r11a_3049602519",
+   "2026-11-10_build_r12a_3050758880",
+   "2026-11-10_build_r13a_3051722998",
+   "2026-11-11_build_r15a_3054716634",
+   "2026-11-12_build_r24a_3057403889"
+  ],
+  "set_by": "data",
+  "upper": 1.3,
+  "values": [
+   0.45,
+   0.43,
+   1.1,
+   1.07,
+   1.01,
+   0.99,
+   1.1,
+   0.86
+  ]
+ },
+ "wayland/terminal/latency_enter_ssh/ssh_enter_to_start": {
+  "kind": "ms",
+  "lower": -9.19,
+  "mad": 0.0,
+  "median": -9.19,
+  "n": 1,
+  "provisional": true,
+  "runs": [
+   "2026-11-11_build_r15a_3054716634"
+  ],
+  "set_by": "data",
+  "upper": -8.89,
+  "values": [
+   -9.19
+  ]
+ },
+ "wayland/terminal/latency_enter_ssh/ssh_enter_to_start#app": {
+  "kind": "ms",
+  "lower": 0.38,
+  "mad": 0.0,
+  "median": 0.38,
+  "n": 1,
+  "provisional": true,
+  "runs": [
+   "2026-11-11_build_r15a_3054716634"
+  ],
+  "set_by": "data",
+  "upper": 0.68,
+  "values": [
+   0.38
+  ]
+ },
+ "wayland/terminal/latency_first_key_after_idle/gap1s": {
+  "kind": "ms",
+  "lower": -0.05,
+  "mad": 0.0,
+  "median": -0.05,
+  "n": 2,
+  "provisional": true,
+  "runs": [
+   "2026-11-11_build_r15a_3054716634",
+   "2026-11-12_build_r24a_3057403889"
+  ],
+  "set_by": "data",
+  "upper": 0.25,
+  "values": [
+   -0.05,
+   -0.05
+  ]
+ },
+ "wayland/terminal/latency_first_key_after_idle/gap2s": {
+  "kind": "ms",
+  "lower": -0.18,
+  "mad": 0.04,
+  "median": -0.06,
+  "n": 2,
+  "provisional": true,
+  "runs": [
+   "2026-11-11_build_r15a_3054716634",
+   "2026-11-12_build_r24a_3057403889"
+  ],
+  "set_by": "data",
+  "upper": 0.24,
+  "values": [
+   -0.1,
+   -0.02
+  ]
+ },
+ "wayland/terminal/latency_first_key_after_idle/gap5s": {
+  "kind": "ms",
+  "lower": -0.11,
+  "mad": 0.03,
+  "median": -0.02,
+  "n": 2,
+  "provisional": true,
+  "runs": [
+   "2026-11-11_build_r15a_3054716634",
+   "2026-11-12_build_r24a_3057403889"
+  ],
+  "set_by": "data",
+  "upper": 0.28,
+  "values": [
+   0.01,
+   -0.05
+  ]
+ },
+ "wayland/terminal/latency_key_log/key_to_frame": {
+  "kind": "ms",
+  "lower": 2.61,
+  "mad": 0.05,
+  "median": 2.76,
+  "n": 4,
+  "provisional": true,
+  "runs": [
+   "2026-11-10_build_r11a_3049602519",
+   "2026-11-10_build_r12a_3050758880",
+   "2026-11-10_build_r13a_3051722998",
+   "2026-11-12_build_r24a_3057403889"
+  ],
+  "set_by": "data",
+  "upper": 3.06,
+  "values": [
+   2.72,
+   2.69,
+   2.8,
+   2.82
+  ]
+ },
+ "wayland/terminal/latency_key_log/key_to_frame#app": {
+  "kind": "ms",
+  "lower": 0.6,
+  "mad": 0.02,
+  "median": 0.65,
+  "n": 4,
+  "provisional": true,
+  "runs": [
+   "2026-11-10_build_r11a_3049602519",
+   "2026-11-10_build_r12a_3050758880",
+   "2026-11-10_build_r13a_3051722998",
+   "2026-11-12_build_r24a_3057403889"
+  ],
+  "set_by": "data",
+  "upper": 0.95,
+  "values": [
+   0.64,
+   0.61,
+   0.67,
+   0.66
+  ]
+ },
+ "wayland/terminal/subshell_line_editor_proof/lep_inner_line_after_enter_s": {
+  "kind": "s",
+  "lower": 0.8,
+  "mad": 0.0,
+  "median": 0.8,
+  "n": 1,
+  "provisional": true,
+  "runs": [
+   "2026-11-12_build_r24a_3057403889"
+  ],
+  "set_by": "data",
+  "upper": 1.1,
+  "values": [
+   0.8
+  ]
+ },
+ "wayland/terminal/subshell_ready_rc_clear/clear_inner_line_after_enter_s": {
+  "kind": "s",
+  "lower": 0.5,
+  "mad": 0.05,
+  "median": 0.65,
+  "n": 8,
+  "provisional": false,
+  "runs": [
+   "2026-11-09_build_r18w7_3046481170",
+   "2026-11-09_build_r18w8_3047198675",
+   "2026-11-10_build_r18w9b_3048013125",
+   "2026-11-10_build_r10a_3048440714",
+   "2026-11-10_build_r11a_3049602519",
+   "2026-11-10_build_r12a_3050758880",
+   "2026-11-10_build_r13a_3051722998",
+   "2026-11-12_build_r24a_3057403889"
+  ],
+  "set_by": "data",
+  "upper": 0.95,
+  "values": [
+   0.5,
+   0.5,
+   0.55,
+   0.65,
+   0.65,
+   0.65,
+   0.65,
+   0.8
+  ]
+ },
+ "wayland/terminal/subshell_ready_rc_questions/rcq_inner_line_after_enter_s": {
+  "kind": "s",
+  "lower": 0.57,
+  "mad": 0.02,
+  "median": 0.65,
+  "n": 8,
+  "provisional": false,
+  "runs": [
+   "2026-11-09_build_r18w7_3046481170",
+   "2026-11-09_build_r18w8_3047198675",
+   "2026-11-10_build_r18w9b_3048013125",
+   "2026-11-10_build_r10a_3048440714",
+   "2026-11-10_build_r11a_3049602519",
+   "2026-11-10_build_r12a_3050758880",
+   "2026-11-10_build_r13a_3051722998",
+   "2026-11-12_build_r24a_3057403889"
+  ],
+  "set_by": "data",
+  "upper": 0.95,
+  "values": [
+   0.7,
+   0.7,
+   0.6,
+   0.65,
+   0.65,
+   0.65,
+   0.65,
+   0.8
+  ]
+ },
+ "wayland/terminal/subshell_sh_probe_empty_ps1/empty_ps1_inner_line_after_enter_s": {
+  "kind": "s",
+  "lower": 0.0,
+  "mad": 0.0,
+  "median": 0.0,
+  "n": 6,
+  "provisional": false,
+  "runs": [
+   "2026-11-10_build_r18w9b_3048013125",
+   "2026-11-10_build_r10a_3048440714",
+   "2026-11-10_build_r11a_3049602519",
+   "2026-11-10_build_r12a_3050758880",
+   "2026-11-10_build_r13a_3051722998",
+   "2026-11-12_build_r24a_3057403889"
+  ],
+  "set_by": "data",
+  "upper": 0.3,
+  "values": [
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0
+  ]
+ },
+ "windows/agent/ctrl_c_d/ctrl_c": {
+  "kind": "ms",
+  "lower": -13.03,
+  "mad": 7.17,
+  "median": 8.49,
+  "n": 2,
+  "provisional": true,
+  "runs": [
+   "2026-11-02_build_r18cj_3018419792",
+   "2026-11-12_build_r24a_3057403889"
+  ],
+  "set_by": "data",
+  "upper": 30.02,
+  "values": [
+   15.67,
+   1.32
+  ]
+ },
+ "windows/agent/ctrl_c_d/ctrl_c#app": {
+  "kind": "ms",
+  "lower": 0.69,
+  "mad": 0.0,
+  "median": 0.69,
+  "n": 1,
+  "provisional": true,
+  "runs": [
+   "2026-11-12_build_r24a_3057403889"
+  ],
+  "set_by": "data",
+  "upper": 0.99,
+  "values": [
+   0.69
+  ]
+ },
+ "windows/agent/latency_enter/enter_to_start": {
+  "kind": "ms",
+  "lower": 34.8,
+  "mad": 0.0,
+  "median": 34.8,
+  "n": 1,
+  "provisional": true,
+  "runs": [
+   "2026-11-12_build_r24a_3057403889"
+  ],
+  "set_by": "data",
+  "upper": 35.1,
+  "values": [
+   34.8
+  ]
+ },
+ "windows/agent/latency_enter/enter_to_start#app": {
+  "kind": "ms",
+  "lower": 4.04,
+  "mad": 0.0,
+  "median": 4.04,
+  "n": 1,
+  "provisional": true,
+  "runs": [
+   "2026-11-12_build_r24a_3057403889"
+  ],
+  "set_by": "data",
+  "upper": 4.34,
+  "values": [
+   4.04
+  ]
+ },
+ "windows/agent@gitbash+fake/agent_latency_enter/idle": {
+  "kind": "ms",
+  "lower": -0.08,
+  "mad": 0.01,
+  "median": -0.02,
+  "n": 6,
+  "provisional": false,
+  "runs": [
+   "2026-11-09_build_r18w8_3047198675",
+   "2026-11-10_build_r18w9_3047937983",
+   "2026-11-10_build_r10a_3048440714",
+   "2026-11-10_build_r11a_3049602519",
+   "2026-11-10_build_r12a_3050758880",
+   "2026-11-10_build_r13a_3051722998"
+  ],
+  "set_by": "data",
+  "upper": 0.28,
+  "values": [
+   -0.02,
+   -0.02,
+   -0.05,
+   0.0,
+   -0.08,
+   -0.01
+  ]
+ },
+ "windows/agent@gitbash+fake/agent_latency_enter/streaming": {
+  "kind": "ms",
+  "lower": -0.16,
+  "mad": 0.01,
+  "median": -0.13,
+  "n": 6,
+  "provisional": false,
+  "runs": [
+   "2026-11-09_build_r18w8_3047198675",
+   "2026-11-10_build_r18w9_3047937983",
+   "2026-11-10_build_r10a_3048440714",
+   "2026-11-10_build_r11a_3049602519",
+   "2026-11-10_build_r12a_3050758880",
+   "2026-11-10_build_r13a_3051722998"
+  ],
+  "set_by": "data",
+  "upper": 0.17,
+  "values": [
+   -0.13,
+   -0.12,
+   -0.15,
+   -0.13,
+   -0.16,
+   -0.13
+  ]
+ },
+ "windows/agent@gitbash+fake/agent_latency_key/idle": {
+  "kind": "ms",
+  "lower": -0.43,
+  "mad": 0.15,
+  "median": 0.02,
+  "n": 7,
+  "provisional": false,
+  "runs": [
+   "2026-11-09_build_r18w7_3046481170",
+   "2026-11-09_build_r18w8_3047198675",
+   "2026-11-10_build_r18w9_3047937983",
+   "2026-11-10_build_r10a_3048440714",
+   "2026-11-10_build_r11a_3049602519",
+   "2026-11-10_build_r12a_3050758880",
+   "2026-11-10_build_r13a_3051722998"
+  ],
+  "set_by": "data",
+  "upper": 0.47,
+  "values": [
+   0.14,
+   0.1,
+   -0.25,
+   -0.3,
+   0.17,
+   0.02,
+   -0.13
+  ]
+ },
+ "windows/agent@gitbash+fake/agent_latency_key/streaming": {
+  "kind": "ms",
+  "lower": -2.29,
+  "mad": 0.08,
+  "median": -2.0,
+  "n": 7,
+  "provisional": false,
+  "runs": [
+   "2026-11-09_build_r18w7_3046481170",
+   "2026-11-09_build_r18w8_3047198675",
+   "2026-11-10_build_r18w9_3047937983",
+   "2026-11-10_build_r10a_3048440714",
+   "2026-11-10_build_r11a_3049602519",
+   "2026-11-10_build_r12a_3050758880",
+   "2026-11-10_build_r13a_3051722998"
+  ],
+  "set_by": "data",
+  "upper": -1.7,
+  "values": [
+   -1.95,
+   -1.91,
+   -2.29,
+   -1.97,
+   -2.0,
+   -2.08,
+   -2.29
+  ]
+ },
+ "windows/agent@gitbash/ctrl_c_d/ctrl_c": {
+  "kind": "ms",
+  "lower": -8.6,
+  "mad": 4.8,
+  "median": 5.81,
+  "n": 2,
+  "provisional": true,
+  "runs": [
+   "2026-11-02_build_r18cj_3018419792",
+   "2026-11-12_build_r24a_3057403889"
+  ],
+  "set_by": "data",
+  "upper": 20.23,
+  "values": [
+   1.01,
+   10.62
+  ]
+ },
+ "windows/agent@gitbash/ctrl_c_d/ctrl_c#app": {
+  "kind": "ms",
+  "lower": 0.65,
+  "mad": 0.0,
+  "median": 0.65,
+  "n": 1,
+  "provisional": true,
+  "runs": [
+   "2026-11-12_build_r24a_3057403889"
+  ],
+  "set_by": "data",
+  "upper": 0.95,
+  "values": [
+   0.65
+  ]
+ },
+ "windows/agent@gitbash/latency_enter/enter_to_start": {
+  "kind": "ms",
+  "lower": 4.23,
+  "mad": 10.83,
+  "median": 36.7,
+  "n": 2,
+  "provisional": true,
+  "runs": [
+   "2026-11-02_build_r18cj_3018419792",
+   "2026-11-12_build_r24a_3057403889"
+  ],
+  "set_by": "data",
+  "upper": 69.18,
+  "values": [
+   25.88,
+   47.53
+  ]
+ },
+ "windows/agent@gitbash/latency_enter/enter_to_start#app": {
+  "kind": "ms",
+  "lower": 1.45,
+  "mad": 0.0,
+  "median": 1.45,
+  "n": 1,
+  "provisional": true,
+  "runs": [
+   "2026-11-12_build_r24a_3057403889"
+  ],
+  "set_by": "data",
+  "upper": 1.75,
+  "values": [
+   1.45
+  ]
+ },
+ "windows/agent@gitbash/latency_first_key_after_idle/gap1s": {
+  "kind": "ms",
+  "lower": -0.02,
+  "mad": 0.0,
+  "median": -0.02,
+  "n": 1,
+  "provisional": true,
+  "runs": [
+   "2026-11-12_build_r24a_3057403889"
+  ],
+  "set_by": "data",
+  "upper": 0.28,
+  "values": [
+   -0.02
+  ]
+ },
+ "windows/agent@gitbash/latency_first_key_after_idle/gap2s": {
+  "kind": "ms",
+  "lower": -0.09,
+  "mad": 0.0,
+  "median": -0.09,
+  "n": 1,
+  "provisional": true,
+  "runs": [
+   "2026-11-12_build_r24a_3057403889"
+  ],
+  "set_by": "data",
+  "upper": 0.21,
+  "values": [
+   -0.09
+  ]
+ },
+ "windows/agent@gitbash/latency_first_key_after_idle/gap5s": {
+  "kind": "ms",
+  "lower": -0.1,
+  "mad": 0.0,
+  "median": -0.1,
+  "n": 1,
+  "provisional": true,
+  "runs": [
+   "2026-11-12_build_r24a_3057403889"
+  ],
+  "set_by": "data",
+  "upper": 0.2,
+  "values": [
+   -0.1
+  ]
+ },
+ "windows/agent@gitbash/latency_key_log/key_to_frame": {
+  "kind": "ms",
+  "lower": 2.55,
+  "mad": 0.48,
+  "median": 3.98,
+  "n": 2,
+  "provisional": true,
+  "runs": [
+   "2026-11-02_build_r18cj_3018419792",
+   "2026-11-12_build_r24a_3057403889"
+  ],
+  "set_by": "data",
+  "upper": 5.4,
+  "values": [
+   3.5,
+   4.45
+  ]
+ },
+ "windows/agent@gitbash/latency_key_log/key_to_frame#app": {
+  "kind": "ms",
+  "lower": 0.77,
+  "mad": 0.0,
+  "median": 0.77,
+  "n": 1,
+  "provisional": true,
+  "runs": [
+   "2026-11-12_build_r24a_3057403889"
+  ],
+  "set_by": "data",
+  "upper": 1.07,
+  "values": [
+   0.77
+  ]
+ },
+ "windows/agent@gitbash/subshell_ready_rc_clear/clear_inner_line_after_enter_s": {
+  "kind": "s",
+  "lower": 0.05,
+  "mad": 0.0,
+  "median": 0.05,
+  "n": 7,
+  "provisional": false,
+  "runs": [
+   "2026-11-09_build_r18w8_3047198675",
+   "2026-11-10_build_r18w9_3047937983",
+   "2026-11-10_build_r10a_3048440714",
+   "2026-11-10_build_r11a_3049602519",
+   "2026-11-10_build_r12a_3050758880",
+   "2026-11-10_build_r13a_3051722998",
+   "2026-11-12_build_r24a_3057403889"
+  ],
+  "set_by": "data",
+  "upper": 4.79,
+  "values": [
+   0.05,
+   0.05,
+   0.05,
+   0.05,
+   3.75,
+   0.05,
+   4.79
+  ]
+ },
+ "windows/agent@gitbash/subshell_ready_rc_questions/rcq_inner_line_after_enter_s": {
+  "kind": "s",
+  "lower": 0.05,
+  "mad": 0.14,
+  "median": 3.76,
+  "n": 5,
+  "provisional": false,
+  "runs": [
+   "2026-11-09_build_r18w8_3047198675",
+   "2026-11-10_build_r11a_3049602519",
+   "2026-11-10_build_r12a_3050758880",
+   "2026-11-10_build_r13a_3051722998",
+   "2026-11-12_build_r24a_3057403889"
+  ],
+  "set_by": "data",
+  "upper": 4.18,
+  "values": [
+   0.05,
+   3.65,
+   3.91,
+   3.76,
+   3.9
+  ]
+ },
+ "windows/terminal/ctrl_c_d/ctrl_c": {
+  "kind": "ms",
+  "lower": 1.54,
+  "mad": 0.07,
+  "median": 1.76,
+  "n": 8,
+  "provisional": false,
+  "runs": [
+   "2026-11-09_build_r18w7_3046481170",
+   "2026-11-09_build_r18w8_3047198675",
+   "2026-11-10_build_r18w9_3047937983",
+   "2026-11-10_build_r10a_3048440714",
+   "2026-11-10_build_r11a_3049602519",
+   "2026-11-10_build_r12a_3050758880",
+   "2026-11-10_build_r13a_3051722998",
+   "2026-11-12_build_r24a_3057403889"
+  ],
+  "set_by": "data",
+  "upper": 2.06,
+  "values": [
+   1.54,
+   2.01,
+   1.72,
+   1.78,
+   1.8,
+   1.86,
+   1.56,
+   1.74
+  ]
+ },
+ "windows/terminal/ctrl_c_d/ctrl_c#app": {
+  "kind": "ms",
+  "lower": 0.6,
+  "mad": 0.01,
+  "median": 0.63,
+  "n": 3,
+  "provisional": true,
+  "runs": [
+   "2026-11-10_build_r12a_3050758880",
+   "2026-11-10_build_r13a_3051722998",
+   "2026-11-12_build_r24a_3057403889"
+  ],
+  "set_by": "data",
+  "upper": 0.93,
+  "values": [
+   0.67,
+   0.63,
+   0.62
+  ]
+ },
+ "windows/terminal/latency_enter/enter_to_start": {
+  "kind": "ms",
+  "lower": 37.64,
+  "mad": 0.59,
+  "median": 40.87,
+  "n": 8,
+  "provisional": false,
+  "runs": [
+   "2026-11-02_build_r18d2_3020063118",
+   "2026-11-09_build_r18w5_3045526679",
+   "2026-11-09_build_r18w7_3046481170",
+   "2026-11-10_build_r18w9_3047937983",
+   "2026-11-10_build_r10a_3048440714",
+   "2026-11-10_build_r11a_3049602519",
+   "2026-11-10_build_r12a_3050758880",
+   "2026-11-10_build_r13a_3051722998"
+  ],
+  "set_by": "data",
+  "upper": 86.47,
+  "values": [
+   86.47,
+   41.06,
+   37.64,
+   37.7,
+   40.67,
+   39.9,
+   41.08,
+   41.06
+  ]
+ },
+ "windows/terminal/latency_enter/enter_to_start#app": {
+  "kind": "ms",
+  "lower": 1.65,
+  "mad": 0.03,
+  "median": 1.76,
+  "n": 8,
+  "provisional": false,
+  "runs": [
+   "2026-11-09_build_r18w5_3045526679",
+   "2026-11-09_build_r18w7_3046481170",
+   "2026-11-10_build_r18w9_3047937983",
+   "2026-11-10_build_r10a_3048440714",
+   "2026-11-10_build_r11a_3049602519",
+   "2026-11-10_build_r12a_3050758880",
+   "2026-11-10_build_r13a_3051722998",
+   "2026-11-12_build_r24a_3057403889"
+  ],
+  "set_by": "data",
+  "upper": 2.06,
+  "values": [
+   1.65,
+   1.66,
+   1.75,
+   1.74,
+   1.79,
+   1.77,
+   1.79,
+   1.77
+  ]
+ },
+ "windows/terminal@gitbash/ctrl_c_d/ctrl_c": {
+  "kind": "ms",
+  "lower": -10.43,
+  "mad": 6.32,
+  "median": 8.53,
+  "n": 8,
+  "provisional": false,
+  "runs": [
+   "2026-11-09_build_r18w7_3046481170",
+   "2026-11-09_build_r18w8_3047198675",
+   "2026-11-10_build_r18w9_3047937983",
+   "2026-11-10_build_r10a_3048440714",
+   "2026-11-10_build_r11a_3049602519",
+   "2026-11-10_build_r12a_3050758880",
+   "2026-11-10_build_r13a_3051722998",
+   "2026-11-12_build_r24a_3057403889"
+  ],
+  "set_by": "data",
+  "upper": 27.49,
+  "values": [
+   7.25,
+   17.86,
+   4.77,
+   14.48,
+   -5.11,
+   15.22,
+   -5.59,
+   9.81
+  ]
+ },
+ "windows/terminal@gitbash/ctrl_c_d/ctrl_c#app": {
+  "kind": "ms",
+  "lower": 0.59,
+  "mad": 0.01,
+  "median": 0.62,
+  "n": 3,
+  "provisional": true,
+  "runs": [
+   "2026-11-10_build_r12a_3050758880",
+   "2026-11-10_build_r13a_3051722998",
+   "2026-11-12_build_r24a_3057403889"
+  ],
+  "set_by": "data",
+  "upper": 0.92,
+  "values": [
+   0.65,
+   0.62,
+   0.61
+  ]
+ },
+ "windows/terminal@gitbash/latency_enter/enter_to_start": {
+  "kind": "ms",
+  "lower": 25.56,
+  "mad": 1.85,
+  "median": 31.11,
+  "n": 8,
+  "provisional": false,
+  "runs": [
+   "2026-11-09_build_r18w7_3046481170",
+   "2026-11-09_build_r18w8_3047198675",
+   "2026-11-10_build_r18w9_3047937983",
+   "2026-11-10_build_r10a_3048440714",
+   "2026-11-10_build_r11a_3049602519",
+   "2026-11-10_build_r12a_3050758880",
+   "2026-11-10_build_r13a_3051722998",
+   "2026-11-12_build_r24a_3057403889"
+  ],
+  "set_by": "data",
+  "upper": 53.51,
+  "values": [
+   31.24,
+   30.22,
+   34.39,
+   31.37,
+   30.98,
+   27.26,
+   28.3,
+   53.51
+  ]
+ },
+ "windows/terminal@gitbash/latency_enter/enter_to_start#app": {
+  "kind": "ms",
+  "lower": 0.85,
+  "mad": 0.03,
+  "median": 0.93,
+  "n": 8,
+  "provisional": false,
+  "runs": [
+   "2026-11-09_build_r18w7_3046481170",
+   "2026-11-09_build_r18w8_3047198675",
+   "2026-11-10_build_r18w9_3047937983",
+   "2026-11-10_build_r10a_3048440714",
+   "2026-11-10_build_r11a_3049602519",
+   "2026-11-10_build_r12a_3050758880",
+   "2026-11-10_build_r13a_3051722998",
+   "2026-11-12_build_r24a_3057403889"
+  ],
+  "set_by": "data",
+  "upper": 1.23,
+  "values": [
+   0.9,
+   0.9,
+   0.96,
+   0.99,
+   0.93,
+   0.92,
+   0.93,
+   0.9
+  ]
+ },
+ "windows/terminal@gitbash/latency_first_key_after_idle/gap1s": {
+  "kind": "ms",
+  "lower": -0.13,
+  "mad": 0.0,
+  "median": -0.13,
+  "n": 1,
+  "provisional": true,
+  "runs": [
+   "2026-11-12_build_r24a_3057403889"
+  ],
+  "set_by": "data",
+  "upper": 0.17,
+  "values": [
+   -0.13
+  ]
+ },
+ "windows/terminal@gitbash/latency_first_key_after_idle/gap2s": {
+  "kind": "ms",
+  "lower": -0.13,
+  "mad": 0.0,
+  "median": -0.13,
+  "n": 1,
+  "provisional": true,
+  "runs": [
+   "2026-11-12_build_r24a_3057403889"
+  ],
+  "set_by": "data",
+  "upper": 0.17,
+  "values": [
+   -0.13
+  ]
+ },
+ "windows/terminal@gitbash/latency_first_key_after_idle/gap5s": {
+  "kind": "ms",
+  "lower": -0.1,
+  "mad": 0.0,
+  "median": -0.1,
+  "n": 1,
+  "provisional": true,
+  "runs": [
+   "2026-11-12_build_r24a_3057403889"
+  ],
+  "set_by": "data",
+  "upper": 0.2,
+  "values": [
+   -0.1
+  ]
+ },
+ "windows/terminal@gitbash/latency_key_log/key_to_frame": {
+  "kind": "ms",
+  "lower": 3.32,
+  "mad": 0.09,
+  "median": 3.59,
+  "n": 8,
+  "provisional": false,
+  "runs": [
+   "2026-11-09_build_r18w7_3046481170",
+   "2026-11-09_build_r18w8_3047198675",
+   "2026-11-10_build_r18w9_3047937983",
+   "2026-11-10_build_r10a_3048440714",
+   "2026-11-10_build_r11a_3049602519",
+   "2026-11-10_build_r12a_3050758880",
+   "2026-11-10_build_r13a_3051722998",
+   "2026-11-12_build_r24a_3057403889"
+  ],
+  "set_by": "data",
+  "upper": 4.35,
+  "values": [
+   3.5,
+   3.54,
+   3.53,
+   3.51,
+   3.97,
+   3.65,
+   3.7,
+   4.35
+  ]
+ },
+ "windows/terminal@gitbash/latency_key_log/key_to_frame#app": {
+  "kind": "ms",
+  "lower": 0.62,
+  "mad": 0.02,
+  "median": 0.69,
+  "n": 8,
+  "provisional": false,
+  "runs": [
+   "2026-11-09_build_r18w7_3046481170",
+   "2026-11-09_build_r18w8_3047198675",
+   "2026-11-10_build_r18w9_3047937983",
+   "2026-11-10_build_r10a_3048440714",
+   "2026-11-10_build_r11a_3049602519",
+   "2026-11-10_build_r12a_3050758880",
+   "2026-11-10_build_r13a_3051722998",
+   "2026-11-12_build_r24a_3057403889"
+  ],
+  "set_by": "data",
+  "upper": 0.99,
+  "values": [
+   0.66,
+   0.68,
+   0.67,
+   0.67,
+   0.77,
+   0.69,
+   0.72,
+   0.78
+  ]
+ },
+ "windows/terminal@gitbash/subshell_ready_rc_clear/clear_inner_line_after_enter_s": {
+  "kind": "s",
+  "lower": 0.05,
+  "mad": 0.0,
+  "median": 0.05,
+  "n": 7,
+  "provisional": false,
+  "runs": [
+   "2026-11-09_build_r18w8_3047198675",
+   "2026-11-10_build_r18w9_3047937983",
+   "2026-11-10_build_r10a_3048440714",
+   "2026-11-10_build_r11a_3049602519",
+   "2026-11-10_build_r12a_3050758880",
+   "2026-11-10_build_r13a_3051722998",
+   "2026-11-12_build_r24a_3057403889"
+  ],
+  "set_by": "data",
+  "upper": 0.35,
+  "values": [
+   0.05,
+   0.05,
+   0.06,
+   0.05,
+   0.05,
+   0.05,
+   0.05
+  ]
+ },
+ "windows/terminal@gitbash/subshell_ready_rc_questions/rcq_inner_line_after_enter_s": {
+  "kind": "s",
+  "lower": 0.05,
+  "mad": 0.23,
+  "median": 3.92,
+  "n": 6,
+  "provisional": false,
+  "runs": [
+   "2026-11-09_build_r18w8_3047198675",
+   "2026-11-10_build_r18w9_3047937983",
+   "2026-11-10_build_r11a_3049602519",
+   "2026-11-10_build_r12a_3050758880",
+   "2026-11-10_build_r13a_3051722998",
+   "2026-11-12_build_r24a_3057403889"
+  ],
+  "set_by": "data",
+  "upper": 4.63,
+  "values": [
+   0.05,
+   0.05,
+   3.95,
+   4.05,
+   3.89,
+   4.26
+  ]
+ }
+}

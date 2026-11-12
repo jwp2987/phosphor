@@ -12,6 +12,7 @@
 import functools, os, shutil, subprocess, sys, time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import bands  # noqa: E402
 import cases  # noqa: E402
 import priv_boundary as PB  # noqa: E402  (T47: what the sudo relay and the docker case need from the machine, and the exact NEEDS: text)
 from cases import case  # noqa: E402
@@ -360,7 +361,8 @@ def empty_ps1_first_leg(ctx, r, f):
     dt = time.time() - t0
     r.metric("empty_ps1_inner_line_after_enter_s", round(dt, 3))
     r.check(got, "the first inner line ran at all (file %r)" % ctx.lines(f))
-    r.check(dt < 2.0, "the first inner line ran %.2f s after its Enter (budget 2 s)" % dt)
+    bands.check(r, bands.key(os.environ.get("APPCI_PLATFORM", "linux"), "%s/subshell_sh_probe_empty_ps1/empty_ps1_inner_line_after_enter_s" % ctx.label), round(dt, 2),
+                "the first inner line ran %.2f s after its Enter (owner 2026-11-12: its history band replaces the fixed 2 s budget)" % dt)
     r.check(ctx.until(lambda: first_index(hops(ctx, off), "subshell_setup_unsupported") is not None, 6),
             "the probe answered and the unsupported-shell event ended the setup (its second line was not stalled for a prompt)")
     ctx.be.type("printf '[%s]\\n' \"$PS1\" >> " + f, 12, enter=True)   # what PS1 this dash really has
@@ -843,9 +845,9 @@ def c_ready_zsh_newuser_install(ctx, r):
     leave_and_prove_parent(ctx, r, "zshnew", f, [tok])
 
 
-# r26: Windows Git Bash measurement for the 2 s budget. There is NO per-platform budget (none approved by the owner); the budget stays 2 s and the row names the known cause.
+# r26: Windows Git Bash and the first-inner-line time. Owner 2026-11-12: the fixed 2 s budget is replaced by the band of the metric (per platform / mode / pane, bands.py); the row names the known cause.
 WIN_BOOTSTRAP_NOTE = (" (Windows Git Bash: known issue #2025, the ~83 KB bootstrap is typed through the inner bash's line editor over ConPTY at about 40 lines/s; "
-                      "r24a measured Bootstrapped at 4760 ms against this 2 s budget; the budget is unchanged, no owner-approved Windows number exists)")
+                      "r24a measured Bootstrapped at 4760 ms; the band holds what the history shows, tighten it when #2025 is fixed)")
 
 
 @case("subshell_ready_rc_clear", order=22)
@@ -867,7 +869,8 @@ def c_ready_rc_clear(ctx, r):
         # where the time went, in the row (the budget below is unchanged): a line typed behind a setup that was already written is held to
         # the setup's own end, so its time is the shell's setup time; a line typed before the write runs at once (setup_timeline)
         r.note("clear: setup " + setup_timeline(ctx.log_since(off)))
-        r.check(dt < 2.0, "the first inner line ran %.2f s after its Enter (budget 2 s)%s" % (dt, WIN_BOOTSTRAP_NOTE if ctx.win else ""))
+        bands.check(r, bands.key(os.environ.get("APPCI_PLATFORM", "linux"), "%s/subshell_ready_rc_clear/clear_inner_line_after_enter_s" % ctx.label), round(dt, 2),
+                    "the first inner line ran %.2f s after its Enter (its history band replaces the fixed 2 s budget)%s" % (dt, WIN_BOOTSTRAP_NOTE if ctx.win else ""))
         if ctx.win:
             r.note(WIN_BOOTSTRAP_NOTE.strip(" ()"))
     r.check(first_index(hops(ctx, off), "subshell_setup_ready_write") is not None, "the setup was written after the clear")

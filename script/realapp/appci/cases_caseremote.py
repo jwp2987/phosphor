@@ -1320,7 +1320,7 @@ def remote_stamp_line(ctx):
 @case("latency_enter_ssh", order=64, gui=True)
 def c_lat_enter_ssh(ctx, r):
     """#1532: Enter -> command start INSIDE an ssh session, Phosphor vs plain ssh in the reference terminal (same session, same remote shell,
-    same keys/cadence/stamp line), verdict on the overhead against the owner's ssh budget (plain ssh +/- 1 ms, APPCI_SSH_ENTER_BUDGET_MS).
+    same keys/cadence/stamp line), verdict on the overhead against the owner's ssh budget (its history band, bands.py; was plain ssh +/- 1 ms).
     A/B/A/B interleaved in blocks (both windows hold an ssh session); NOREF when that is impossible. The stamp files land in the remote home, so the measurement includes the ssh round trip on
     BOTH sides and cancels out of the overhead."""
     need_ssh(ctx, r)
@@ -1391,8 +1391,8 @@ def c_lat_enter_ssh(ctx, r):
     if not left:
         return
     if ds:
-        rec = lat.evaluate("%s/latency_enter_ssh/enter_to_start" % ctx.label, ds, rs, float(os.environ.get("APPCI_SSH_ENTER_BUDGET_MS", "1")), "overhead",
-                           plat(), ref_name=ref.name if ref and rs else None, floor=ctx.be.key_floor_ms, expected=n, mode=mode,
+        rec = lat.evaluate("%s/latency_enter_ssh/enter_to_start" % ctx.label, ds, rs, None, "overhead",
+                           plat(), banded=True, ref_name=ref.name if ref and rs else None, floor=ctx.be.key_floor_ms, expected=n, mode=mode,
                            notes=["both sides type into the SAME remote shell over ssh to the harness's local sshd; " +
                                   ("reference interleaved with Phosphor in blocks of %d (A/B/A/B, same session)" % lat.interleave_block() if mode == "interleaved"
                                    else "NOREF: the reference was not interleaved (%s), so no overhead is judged" % fallback)])

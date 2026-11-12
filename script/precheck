@@ -255,6 +255,12 @@ if [[ -f ./script/ci/test_check_release_gate.py ]]; then
     python3 ./script/ci/test_check_release_gate.py >/dev/null 2>&1 && ok "release gate self-test" \
         || fail "release gate self-test -- run python3 script/ci/test_check_release_gate.py for detail"
 fi
+if [[ -f ./script/ci/perf_bands.py ]]; then
+    python3 ./script/ci/test_perf_bands.py >/dev/null 2>&1 && ok "perf bands self-test" \
+        || fail "perf bands self-test -- run python3 script/ci/test_perf_bands.py for detail"
+    python3 ./script/ci/perf_bands.py --check >/dev/null 2>&1 && ok "test-results/bands.json is current" \
+        || fail "test-results/bands.json is stale -- run python3 script/ci/perf_bands.py and commit it"
+fi
 if [[ -x ./script/check_outbound_redaction ]]; then
     ./script/check_outbound_redaction >/dev/null 2>&1 && ok "outbound redaction" \
         || fail "outbound redaction -- run ./script/check_outbound_redaction for detail"

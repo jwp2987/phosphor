@@ -315,7 +315,7 @@ def r19_latency_enter_gitbash_gate_judges_the_app_segment():
         return types.SimpleNamespace(win=win, pane=pane, mode=mode, app_enter_segments=lambda t0: calls.append("segs") or dict(again_segs or segs))
     b = cases.enter_regress_basis(ctx(), segs, 60, 3, lambda: [100.0] * 60)
     assert b["what"] == cases.ENTER_APP_SHARE == "enter_to_write" and b["p50"] == 0.91 and b["n"] == 63 and b["metric"] == "app_segments_ms", b
-    assert b["budget_ms"] == cases.ENTER_APP_SHARE_MAX_MS == 2.0 == cases.MACOS_ENTER_APP_SHARE_MAX_MS and callable(b["remeasure"])
+    assert "budget_ms" not in b and callable(b["remeasure"]), "the bound is the band of <id>#app (bands.py), not a number here"
     assert cases.enter_regress_basis(ctx(mode="terminal"), segs, 60, 3, lambda: [])["p50"] == 0.91, "both session modes"
     for other in (ctx(win=False), ctx(pane="powershell"), ctx(win=False, pane="gitbash")):
         assert cases.enter_regress_basis(other, segs, 60, 3, lambda: []) is None, "only the Windows Git Bash pane"

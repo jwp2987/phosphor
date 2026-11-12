@@ -7,6 +7,7 @@ import hashlib, json, os, random, re, shutil, statistics, subprocess, sys, time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import lat  # noqa: E402
+import bands  # noqa: E402
 import backend  # noqa: E402
 import render_hops  # noqa: E402
 
@@ -424,16 +425,15 @@ def plat():
     return os.environ.get("APPCI_PLATFORM", "linux")
 
 
-MACOS_ENTER_REASON = "macOS-bound; #1606 closed by owner 2026-11-05"
-MACOS_ENTER_APP_SHARE_MAX_MS = 2.0      # the app's OWN share (enter_begin -> pty_write): above this a regression is Phosphor's, not the OS's
-# A gross-regression guard RELATIVE to the reference measured in the same session: r18u30 showed the whole Mac running slower
-# (Terminal.app itself 76 ms vs 61 ms in r18u28) with Phosphor's overhead unchanged at +20 ms, so an absolute median bound judged the machine.
-MACOS_ENTER_GROSS_OVERHEAD_MS = 40.0    # twice the steady macOS overhead (+20 ms, r18u28 and r18u30)
+# owner 2026-11-12: the macOS Enter fixed numbers (the app-share 2 ms bound, the 40 ms gross-overhead bound, the report-only branch) are replaced by the band of the
+# metric (bands.py): the overhead and the app's own share ("#app") are each judged against their own history band, per platform / mode / pane.
 
 
 def lat_checks(r, rec, label, known_key=None, report_only_macos=False, app_share_ms=None, median_ms=None, share_judges=False):
     """known_key: an ACCEPTED_FOR_RELEASE key; while it is accepted (and the platform is one it names) an over-budget OVERHEAD verdict is KNOWN (numbers printed), never a FAIL.
     turn a latency record's verdicts into case failures (FAIL); WARN stays a note; no-reference makes the case status 'noref' (not a pass, #1499)"""
+    banded = bool(rec.get("band_key"))          # owner 2026-11-12: judged against its history band (bands.py), not a fixed budget
+    band_desc = bands.describe(rec["band"]) if banded and rec["band"].get("status") == "band" else None
     conhost_ref = str(rec.get("reference_name") or "").lower().startswith("conhost") and rec["budget_kind"] == "overhead"
     if conhost_ref and rec["budget_verdict"] == "fail":
         # r18u8 (U1): the pane runs through ConPTY and a bare conhost window does not, so the gap measured against conhost mixes the ConPTY layer (pty_write -> first
@@ -442,32 +442,25 @@ def lat_checks(r, rec, label, known_key=None, report_only_macos=False, app_share
         r.no_reference("NO-CONPTY-REFERENCE: %s: Phosphor overhead %.2f +/- %s ms (SE) over %s (a console with no ConPTY) against the %.0f ms budget; the app's own share is in the notes. "
                        "Install Windows Terminal for a ConPTY reference (owner decision); the overhead budget was NOT judged" % (
                            label, rec["overhead_ms"], rec.get("overhead_se_ms"), rec["reference_name"], rec["budget_ms"]))
-    elif rec["budget_verdict"] == "fail" and report_only_macos and plat().startswith("macos") and rec["budget_kind"] == "overhead":
-        # owner 2026-11-05: #1606 is CLOSED as macOS-bound (Phosphor beats Warp on the Mac: Enter->first paint 36.6 vs 76.5 ms). Numbers are still reported; the overhead
-        # budget is not judged against Terminal.app. The guards below (app share, absolute median) still fail a gross regression.
-        r.note("REPORT-ONLY: %s: Phosphor overhead %.2f +/- %s ms (SE) over %s vs the %.0f ms budget, NOT judged (%s); the app's own share and the OS split are in the notes/metrics" % (
-            label, rec["overhead_ms"], rec.get("overhead_se_ms"), rec["reference_name"], rec["budget_ms"], MACOS_ENTER_REASON))
     elif rec["budget_verdict"] == "fail":
         acc = accepted_for_release(known_key) if known_key and rec["budget_kind"] == "overhead" else None
         if acc and any(plat().startswith(p_) for p_ in acc.get("platforms", ("",))):
             r.known("%s: Phosphor overhead %.2f +/- %s ms (SE) over %s exceeds the %.0f ms budget [ACCEPTED_FOR_RELEASE #%d v%s: %s]" % (
                 label, rec["overhead_ms"], rec.get("overhead_se_ms"), rec["reference_name"], rec["budget_ms"], acc["issue"], acc["release"], acc["why"]))
+        elif banded and band_desc:
+            val = rec["overhead_ms"] if rec.get("overhead_ms") is not None else rec["phosphor"]["p50"]
+            r.check(False, "%s: %.2f ms (SE %s) is outside its band (history %s; above %g) [%s]" % (label, val, rec.get("overhead_se_ms"), band_desc, rec["budget_ms"], rec["band_key"]))
         elif rec["budget_kind"] == "overhead":
             r.check(False, "%s: Phosphor overhead %.2f +/- %s ms (SE) over %s exceeds the %.0f ms budget (overhead - 2 SE > budget)" % (label, rec["overhead_ms"], rec.get("overhead_se_ms"), rec["reference_name"], rec["budget_ms"]))
         else:
             r.check(False, "%s: %.2f ms over the harness floor exceeds the %.0f ms budget" % (label, rec["overhead_ms"], rec["budget_ms"]))
-    if report_only_macos and plat().startswith("macos"):
-        if app_share_ms is not None:
-            r.check(app_share_ms <= MACOS_ENTER_APP_SHARE_MAX_MS, "%s: the app's own share (enter_begin -> pty_write) %.2f ms exceeds %.1f ms (report-only on macOS does not cover Phosphor's own time)" % (
-                label, app_share_ms, MACOS_ENTER_APP_SHARE_MAX_MS))
-        if rec.get("budget_kind") == "overhead" and rec.get("overhead_ms") is not None:
-            r.check(rec["overhead_ms"] <= MACOS_ENTER_GROSS_OVERHEAD_MS, "%s: Phosphor overhead %.2f ms over %s exceeds the %.0f ms gross-regression bound (report-only on macOS covers the steady ~+20 ms OS gap, not this)" % (
-                label, rec["overhead_ms"], rec.get("reference_name"), MACOS_ENTER_GROSS_OVERHEAD_MS))
+    if banded and app_share_ms is not None and report_only_macos and not (rec.get("app_share") or {}).get("band_key"):
+        bands.check(r, rec["band_key"] + "#app", app_share_ms, "%s: the app's own share (enter_begin -> pty_write)" % label)
     sh = rec.get("app_share") or {}
     if sh.get("budget_verdict") == "fail":
         # the hard bound on the app's own time (lat.py "app-share basis"): it holds whatever the regression basis is and however few samples there are
         r.check(False, "%s: the app's own share (%s) %.2f ms exceeds its %.1f ms budget (n=%s)" % (label, sh.get("what"), sh["p50"], sh["budget_ms"], sh.get("n")))
-    for tag in ("prev", "baseline") if rec.get("regress_basis") == "app_share" else ():
+    for tag in ("prev", "baseline") if rec.get("regress_basis") == "app_share" and not banded else ():
         # owner 2026-11-10: judged on the app's own segments, not on the end-to-end median (whose spread is the input tool, the pty layer and the shell)
         x, m = sh.get(tag) or {}, rec.get(tag) or {}
         if x.get("verdict") in ("fail", "warn") and x.get("delta_ms") is not None:
@@ -482,7 +475,12 @@ def lat_checks(r, rec, label, known_key=None, report_only_macos=False, app_share
             r.note("NOT JUDGED: %s: median %s vs %s build %+.2f ms (%+.1f%%) would be %s on the median gate; judged on the app's own share (%s) instead: %s ms now, %s in that build" % (
                 label, rec["phosphor"]["p50"], tag, m["delta_ms"], m["delta_pct"], m["median_verdict"].upper(), sh.get("what"), sh["p50"],
                 x.get("p50") if x.get("p50") is not None else "not recorded"))
-    for tag in ("prev", "baseline") if rec.get("regress_basis") != "app_share" else ():
+    for tag in ("prev", "baseline") if banded else ():
+        # owner 2026-11-12: the previous-build / baseline comparison is a NOTE only; the band decides
+        x = rec.get(tag) or {}
+        if x.get("verdict") in ("fail", "warn") and x.get("delta_ms") is not None:
+            r.note("NOTE (not judged; the band decides): %s: median %s vs %s build %+.2f ms (%+.1f%%)" % (label, rec["phosphor"]["p50"], tag, x["delta_ms"], x["delta_pct"]))
+    for tag in ("prev", "baseline") if rec.get("regress_basis") != "app_share" and not banded else ():
         x = rec.get(tag) or {}
         if x.get("verdict") in ("fail", "warn") and x.get("delta_ms") is not None:
             msg = "%s: median %s vs %s build %+.2f ms (%+.1f%%)" % (label, rec["phosphor"]["p50"], tag, x["delta_ms"], x["delta_pct"])
@@ -494,7 +492,9 @@ def lat_checks(r, rec, label, known_key=None, report_only_macos=False, app_share
                 r.note("WARN " + msg)
     if rec["verdict"] in ("inconclusive", "no-compare") or rec.get("budget_verdict") in ("inconclusive", "no-compare"):  # (#1514: includes too-few-samples and resolution-limited)
         why = "overhead %s +/- %s ms (SE) vs budget %g ms is within noise" % (rec.get("overhead_ms"), rec.get("overhead_se_ms"), rec["budget_ms"])
-        if rec.get("implausible"):
+        if banded and not band_desc:
+            why = "no band yet for %s" % rec["band_key"]
+        elif rec.get("implausible"):
             why = "the reference measured implausibly slow (overhead %s ms)" % rec.get("overhead_ms")
         elif rec.get("budget_verdict") == "no-compare":
             why = "pane shell %s != reference shell %s" % (rec.get("pane_shell"), rec.get("reference_shell"))
@@ -3106,10 +3106,10 @@ def ctrlc_flood(ctx, r, n, warm):
         r.metric("reference_ctrl_c_flood_ms", stats(rs))
         r.metric("reference", ref.name)
     if fl:
-        flood_ms = float(os.environ.get("APPCI_CTRLC_FLOOD_MAX_MS", "20"))   # the owner budget; no release allowance (removed for v0.2.0, owner 2026-11-12)
+        flood_ms = None      # owner 2026-11-12: the band of ctrl_c_d/ctrl_c_flood replaces the fixed 20 ms budget (no release allowance either)
         rec = lat.evaluate("%s/ctrl_c_d/ctrl_c_flood" % ctx.label, fl, rs, flood_ms, "overhead", plat(),
                            remeasure=None, ref_name=ref.name if ref and rs else None, floor=ctx.be.key_floor_ms, expected=n,
-                           pane_shell=pane_shell_id(ctx), ref_shell=getattr(ctx, "ref_shell", None) if ref else None, mode=mode,
+                           pane_shell=pane_shell_id(ctx), ref_shell=getattr(ctx, "ref_shell", None) if ref else None, mode=mode, banded=True,
                            notes=["Ctrl-C while `yes` floods the terminal; the plain-sleep ctrl_c measurement is the control; " +
                                   ("reference interleaved with Phosphor in blocks of %d (A/B/A/B, same session)" % lat.interleave_block() if mode == "interleaved"
                                    else "NOREF: the reference was not interleaved (%s), so no overhead is judged" % fallback)])
@@ -3154,9 +3154,7 @@ def ctrl_c_segments(txt, skip=0):
     return out
 
 
-# The hard bound on the app's own share of a Ctrl-C (key event -> write(2) of the ^C returned), ms. The same 2 ms the app's share of an Enter is held to
-# (MACOS_ENTER_APP_SHARE_MAX_MS); measured 0.65 ms on the Windows VM in rounds 9 and 10 (docs/design/r11-win.md section 6).
-CTRLC_APP_SHARE_MAX_MS = 2.0
+# The bound on the app's own share of a Ctrl-C (key event -> write(2) of the ^C returned) is its history band "<id>#app" (owner 2026-11-12, bands.py); it was a fixed 2 ms.
 
 
 def ctrl_c_app_share(seg):
@@ -3184,7 +3182,7 @@ def ctrl_c_regress_basis(ctx, share, n, warm):
         off = ctx.log_size()
         ms = ctrlc_samples(ctx, n + warm, "cc2.txt")[0][warm:]
         return dict(ctrl_c_app_share(ctrl_c_segments(ctx.log_since(off), skip=warm)) or {}, samples=ms)
-    return dict(share, budget_ms=float(os.environ.get("APPCI_CTRLC_APP_SHARE_MAX_MS", str(CTRLC_APP_SHARE_MAX_MS))), metric="ctrl_c_app_segments", remeasure=again)
+    return dict(share, metric="ctrl_c_app_segments", remeasure=again)
 
 
 @case("ctrl_c_d", order=17)
@@ -3270,7 +3268,7 @@ def c_ctrl(ctx, r):
             r.note("no reference: absolute only (Ctrl-C): no reference terminal available%s" % (": " + ctx.ref_reason if getattr(ctx, "ref_reason", None) else ""))
         if short:
             r.note("fix tier, agent mode (winmap.FIX_TIER): Ctrl-C delivery and line integrity only; the overhead budget is judged in terminal mode")
-        rec = None if (short or not lat_ms) else lat.evaluate("%s/ctrl_c_d/ctrl_c" % ctx.label, lat_ms, rs, float(os.environ.get("APPCI_CTRLC_MAX_MS", "20")), "overhead", plat(),
+        rec = None if (short or not lat_ms) else lat.evaluate("%s/ctrl_c_d/ctrl_c" % ctx.label, lat_ms, rs, None, "overhead", plat(), banded=True,
                            remeasure=None if short else (lambda: ctrlc_samples(ctx, n + warm, "cc2.txt")[0][warm:]), ref_name=ref.name if ref else None, floor=ctx.be.key_floor_ms,
                            expected=n, app_share=ctrl_c_regress_basis(ctx, share, n, warm),
                            notes=["same trap/timestamp command typed in both terminals; reference measured after Phosphor in the same session; "
@@ -4807,7 +4805,6 @@ def record_enter_os_split(ctx, r, splits):
 
 
 ENTER_APP_SHARE = "enter_to_write"           # the figure's name in a latency record; older runs recorded it as app_segments_ms.enter_to_write_ms / _n
-ENTER_APP_SHARE_MAX_MS = 2.0                 # hard bound on the app's own share of an Enter: the owner's Enter budget (MACOS_ENTER_APP_SHARE_MAX_MS, the Ctrl-C bound)
 _ENTER_HOPS_OF_RUN = {}                      # (run dir, pane) -> the terminal-mode arm's app segments: the same-run control of the agent-mode arm
 
 
@@ -4818,7 +4815,7 @@ def enter_regress_basis(ctx, segs, n, warm, again):
     app's; the rest is after the write (pty_write -> first pty_read 39 ms, a Git Bash fork 45 ms at that hour), which no change to the app moves.
     -> the app_share argument of lat.evaluate, or None (another platform or pane, or no figure in the log: the median gate, as before). The end-to-end
     median stays measured and reported (the latency record, the row), not gated. The re-measure rule is kept: `again()` types a fresh set and the second
-    verdict is on that set's own share. Hard bound ENTER_APP_SHARE_MAX_MS (APPCI_ENTER_APP_SHARE_MAX_MS): the share over it fails the row.
+    verdict is on that set's own share. Bound: the band of "<id>#app" (bands.py; was a fixed 2 ms): the share above it fails the row.
     segs: enter_segments() of the measured Enters. again: callable -> fresh end-to-end samples (warm-up dropped)."""
     if not (ctx.win and ctx.pane == "gitbash"):
         return None
@@ -4831,8 +4828,7 @@ def enter_regress_basis(ctx, segs, n, warm, again):
         samples = again()
         s2 = ctx.app_enter_segments(t0)
         return dict(what=ENTER_APP_SHARE, p50=s2.get("enter_to_write_ms"), n=s2.get("enter_to_write_n") or 0, samples=samples)
-    return dict(what=ENTER_APP_SHARE, p50=p50, n=segs.get("enter_to_write_n") or 0, metric="app_segments_ms", remeasure=remeasure,
-                budget_ms=float(os.environ.get("APPCI_ENTER_APP_SHARE_MAX_MS", str(ENTER_APP_SHARE_MAX_MS))))
+    return dict(what=ENTER_APP_SHARE, p50=p50, n=segs.get("enter_to_write_n") or 0, metric="app_segments_ms", remeasure=remeasure)
 
 
 def enter_hop_breakdown(segs, others=()):
@@ -5047,7 +5043,7 @@ def c_lat_enter(ctx, r):
             r.note("Enter to command start: end-to-end median %.2f ms (p95 %.2f, n=%d): REPORTED, not gated on this pane (owner 2026-11-11: the regression "
                    "gate judges the app's own segment, enter_begin -> pty_write, %.2f ms, n=%d; lat.py app-share basis)" % (
                        statistics.median(ds), lat.pct(ds, 0.95), len(ds), basis["p50"], basis["n"]))
-        rec = lat.evaluate(rid, ds, rs, float(os.environ.get("APPCI_ENTER_BUDGET_MS", "2")), "overhead", plat(),
+        rec = lat.evaluate(rid, ds, rs, None, "overhead", plat(), banded=True,
                            remeasure=again, ref_name=ref.name if ref else None, floor=ctx.be.key_floor_ms, app_share=basis,
                            pane_shell=pane_sh, ref_shell=getattr(ctx, "ref_shell", None) if ref else None, expected=n, mode=mode,
                            notes=[("reference interleaved with Phosphor in blocks of %d (A/B/A/B, same session)" % lat.interleave_block() if mode == "interleaved"
@@ -5176,7 +5172,7 @@ def key_frame_regress_basis(share, again):
     key -> frame, not on the median of the whole. The whole is mostly the wait for the next display pass: its median moved 5.86-8.44 ms over 26
     measurements of unchanged code (standard error 0.5-0.7 ms at n=60) against a gate of +5 % / +0.5 ms, and round 11 failed on it with the app's
     share at 1.68 ms. -> the app_share argument of lat.evaluate, or None (other platforms, or no figure in the log: the median gate, as before).
-    Hard bound: the share over APPCI_KEY_APP_SHARE_MAX_MS (default APPCI_KEY_BUDGET_MS, the owner's 2 ms own-work budget) fails the case.
+    Bound: the share above the band of "<id>#app" fails the case (owner 2026-11-12; was the fixed 2 ms own-work budget).
     again: callable -> key_frame_shares() output of a fresh run (warm-up dropped)."""
     if not (plat().startswith("macos") and share):
         return None
@@ -5184,7 +5180,7 @@ def key_frame_regress_basis(share, again):
     def remeasure():
         sh = again()
         return dict(key_frame_app_share(sh) or {}, samples=[t for t, _, _ in sh])
-    return dict(share, budget_ms=float(os.environ.get("APPCI_KEY_APP_SHARE_MAX_MS", os.environ.get("APPCI_KEY_BUDGET_MS", "2"))), remeasure=remeasure)
+    return dict(share, remeasure=remeasure)       # the bound on the share is the band of "<id>#app" (bands.py; was the fixed 2 ms own-work budget)
 
 
 KEY_PTY_SHARE = "key_to_pty_write"
@@ -5192,7 +5188,7 @@ KEY_PTY_SHARE = "key_to_pty_write"
 
 def key_pty_share_gate(rec, kw, expected):
     """owner 2026-11-11 (#2070, #1176): off macOS, latency_key_log is JUDGED on the app's own key -> pty write share (key_write_pairs: keydown to the
-    event loop's `input_order pty_write` line), median against APPCI_KEY_PTY_SHARE_MAX_MS (default 1 ms, the #1176 target; r12a medians 0.33-0.69 ms).
+    event loop's `input_order pty_write` line), median against the band "<id>#app" (owner 2026-11-12; it was the fixed APPCI_KEY_PTY_SHARE_MAX_MS, 1 ms, the #1176 target; r12a medians 0.33-0.69 ms).
     It was NOREF on Linux and Windows in every run: no reference terminal exists for key -> frame by construction and those platforms log no display-wait
     split. The figure goes into rec['app_share'] as a GATE ONLY: rec['regress_basis'] is not touched, so the prev / baseline regression verdicts stay on
     the key -> frame median exactly as before. Over the budget = FAIL whatever n is; a pass needs the evidence any pass needs (lat.app_share_usable:
@@ -5201,11 +5197,17 @@ def key_pty_share_gate(rec, kw, expected):
     if plat().startswith("macos"):
         return None
     p50 = round(statistics.median(kw), 3) if kw else None
-    sh = dict(what=KEY_PTY_SHARE, p50=p50, n=len(kw), budget_ms=float(os.environ.get("APPCI_KEY_PTY_SHARE_MAX_MS", "1")), gate_only=True)
+    bk = (rec.get("band_key") or "") + "#app"
+    band = bands.lookup(bk) if rec.get("band_key") else None
+    sh = dict(what=KEY_PTY_SHARE, p50=p50, n=len(kw), budget_ms=band["upper"] if band else None, gate_only=True, band_key=bk)
+    if band:
+        sh["band_note"] = bands.describe(band)
     sh["usable"], why_not = lat.app_share_usable(sh, expected)
     if not sh["usable"]:
         sh["why_not"] = "no figure: no keydown -> `input_order pty_write` pair in the measurement window" if p50 is None else why_not
-    if p50 is not None:
+    if p50 is not None and sh["budget_ms"] is None:
+        rec["notes"].append("no band yet for %s: the key -> pty write share is not judged (NOREF)" % bk)
+    if p50 is not None and sh["budget_ms"] is not None:
         sh["budget_verdict"] = "fail" if p50 > sh["budget_ms"] else "pass"
         if sh["budget_verdict"] == "fail":
             rec["verdict"] = lat.worst(rec["verdict"], "fail")
@@ -5237,12 +5239,13 @@ def key_frame_tail_checks(r, rec, label, again):
             tail[tag]["remeasure"] = {"p95": second.get("p95"), "verdict": v2}
             msg += "; re-measured once: p95 %s (%s)" % (second.get("p95"), v2)
             v = tail[tag]["verdict"] = "fail" if v2 in ("fail", "warn") else "warn"
-        if v == "fail":
+        if v == "fail" and not rec.get("band_key"):
             r.check(False, "REGRESSION " + msg)
         else:
-            r.note("WARN " + msg)
+            r.note(("NOTE (not judged; the band decides) " if rec.get("band_key") else "WARN ") + msg)
     rec["tail"] = tail
-    rec["verdict"] = lat.worst(rec["verdict"], *[t["verdict"] for t in tail.values()])
+    if not rec.get("band_key"):         # owner 2026-11-12: the previous-build / baseline p95 comparison is a note when the record is banded
+        rec["verdict"] = lat.worst(rec["verdict"], *[t["verdict"] for t in tail.values()])
 
 
 @case("latency_key_log", order=42, gui=True)
@@ -5329,7 +5332,7 @@ def c_lat_key(ctx, r):
     # row is judged by the app's own share (lat_checks share_judges): macOS #2037 below, Linux / Windows key -> pty write (key_pty_share_gate).
     # Regression basis (#2037, docs/design/r12-mackey.md): on macOS the app's own share of key -> frame, with a hard bound at the own-work budget, and
     # the p95 of the whole against the older builds' p95 (key_frame_tail_checks). Elsewhere, and without the figure, the median gate as before.
-    rec = lat.evaluate("%s/latency_key_log/key_to_frame" % ctx.label, ds, None, float(os.environ.get("APPCI_KEY_BUDGET_MS", "2")), "overhead", plat(),
+    rec = lat.evaluate("%s/latency_key_log/key_to_frame" % ctx.label, ds, None, None, "overhead", plat(), banded=True, band_on_median=True,
                        remeasure=lambda: run_keys(n + warm)[0], notes=["Phosphor-side keydown to first frame; no same-method reference exists"],
                        app_share=key_frame_regress_basis(share, lambda: (run_keys(n + warm), run_keys.shares)[1]))
     r.metrics.setdefault("lat", {})["key_to_frame"] = rec
@@ -5478,7 +5481,7 @@ def c_lat_paint(ctx, r):
     else:
         r.note("no reference: absolute only (key->paint): no reference terminal available%s" % (": " + ctx.ref_reason if getattr(ctx, "ref_reason", None) else ""))
     if ds:
-        rec = lat.evaluate("%s/latency_paint/key_to_paint" % ctx.label, ds, rs, float(os.environ.get("APPCI_PAINT_BUDGET_MS", "10")), "overhead", plat(),
+        rec = lat.evaluate("%s/latency_paint/key_to_paint" % ctx.label, ds, rs, None, "overhead", plat(), banded=True,
                            remeasure=lambda: paint_samples(ctx, rect, n + warm)[warm:], ref_name=ref.name if ref and rs else None, floor=ctx.be.key_floor_ms,
                            expected=n, resolution_ms=KL3_QUANTUM_MS, mode=mode,
                            notes=["kl3 measures post-to-first-changed-pixel at 240 Hz in each terminal's own window; " +
@@ -5728,10 +5731,6 @@ IDLE_GAPS = (1.0, 2.0, 5.0)
 IDLE_BLOCK = 10      # samples per side before the A/B order flips (macOS: a focus switch between Phosphor and Terminal.app costs ~1 s, so not per sample)
 
 
-def idle_key_budget_ms():
-    return float(os.environ.get("APPCI_IDLE_KEY_BUDGET_MS", "5"))
-
-
 def idle_paint_block(ctx, rect, gap, count):
     """macOS: `count` x (sleep `gap` s with no input, then ONE key through kl3) -> key->first-changed-pixel ms of that first key alone"""
     ds = []
@@ -5783,13 +5782,12 @@ def c_lat_first_key_idle(ctx, r):
     """#1160: the FIRST key after an idle gap of 1, 2 and 5 s, measured alone (full tier only; ~9 min on macOS). n = ctx.count_lat(30) kept samples per gap (never < 30),
     a few discarded warm-up samples per side and gap.
     macOS: key -> first changed pixel (kl3, 240 Hz) for Phosphor AND Terminal.app in the same session, A/B by blocks of 10 samples (the side that goes first
-    alternates per gap); the verdict per gap is lat.evaluate on OVERHEAD (Phosphor median - Terminal.app median) against APPCI_IDLE_KEY_BUDGET_MS (5 ms, owner 2026-11-03; the
+    alternates per gap); the verdict per gap is lat.evaluate on OVERHEAD (Phosphor median - Terminal.app median) against its history band (bands.py; was the fixed 5 ms of owner 2026-11-03, the
     issue's 'next refresh + 4 ms'), SE-aware PASS / FAIL / INCONCLUSIVE. Other platforms: no paint read-back, so key -> first frame from the app log, and
     the control is the SAME session's second key (0.3 s after the first, not idle): the verdict is the idle penalty (first - second median) against the
     same budget. Not interleaved per sample: a macOS focus switch between the two windows is itself an activation, so it happens between blocks."""
     mac = ctx.be.name == "mac" and hasattr(ctx.be, "kl_start")
     n, warm = ctx.count_lat(30), lat.warmup()
-    budget = idle_key_budget_ms()
     if not mac:
         if not ctx.log_path or not os.path.exists(ctx.log_path):
             r.skip("no app log at %s (set APPCI_APP_LOG): key -> frame is read from the app's input_order log" % ctx.log_path)
@@ -5808,7 +5806,7 @@ def c_lat_first_key_idle(ctx, r):
                 # and latency_key_log in the same arm showed no change): lat.py re-measures a suspected regression once (a second clean set makes it a
                 # WARN, never a pass; a second regressed set stays FAIL) and this path passed no re-measure, so one sample set decided.
                 again = lambda g=g: idle_log_block(ctx, g, n + warm)[0][warm:]      # noqa: E731
-                rec = lat.evaluate("%s/latency_first_key_after_idle/%s" % (ctx.label, tag), first, second, budget, "overhead", plat(), ref_name="second key 0.3 s later (same session)",
+                rec = lat.evaluate("%s/latency_first_key_after_idle/%s" % (ctx.label, tag), first, second, None, "overhead", plat(), banded=True, ref_name="second key 0.3 s later (same session)",
                                    remeasure=again,
                                    expected=n, notes=["key -> first frame from the app's input_order log (Phosphor-side); the control is the following non-idle key, so the figure is the idle penalty, not an overhead vs another terminal"])
                 r.metrics.setdefault("lat", {})[tag] = rec
@@ -5856,7 +5854,7 @@ def c_lat_first_key_idle(ctx, r):
             r.metric("reference_first_key_paint_" + tag, stats(rs[g]))
         r.check(len(ph[g]) >= 0.9 * n, "idle %g s: only %d of %d first-key key->paint samples from kl3" % (g, len(ph[g]), n))
         if ph[g]:
-            rec = lat.evaluate("%s/latency_first_key_after_idle/%s" % (ctx.label, tag), ph[g], rs[g] if ref else [], budget, "overhead", plat(),
+            rec = lat.evaluate("%s/latency_first_key_after_idle/%s" % (ctx.label, tag), ph[g], rs[g] if ref else [], None, "overhead", plat(), banded=True,
                                ref_name=ref.name if ref and rs[g] else None, floor=ctx.be.key_floor_ms, expected=n,
                                pane_shell=pane_shell_id(ctx), ref_shell=getattr(ctx, "ref_shell", None) if ref else None,
                                mode="interleaved" if ref and rs[g] else "sequential", implausible_neg_ms=float(os.environ.get("APPCI_IMPLAUSIBLE_NEG_MS", "5")),
@@ -6094,6 +6092,26 @@ def mem_judge_known(r, sample, base, limit, what, key):
         if k in base and v - base[k] > limit:
             ok = False
             r.known("%s [ACCEPTED_FOR_RELEASE #%d v%s: %s]" % (what % (v - base[k], k), acc["issue"], acc["release"], acc["why"]))
+    return ok
+
+
+def mem_judge_banded(r, ctx, delta, name, what, closed=False):
+    """owner 2026-11-12: the memory verdicts read bands (bands.py) instead of fixed MB limits. `delta`: {figure: MB over the baseline}; `what % (MB, figure)`
+    names it. Which figures are judged is unchanged (judged_sample: Windows private bytes only; macOS: open cost on rss AND phys_footprint, the after-close
+    check on phys_footprint only, RSS reported). Band key <platform>/<mode+pane>/editor_memory_7mb/<name>/<figure>; no band yet = NOREF. -> ok (no fail)"""
+    ok = True
+    judged = judged_sample(delta)
+    if closed and "phys_footprint" in delta:
+        for k, v in delta.items():
+            if k != "phys_footprint":
+                r.note("%s: %+.0f MB over the pre-open baseline after close (reported, not judged on macOS: freed pages marked reusable stay in RSS; "
+                       "phys_footprint is the judged figure)" % (k, v))
+        judged = {"phys_footprint": delta["phys_footprint"]}
+    for k, v in delta.items():
+        if k not in judged:
+            r.note("%s: %+.0f MB over the baseline (reported, not judged on Windows: the working set is OS-trimmed and shared; private bytes are the judged figure)" % (k, v))
+    for k, v in judged.items():
+        ok &= bands.check(r, bands.key(plat(), "%s/editor_memory_7mb/%s/%s" % (ctx.label, name, k)), round(v, 2), what % (v, k)) != "fail"
     return ok
 
 
@@ -6512,8 +6530,7 @@ def editor_trim_ab(ctx, r, palette, path):
 def c_editor_mem(ctx, r):
     """#1340 / #1607 / #1407: open a generated 7 MB file in the code editor (command palette + absolute path), record memory after open, close
     the pane, record memory right after close and after the undo-close grace window, and repeat open/close APPCI_EDITOR_MEM_CYCLES times
-    (default 3, plain-text file only) to measure growth per cycle. Thresholds are the #1340 targets (7 MB plain text <= ~100 MB over baseline,
-    7 MB Rust <= ~150 MB, <= 60 MB held after close, APPCI_EDITOR_MEM_CYCLE_GROWTH_MAX_MB = 40 MB growth from the first to the last cycle; owner 2026-11-12 raised it from 30 after r24a macOS measured 36 MB).
+    (default 3, plain-text file only) to measure growth per cycle. Owner 2026-11-12: the thresholds (the #1340 targets 100 / 150 MB open cost, 60 MB held after close, 40 MB cycle growth) are replaced by history bands (bands.py, docs/testing.md "Perf and memory bands"), one per kind and figure, started from the first run measured the #2185 way.
     Judged: RSS on Linux; on Windows PRIVATE bytes (PrivateUsage) against a warm baseline, the working set only reported (#1340); on macOS the open cost is judged on RSS and phys_footprint (owner 2026-11-03), the
     after-close check on phys_footprint only (owner 2026-11-05: RSS keeps freed MADV_FREE_REUSABLE pages; reported, not judged). Both are reported. A close through the command palette must be followed by the app's buffer_dropped log line. The app's own breakdown (log target
     editor_memory: buffer tree, render tree, parked chunks, hydrated frames) is attached as metrics, and so is the open cost against the file's size
@@ -6528,9 +6545,9 @@ def c_editor_mem(ctx, r):
     palette = os.environ.get("APPCI_KEY_PALETTE", "ctrl+shift+p")
     grace = float(os.environ.get("APPCI_UNDO_CLOSE_WAIT_S", "75"))   # general.undo_close.grace_period is 60 s
     strict = os.environ.get("APPCI_EDITOR_MEM_STRICT", "") not in ("", "0")
-    limits = {"txt": float(os.environ.get("APPCI_EDITOR_MEM_TXT_MAX_MB", "100")), "rs": float(os.environ.get("APPCI_EDITOR_MEM_RS_MAX_MB", "150"))}
-    close_max = float(os.environ.get("APPCI_EDITOR_MEM_CLOSE_MAX_MB", "60"))
-    growth_max = float(os.environ.get("APPCI_EDITOR_MEM_CYCLE_GROWTH_MAX_MB", "40"))
+    # owner 2026-11-12: the fixed limits (100 / 150 MB open cost, 60 MB held after close, 40 MB cycle growth) are replaced by history bands, one per kind and
+    # figure (bands.py), measured the #2185 way (heap prime, every cycle judged); until 5 such runs exist a band is provisional and says so.
+    limits = {"txt": None, "rs": None}
     cycles = max(1, int(os.environ.get("APPCI_EDITOR_MEM_CYCLES", "3")))
     kinds = [k for k in os.environ.get("APPCI_EDITOR_MEM_KINDS", "txt,rs").split(",") if k in limits]
     size = int(float(os.environ.get("APPCI_EDITOR_MEM_MB", "7")) * 1024 * 1024)
@@ -6657,9 +6674,8 @@ def c_editor_mem(ctx, r):
             r.metric("%s_open_cost_median_mb" % kind, {k: round(v, 1) for k, v in med.items()})
             r.metric("%s_open_cost_worst_mb" % kind, {k: round(v, 1) for k, v in worst.items()})
             r.metric("%s_open_cost_cycles_mb" % kind, [{k: round(o[k] - p[k], 1) for k in o if k in p} for o, p in cost_pairs])
-            mem_judge_known(r, worst, {k: 0.0 for k in worst}, limits[kind],
-                            "%s: opening a %d MB file cost %%.0f MB of %%s (worst of %d cycle(s); > %.0f MB target)" % (kind, size >> 20, len(cost_pairs), limits[kind]),
-                            "editor_open_cost")
+            mem_judge_banded(r, ctx, worst, "%s_open_cost_worst" % kind,
+                             "%s: opening a %d MB file cost %%.0f MB of %%s (worst of %d cycle(s))" % (kind, size >> 20, len(cost_pairs)))
         if not opens or not how:
             continue
         r.metric("%s_close_method" % kind, how)
@@ -6671,18 +6687,18 @@ def c_editor_mem(ctx, r):
                 r.metric("%s_cycle_close%s_mb" % (kind, sfx), [round(x, 1) for x in series])
                 r.metric("%s_cycle_open%s_mb" % (kind, sfx), [round(o[k], 1) for o in opens if k in o])
                 r.metric("%s_cycle_growth%s_mb" % (kind, sfx), growth)
-                msg = "%s: %d open/close cycles grew the post-close %s by %.0f MB (> %.0f MB): %s" % (
-                    kind, n_cycles, k, growth, growth_max, ", ".join("%.0f" % x for x in series))
+                msg = "%s: %d open/close cycles grew the post-close %s by %.0f MB: %s" % (
+                    kind, n_cycles, k, growth, ", ".join("%.0f" % x for x in series))
                 if k in judged_sample(closes[0]):
-                    r.check(growth <= growth_max, msg)
-                elif growth > growth_max:
+                    bands.check(r, bands.key(plat(), "%s/editor_memory_7mb/%s_cycle_growth/%s" % (ctx.label, kind, k)), round(growth, 2), msg)
+                else:
                     r.note("reported, not judged on Windows (private bytes are): " + msg)
         time.sleep(grace)
         after = settle_rss(ctx)
         mem_metrics(r, "%s_rss_close" % kind, after, base)
         ctx.shot("editor_mem_%s_closed" % kind)
-        mem_judge_closed(r, after, base, close_max, "%s: %%.0f MB of %%s still held %.0f s after closing the editor (> %.0f MB over the pre-open baseline; close via %s)" % (
-            kind, grace, close_max, how))
+        mem_judge_banded(r, ctx, {k: after[k] - base[k] for k in after if k in base}, "%s_held_after_close" % kind,
+                         "%s: %%.0f MB of %%s still held %.0f s after closing the editor (over the pre-open baseline; close via %s)" % (kind, grace, how), closed=True)
         if kind == "txt":
             ab_path = path
         else:
