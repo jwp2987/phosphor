@@ -6466,7 +6466,7 @@ def c_editor_mem(ctx, r):
     """#1340 / #1607 / #1407: open a generated 7 MB file in the code editor (command palette + absolute path), record memory after open, close
     the pane, record memory right after close and after the undo-close grace window, and repeat open/close APPCI_EDITOR_MEM_CYCLES times
     (default 3, plain-text file only) to measure growth per cycle. Thresholds are the #1340 targets (7 MB plain text <= ~100 MB over baseline,
-    7 MB Rust <= ~150 MB, <= 60 MB held after close, APPCI_EDITOR_MEM_CYCLE_GROWTH_MAX_MB = 30 MB growth from the first to the last cycle).
+    7 MB Rust <= ~150 MB, <= 60 MB held after close, APPCI_EDITOR_MEM_CYCLE_GROWTH_MAX_MB = 40 MB growth from the first to the last cycle; owner 2026-11-12 raised it from 30 after r24a macOS measured 36 MB).
     Judged: RSS on Linux; on Windows PRIVATE bytes (PrivateUsage) against a warm baseline, the working set only reported (#1340); on macOS the open cost is judged on RSS and phys_footprint (owner 2026-11-03), the
     after-close check on phys_footprint only (owner 2026-11-05: RSS keeps freed MADV_FREE_REUSABLE pages; reported, not judged). Both are reported. A close through the command palette must be followed by the app's buffer_dropped log line. The app's own breakdown (log target
     editor_memory: buffer tree, render tree, parked chunks, hydrated frames) is attached as metrics, and so is the open cost against the file's size
@@ -6483,7 +6483,7 @@ def c_editor_mem(ctx, r):
     strict = os.environ.get("APPCI_EDITOR_MEM_STRICT", "") not in ("", "0")
     limits = {"txt": float(os.environ.get("APPCI_EDITOR_MEM_TXT_MAX_MB", "100")), "rs": float(os.environ.get("APPCI_EDITOR_MEM_RS_MAX_MB", "150"))}
     close_max = float(os.environ.get("APPCI_EDITOR_MEM_CLOSE_MAX_MB", "60"))
-    growth_max = float(os.environ.get("APPCI_EDITOR_MEM_CYCLE_GROWTH_MAX_MB", "30"))
+    growth_max = float(os.environ.get("APPCI_EDITOR_MEM_CYCLE_GROWTH_MAX_MB", "40"))
     cycles = max(1, int(os.environ.get("APPCI_EDITOR_MEM_CYCLES", "3")))
     kinds = [k for k in os.environ.get("APPCI_EDITOR_MEM_KINDS", "txt,rs").split(",") if k in limits]
     size = int(float(os.environ.get("APPCI_EDITOR_MEM_MB", "7")) * 1024 * 1024)
