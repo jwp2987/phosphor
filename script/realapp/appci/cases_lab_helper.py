@@ -575,8 +575,8 @@ reg("nohelper_tab_hands_back", c_tab_hands_back, shells=("bash", "zsh", "fish", 
 
 
 def c_unavailable(ctx, r, arm):
-    """A session with no out-of-band channel (a subshell started inside the ssh session: the app cannot tell its prompt from the remote's) says the feature is unavailable
-    HERE and never types into the pty: the shell's own record holds exactly the lines the case typed."""
+    """A session with no out-of-band channel (a subshell started inside the ssh session: the app cannot tell its prompt from the remote's) never types into the pty: the
+    shell's own record holds exactly the lines the case typed. (Owner decision on #2166, 2026-11-12: no 'unavailable here' notice is specified for this state, so none is required.)"""
     if CL.connect_or_fail(ctx, r, arm) is None:
         ctx.reset()
         return
@@ -587,11 +587,7 @@ def c_unavailable(ctx, r, arm):
         typed.append(line)
         ctx.be.type(line, CL.type_pace(ctx), enter=True)
         settle(ctx, arm, 0.8)
-    flat = ocr_flat(ctx, "lab_unavailable")
-    if flat is None:
-        r.unverifiable("no OCR: the 'unavailable here' message is not checked")
-    else:
-        r.check(has_any(flat, ["unavailable", "not available"]), "no 'unavailable here' message in a session without an out-of-band channel")
+    # #2166: the on-screen "unavailable"/"not available" text expectation was dropped by owner decision; the no-typing check below is unchanged.
     rec = [c.strip() for _, c in ctx.remote.commands()[c0:]]
     r.check(all(c in typed for c in rec), "the remote shell received lines nobody typed (the app typed into the pty): %r" % rec)
     ctx.exit_nested(None, r, "nohelper_unavailable: inner bash")        # audit #2: the where probe must land REMOTE before `exit`
