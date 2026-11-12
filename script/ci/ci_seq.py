@@ -199,8 +199,9 @@ def tier_plan(tier, plats=(LINUX, MAC, WIN), reuse=(), lab_globs=None, units=("t
             seq.append(LAB_IMAGE_JOB)
         if tier != "fix":
             seq.append(LAB_HELPER_JOB)
-        seq += [] if r else [BUILD[LINUX]]
+        # owner 2026-11-12: unit suites (and, outside the fix tier, integration / usage) BEFORE the release build; a red one stops the build and the app jobs
         seq += list(units) + (BOX_EXTRA if tier != "fix" else [])
+        seq += [] if r else [BUILD[LINUX]]
         seq += [n for n, _ in box_app_sequence(tier, r, lab_globs)]
         if tier == "release":
             seq += HEAVY_SUFFIX
@@ -211,8 +212,29 @@ def tier_plan(tier, plats=(LINUX, MAC, WIN), reuse=(), lab_globs=None, units=("t
         if tier == "fix":
             out[p] = [n + "-reuse" for n in APP[p]] if p in reuse else [BUILD[p]] + APP[p]
             continue
-        out[p] = [BUILD[p]] + plat_suites(p, False) + APP[p] + [LAB_APP[p]] + [n for n in plat_suites(p, tier == "release") if n not in plat_suites(p, False)]
+        out[p] = plat_suites(p, False) + [BUILD[p]] + APP[p] + [LAB_APP[p]] + [n for n in plat_suites(p, tier == "release") if n not in plat_suites(p, False)]
     return out
+
+
+def run_unit_gate(names, run_one):
+    """Owner 2026-11-12 (fix / candidate / release tiers, as run_targeted): play the unit suites `names` in order with run_one(name) -> status. Every suite is
+    played (more evidence per run); -> the FIRST red one as "<name> <status>", or None when all are green. A red unit suite stops its machine's build and app/lab jobs."""
+    red = None
+    for n in names:
+        st = run_one(n)
+        if st not in (None, "success") and red is None:
+            red = "%s %s" % (n, st)
+    return red
+
+
+def red_unit_rows(red, build, apps):
+    """The timeline rows a red unit suite leaves: the build `not built`, every app / lab job `not run` (both FAIL rows)."""
+    rows = {}
+    if build:
+        rows[build] = ("not built (unit suite %s: no build on red unit tests)" % red, None)
+    for n in apps:
+        rows[n] = ("not run (unit suite %s: no app tests on red unit tests)" % red, None)
+    return rows
 
 
 # ---- the TARGETED tier (owner 2026-11-11; docs/design/r10-r19-targeted.md, docs/testing.md 2.9) ----------------------------------------------------
@@ -818,8 +840,28 @@ def self_test():
         (verdict(LAB_IMAGE_JOB, "failed") == "FAIL", "a red sshlab-image job fails the tier"),
         (re.search(r"^%s:" % LAB_IMAGE_JOB, yml, re.M) is not None, "the sshlab-image job exists in .gitlab-ci.yml (ci_seq plays it before every lab job)"),
         # owner 2026-11-05 (violated in the fix tier 2026-11-10): the Linux box's unit suites run first in EVERY tier; the app tests wait
-        ('elif tier != "fix":\n            box_units_done.wait()' not in _src and "elif p_of[b] not in PLAT_SUFFIX:\n            box_units_done.wait()" in _src,
-         "the Linux app tests wait for the box unit suites in every tier, not only candidate/release"),
+        ('elif tier != "fix":\n            box_units_done.wait()' not in _src and "elif p_of[b] not in PLAT_SUFFIX:\n            box_units_done.wait()" not in _src
+         and (lambda m: m.index("box_units_done.set()") < m.index("watch(BUILD[LINUX], after_build"))(_src.split("def main" + "():")[1]),
+         "the Linux box plays its unit suites, THEN its build, THEN the app tests in every tier (owner 2026-11-12; the app tests used to wait for the suites beside the build)"),
+        # owner 2026-11-12: a red unit suite stops that machine's build AND its app/lab jobs in the fix, candidate and release tiers too
+        (run_unit_gate(["a", "b", "c"], {"a": "success", "b": "failed", "c": "failed"}.get) == "b failed" and run_unit_gate(["a"], lambda n: "success") is None
+         and run_unit_gate(["a", "b"], lambda n: None) is None,
+         "run_unit_gate: the first red suite is reported, an all-green (or unplayed) list is None"),
+        ((lambda calls: (run_unit_gate(["a", "b", "c"], lambda n: calls.append(n) or ("failed" if n == "a" else "success")), calls)[1])([]) == ["a", "b", "c"],
+         "run_unit_gate: a red suite does not stop the other suites of that machine (more evidence per run)"),
+        (red_unit_rows("test-macos failed", BUILD[MAC], ["app-test-macos", LAB_APP[MAC]]) == {
+            BUILD[MAC]: ("not built (unit suite test-macos failed: no build on red unit tests)", None),
+            "app-test-macos": ("not run (unit suite test-macos failed: no app tests on red unit tests)", None),
+            LAB_APP[MAC]: ("not run (unit suite test-macos failed: no app tests on red unit tests)", None)}
+         and all(verdict(k, v[0]) == "FAIL" for k, v in red_unit_rows("x failed", BUILD[MAC], ["app-test-macos"]).items()),
+         "a red unit suite leaves the build `not built` and every app / lab job `not run`, all FAIL rows"),
+        ((lambda m: m.index("red = run_suites(plat_suites(p, False))") < m.index("if play(b):") and "red_unit_rows(red, b," in m.split("if play(b):")[0] and "return" in m.split("if play(b):")[0])
+         (_src.split("def plat_" + "flow(p):")[1].split("for b in builds")[0]),
+         "Mac / Windows, candidate / release: plat_flow plays the unit suites, returns without playing the build or any app job when one is red, and only then plays the build"),
+        ((lambda m: m.index("r = run_unit_gate(box, box_one)") < m.index("box_red.append(r)") < m.index("if box_red:", m.index("box_red.append(r)")) < m.index("if play(BUILD[LINUX])") and "red_unit_rows(box_red[0], BUILD[LINUX]," in m)
+         (_src.split("def main" + "():")[1]),
+         "the box: a red unit / integration suite is recorded, then the box build is not played and the box app jobs are `not run`"),
+        ("box_red[0], None, [n for n, _ in box_app_sequence(tier, True)" in _src, "the box's reused-build app jobs are `not run` after a red unit suite too"),
         (lab_image_skipped({"cases": [{"status": "skip", "detail": ["labctl start failed (1): image localhost/phosphor-sshlab:full-ab12 is not built: run the sshlab-image job"]}]}), "all-skip rows for a missing image are recognised"),
         (not lab_image_skipped({"cases": [{"status": "skip", "detail": ["no card"]}, {"status": "pass"}]}), "an ordinary skip is not a missing-image skip"),
         # #1921: pending behind this pipeline's own jobs is queued, not offline
@@ -831,7 +873,7 @@ def self_test():
          "no online runner with the job's tags is offline"),
         (pending_state({"id": 1, "tag_list": ["mac"]}, {"a": {"id": 1, "status": "pending", "tag_list": ["mac"]}}, None) == "offline",
          "no runner information and no busy sibling keeps the old offline rule"),
-        ("if BUILD[p] in gave_up:" in _src and "succeeded late; started" in _src and "late_build_outcome(" in _src.split("def main")[1],
+        ("if BUILD[p] in gave_up:" in _src and "succeeded late; started" in _src and "late_build_outcome(" in _src.split("def main" + "():")[1],
          "#2168: no more jobs are queued on a runner whose build was given up, and the app job is played when that build succeeds late"),
         # #2168: busy is not offline; the blocker is named; a build that finishes after the give-up is picked up
         (blocking_job({"id": 1, "tag_list": ["windows"]}, {"build": {"id": 1, "status": "pending", "tag_list": ["windows"]}, "old": {"id": 9, "status": "running", "tag_list": ["windows"]}}) == "old#9",
@@ -874,6 +916,15 @@ def self_test_r15(yml, src):
          "every job the plan names exists in .gitlab-ci.yml"),
         (("= (TIER" + "_SKIP, None)") not in src, "the driver marks no app job skipped by tier any more"),
         (all(before(fix[LINUX], u, "app-test-linux-wayland") for u in ("test-linux", "test-warpui-core", "test-workspace-rest")), "fix tier: the box unit suites before the first app job"),
+        # owner 2026-11-12: unit tests run BEFORE the release build on every machine in every tier that runs them; a red suite stops build + app jobs
+        (all(before(t[LINUX], u, BUILD[LINUX]) for t in (fix, cand, rel) for u in ("test-linux", "test-warpui-core", "test-workspace-rest"))
+         and all(before(t[LINUX], u, BUILD[LINUX]) for t in (cand, rel) for u in BOX_EXTRA) and all(before(t[LINUX], BUILD[LINUX], "app-test-linux-wayland") for t in (fix, cand, rel)),
+         "box, fix / candidate / release: the unit (and, outside fix, integration / usage) suites come BEFORE the release build, the build before the app jobs"),
+        (all(before(t[p], u, BUILD[p]) for t in (cand, rel) for p in (MAC, WIN) for u in plat_suites(p, False)) and all(before(t[p], BUILD[p], APP[p][0]) for t in (cand, rel) for p in (MAC, WIN)),
+         "Mac and Windows, candidate / release: the platform's unit suites come BEFORE its build, the build before its app jobs"),
+        (before(rel[MAC], "app-test-macos", "mutants-macos") and before(rel[WIN], "app-test-windows", "mutants-windows") and before(rel[LINUX], "app-test-linux-wayland", "mutants"),
+         "release: the heavy, non-gating suites (mutants, loom, fuzz) stay AFTER the app jobs; they are not unit gates"),
+        (fix[MAC][0] == BUILD[MAC], "fix tier, Mac / Windows: no unit suites are played there, so the build stays first"),
         (fix[MAC] == [BUILD[MAC], "app-test-macos"] and fix[WIN] == [BUILD[WIN], "app-test-windows"] and LAB_HELPER_JOB not in fix[LINUX] and REPLAY_JOB not in fix[LINUX],
          "fix tier: no lab job off the box, no helper build, no replay"),
         (tier_plan("fix", reuse=(LINUX, MAC), lab_globs=g)[MAC] == ["app-test-macos-reuse"] and BUILD[LINUX] not in tier_plan("fix", reuse=(LINUX,), lab_globs=g)[LINUX],
@@ -1547,9 +1598,11 @@ def main():
         return 0 if all(verdict(k, v[0]) not in ("FAIL", "OFFLINE") for k, v in timeline.items()) else 1
     # r18e4: the Mac and Windows builds have `needs: []` and run on their own machines; holding them behind a check-linux that
     # waits for the busy box left those machines idle for hours. Start them now (a compile error fails them on their own).
+    # Owner 2026-11-12: outside the fix tier (which runs no unit suites on these machines) each machine's unit suites come BEFORE its build, so the
+    # build is played by plat_flow after them, not here.
     for p in (MAC, WIN):
-        if p in plats and p not in reuse and BUILD[p] not in SKIP and play(BUILD[p]):
-            print("%s: started %s without waiting for check-linux (own machine)" % (time.strftime("%H:%M"), BUILD[p]), flush=True)
+        if tier == "fix" and p in plats and p not in reuse and BUILD[p] not in SKIP and play(BUILD[p]):
+            print("%s: started %s without waiting for check-linux (own machine; the fix tier runs no unit suites there)" % (time.strftime("%H:%M"), BUILD[p]), flush=True)
     # #1921: the lab image job is a seconds-long no-op on the box runner; queued behind the long box jobs it starved for 23 min. Play it NOW,
     # at the front of the box queue (every lab job needs it). Round 15: candidate and release play a lab job on every platform, so always there.
     if (tier != "fix" or (LINUX in plats and LAB_FIX_JOB not in SKIP and proving_lab_globs())) and LAB_IMAGE_JOB in jobs():
@@ -1570,6 +1623,7 @@ def main():
         lab_helper_done.set()
     # r18u31 / owner 2026-11-05: set when the box's unit (and integration / usage) suites are done; the Linux app jobs wait for it in every tier
     box_units_done = threading.Event()
+    box_red = []                                        # [first red box unit suite "<name> <status>"] (owner 2026-11-12: it stops the box build and app jobs)
 
     # builds first (they are the long pole: macos ~21 min, windows ~38 min), tests alongside on the box
     builds = [BUILD[p] for p in plats if BUILD[p] not in SKIP and p not in reuse]
@@ -1581,6 +1635,10 @@ def main():
             # start them at once, beside the suites), one at a time, wayland, x11 in both modes, then the PROVING lab cases.
             def box_reuse_apps(rv=rv):
                 box_units_done.wait()
+                if box_red:                             # owner 2026-11-12: no app tests on red unit tests
+                    for n, row in red_unit_rows(box_red[0], None, [n for n, _ in box_app_sequence(tier, True) if n not in SKIP]).items():
+                        timeline[n] = row
+                    return
                 run_box_apps(box_app_sequence(tier, True), rv)
             side_threads.append(threading.Thread(target=box_reuse_apps, daemon=True))
             side_threads[-1].start()
@@ -1590,8 +1648,7 @@ def main():
                 continue
             if play(n + "-reuse", rv):
                 reuse_started.append(n + "-reuse")
-    for n in builds:
-        play(n)
+    # (the builds are played further down: Mac / Windows fix-tier builds above, the others after their machine's unit suites -- owner 2026-11-12)
     # Each platform's tests start as soon as ITS build succeeds, not after the box test suites (those take ~1 h and
     # would hold the Mac and Windows tests back for no reason; app tests on other machines do not compete with the box).
     # Owner 2026-11-05: on each machine (Mac, Windows and the Linux box) the UNIT suites run first, then the app tests, then (release tier) the heavy suites,
@@ -1604,17 +1661,22 @@ def main():
     # (box_units_done is made above, before the reuse path, which waits for it too since round 15)
 
     def run_suites(names):
-        """Play the suite jobs one after the other on their machine; a suite that cannot exist there is reported, not played."""
-        for n in names:
+        """Play the suite jobs one after the other on their machine; a suite that cannot exist there is reported, not played.
+        -> the first red one ("<name> <status>") or None (run_unit_gate)."""
+        def one(n):
             if n in SKIP or n not in jobs():
-                continue
+                return None
             if n in UNSUPPORTED:
                 print("%s: not played, unsupported on this platform: %s" % (n, UNSUPPORTED[n]), flush=True)
-                timeline[n] = (PLATFORM_UNSUPPORTED, None); continue
+                timeline[n] = (PLATFORM_UNSUPPORTED, None); return None
             if play(n):
                 print("%s: started %s" % (time.strftime("%H:%M"), n), flush=True)
             if jobs().get(n, {}).get("status") not in (None, "manual"):
-                print(n, wait(n), flush=True)
+                st = wait(n)
+                print(n, st, flush=True)
+                return st
+            return None
+        return run_unit_gate(names, one)
 
     gave_up = {}      # #2168: build job -> RUNNER-OFFLINE / RUNNER-BUSY; nothing more is queued on that machine, the app job is played if the build finishes late
 
@@ -1627,10 +1689,7 @@ def main():
             for n in [t for t in mine if t not in SKIP and t in jobs()]:
                 timeline[n] = ("not run (%s %s)" % (b, bs), None)   # a build that failed leaves its app tests unrun: that is a failure, not a pass
             return
-        if tier != "fix" and p_of[b] in PLAT_SUFFIX:
-            run_suites(plat_suites(p_of[b], False))     # unit suites first, on the same machine, before its app tests
-        elif p_of[b] not in PLAT_SUFFIX:
-            box_units_done.wait()                       # the Linux box: its unit suites first, never alongside the app tests (ALL tiers, owner 2026-11-05; the fix tier used to start them alongside, 2026-11-10)
+        # owner 2026-11-12: the unit suites (every machine, every tier that runs them) already ran BEFORE this build was played, and were green
         if p_of[b] == LINUX:
             # Round 15 (#2058, #2063): wayland, then x11 in both modes, then the lab (fix: the PROVING lab cases, owner rule 2026-11-09; candidate /
             # release: every family, then the replay), each waited for before the next is played
@@ -1641,10 +1700,33 @@ def main():
                 print("%s: %s succeeded, started %s" % (time.strftime("%H:%M"), b, n), flush=True)
                 with lock:
                     started.append(n)
-    watchers = [threading.Thread(target=after_build, args=(b,), daemon=True) for b in builds]
-    for t in watchers:
+    watchers, watch_of = [], {}
+
+    def watch(b, target, *args):
+        t = threading.Thread(target=target, args=args, daemon=True)
+        watchers.append(t); watch_of[b] = t
         t.start()
-    watch_of = {b: t for b, t in zip(builds, watchers)}
+
+    def plat_flow(p):
+        """candidate / release, Mac and Windows (owner 2026-11-12): this machine's unit suites FIRST, then its build, then its app tests. A red unit suite
+        plays no build and no app / lab job (they are FAIL rows), spending no build minutes on a red suite."""
+        b = BUILD[p]
+        red = run_suites(plat_suites(p, False))
+        if red:
+            print("%s: %s NOT played: unit suite %s (owner: unit tests first, no build and no app tests on a red suite)" % (time.strftime("%H:%M"), b, red), flush=True)
+            for n, row in red_unit_rows(red, b, [t for t in APP[p] + [LAB_APP[p]] if t not in SKIP and t in jobs()]).items():
+                timeline[n] = row
+            return
+        if play(b):
+            print("%s: started %s (unit suites green)" % (time.strftime("%H:%M"), b), flush=True)
+        after_build(b)
+    for b in builds:
+        if p_of[b] == LINUX:
+            continue                                    # the box build is played after the box unit suites, below
+        if tier == "fix":
+            play(b); watch(b, after_build, b)           # Mac / Windows, fix tier: no unit suites there; the build is already running
+        else:
+            watch(b, plat_flow, p_of[b])
 
     def plat_unit_suites(p):
         """candidate/release: after this platform's unit suites and app tests (played by after_build), its heavy suites
@@ -1682,12 +1764,27 @@ def main():
         box = [(n, v) for n, k, v in (("test-linux", "linux", fvars), ("test-warpui-core", "core", None), ("test-workspace-rest", "rest", None)) if k in suites]
     else:
         box = [("test-linux", None), ("test-warpui-core", None), ("test-workspace-rest", None)]
-    for n, v in box:
-        if n in SKIP: continue
-        play(n, v); print(n, wait(n), flush=True)
+    def box_one(item):
+        n, v = item
+        if n in SKIP: return None
+        play(n, v); st = wait(n); print(n, st, flush=True)
+        return st
+    r = run_unit_gate(box, box_one)
     if tier != "fix":
-        run_suites(BOX_EXTRA)                           # #1502: integration (3 shards), its pwsh scenarios and the usage suite, before the app tests
+        r = r or run_suites(BOX_EXTRA)                  # #1502: integration (3 shards), its pwsh scenarios and the usage suite, before the app tests
+    if r:
+        box_red.append(r)
     box_units_done.set()
+    # owner 2026-11-12: the box's unit suites come BEFORE its release build; green -> the build is played now and its app jobs follow it, red -> neither
+    if BUILD[LINUX] in builds:
+        if box_red:
+            print("%s: %s NOT played: unit suite %s (owner: unit tests first, no build and no app tests on a red suite)" % (time.strftime("%H:%M"), BUILD[LINUX], box_red[0]), flush=True)
+            for n, row in red_unit_rows(box_red[0], BUILD[LINUX], [n for n, _ in box_app_sequence(tier) if n not in SKIP and n in jobs()]).items():
+                timeline[n] = row
+        else:
+            if play(BUILD[LINUX]):
+                print("%s: started %s (box unit suites green)" % (time.strftime("%H:%M"), BUILD[LINUX]), flush=True)
+            watch(BUILD[LINUX], after_build, BUILD[LINUX])
     if tier == "release":
         for p in plats:                                 # the box's heavy suites after its app tests (they load every core)
             if p in PLAT_SUFFIX:
@@ -1710,7 +1807,7 @@ def main():
     for n in builds:
         print(n, timeline.get(n, ("?",))[0], flush=True)
     for n in started + reuse_started: print(n, wait(n), flush=True)
-    if tier == "fix" and LINUX in plats and lab_image_state and not lab_image_state[0] and LAB_FIX_JOB not in SKIP and proving_lab_globs():
+    if tier == "fix" and LINUX in plats and not box_red and lab_image_state and not lab_image_state[0] and LAB_FIX_JOB not in SKIP and proving_lab_globs():
         # #1921: the image may have finished after ci_seq stopped waiting for it; if so the lab job is played now rather than never
         if ensure_lab_image():
             late, lv2 = LAB_FIX_JOB, dict(appvars, **lab_fix_vars())
