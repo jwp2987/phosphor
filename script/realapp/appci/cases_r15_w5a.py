@@ -68,6 +68,15 @@ def key_fate(text):
     return "the app's key trace: taken by a binding: %s; reached no binding: %s" % (", ".join(bound[:4]) or "none", ", ".join(plain[:4]) or "none")
 
 
+PROMPT_BACK_NET_S = 10.0
+PRECMD_LINE = "hop=precmd_seen"                            # app/src/terminal: logged when the shell's prompt hook reports a new prompt (Git Bash included)
+
+
+def prompt_returned(text):
+    """pure: whether an app-log excerpt shows the shell's prompt coming back (the app saw a precmd), i.e. the input editor owns the keyboard again"""
+    return PRECMD_LINE in (text or "")
+
+
 def await_view(ctx, off, view, net=SEARCH_OPEN_NET_S):
     """wait until a frame after log offset `off` rendered `view` (a give-up net of `net` seconds, not a settle: the first open of command search
     after a launch reads the whole history, which on a slow machine with a long history takes longer than any fixed sleep) -> (True | False |
@@ -166,8 +175,13 @@ def search_closed_probe(ctx, r, tag):
     f = "kbr_%s.txt" % tag
     tok = "kbr" + ctx.tok(6).lower()
     ctx.rm(f)
+    off = ctx.log_size()
     typed(ctx, ctx.append_cmd(ctx.pane_shell(), tok, f))
     ok = bool(ctx.until(lambda: tok in [l.strip() for l in ctx.lines(f)], 8))
+    # #2183: the effect line is on disk while its command is still running; until the app sees the prompt come back the terminal pane owns the keyboard
+    # and the Input keymap context (command search's) is not active, so a chord pressed now goes to the pty. Wait for the prompt before the next key.
+    ctx.until(lambda: prompt_returned(ctx.log_since(off)), PROMPT_BACK_NET_S, step=0.1)
+    time.sleep(0.3)
     r.check(ok, "%s: a line typed after the key did not run in the shell (something else has the keyboard: command search?)" % tag)
     return ok
 
