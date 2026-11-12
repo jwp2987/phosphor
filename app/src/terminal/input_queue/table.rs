@@ -31,7 +31,7 @@
 //! | `H5` | Typed/Enter/editor key, an EnterVerdict or TabCompletion gate is open | `Hold(that gate)` |
 //! | `H6` | PowerShell setup holds keys | `Hold(PowershellSetup)` |
 //! | `H7` | subshell setup gate / bootstrap write gate (no bypass since #1679 step 4: a shell asking for an answer is the readiness judge's E-SECRET / E-QUESTION, which hand the keys back) | `Hold(..)` |
-//! | `H8` | any other gate, queued entries or the mailbox (the `HistoryRecall` gate, #2107, is one: every editor key typed while the inline history menu's list is still being built waits behind it, no exemption) | `Hold(gate)` / `Queue`; see [`gate_holds`] |
+//! | `H8` | any other gate, queued entries or the mailbox (the `HistoryRecall` gate, #2107, is one: every editor key typed while the inline history menu's list is still being built waits behind it, no exemption; the `RemoteTabCompletion` gate, #2188, is another: every editor key typed while a remote Tab completion is being answered waits behind it, no exemption) | `Hold(gate)` / `Queue`; see [`gate_holds`] |
 //! | `H10` | editor key needing a fresh display map | `Hold(EditorDisplayMap)` |
 //! | `D9` | origin Editor | `EditorInsert` / `EditorAction` / `EditorSubmit` |
 //! | `D1` / `D2` | approval card focus / the agent owns the pty | `AgentInput` |
@@ -522,6 +522,10 @@ pub fn pty_enter_replay(f: &RouteFacts) -> bool {
 ///
 /// * **`HistoryRecall`** (#2107) has no exemption: every key waits behind it, in order, so the
 ///   recalled line is in the buffer before the first key edits it.
+///
+/// * **`RemoteTabCompletion`** (#2188) has no exemption either: every key waits behind it, in
+///   order, so the remote completion is in the buffer before the Enter (or the text) typed after
+///   the Tab acts.
 ///
 /// Signals never reach this function: they apply [`signal_plan`] per gate instead.
 pub fn gate_holds(f: &RouteFacts, class: Class, origin: Origin) -> bool {

@@ -19708,3 +19708,431 @@ fn test_history_recall_kill_switch_name_and_semantics() {
     assert!(!switch_is_on(Some("0")));
     assert!(switch_is_on(None));
 }
+
+// ---- #2188: Tab then a fast Enter in a remote session runs the COMPLETED line ----
+
+/// One key typed after the Tab of a remote Tab scenario.
+#[derive(Clone)]
+enum RemoteTabKey {
+    Action(EditorAction),
+    Text(&'static str),
+}
+
+/// How the remote completer's job ends in a remote Tab scenario.
+enum RemoteTabEnd {
+    /// It answers with these candidates for `fe` (none: nothing to complete).
+    Answer(Vec<&'static str>),
+    /// It never answers: the gate's give-up net fires.
+    GiveUp,
+    /// It is superseded or cancelled without an answer.
+    Superseded,
+    /// Nothing ends it within the scenario (a ^C typed meanwhile is the end).
+    Nothing,
+}
+
+/// What a remote Tab scenario observed.
+#[derive(Debug, Default)]
+struct RemoteTabOutcome {
+    /// The remote Tab gate was open right after the Tab.
+    gate_open_after_tab: bool,
+    /// Once every key was typed and the completer had been slow for 200 ms: the gate, the buffer,
+    /// the queue's size and what had run.
+    gate_open_before_end: bool,
+    buffer_before_end: String,
+    queued_before_end: usize,
+    executed_before_end: Vec<String>,
+    /// After the job ended and the queue was idle.
+    gate_open_after: bool,
+    buffer_after: String,
+    menu_closed_after: bool,
+    executed: Vec<String>,
+    /// What had run after an answer that arrived AFTER the end (a late duplicate).
+    executed_after_late_answer: Vec<String>,
+    buffer_after_late_answer: String,
+}
+
+fn remote_tab_gate_open(app: &App, editor: &ViewHandle<EditorView>) -> bool {
+    editor.read(app, |editor, _| {
+        editor.paste_hold().queue().try_peek().is_some_and(|queue| {
+            queue.has_gate_kind(crate::terminal::input_queue::GateKind::RemoteTabCompletion)
+        })
+    })
+}
+
+/// Waits (event loop turns, bounded) until the pane queue is idle and no replay is pending.
+async fn wait_for_remote_tab_replay(app: &App, editor: &ViewHandle<EditorView>) {
+    // The replay of the held keys and the Enter's submit are events after the release.
+    warpui::r#async::Timer::after(Duration::from_millis(50)).await;
+    wait_until(app, |app| {
+        editor.read(app, |editor, _| {
+            let hold = editor.paste_hold();
+            hold.queue().try_peek().is_some_and(|queue| queue.is_idle()) && !hold.replay_pending()
+        })
+    })
+    .await;
+    warpui::r#async::Timer::after(Duration::from_millis(50)).await;
+}
+
+fn remote_tab_answer(
+    input: &ViewHandle<Input>,
+    app: &mut App,
+    job: u64,
+    generation: u64,
+    candidates: Vec<&'static str>,
+    snapshot: EditorSnapshot,
+) {
+    input.update(app, |input, ctx| {
+        input.deliver_tab_job_results(
+            Some(job),
+            generation,
+            build_suggestion_results(
+                candidates.into_iter().map(argument_suggestion).collect(),
+                (13, 15),
+                MatchStrategy::CaseInsensitive,
+            ),
+            CompletionsTrigger::Keybinding,
+            snapshot,
+            ctx,
+        );
+    });
+}
+
+/// The buffer holds `git checkout fe` in a session whose completer runs over the link, and a Tab
+/// has started its job (the remote Tab gate is open). `keys` are typed through the editor at
+/// once, the completer stays silent for 200 ms (slower than the lab's 150 ms link), then the job
+/// ends as `end` says. A late copy of a single-match answer is delivered afterwards.
+fn run_remote_tab_scenario(keys: Vec<RemoteTabKey>, end: RemoteTabEnd) -> RemoteTabOutcome {
+    let result = Rc::new(RefCell::new(RemoteTabOutcome::default()));
+    let sink = result.clone();
+    App::test((), |mut app| async move {
+        let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+        let (input, executed, generation, snapshot) = tab_enter_fixture(&mut app, false).await;
+        let editor = input.read(&app, |input, _| input.editor().clone());
+        let job = input
+            .update(&mut app, |input, ctx| input.open_remote_tab_gate(ctx))
+            .expect("a Tab on an idle queue opens the remote Tab gate");
+        let mut outcome = RemoteTabOutcome {
+            gate_open_after_tab: remote_tab_gate_open(&app, &editor),
+            ..RemoteTabOutcome::default()
+        };
+        for key in keys {
+            editor.update(&mut app, |editor, ctx| match &key {
+                RemoteTabKey::Action(action) => editor.handle_action(action, ctx),
+                RemoteTabKey::Text(text) => {
+                    editor.handle_action(&EditorAction::UserInsert(UserInput::new(*text)), ctx)
+                }
+            });
+        }
+        // A slow completer: the answer is still on its way after 200 ms.
+        warpui::r#async::Timer::after(Duration::from_millis(200)).await;
+        outcome.gate_open_before_end = remote_tab_gate_open(&app, &editor);
+        outcome.buffer_before_end = input.read(&app, |input, ctx| input.buffer_text(ctx));
+        outcome.queued_before_end = editor.read(&app, |editor, _| {
+            editor
+                .paste_hold()
+                .queue()
+                .try_peek()
+                .map_or(0, |queue| queue.queued_len())
+        });
+        outcome.executed_before_end = executed.borrow().clone();
+        match end {
+            RemoteTabEnd::Answer(candidates) => remote_tab_answer(
+                &input,
+                &mut app,
+                job,
+                generation,
+                candidates,
+                snapshot.clone(),
+            ),
+            RemoteTabEnd::GiveUp => {
+                let token = editor.read(&app, |editor, _| {
+                    editor
+                        .paste_hold()
+                        .queue()
+                        .peek()
+                        .gates()
+                        .iter()
+                        .find(|gate| {
+                            gate.kind == crate::terminal::input_queue::GateKind::RemoteTabCompletion
+                        })
+                        .map(|gate| gate.token)
+                        .expect("the remote Tab gate is open")
+                });
+                // The net fires.
+                input.update(&mut app, |input, ctx| {
+                    input.give_up_remote_tab_gate(token, ctx)
+                });
+            }
+            RemoteTabEnd::Superseded => input.update(&mut app, |input, ctx| {
+                input.release_remote_tab_gate(job, "superseded", ctx)
+            }),
+            RemoteTabEnd::Nothing => {}
+        }
+        wait_for_remote_tab_replay(&app, &editor).await;
+        outcome.gate_open_after = remote_tab_gate_open(&app, &editor)
+            || input.read(&app, |input, _| input.remote_tab_gate_open_for_test());
+        outcome.buffer_after = input.read(&app, |input, ctx| input.buffer_text(ctx));
+        outcome.menu_closed_after = input.read(&app, |input, ctx| {
+            input.suggestions_mode_model.as_ref(ctx).is_closed()
+        });
+        outcome.executed = executed.borrow().clone();
+        // An answer that arrives after the end must change nothing.
+        remote_tab_answer(&input, &mut app, job, generation, vec!["feature"], snapshot);
+        wait_for_remote_tab_replay(&app, &editor).await;
+        outcome.executed_after_late_answer = executed.borrow().clone();
+        outcome.buffer_after_late_answer = input.read(&app, |input, ctx| input.buffer_text(ctx));
+        *sink.borrow_mut() = outcome;
+    });
+    result.take()
+}
+
+/// A line with its blanks removed: the completer decides whether a completed word is followed by
+/// a space, the tests decide the ORDER of the completed word and the keys typed after the Tab.
+fn without_blanks(line: &str) -> String {
+    line.chars().filter(|c| !c.is_whitespace()).collect()
+}
+
+/// The owner's rule extended to remote sessions (#2188): Tab, then an Enter before the remote
+/// completer answers (it takes 200 ms here). The Enter waits in the queue, nothing runs and the
+/// line is untouched meanwhile, and the answer's single match is applied before the Enter runs:
+/// the COMPLETED line is submitted, once.
+#[test]
+fn test_remote_tab_then_fast_enter_runs_the_completed_line() {
+    let outcome = run_remote_tab_scenario(
+        vec![RemoteTabKey::Action(EditorAction::Enter)],
+        RemoteTabEnd::Answer(vec!["feature"]),
+    );
+    assert!(outcome.gate_open_after_tab, "{outcome:?}");
+    assert!(outcome.gate_open_before_end, "{outcome:?}");
+    assert_eq!(outcome.buffer_before_end, "git checkout fe", "{outcome:?}");
+    assert_eq!(outcome.queued_before_end, 1, "{outcome:?}");
+    assert!(
+        outcome.executed_before_end.is_empty(),
+        "nothing runs before the answer: {outcome:?}"
+    );
+    assert_eq!(outcome.executed.len(), 1, "{outcome:?}");
+    assert_eq!(
+        outcome.executed[0].trim_end(),
+        "git checkout feature",
+        "{outcome:?}"
+    );
+    assert!(!outcome.gate_open_after, "{outcome:?}");
+    assert_eq!(
+        outcome.executed_after_late_answer.len(),
+        1,
+        "a late copy of the answer runs nothing: {outcome:?}"
+    );
+}
+
+/// Tab, text, Enter, all before the answer: the completion is applied first, then the text, then
+/// the Enter runs the line, in typed order (what plain ssh does: the Tab and the keys behind it
+/// reach the remote shell in order). The text never enters the buffer ahead of the completion.
+#[test]
+fn test_remote_tab_then_text_then_enter_applies_the_completion_before_the_text() {
+    let outcome = run_remote_tab_scenario(
+        vec![
+            RemoteTabKey::Text("X"),
+            RemoteTabKey::Action(EditorAction::Enter),
+        ],
+        RemoteTabEnd::Answer(vec!["feature"]),
+    );
+    assert_eq!(outcome.buffer_before_end, "git checkout fe", "{outcome:?}");
+    assert_eq!(outcome.queued_before_end, 2, "{outcome:?}");
+    assert!(outcome.executed_before_end.is_empty(), "{outcome:?}");
+    assert_eq!(outcome.executed.len(), 1, "{outcome:?}");
+    assert!(
+        outcome.executed[0].starts_with("git checkout feature"),
+        "{outcome:?}"
+    );
+    assert_eq!(
+        without_blanks(&outcome.executed[0]),
+        "gitcheckoutfeatureX",
+        "the completed word, then the typed text: {outcome:?}"
+    );
+    assert!(!outcome.gate_open_after, "{outcome:?}");
+}
+
+/// Tab, then text and no Enter: the text waits too and is typed after the completed word; nothing
+/// runs.
+#[test]
+fn test_remote_tab_then_text_is_typed_after_the_completion() {
+    let outcome = run_remote_tab_scenario(
+        vec![RemoteTabKey::Text("X")],
+        RemoteTabEnd::Answer(vec!["feature"]),
+    );
+    assert_eq!(outcome.buffer_before_end, "git checkout fe", "{outcome:?}");
+    assert_eq!(outcome.queued_before_end, 1, "{outcome:?}");
+    assert!(
+        outcome.buffer_after.starts_with("git checkout feature"),
+        "{outcome:?}"
+    );
+    assert_eq!(
+        without_blanks(&outcome.buffer_after),
+        "gitcheckoutfeatureX",
+        "{outcome:?}"
+    );
+    assert!(outcome.executed.is_empty(), "{outcome:?}");
+    assert!(!outcome.gate_open_after, "{outcome:?}");
+}
+
+/// The answer has no candidates: the Enter runs the line as typed, after the answer (not before:
+/// it waited), once.
+#[test]
+fn test_remote_tab_then_enter_with_no_candidates_runs_the_line_as_typed_after_the_answer() {
+    let outcome = run_remote_tab_scenario(
+        vec![RemoteTabKey::Action(EditorAction::Enter)],
+        RemoteTabEnd::Answer(vec![]),
+    );
+    assert!(
+        outcome.executed_before_end.is_empty(),
+        "the Enter waits for the answer: {outcome:?}"
+    );
+    assert_eq!(outcome.executed, vec!["git checkout fe".to_string()]);
+    assert!(!outcome.gate_open_after, "{outcome:?}");
+}
+
+/// Several candidates: as the local rule (#1165), no menu opens for the held Enter and the
+/// visible line runs.
+#[test]
+fn test_remote_tab_then_enter_with_several_candidates_runs_the_visible_line_and_opens_no_menu() {
+    let outcome = run_remote_tab_scenario(
+        vec![RemoteTabKey::Action(EditorAction::Enter)],
+        RemoteTabEnd::Answer(vec!["feature", "fennel"]),
+    );
+    assert!(outcome.executed_before_end.is_empty(), "{outcome:?}");
+    assert_eq!(outcome.executed, vec!["git checkout fe".to_string()]);
+    assert!(outcome.menu_closed_after, "{outcome:?}");
+}
+
+/// The give-up net: the completer never answers. The Enter is not dropped: it runs the line as
+/// typed (what plain ssh runs when the remote shell completes nothing), once, and an answer that
+/// arrives afterwards neither completes nor runs anything.
+#[test]
+fn test_remote_tab_give_up_runs_the_line_as_typed_and_drops_the_late_answer() {
+    let outcome = run_remote_tab_scenario(
+        vec![RemoteTabKey::Action(EditorAction::Enter)],
+        RemoteTabEnd::GiveUp,
+    );
+    assert!(outcome.gate_open_before_end, "{outcome:?}");
+    assert!(outcome.executed_before_end.is_empty(), "{outcome:?}");
+    assert_eq!(
+        outcome.executed,
+        vec!["git checkout fe".to_string()],
+        "the Enter is not dropped: {outcome:?}"
+    );
+    assert!(!outcome.gate_open_after, "{outcome:?}");
+    assert_eq!(
+        outcome.executed_after_late_answer,
+        vec!["git checkout fe".to_string()],
+        "a late answer runs nothing: {outcome:?}"
+    );
+    assert!(
+        !outcome.buffer_after_late_answer.contains("feature"),
+        "a late answer completes nothing: {outcome:?}"
+    );
+}
+
+/// The give-up net keeps the typed order: text, Enter, text all replay on the line as typed.
+#[test]
+fn test_remote_tab_give_up_replays_every_held_key_in_typed_order() {
+    let outcome = run_remote_tab_scenario(
+        vec![
+            RemoteTabKey::Text("X"),
+            RemoteTabKey::Text("Y"),
+            RemoteTabKey::Action(EditorAction::Enter),
+        ],
+        RemoteTabEnd::GiveUp,
+    );
+    assert_eq!(outcome.queued_before_end, 3, "{outcome:?}");
+    assert_eq!(outcome.buffer_before_end, "git checkout fe", "{outcome:?}");
+    assert_eq!(
+        outcome.executed,
+        vec!["git checkout feXY".to_string()],
+        "none dropped, none reordered: {outcome:?}"
+    );
+}
+
+/// The job is superseded or cancelled without an answer: the held keys replay on the line as it
+/// is, in order; nothing is lost.
+#[test]
+fn test_remote_tab_superseded_job_replays_the_held_keys_on_the_line_as_it_is() {
+    let outcome = run_remote_tab_scenario(vec![RemoteTabKey::Text("X")], RemoteTabEnd::Superseded);
+    assert_eq!(outcome.buffer_before_end, "git checkout fe", "{outcome:?}");
+    assert_eq!(outcome.buffer_after, "git checkout feX", "{outcome:?}");
+    assert!(outcome.executed.is_empty(), "{outcome:?}");
+    assert!(!outcome.gate_open_after, "{outcome:?}");
+}
+
+/// ^C while the completion is awaited: as at the local Tab hold, the keys typed behind the Tab
+/// (the Enter included) are discarded, nothing runs, the gate is gone at once, and the answer
+/// that arrives later neither completes nor runs anything.
+#[test]
+fn test_remote_tab_ctrl_c_while_waiting_discards_the_held_keys_and_runs_nothing() {
+    let outcome = run_remote_tab_scenario(
+        vec![
+            RemoteTabKey::Text("X"),
+            RemoteTabKey::Action(EditorAction::Enter),
+            RemoteTabKey::Action(EditorAction::CtrlC),
+        ],
+        RemoteTabEnd::Nothing,
+    );
+    assert!(outcome.gate_open_after_tab, "{outcome:?}");
+    assert!(
+        !outcome.gate_open_before_end,
+        "^C ends the wait at once: {outcome:?}"
+    );
+    assert_eq!(outcome.queued_before_end, 0, "{outcome:?}");
+    assert!(outcome.executed.is_empty(), "{outcome:?}");
+    assert!(!outcome.gate_open_after, "{outcome:?}");
+    assert!(
+        outcome.executed_after_late_answer.is_empty(),
+        "a late answer runs nothing: {outcome:?}"
+    );
+    assert!(
+        !outcome.buffer_after_late_answer.contains("feature")
+            && !outcome.buffer_after_late_answer.contains('X'),
+        "a late answer completes nothing and the discarded text stays discarded: {outcome:?}"
+    );
+}
+
+/// The gate waits for ONE job: a Tab that supersedes the job takes the gate over, the end of the
+/// superseded job does not close it, and the end of the current one does.
+#[test]
+fn test_remote_tab_gate_follows_the_job_that_superseded_the_first() {
+    App::test((), |mut app| async move {
+        let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+        let (input, _executed, _generation, _snapshot) = tab_enter_fixture(&mut app, false).await;
+        let editor = input.read(&app, |input, _| input.editor().clone());
+        let first = input
+            .update(&mut app, |input, ctx| input.open_remote_tab_gate(ctx))
+            .expect("the gate opens");
+        let second = input
+            .update(&mut app, |input, ctx| input.open_remote_tab_gate(ctx))
+            .expect("the second Tab takes the gate over");
+        assert_ne!(first, second);
+        input.update(&mut app, |input, ctx| {
+            input.release_remote_tab_gate(first, "superseded", ctx)
+        });
+        assert!(
+            remote_tab_gate_open(&app, &editor),
+            "the superseded job's end leaves the gate to the job that took it over"
+        );
+        input.update(&mut app, |input, ctx| {
+            input.release_remote_tab_gate(second, "answered", ctx)
+        });
+        assert!(!remote_tab_gate_open(&app, &editor));
+        input.read(&app, |input, _| {
+            assert!(!input.remote_tab_gate_open_for_test())
+        });
+    });
+}
+
+/// The kill switch: the remote Tab gate is the only thing it guards, and its name is part of the
+/// interface (docs/testing.md).
+#[test]
+fn test_remote_tab_enter_wait_kill_switch_name_and_semantics() {
+    use crate::terminal::input_queue::switches::{REMOTE_TAB_ENTER_WAIT_ENV, switch_is_on};
+    assert_eq!(REMOTE_TAB_ENTER_WAIT_ENV, "PHOSPHOR_REMOTE_TAB_ENTER_WAIT");
+    assert!(!switch_is_on(Some("0")));
+    assert!(switch_is_on(None));
+}

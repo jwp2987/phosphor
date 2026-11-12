@@ -3536,8 +3536,12 @@ impl EditorView {
         // in the buffer yet. Every key typed meanwhile waits in the queue, in order, and acts on
         // the recalled line once it is there: Escape and the other keys with no replayable form
         // included, so none overtakes an earlier key.
+        // #2188: the same hold behind the remote Tab completion gate: the completion a Tab asked
+        // the remote side for is not in the buffer yet, and every key typed meanwhile (the fast
+        // Enter first of all) waits in the queue, in order, and acts on the completed line.
         if queue.try_peek().is_some_and(|held| {
             held.has_gate_kind(crate::terminal::input_queue::GateKind::HistoryRecall)
+                || held.has_gate_kind(crate::terminal::input_queue::GateKind::RemoteTabCompletion)
         }) {
             let kind = match paste_hold::held_form(action) {
                 Some(key) => Some(recall_held_entry(key)),
@@ -9959,6 +9963,9 @@ fn editor_interrupt_meets_gate(queue: &crate::terminal::input_queue::PaneQueue) 
             // #2107: ^C cancels the recall (the plan discards the edits typed meanwhile); the
             // with-an-Enter-held case never gets here (`recall_interrupt_waits_in_order`).
             GateKind::HistoryRecall => true,
+            // #2188: ^C voids the remote Tab completion and the keys typed behind the Tab, as it
+            // voids an Enter held for a local Tab completion.
+            GateKind::RemoteTabCompletion => true,
             // Not `HandoffReport`: an interrupt meeting an Enter deferred for the shell's report
             // cancels that Enter and voids the keys behind its gate (`TerminalView::ctrl_c`,
             // through the editor's own event), which a signal offered to the queue would flush

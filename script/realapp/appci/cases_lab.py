@@ -21,6 +21,9 @@ import lab as L  # noqa: E402
 
 HOOK_TAB_INSERT = re.compile(r"hop=tab_insert\b|completion_inserted")           # [hook] the completion text reached the editor
 HOOK_TAB_MENU = re.compile(r"hop=tab_menu\b[^\n]*items=(\[[^\n]*\])")             # [hook] the ambiguous-prefix menu and its items
+# #2188: the app's own line for the keys it held behind a remote Tab completion (input/remote_tab.rs): counts only, never the line
+HOOK_REMOTE_TAB_WAIT = re.compile(r"remote_tab_wait: (released|gave_up) why=(\w+) waited_ms=(\d+) held=(\d+) enter_held=([01])")
+REMOTE_TAB_ENTER_WAIT_ENV = "PHOSPHOR_REMOTE_TAB_ENTER_WAIT"      # the app's kill switch (input_queue/switches.rs); the lab never sets it
 HOOK_CWD_LISTING = re.compile(r"hop=cwd_listing session=(\d+) kind=([LPT]) entries=(\d+)")            # the remote shell's pushed cwd listing arrived (#1801): ids and counts only
 HOOK_PATH_DETECT = re.compile(r"hop=path_detect source=pushed session=(\d+) entries=(\d+) complete=(true|false)")   # path detection answered from that listing, no round trip (ids and counts only)
 SESSION_ABANDONED = "Session abandoned before bootstrap"
@@ -751,6 +754,36 @@ def zsh_evidence_line(path):
     return ("() { setopt localoptions appendcreate clobber; { typeset -p preexec_functions; whence -v __pa_pxh; print -r -- \"PA_CTL=$PA_CTL\"; [[ -w $PA_CTL ]] && print wr=1 || print wr=0; } >> %s; }" % path)
 
 
+def remote_tab_waits(log_text):
+    """pure (#2188): every `remote_tab_wait:` line of the app log, in order, as dicts {end: released|gave_up, why, waited_ms, held, enter_held}. The app writes
+    one when the remote Tab completion gate closes: `released why=answered_applied` is a fast Enter that waited for the completer's answer and ran the
+    completed line; `gave_up` is the 5 s net (the line ran as typed)."""
+    return [{"end": m.group(1), "why": m.group(2), "waited_ms": int(m.group(3)), "held": int(m.group(4)), "enter_held": m.group(5) == "1"}
+            for m in HOOK_REMOTE_TAB_WAIT.finditer(log_text or "")]
+
+
+def remote_tab_wait_note(waits):
+    """pure (#2188): the row note for the fast-Enter step: the wait(s) the app logged for keys held behind the remote Tab completion, or why there is none"""
+    held = [w for w in waits if w["enter_held"]]
+    if not waits:
+        return ("remote Tab wait (#2188): the app logged no remote_tab_wait line for this step (a build before #2188, %s=0, the remote shell answered in-band "
+                "(#1801), or the completion had already answered when the Enter arrived)" % REMOTE_TAB_ENTER_WAIT_ENV)
+    return "remote Tab wait (#2188) logged by the app: %s; %d of %d with an Enter held" % (
+        "; ".join("%s why=%s waited %d ms, %d key(s) held, enter_held=%d" % (w["end"], w["why"], w["waited_ms"], w["held"], w["enter_held"]) for w in waits),
+        len(held), len(waits))
+
+
+def tab_enter_received(recs, want_dir):
+    """pure (#2188): the verdict on the `cd` line(s) the remote shell RECEIVED for Tab + a fast Enter. Exactly one, and exactly the completed line: `cd <dir>`
+    (the completer may end a directory with `/` and the line with a blank; nothing else is forgiven). The uncompleted prefix, a doubled line or a second `cd`
+    all fail. Returns (ok, message)."""
+    norm = [c.strip().rstrip("/") for c in recs]
+    want = "cd " + want_dir.rstrip("/")
+    if norm == [want]:
+        return True, "the shell received exactly the completed line"
+    return False, "the shell received %r, want exactly one line, the completed %r" % (list(recs), want)
+
+
 def rec_ts(ctx, tok):
     """epoch (REMOTE clock) of the first rec.log entry containing tok, or None"""
     for ts, cmd in ctx.remote.commands():
@@ -777,7 +810,9 @@ def unique(ctx, n=6):
 def c_tab_remote_dir(ctx, r, arm):
     """A unique prefix + Tab completes a REMOTE directory (proof: the completed `cd` really ran there: `&& pwd >> file` writes the exact directory); an ambiguous
     prefix offers the shell's OWN candidates (the lab's /complete runs bash-completion / zpty / fish `complete -C`; the app's menu [hook] must equal it);
-    Tab -> insert <= 1 RTT + 100 ms [hook]; and with Enter 30 ms after Tab the COMPLETED line runs (the Tab+Enter rule, owner 2026-10-31)."""
+    Tab -> insert <= 1 RTT + 100 ms [hook]; and with a FAST Enter after Tab (one key pace, 10-25 ms: the owner's fast-stress rule) the COMPLETED line runs:
+    the Tab+Enter rule (owner 2026-10-31), extended to remote sessions (#2188, owner 2026-11-12): the Enter waits for the remote completer's answer. The line
+    the shell RECEIVED is judged exactly (tab_enter_received) and the wait the app logged is noted (remote_tab_wait_note)."""
     lab, u, base, rt = ctx.lab, arm["user"], work(arm), rtt_s(arm)
     uid = unique(ctx)
     fx = "tabfx_" + uid
@@ -827,19 +862,26 @@ def c_tab_remote_dir(ctx, r, arm):
     elif not m:
         r.unverifiable("[hook] no tab-menu line in the app log (hop=tab_menu items=[...]): the menu is not compared with the shell's candidates")
     ctx.reset()
-    # (c) FAST ENTER: Enter 30 ms after Tab runs the COMPLETED line
+    # (c) FAST ENTER (#2188): Enter one key pace (10-25 ms) after Tab runs the COMPLETED line; the app holds the Enter for the remote completer's answer
     n0 = len(ctx.remote.commands())
+    off_c = ctx.log_size()
     ctx.be.type("cd %s%s/zzq%s" % (base, fx, uid), type_pace(ctx))
     ctx.be.key("Tab")
-    time.sleep(0.03)
+    enter_ms = type_pace(ctx)
+    time.sleep(enter_ms / 1000.0)
     ctx.be.key("Return")
     time.sleep(0.5 + 3 * rt)
     ctx.be.type(pwd_append_line(arm, "%stab2.txt" % base), type_pace(ctx), enter=True)
     got2 = ctx.until(lambda: ctx.remote.lines("tab2.txt"), 10 + 6 * rt)
-    CA.exact_lines(r, "Tab then Enter 30 ms later: the directory the shell entered (the COMPLETED line ran)", ["%s%s/zzq%s_only" % (base, fx, uid)], got2)
+    want_dir = "%s%s/zzq%s_only" % (base, fx, uid)
+    CA.exact_lines(r, "Tab then Enter %d ms later: the directory the shell entered (the COMPLETED line ran)" % enter_ms, [want_dir], got2)
     recs = [c for _, c in ctx.remote.commands()[n0:] if c.startswith("cd ")]
     if recs:
-        r.check(any(("zzq%s_only" % uid) in c for c in recs), "the shell received %r, not the completed directory" % recs)
+        ok, msg = tab_enter_received(recs, want_dir)
+        r.check(ok, "Tab then Enter %d ms later: %s" % (enter_ms, msg))
+    else:
+        r.note("Tab then Enter %d ms later: rec.log has no `cd` line for this step, so the received line is judged by the effect file alone" % enter_ms)
+    r.note(remote_tab_wait_note(remote_tab_waits(ctx.log_since(off_c))))
     finish_remote(ctx, r)
 
 

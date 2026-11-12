@@ -15,7 +15,7 @@
 //! intent, the facts and the pin).
 //!
 //! #1530 adds `exhaustive_*` below: enumerations, not samples. `RouteFacts` has ~43 booleans, four
-//! small enums and a 13-bit gate mask (about 2^60 combinations), so the full product cannot be
+//! small enums and a 14-bit gate mask (about 2^60 combinations), so the full product cannot be
 //! walked. The reduction is stated in each test: (1) EVERY gate mask x ssh phase x every class x
 //! every origin; (2) EVERY subshell x ps x ssh phase x all 11 core booleans x every class; (3)
 //! EVERY PAIR of values of ANY two dimensions (all booleans, all enum values, all gate bits, the
@@ -659,7 +659,7 @@ fn stamp_of(index: usize) -> Stamp {
     }
 }
 
-/// Every dimension the table can branch on: all 41 boolean facts, the four enum facts, the 13 gate
+/// Every dimension the table can branch on: all 41 boolean facts, the four enum facts, the 14 gate
 /// bits, the five intent flags and the stamp.
 fn all_dims() -> Vec<Dim> {
     let mut dims: Vec<Dim> = Vec::new();
@@ -776,7 +776,8 @@ fn all_dims() -> Vec<Dim> {
     gate_dim!(10);
     gate_dim!(11);
     gate_dim!(12);
-    assert_eq!(GateKind::ALL.len(), 13, "add a gate_dim! for the new kind");
+    gate_dim!(13);
+    assert_eq!(GateKind::ALL.len(), 14, "add a gate_dim! for the new kind");
     dims
 }
 
@@ -866,7 +867,7 @@ fn run_exhaustive() -> Tally {
     let bases = base_points();
     let origins = all_origins();
 
-    // 1. EVERY gate mask (2^13) x every ssh phase x every class x every origin, on the running and
+    // 1. EVERY gate mask (2^14) x every ssh phase x every class x every origin, on the running and
     //    the idle-prompt base. Gates are what holds content, so they get the full product.
     for base in &bases[1..] {
         for mask in 0..(1u16 << GateKind::ALL.len()) {

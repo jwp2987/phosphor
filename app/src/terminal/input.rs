@@ -6,6 +6,7 @@ mod common;
 mod enter_queue;
 mod history_recall;
 mod native_completions;
+mod remote_tab;
 pub(crate) use enter_queue::{
     ENTER_GATE_GIVE_UP_TOAST, EnterDiscard, KeysAfterEnter, VERDICT_GIVE_UP_TOAST,
     count_discarded_keys, take_voided_enter_gate,
@@ -2451,6 +2452,13 @@ pub struct Input {
     /// The key given to the next recall gate, so a late event of an earlier one cannot close a
     /// later one.
     history_recall_seq: u64,
+    /// The `RemoteTabCompletion` queue gate this input has open (#2188): a Tab started a
+    /// completion the remote side answers, and the keys typed meanwhile wait for that answer
+    /// (`input/remote_tab.rs`).
+    remote_tab_gate: Option<remote_tab::RemoteTabGate>,
+    /// The id given to the next remote Tab completer job (and the key of the gate it opens), so
+    /// the end of an earlier job cannot close a later job's gate.
+    remote_tab_seq: u64,
     /// Where the view records the entries it routes after an Enter that waited, for tests.
     #[cfg(test)]
     replayed_sink_for_test: Option<Rc<std::cell::RefCell<Vec<AfterEnterInput>>>>,
@@ -4392,6 +4400,8 @@ impl Input {
             stashed_gate: None,
             history_recall_gate: None,
             history_recall_seq: 0,
+            remote_tab_gate: None,
+            remote_tab_seq: 0,
             #[cfg(test)]
             replayed_sink_for_test: None,
             #[cfg(test)]
@@ -11759,6 +11769,9 @@ impl Input {
                 // #2107: ^C cancelled a history recall (the queue discarded the edits typed
                 // meanwhile); the gate is gone, and a list landing later is ignored.
                 self.release_history_recall("ctrl_c", ctx);
+                // #2188: ^C voided a remote Tab completion (the queue discarded the keys typed
+                // behind the Tab); the completion is cancelled, a late answer lands nowhere.
+                self.cancel_remote_tab_gate("ctrl_c", ctx);
                 self.close_input_suggestions(/*should_focus_input=*/ true, ctx);
 
                 self.ai_input_model.update(ctx, |ai_input_model, ctx| {
@@ -13295,6 +13308,18 @@ impl Input {
                 compute: completion_compute.clone(),
             });
         }
+        // #2188: the completer of a remote session answers over the link. The keys typed until
+        // it does (the fast Enter first of all) wait behind the remote Tab gate and act on the
+        // completed line; the end of the job below closes the gate. Not for the remote shell's
+        // in-band answer (#1801), which the Enter holds for itself.
+        let remote_tab_job = if completions_trigger == CompletionsTrigger::Keybinding
+            && !completion_session.is_local()
+            && native_use != native_completions::NativeCompletionsUse::Preferred
+        {
+            self.open_remote_tab_gate(ctx)
+        } else {
+            None
+        };
         // #1289: an explicit Tab on a remote session that shows no menu was never explained; log
         // which stage came back empty so the next occurrence names it.
         let remote_tab_session = (completions_trigger == CompletionsTrigger::Keybinding
@@ -13416,7 +13441,10 @@ impl Input {
                     (suggestions, completions_trigger, editor_snapshot)
                 },
                 move |input, (suggestions, completions_trigger, editor_model), ctx| {
-                    input.deliver_completion_suggestions_results(
+                    // #2188: with keys held behind the remote Tab gate the answer is applied
+                    // first, then the gate closes and they replay on the completed line.
+                    input.deliver_tab_job_results(
+                        remote_tab_job,
                         generation,
                         suggestions,
                         completions_trigger,
@@ -13436,6 +13464,12 @@ impl Input {
                     // Tab and the stale-listing events clear it first).
                     if let Some(job) = listing_job {
                         input.remote_listing_finished(job, ctx);
+                    }
+                    // #2188: no answer is coming from this job: the keys held for it replay on
+                    // the line as it is (a Tab that superseded it has taken the gate over, and
+                    // this is then a no-op).
+                    if let Some(job) = remote_tab_job {
+                        input.release_remote_tab_gate(job, "superseded", ctx);
                     }
                     // Superseding this job drops its future, which cancels exactly the in-band commands it
                     // issued (`InBandCommandExecutor::execute_command`'s `on_cancel`; the local executor kills
@@ -13720,6 +13754,112 @@ impl Input {
         if std::mem::take(&mut self.announce_report_tab_settled) {
             ctx.emit(Event::ReportTabSettled);
         }
+    }
+
+    /// #2188: the result of a Tab's completer job. `remote_tab_job` is the job the remote Tab
+    /// gate was opened for, if one was ([`Self::open_remote_tab_gate`]): the answer is applied to
+    /// the buffer FIRST, then the gate closes and the keys typed since the Tab replay, in typed
+    /// order, on the completed line.
+    ///
+    /// What is applied mirrors the local Tab-then-Enter rule ([`Self::finish_completion_hold`],
+    /// #1165) exactly. With an Enter among the held keys a single match is inserted, and anything
+    /// else (several candidates, none, an error, a stale result) leaves the line as typed and
+    /// opens no menu: the Enter runs the visible line. With no Enter held the answer is handled
+    /// as any Tab answer is (a menu may open), and the held text is typed after it.
+    fn deliver_tab_job_results(
+        &mut self,
+        remote_tab_job: Option<u64>,
+        generation: u64,
+        results: Option<SuggestionResults>,
+        completions_trigger: CompletionsTrigger,
+        snapshot: EditorSnapshot,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let Some(job) = remote_tab_job.filter(|job| self.remote_tab_gate_waits_for(*job)) else {
+            self.deliver_completion_suggestions_results(
+                generation,
+                results,
+                completions_trigger,
+                snapshot,
+                ctx,
+            );
+            return;
+        };
+        let (_, enter_held) = self.remote_tab_gate_held(ctx);
+        if !enter_held {
+            self.deliver_completion_suggestions_results(
+                generation,
+                results,
+                completions_trigger,
+                snapshot,
+                ctx,
+            );
+            self.release_remote_tab_gate(job, "answered", ctx);
+            return;
+        }
+        let why = self.apply_remote_tab_answer_for_held_enter(generation, results, snapshot, ctx);
+        // As `deliver_completion_suggestions_results` does for an answered Tab (#1659).
+        self.settle_report_tab(ctx);
+        self.release_remote_tab_gate(job, why, ctx);
+    }
+
+    /// The remote completer answered a Tab with an Enter held behind it (#2188): applies the
+    /// answer as [`Self::finish_completion_hold`] does for a local Tab (a single match is
+    /// inserted; several candidates, none or an error change nothing and open no menu), so the
+    /// Enter that replays next runs the completed line, or the visible one. Returns what
+    /// happened, for the log.
+    fn apply_remote_tab_answer_for_held_enter(
+        &mut self,
+        generation: u64,
+        results: Option<SuggestionResults>,
+        snapshot: EditorSnapshot,
+        ctx: &mut ViewContext<Self>,
+    ) -> &'static str {
+        if self.is_stale_generation(generation) {
+            // An Esc, submit, clear or block completion happened since the Tab: the answer is
+            // dropped, as any stale result is, and the held keys run on the line as it is.
+            return "answered_stale";
+        }
+        self.tab_completion_request = None;
+        let before = self.editor.as_ref(ctx).buffer_text(ctx);
+        let mut outcome = "answered_no_match";
+        let current = self
+            .editor
+            .read(ctx, |editor, ctx| editor.snapshot_model(ctx));
+        if snapshot.text() == current.text()
+            && snapshot.selections() == current.selections()
+            && let Some(results) = results
+            && !results.suggestions.is_empty()
+        {
+            outcome = "answered_ambiguous";
+            let query = results.replacement_span.slice(&before);
+            if let ExplicitTabCompletion::InsertSingle {
+                suggestion,
+                replacement_span,
+            } = results.explicit_tab_completion(query, self.path_separators(ctx).all)
+            {
+                outcome = "answered_applied";
+                self.insert_completion_result_into_editor(
+                    &suggestion.suggestion.replacement,
+                    replacement_span.start(),
+                    Executing::No,
+                    ctx,
+                );
+            }
+        }
+        // A completion menu left open must not take the Enter (it runs the visible line).
+        self.close_completion_menu_for_deferred_enter(ctx);
+        let text = self.editor.as_ref(ctx).buffer_text(ctx);
+        if text != before {
+            // A verdict requested for the partial line must not route the completed one; the
+            // Enter that replays next waits for the completed line's own verdict.
+            self.ai_input_model
+                .update(ctx, |model, _| model.abandon_pending_detection());
+            if self.can_classify_buffer(ctx) {
+                self.request_input_detection_for_current_buffer(ctx);
+            }
+        }
+        outcome
     }
 
     /// Delivers a completion result to [`Self::handle_completion_suggestions_results`] unless an
