@@ -7527,3 +7527,50 @@ fn an_unproven_session_gets_its_enter_at_once_not_a_hold_for_a_preexec_that_cann
         assert!(!proven.session_emits_preexec);
     }
 }
+
+/// #2182: the app's own in-band command (a generator) is the only line the shell runs: the keys the
+/// user types meanwhile belong to the editor, not the pty, where the next in-band command's kill
+/// prefix would destroy them (Windows Git Bash, managed ssh: the typed line was lost).
+#[test]
+fn in_band_only_line_keeps_keys_with_the_editor() {
+    // The user's command ran and its prompt came back; the editor has not taken over yet.
+    let mut handoff = after_submit();
+    handoff.on_precmd();
+    assert!(
+        handoff.routes_keys_to_pty(),
+        "the user's prompt is not yet committed"
+    );
+    assert!(handoff.on_in_band_command_written());
+    assert!(handoff.in_band_line_only());
+    assert!(handoff.keys_follow_editor_active());
+    assert!(
+        !handoff.routes_keys_to_pty(),
+        "keys typed while only the app's generator runs go to the editor"
+    );
+    // The generator's own prompt answers it; the state is as before.
+    handoff.on_precmd();
+    assert!(!handoff.in_band_line_only());
+}
+
+#[test]
+fn in_band_command_behind_a_user_line_does_not_take_the_keys() {
+    // The user's line is still unanswered when the generator is written: keys stay with the pty.
+    let mut handoff = after_submit();
+    assert!(!handoff.on_in_band_command_written());
+    assert!(!handoff.in_band_line_only());
+    assert!(handoff.routes_keys_to_pty());
+}
+
+#[test]
+fn a_user_byte_or_enter_ends_the_in_band_only_line() {
+    let mut handoff = after_submit();
+    handoff.on_precmd();
+    assert!(handoff.on_in_band_command_written());
+    // Another command of the app's own: still only the app's lines, with the new count.
+    assert!(handoff.on_in_band_command_written());
+    assert!(handoff.in_band_line_only());
+    // A user line counted behind it makes the pty the owner of that line.
+    handoff.on_uncounted_command_written();
+    assert!(!handoff.in_band_line_only());
+    assert!(handoff.routes_keys_to_pty());
+}
