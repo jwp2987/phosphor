@@ -930,3 +930,53 @@ fn the_kill_switch_runs_every_call_by_itself() {
     block_on(be.git_status_shell(&path, None)).unwrap();
     assert_eq!(sh.count(), first * 2, "nothing is shared");
 }
+
+// The exact sequence of a `cd` in the r27b lab: the navigation's tree request arrives BEFORE the
+// prompt's Precmd, the chips after it (#2156).
+
+#[test]
+fn a_cds_navigation_and_the_precmd_that_follows_it_share_one_exec() {
+    if !git_available() {
+        return;
+    }
+    let dir = repo_with(&[("a.txt", "one\n"), ("src/b.rs", "fn main() {}\n")]);
+    let path = canonical(&dir);
+    let sh = Sh::new();
+    let (be, store) = prompt_backend(&sh);
+    store.begin_navigation();
+    block_on(be.navigate_to_directory_shell(path.clone())).unwrap();
+    // The Precmd claims the navigation's bump; chips and the refresh then join its generation.
+    store.begin_prompt();
+    block_on(be.git_status_shell(&path, None)).unwrap();
+    block_on(be.get_diff_state_shell(GetDiffState {
+        repo_path: path.clone(),
+        ..Default::default()
+    }))
+    .unwrap();
+    block_on(be.refresh_repo_tree(&path)).unwrap();
+    assert_eq!(sh.count(), 1, "navigation + precmd producers of one cd");
+    // The next prompt is a prompt of its own, and the claim is spent.
+    store.begin_prompt();
+    block_on(be.git_status_shell(&path, None)).unwrap();
+    assert_eq!(sh.count(), 2);
+}
+
+#[test]
+fn a_navigation_without_a_precmd_does_not_swallow_the_next_prompts_bump_forever() {
+    let store = GitBatchStore::with_join_window(JOIN_WINDOW).with_prompt_keying(true);
+    store.begin_navigation();
+    store.begin_navigation();
+    assert_eq!(
+        store.prompt.load(Ordering::SeqCst),
+        2,
+        "two navigations, two generations"
+    );
+    store.begin_prompt();
+    assert_eq!(
+        store.prompt.load(Ordering::SeqCst),
+        2,
+        "the first precmd claims the bump"
+    );
+    store.begin_prompt();
+    assert_eq!(store.prompt.load(Ordering::SeqCst), 3);
+}
