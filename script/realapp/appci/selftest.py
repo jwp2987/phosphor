@@ -9441,3 +9441,5 @@ import selftest_r27_perfbands  # noqa: E402  (owner 2026-11-12 bands for all: ba
 CHECKS.extend(selftest_r27_perfbands.CHECKS)
 import selftest_r27_labharness  # noqa: E402  (r27 lab harness: nu kill line, drop-not-ended handling, per-shell line audit; own file)
 CHECKS.extend(selftest_r27_labharness.CHECKS)
+import selftest_r27_recallorder  # noqa: E402  (#2107 history_up_recall long-history arm: seed size, kill switch name, seed-after-stop order; own file)
+CHECKS.extend(selftest_r27_recallorder.CHECKS)

@@ -55,6 +55,10 @@ pub enum InlineHistoryMenuEvent {
     /// previewed command or prompt text is cleared from the input buffer.
     SelectConversation,
     NoResults,
+    /// Emitted when the menu was opened and the list for its query is still being built (a history
+    /// too long to answer inline, #2107). The recalled line is not in the input buffer yet: the
+    /// input holds the keys typed meanwhile until the list lands and its first row selects it.
+    ListPending,
     /// Emitted when the inline menu should be closed and additionally restore the
     /// original input buffer contents.
     Close,
@@ -558,6 +562,9 @@ impl InlineHistoryMenuView {
             );
         });
         self.clear_stale_rows_if_pending(ctx);
+        if self.is_pending(ctx) {
+            ctx.emit(InlineHistoryMenuEvent::ListPending);
+        }
     }
 
     /// If the new query's list is still being built, drop the previous query's rows and

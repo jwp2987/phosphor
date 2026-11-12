@@ -196,11 +196,25 @@ pub enum SignalKind {
 /// not `Clone`, so the key sits in a shared cell and the one delivery takes it out. Equality is
 /// identity: two payloads are equal only if they are the same key.
 #[derive(Clone)]
-pub struct EditorKeyPayload(Rc<RefCell<Option<HeldPasteKey>>>);
+pub struct EditorKeyPayload(Rc<RefCell<Option<HeldPasteKey>>>, bool);
 
 impl EditorKeyPayload {
     pub fn new(key: HeldPasteKey) -> Self {
-        Self(Rc::new(RefCell::new(Some(key))))
+        Self(Rc::new(RefCell::new(Some(key))), false)
+    }
+
+    /// A key whose effects are events processed after the delivering update (an Enter, Escape,
+    /// Up or Down, ^C ...): the drain that delivers it yields afterwards ([`Host::yield_after`]),
+    /// so the keys behind it are judged with those effects applied. Used for the keys held behind
+    /// the history-recall gate (#2107): an Escape's buffer restore must not overwrite a key typed
+    /// after it, and an Up must move the menu before the next edit.
+    pub fn new_with_deferred_effects(key: HeldPasteKey) -> Self {
+        Self(Rc::new(RefCell::new(Some(key))), true)
+    }
+
+    /// Whether the drain yields after delivering this key ([`Self::new_with_deferred_effects`]).
+    pub fn yields_after(&self) -> bool {
+        self.1
     }
 
     /// Delivering this key reads the editor's display map (cursor motion, deletion by display
@@ -743,6 +757,25 @@ impl InputQueue {
         self.gates
             .iter()
             .any(|gate| gate.kind == kind && gate.key == key)
+    }
+
+    /// Whether an Enter (or text with a line break) waits behind the gate `(kind, key)` (#2107:
+    /// a ^C meeting the history-recall gate waits in order behind an Enter held ahead of it, and
+    /// cancels the recall at once otherwise). False when the gate is not open.
+    pub fn holds_enter_behind_gate(&self, kind: GateKind, key: u64) -> bool {
+        let Some(gate) = self
+            .gates
+            .iter()
+            .find(|gate| gate.kind == kind && gate.key == key)
+        else {
+            return false;
+        };
+        let upper = self.next_barrier_after(gate.barrier);
+        self.entries.iter().any(|entry| {
+            entry.id >= gate.barrier
+                && upper.is_none_or(|upper| entry.id < upper)
+                && entry.kind.holds_enter() == Some(true)
+        })
     }
 
     /// How many entries wait behind the gate `(kind, key)`: from its barrier to the next gate's

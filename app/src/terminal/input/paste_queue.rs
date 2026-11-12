@@ -151,6 +151,13 @@ impl Host for InputQueueHost<'_, '_> {
         DeliverOutcome::Delivered
     }
 
+    /// #2107: a key held behind the history-recall gate whose effects are events (an Enter,
+    /// Escape, Up, Down, ^C ...) ends this turn of the drain: the keys behind it are applied once
+    /// those events have run. Every other key goes on in the same turn.
+    fn yield_after(&mut self, entry: &InputEntry) -> bool {
+        matches!(&entry.kind, EntryKind::EditorKey(payload) if payload.yields_after())
+    }
+
     fn discarded(&mut self, entry: &InputEntry, why: DiscardReason) {
         if let EntryKind::Paste { paste_id, .. } = &entry.kind {
             self.input.paste_payloads.remove(paste_id);
@@ -181,7 +188,9 @@ impl Host for InputQueueHost<'_, '_> {
                     .defer(crate::terminal::input_queue::Deferred::FlushProgrammaticEdits);
             }
             // ^C met the Enter's gate: the keys typed behind that Enter are dropped with it.
-            DiscardReason::SignalDiscard(GateKind::EnterVerdict | GateKind::TabCompletion) => {}
+            DiscardReason::SignalDiscard(
+                GateKind::EnterVerdict | GateKind::TabCompletion | GateKind::HistoryRecall,
+            ) => {}
             other => log::warn!("input queue: editor paste entry discarded: {other:?}"),
         }
         if let EntryKind::Paste { paste_id, .. } = &entry.kind {
@@ -302,6 +311,11 @@ impl Input {
     /// The give-up cap of paste `token` fired. A no-op if the reader's result already closed it.
     fn on_paste_queue_give_up(&mut self, token: GateToken, ctx: &mut ViewContext<Self>) {
         let queue = self.editor.as_ref(ctx).paste_hold().queue();
+        // #2107: the history-recall gate's net closes the menu, then replays the held keys.
+        if self.is_history_recall_token(token, ctx) {
+            self.give_up_history_recall(token, ctx);
+            return;
+        }
         // #1571: the net of a verdict gate that now holds an Enter refused by an unready shell
         // (its retag found the queue busy). Releasing it would deliver the keys behind the held
         // line (an Enter among them would submit a merged buffer): it hands the line back instead.

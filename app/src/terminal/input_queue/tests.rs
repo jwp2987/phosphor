@@ -2454,3 +2454,116 @@ fn a_yielded_drain_delivers_nothing_until_it_is_resumed() {
     );
     assert!(!q.pending_foreign());
 }
+
+// ---- the history-recall gate (#2107) ---------------------------------------------------------
+
+/// Offers what the owner typed after the Up arrow: three Backspaces, `e9z`, an Enter.
+fn offer_recall_keys(q: &mut InputQueue, h: &mut MockHost) -> Vec<EntryId> {
+    let mut ids = Vec::new();
+    for _ in 0..3 {
+        ids.push(q.offer(h, EntryKind::Control("\u{7f}")));
+    }
+    ids.push(q.offer(h, text("e9z")));
+    ids.push(q.offer(h, EntryKind::Enter));
+    ids
+}
+
+/// Every key typed while the recall gate is open waits, and the gate's event releases exactly
+/// those keys in exactly the order they were typed.
+#[test]
+fn history_recall_gate_holds_every_key_and_the_event_releases_them_in_order() {
+    let mut q = InputQueue::new();
+    let mut h = MockHost::new();
+    q.open_gate(&mut h, GateSpec::new(GateKind::HistoryRecall, 1));
+    assert!(q.holds_keys());
+    let ids = offer_recall_keys(&mut q, &mut h);
+    assert!(
+        h.delivered.is_empty(),
+        "nothing is delivered before the recalled line is in the buffer"
+    );
+    assert_eq!(q.queued_len(), 5);
+    // Not the gate's event: a wrong key or kind leaves the keys held.
+    assert!(!q.on_gate_event(&mut h, GateKind::HistoryRecall, 2));
+    assert!(!q.on_gate_event(&mut h, GateKind::EditorDisplayMap, 1));
+    assert!(h.delivered.is_empty());
+    assert!(q.on_gate_event(&mut h, GateKind::HistoryRecall, 1));
+    assert_eq!(
+        h.delivered_ids(),
+        ids.iter().map(|id| id.0).collect::<Vec<_>>(),
+        "exactly the typed order"
+    );
+    assert_eq!(
+        h.delivered.iter().map(|d| d.tag).collect::<Vec<_>>(),
+        vec!["control", "control", "control", "text", "enter"]
+    );
+    assert!(q.is_idle());
+    // A late duplicate of the event is a no-op.
+    assert!(!q.on_gate_event(&mut h, GateKind::HistoryRecall, 1));
+}
+
+/// The cap is just above the menu's own 120 s limit; when it fires everything held is delivered
+/// in order (none dropped or reordered) with a warning naming the gate, and a stale timer of the
+/// closed gate finds nothing.
+#[test]
+fn history_recall_gate_give_up_delivers_everything_in_order_and_logs() {
+    let mut q = InputQueue::new();
+    let mut h = MockHost::new();
+    let token = q.open_gate(&mut h, GateSpec::new(GateKind::HistoryRecall, 1));
+    assert_eq!(h.armed.len(), 1);
+    assert_eq!(h.armed[0].1, GateKind::HistoryRecall);
+    assert_eq!(h.armed[0].2, Duration::from_secs(125));
+    assert!(h.armed[0].2 > Duration::from_secs(120));
+    let ids = offer_recall_keys(&mut q, &mut h);
+    assert!(h.delivered.is_empty());
+    assert!(q.give_up(&mut h, token));
+    assert_eq!(
+        h.delivered_ids(),
+        ids.iter().map(|id| id.0).collect::<Vec<_>>()
+    );
+    assert!(h.discarded.is_empty(), "no key is dropped");
+    assert!(
+        h.warns.iter().any(|line| line.contains("history_recall")),
+        "the give-up is logged: {:?}",
+        h.warns
+    );
+    assert!(!q.give_up(&mut h, token), "one-shot");
+}
+
+/// ^C meeting the gate with no Enter held ahead of it: the edits typed meanwhile are discarded
+/// (a shell's ^C discards the line) and the signal goes at once. With an Enter held ahead the
+/// queue reports it, which is what makes the editor queue the ^C in order instead.
+#[test]
+fn history_recall_gate_ctrl_c_discards_the_edits_and_an_enter_ahead_is_visible() {
+    let mut q = InputQueue::new();
+    let mut h = MockHost::new();
+    q.open_gate(&mut h, GateSpec::new(GateKind::HistoryRecall, 1));
+    for _ in 0..3 {
+        q.offer(&mut h, EntryKind::Control("\u{7f}"));
+    }
+    q.offer(&mut h, text("e9z"));
+    assert!(!q.holds_enter_behind_gate(GateKind::HistoryRecall, 1));
+    q.offer(&mut h, EntryKind::Enter);
+    assert!(q.holds_enter_behind_gate(GateKind::HistoryRecall, 1));
+    assert!(!q.holds_enter_behind_gate(GateKind::HistoryRecall, 2));
+
+    let mut q = InputQueue::new();
+    let mut h = MockHost::new();
+    q.open_gate(&mut h, GateSpec::new(GateKind::HistoryRecall, 1));
+    for _ in 0..3 {
+        q.offer(&mut h, EntryKind::Control("\u{7f}"));
+    }
+    q.offer(&mut h, text("e9z"));
+    q.offer(&mut h, EntryKind::Signal(SignalKind::Interrupt));
+    assert_eq!(h.discarded.len(), 4, "the held edits are discarded");
+    assert!(
+        h.discarded
+            .iter()
+            .all(|(_, why)| *why == DiscardReason::SignalDiscard(GateKind::HistoryRecall))
+    );
+    assert_eq!(
+        h.delivered.iter().map(|d| d.tag).collect::<Vec<_>>(),
+        vec!["signal"],
+        "the ^C goes at once"
+    );
+    assert!(q.is_idle(), "the gate is gone");
+}

@@ -46,6 +46,13 @@ pub enum GateKind {
     /// (#1389). Replaces the editor's separate replay list on the shared queue: every key behind
     /// the waiting one stays behind it.
     EditorDisplayMap,
+    /// #2107: the Up arrow opened the inline history menu on a history too long to list at once
+    /// (the list builds off-thread), so the recalled line is not in the buffer yet. Every key typed
+    /// meanwhile waits here, in order, and is applied to the recalled line once the list has landed
+    /// and its first row has put that line in the buffer. Without it the keys edited the EMPTY
+    /// buffer and the recalled line then replaced them. Opened only when the menu's list is
+    /// pending (a small history answers inline and never opens it).
+    HistoryRecall,
 }
 
 /// #1571: the key flag of an `EnterVerdict` gate that holds the keys typed behind an Enter the
@@ -90,7 +97,7 @@ pub enum SignalPlan {
 }
 
 impl GateKind {
-    pub const ALL: [GateKind; 12] = [
+    pub const ALL: [GateKind; 13] = [
         GateKind::PasteReading,
         GateKind::EnterVerdict,
         GateKind::TabCompletion,
@@ -103,6 +110,7 @@ impl GateKind {
         GateKind::SubshellBootstrapWrite,
         GateKind::SshConnect,
         GateKind::EditorDisplayMap,
+        GateKind::HistoryRecall,
     ];
 
     pub fn name(self) -> &'static str {
@@ -119,6 +127,7 @@ impl GateKind {
             GateKind::SubshellBootstrapWrite => "subshell_bootstrap_write",
             GateKind::SshConnect => "ssh_connect",
             GateKind::EditorDisplayMap => "editor_display_map",
+            GateKind::HistoryRecall => "history_recall",
         }
     }
 
@@ -137,6 +146,7 @@ impl GateKind {
             GateKind::SubshellBootstrapWrite => "bootstrap_write_started",
             GateKind::SshConnect => "ssh_connect_started",
             GateKind::EditorDisplayMap => "editor_key_needs_fresh_display_map",
+            GateKind::HistoryRecall => "history_menu_opened_with_pending_list",
         }
     }
 
@@ -158,6 +168,9 @@ impl GateKind {
             GateKind::SubshellBootstrapWrite => "last_bootstrap_line_written",
             GateKind::SshConnect => "gate_released_and_first_remote_precmd",
             GateKind::EditorDisplayMap => "replay_step_dispatched",
+            // The first row of the menu's list has put the recalled line in the buffer; also the
+            // list found empty, the menu closed or left, or ^C cancelling the recall.
+            GateKind::HistoryRecall => "history_list_ready_and_first_row_selected",
         }
     }
 
@@ -168,9 +181,14 @@ impl GateKind {
             // A submit holds no paste entry, so the plan only flushes what was typed before the
             // signal, as it did when the submit's gate was a `PasteReading` one.
             GateKind::PasteReading | GateKind::CliSubmit => SignalPlan::CancelPasteThenFlush,
-            GateKind::EnterVerdict | GateKind::TabCompletion | GateKind::SshConnect => {
-                SignalPlan::DiscardThenSignal
-            }
+            // ^C with no Enter held ahead of it: the recall is cancelled and the edits typed
+            // meanwhile are discarded (at a prompt ^C discards the line anyway). With an Enter
+            // held ahead the editor does not offer the signal: it waits in order (see
+            // `editor_interrupt_meets_gate`).
+            GateKind::EnterVerdict
+            | GateKind::TabCompletion
+            | GateKind::SshConnect
+            | GateKind::HistoryRecall => SignalPlan::DiscardThenSignal,
             GateKind::HandoffReport
             | GateKind::PromptSeen
             | GateKind::LineEditorActive
@@ -203,6 +221,11 @@ impl GateKind {
             // The deferred replay step runs as soon as this update's effects have flushed; this
             // only guards a step that never runs (logged when it fires).
             GateKind::EditorDisplayMap => Some(Duration::from_secs(1)),
+            // Just above the menu's mixer `initial_results_timeout` (120 s, `inline_history/view.rs`):
+            // the list's own limit ends the wait first in every case, this only guards a recall
+            // whose list event never came. The give-up closes the menu, then replays the held
+            // keys in order on the unchanged buffer (none dropped or reordered).
+            GateKind::HistoryRecall => Some(Duration::from_secs(125)),
         }
     }
 }
@@ -252,6 +275,10 @@ pub fn signal_plan(gate: GateKind, signal: SignalKind) -> GateSignalPlan {
         GateKind::EnterVerdict | GateKind::TabCompletion | GateKind::SshConnect => {
             GateSignalPlan::DiscardThenSignal
         }
+        // ^D is not flushed by the tty: it waits in order like a key. The other signals cancel
+        // the recall like ^C (an Enter held ahead of a ^C makes the editor queue it instead).
+        GateKind::HistoryRecall if eof => GateSignalPlan::WaitInOrder,
+        GateKind::HistoryRecall => GateSignalPlan::DiscardThenSignal,
         GateKind::HandoffReport if eof => GateSignalPlan::WaitInOrder,
         GateKind::HandoffReport => GateSignalPlan::CancelDeferredEnterThenSignal,
         GateKind::PromptSeen | GateKind::LineEditorActive if eof => GateSignalPlan::FlushThenSignal,

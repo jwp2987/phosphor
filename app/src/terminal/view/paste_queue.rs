@@ -620,6 +620,9 @@ impl Host for PtyQueueHost<'_, '_> {
                 if *class == crate::terminal::input_queue::HELD_KEY
                     && matches!(text.as_str(), "\r" | "\n" | "\r\n")
         )
+        // #2107: a key held behind the history-recall gate whose effects are events (an Enter,
+        // Escape, Up, Down, ^C ...): what follows is applied once those events have run.
+        || matches!(&entry.kind, EntryKind::EditorKey(payload) if payload.yields_after())
     }
 
     fn requeued_entry(&mut self, entry: &InputEntry) -> InputEntry {
@@ -958,6 +961,13 @@ impl TerminalView {
                     .copied()
             })
             .map(|gate| gate.kind);
+        if kind == Some(GateKind::HistoryRecall) {
+            // #2107: the inline history menu's list never landed: the input closes the menu, then
+            // the held keys replay in order on the unchanged buffer.
+            self.input
+                .update(ctx, |input, ctx| input.give_up_history_recall(token, ctx));
+            return;
+        }
         if kind == Some(GateKind::LineEditorActive) {
             let key = queue
                 .try_peek()

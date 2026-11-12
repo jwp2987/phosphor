@@ -19368,3 +19368,324 @@ fn test_listing_inflight_hop_detail_format() {
     assert_eq!(listing_inflight_detail("start", 4), "event=start gen=4");
     assert_eq!(listing_inflight_detail("replay", 12), "event=replay gen=12");
 }
+
+// ---- #2107: keys typed while the history menu's list is built are applied to the recalled line ----
+
+/// One key of a recall scenario.
+#[derive(Clone)]
+enum RecallKey {
+    Action(EditorAction),
+    Text(&'static str),
+}
+
+/// What a recall scenario observed.
+#[derive(Debug, Default)]
+struct RecallOutcome {
+    /// The recall gate was open right after the Up (the list was pending).
+    gate_open_after_up: bool,
+    /// The buffer and the queue's size once every key was typed, before the list landed.
+    buffer_before_landing: String,
+    queued_before_landing: usize,
+    /// Whether the recall gate was still open when the keys were all typed.
+    gate_open_before_landing: bool,
+    /// After the list landed and the queue was idle.
+    buffer_after: String,
+    menu_open_after: bool,
+    executed: Vec<String>,
+}
+
+fn recall_gate_open(app: &App, editor: &ViewHandle<EditorView>) -> bool {
+    editor.read(app, |editor, _| {
+        editor.paste_hold().queue().try_peek().is_some_and(|queue| {
+            queue.has_gate_kind(crate::terminal::input_queue::GateKind::HistoryRecall)
+        })
+    })
+}
+
+/// A terminal whose history is long enough (20 000 lines) that the Up arrow's menu builds its list
+/// off-thread; the newest line is `cmd_t246_uu59vu93`, the one before it `cmd_older_x1`.
+async fn recall_terminal(
+    app: &mut App,
+) -> (
+    ViewHandle<Input>,
+    ViewHandle<EditorView>,
+    Rc<RefCell<Vec<String>>>,
+) {
+    let mut commands: Vec<String> = (0..20_000).map(|i| format!("cmd_filler_{i:05}")).collect();
+    commands.push("cmd_older_x1".to_string());
+    commands.push("cmd_t246_uu59vu93".to_string());
+    let terminal = add_window_with_bootstrapped_terminal(app, Some(commands), None).await;
+    let input = terminal.read(app, |terminal, _| terminal.input().clone());
+    let editor = input.read(app, |input, _| input.editor().clone());
+    let executed = Rc::new(RefCell::new(Vec::<String>::new()));
+    let sink = executed.clone();
+    app.update(|ctx| {
+        ctx.subscribe_to_view(&input, move |_, event: &super::Event, _| {
+            if let super::Event::ExecuteCommand(event) = event {
+                sink.borrow_mut().push(event.command.clone());
+            }
+        });
+    });
+    (input, editor, executed)
+}
+
+/// Waits (event loop turns, bounded) until the menu's list has landed and the pane queue is
+/// idle and no replay is pending.
+async fn wait_for_recall_to_settle(
+    app: &App,
+    input: &ViewHandle<Input>,
+    editor: &ViewHandle<EditorView>,
+) {
+    wait_until(app, |app| {
+        !input.read(app, |input, ctx| {
+            input.inline_history_menu_view.as_ref(ctx).is_pending(ctx)
+        })
+    })
+    .await;
+    // The first row's selection and the replay of the held keys are events after the landing.
+    warpui::r#async::Timer::after(Duration::from_millis(100)).await;
+    wait_until(app, |app| {
+        editor.read(app, |editor, _| {
+            let hold = editor.paste_hold();
+            hold.queue().try_peek().is_some_and(|queue| queue.is_idle()) && !hold.replay_pending()
+        })
+    })
+    .await;
+    warpui::r#async::Timer::after(Duration::from_millis(50)).await;
+}
+
+/// Presses Up on the long history, types `keys` before the list lands (no await in between, so
+/// the list cannot land meanwhile), then lets the list land and reports what happened.
+fn run_recall_scenario(keys: Vec<RecallKey>) -> RecallOutcome {
+    let result = Rc::new(RefCell::new(RecallOutcome::default()));
+    let sink = result.clone();
+    App::test((), |mut app| async move {
+        let _menu_flag = FeatureFlag::InlineHistoryMenu.override_enabled(true);
+        initialize_app(&mut app);
+        let (input, editor, executed) = recall_terminal(&mut app).await;
+        input.update(&mut app, |input, ctx| {
+            input.clear_buffer_and_reset_undo_stack(ctx);
+        });
+        input.update(&mut app, |input, ctx| input.editor_up(ctx));
+        let mut outcome = RecallOutcome {
+            gate_open_after_up: recall_gate_open(&app, &editor),
+            ..RecallOutcome::default()
+        };
+        for key in keys {
+            editor.update(&mut app, |editor, ctx| match &key {
+                RecallKey::Action(action) => editor.handle_action(action, ctx),
+                RecallKey::Text(text) => {
+                    editor.handle_action(&EditorAction::UserInsert(UserInput::new(*text)), ctx)
+                }
+            });
+        }
+        outcome.gate_open_before_landing = recall_gate_open(&app, &editor);
+        outcome.buffer_before_landing = input.read(&app, |input, ctx| input.buffer_text(ctx));
+        outcome.queued_before_landing = editor.read(&app, |editor, _| {
+            editor
+                .paste_hold()
+                .queue()
+                .try_peek()
+                .map_or(0, |queue| queue.queued_len())
+        });
+        wait_for_recall_to_settle(&app, &input, &editor).await;
+        outcome.buffer_after = input.read(&app, |input, ctx| input.buffer_text(ctx));
+        outcome.menu_open_after = input.read(&app, |input, ctx| {
+            input
+                .suggestions_mode_model
+                .as_ref(ctx)
+                .is_inline_history_menu()
+        });
+        outcome.executed = executed.borrow().clone();
+        *sink.borrow_mut() = outcome;
+    });
+    result.take()
+}
+
+fn backspaces(n: usize) -> Vec<RecallKey> {
+    (0..n)
+        .map(|_| RecallKey::Action(EditorAction::Backspace))
+        .collect()
+}
+
+/// The owner's bug: Up, then BackSpace x3 and `e9z` while the list is still being built. The
+/// edits wait, the buffer stays empty until the recalled line lands, and then they act on it.
+#[test]
+fn test_keys_typed_while_the_history_list_builds_edit_the_recalled_line() {
+    let mut keys = backspaces(3);
+    keys.push(RecallKey::Text("e9z"));
+    let outcome = run_recall_scenario(keys);
+    assert!(
+        outcome.gate_open_after_up,
+        "a long history opens the recall gate: {outcome:?}"
+    );
+    assert!(outcome.gate_open_before_landing, "{outcome:?}");
+    assert_eq!(outcome.buffer_before_landing, "", "{outcome:?}");
+    assert_eq!(outcome.queued_before_landing, 4, "{outcome:?}");
+    assert_eq!(outcome.buffer_after, "cmd_t246_uu59ve9z", "{outcome:?}");
+    assert!(outcome.executed.is_empty(), "{outcome:?}");
+}
+
+/// The same keys and an Enter: the line that is submitted is exactly the edited recalled line.
+#[test]
+fn test_enter_after_edits_typed_during_the_history_list_build_submits_the_edited_line() {
+    let mut keys = backspaces(3);
+    keys.push(RecallKey::Text("e9z"));
+    keys.push(RecallKey::Action(EditorAction::Enter));
+    let outcome = run_recall_scenario(keys);
+    assert_eq!(outcome.buffer_before_landing, "", "{outcome:?}");
+    assert_eq!(outcome.queued_before_landing, 5, "{outcome:?}");
+    assert_eq!(
+        outcome.executed,
+        vec!["cmd_t246_uu59ve9z".to_string()],
+        "{outcome:?}"
+    );
+    assert_eq!(outcome.buffer_after, "", "{outcome:?}");
+}
+
+/// A second Up typed during the build recalls the older entry once the list lands.
+#[test]
+fn test_second_up_during_the_history_list_build_recalls_the_older_entry() {
+    let outcome = run_recall_scenario(vec![RecallKey::Action(EditorAction::Up)]);
+    assert_eq!(outcome.buffer_before_landing, "", "{outcome:?}");
+    assert_eq!(outcome.buffer_after, "cmd_older_x1", "{outcome:?}");
+    assert!(outcome.executed.is_empty(), "{outcome:?}");
+}
+
+/// A Down typed during the build goes back to the empty line (the menu closes).
+#[test]
+fn test_down_during_the_history_list_build_goes_back_to_the_empty_line() {
+    let outcome = run_recall_scenario(vec![RecallKey::Action(EditorAction::Down)]);
+    assert_eq!(outcome.buffer_before_landing, "", "{outcome:?}");
+    assert_eq!(outcome.buffer_after, "", "{outcome:?}");
+    assert!(!outcome.menu_open_after, "{outcome:?}");
+}
+
+/// An Escape typed during the build restores the line from before the Up, and the key typed after
+/// it applies after the restore (neither overtakes the other, none is lost).
+#[test]
+fn test_escape_during_the_history_list_build_restores_and_later_keys_apply_after() {
+    let outcome = run_recall_scenario(vec![
+        RecallKey::Action(EditorAction::Escape),
+        RecallKey::Text("z"),
+    ]);
+    assert_eq!(outcome.buffer_before_landing, "", "{outcome:?}");
+    assert_eq!(outcome.buffer_after, "z", "{outcome:?}");
+    assert!(!outcome.menu_open_after, "{outcome:?}");
+}
+
+/// An Enter alone typed during the build runs the recalled line.
+#[test]
+fn test_enter_alone_during_the_history_list_build_runs_the_recalled_line() {
+    let outcome = run_recall_scenario(vec![RecallKey::Action(EditorAction::Enter)]);
+    assert_eq!(outcome.buffer_before_landing, "", "{outcome:?}");
+    assert_eq!(
+        outcome.executed,
+        vec!["cmd_t246_uu59vu93".to_string()],
+        "{outcome:?}"
+    );
+}
+
+/// ^C with no Enter held ahead of it cancels the recall at once: the gate is gone, the edits typed
+/// meanwhile are discarded, nothing runs, and the list landing later does not put the recalled
+/// line back.
+#[test]
+fn test_ctrl_c_during_the_history_list_build_cancels_the_recall() {
+    let outcome = run_recall_scenario(vec![
+        RecallKey::Action(EditorAction::Backspace),
+        RecallKey::Text("x"),
+        RecallKey::Action(EditorAction::CtrlC),
+    ]);
+    assert!(outcome.gate_open_after_up, "{outcome:?}");
+    assert!(!outcome.gate_open_before_landing, "{outcome:?}");
+    assert_eq!(outcome.queued_before_landing, 0, "{outcome:?}");
+    assert_eq!(outcome.buffer_before_landing, "", "{outcome:?}");
+    assert_eq!(outcome.buffer_after, "", "{outcome:?}");
+    assert!(!outcome.menu_open_after, "{outcome:?}");
+    assert!(outcome.executed.is_empty(), "{outcome:?}");
+}
+
+/// ^C behind a held Enter waits in order: the Enter's line runs first, then the ^C.
+#[test]
+fn test_ctrl_c_behind_an_enter_during_the_history_list_build_runs_the_line_first() {
+    let outcome = run_recall_scenario(vec![
+        RecallKey::Text("x"),
+        RecallKey::Action(EditorAction::Enter),
+        RecallKey::Action(EditorAction::CtrlC),
+    ]);
+    assert!(outcome.gate_open_before_landing, "{outcome:?}");
+    assert_eq!(outcome.queued_before_landing, 3, "{outcome:?}");
+    assert_eq!(
+        outcome.executed,
+        vec!["cmd_t246_uu59vu93x".to_string()],
+        "{outcome:?}"
+    );
+    assert_eq!(outcome.buffer_after, "", "{outcome:?}");
+}
+
+/// The give-up net: the list never lands. The menu closes first and the held keys replay in order
+/// on the unchanged buffer: none dropped or reordered, and a list landing later is ignored.
+#[test]
+fn test_history_recall_give_up_closes_the_menu_and_replays_the_held_keys_in_order() {
+    App::test((), |mut app| async move {
+        let _menu_flag = FeatureFlag::InlineHistoryMenu.override_enabled(true);
+        initialize_app(&mut app);
+        let (input, editor, executed) = recall_terminal(&mut app).await;
+        input.update(&mut app, |input, ctx| {
+            input.clear_buffer_and_reset_undo_stack(ctx);
+        });
+        input.update(&mut app, |input, ctx| input.editor_up(ctx));
+        assert!(recall_gate_open(&app, &editor));
+        for text in ["a", "b", "c"] {
+            editor.update(&mut app, |editor, ctx| {
+                editor.handle_action(&EditorAction::UserInsert(UserInput::new(text)), ctx)
+            });
+        }
+        input.read(&app, |input, ctx| assert_eq!(input.buffer_text(ctx), ""));
+        let token = editor.read(&app, |editor, _| {
+            editor
+                .paste_hold()
+                .queue()
+                .peek()
+                .gates()
+                .iter()
+                .find(|gate| gate.kind == crate::terminal::input_queue::GateKind::HistoryRecall)
+                .map(|gate| gate.token)
+                .expect("the recall gate is open")
+        });
+        // The cap fires.
+        input.update(&mut app, |input, ctx| {
+            input.give_up_history_recall(token, ctx)
+        });
+        wait_for_recall_to_settle(&app, &input, &editor).await;
+        input.read(&app, |input, ctx| {
+            assert_eq!(
+                input.buffer_text(ctx),
+                "abc",
+                "the held keys replayed in order on the unchanged buffer"
+            );
+            assert!(
+                !input
+                    .suggestions_mode_model
+                    .as_ref(ctx)
+                    .is_inline_history_menu(),
+                "the menu was closed"
+            );
+        });
+        assert!(!recall_gate_open(&app, &editor));
+        assert!(executed.borrow().is_empty());
+    });
+}
+
+/// The kill switch: the recall gate is the only thing it guards, and its name is part of the
+/// interface (docs/testing.md).
+#[test]
+fn test_history_recall_kill_switch_name_and_semantics() {
+    use crate::terminal::input_queue::switches::{HOLD_KEYS_BEHIND_RECALL_ENV, switch_is_on};
+    assert_eq!(
+        HOLD_KEYS_BEHIND_RECALL_ENV,
+        "PHOSPHOR_HOLD_KEYS_BEHIND_RECALL"
+    );
+    assert!(!switch_is_on(Some("0")));
+    assert!(switch_is_on(None));
+}

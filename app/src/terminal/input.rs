@@ -4,6 +4,7 @@ mod classic;
 mod cli_agent;
 mod common;
 mod enter_queue;
+mod history_recall;
 mod native_completions;
 pub(crate) use enter_queue::{
     ENTER_GATE_GIVE_UP_TOAST, EnterDiscard, KeysAfterEnter, VERDICT_GIVE_UP_TOAST,
@@ -2443,6 +2444,13 @@ pub struct Input {
     /// after the call and returns it as the delivery's `OpensGate`, so the entries behind that
     /// Enter wait for it (#1353, the replay hop is gone).
     stashed_gate: Option<crate::terminal::input_queue::GateSpec>,
+    /// The key of the `HistoryRecall` queue gate this input has open (#2107): the Up arrow opened
+    /// the inline history menu on a history whose list is still being built, and the keys typed
+    /// meanwhile wait for the recalled line (`input/history_recall.rs`).
+    history_recall_gate: Option<u64>,
+    /// The key given to the next recall gate, so a late event of an earlier one cannot close a
+    /// later one.
+    history_recall_seq: u64,
     /// Where the view records the entries it routes after an Enter that waited, for tests.
     #[cfg(test)]
     replayed_sink_for_test: Option<Rc<std::cell::RefCell<Vec<AfterEnterInput>>>>,
@@ -3789,6 +3797,15 @@ impl Input {
 
             me.set_zero_state_hint_text(ctx);
             notify_cause!(ctx, "new_10");
+            // #2107: the menu left its mode (closed, escaped, accepted): the recalled line is
+            // not coming, and the keys held for it replay now, after any buffer restore above.
+            if !me
+                .suggestions_mode_model
+                .as_ref(ctx)
+                .is_inline_history_menu()
+            {
+                me.release_history_recall("mode_changed", ctx);
+            }
         });
 
         ctx.subscribe_to_model(&ai_input_model, |me, _, event, ctx| {
@@ -4373,6 +4390,8 @@ impl Input {
             next_verdict_wait_id: 0,
             enter_gate: None,
             stashed_gate: None,
+            history_recall_gate: None,
+            history_recall_seq: 0,
             #[cfg(test)]
             replayed_sink_for_test: None,
             #[cfg(test)]
@@ -5385,7 +5404,28 @@ impl Input {
         event: &inline_history::InlineHistoryMenuEvent,
         ctx: &mut ViewContext<Self>,
     ) {
+        // #2107: a list that lands after the menu was left (^C, Escape, a give-up) must not put
+        // its first row into the buffer.
+        if matches!(
+            event,
+            inline_history::InlineHistoryMenuEvent::SelectCommand { .. }
+                | inline_history::InlineHistoryMenuEvent::SelectAIPrompt { .. }
+                | inline_history::InlineHistoryMenuEvent::SelectConversation
+        ) && crate::terminal::input_queue::switches::hold_keys_behind_recall()
+            && !self
+                .suggestions_mode_model
+                .as_ref(ctx)
+                .is_inline_history_menu()
+        {
+            warpui::input_order::log_hop("history_recall_gate", || {
+                "late_select_ignored menu_closed".to_owned()
+            });
+            return;
+        }
         match event {
+            inline_history::InlineHistoryMenuEvent::ListPending => {
+                self.open_history_recall_gate(ctx);
+            }
             inline_history::InlineHistoryMenuEvent::NavigateToConversation { conversation_id } => {
                 if self
                     .suggestions_mode_model
@@ -5507,9 +5547,20 @@ impl Input {
             inline_history::InlineHistoryMenuEvent::NoResults => {
                 // Both the regular inline view and the cloud-mode V2 wrapper
                 // render their own "No results" placeholder UI when the
-                // mixer query produces zero rows. This handler is therefore
-                // a no-op; the user dismisses via Escape.
+                // mixer query produces zero rows. The user dismisses via Escape.
+                // #2107: the list landed empty, so no recalled line is coming.
+                self.release_history_recall("no_results", ctx);
             }
+        }
+        // #2107: the first row of the list that just landed has put the recalled line in the
+        // buffer (the row's `Select*` event is the last step): the keys held for it replay now.
+        if matches!(
+            event,
+            inline_history::InlineHistoryMenuEvent::SelectCommand { .. }
+                | inline_history::InlineHistoryMenuEvent::SelectAIPrompt { .. }
+                | inline_history::InlineHistoryMenuEvent::SelectConversation
+        ) {
+            self.release_history_recall("list_ready", ctx);
         }
     }
 
@@ -11685,6 +11736,9 @@ impl Input {
                 self.cancel_report_tab();
                 // #1652: and one waiting for the multi-line dialog (the dialog closes).
                 self.cancel_multiline_dialog("editor_interrupt", ctx);
+                // #2107: ^C cancelled a history recall (the queue discarded the edits typed
+                // meanwhile); the gate is gone, and a list landing later is ignored.
+                self.release_history_recall("ctrl_c", ctx);
                 self.close_input_suggestions(/*should_focus_input=*/ true, ctx);
 
                 self.ai_input_model.update(ctx, |ai_input_model, ctx| {
