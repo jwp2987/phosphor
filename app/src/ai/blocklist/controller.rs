@@ -6717,8 +6717,10 @@ impl BlocklistAIController {
                 // answers with the same calls again. `chat_stream` cannot yield `Finished`
                 // and then an error today, so this is a guard, not a fix: the queued calls
                 // carry the turn, and their follow-up is the request that continues it.
+                let resume_decision =
+                    resume_at_stream_end(pending_resume.is_some(), actions_were_queued);
                 if let Some(resume) = pending_resume {
-                    if actions_were_queued {
+                    if resume_decision == ResumeAtStreamEnd::Drop {
                         log::warn!(
                             "a stream ended with tool calls queued and a resume scheduled; \
                              keeping the tool calls and dropping the resume. \
@@ -7412,6 +7414,26 @@ pub struct ClientIdentifiers {
     pub client_exchange_id: AIAgentExchangeId,
     /// Not populated for restored AI blocks.
     pub response_stream_id: Option<ResponseStreamId>,
+}
+
+/// What the end of a stream does with the auto-resume it scheduled (#1952).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ResumeAtStreamEnd {
+    /// No resume was scheduled.
+    NoResume,
+    /// Schedule the resume: nothing else carries the turn.
+    Schedule,
+    /// Drop the resume: tool calls were queued and their follow-up continues the turn, so a
+    /// resume as well would run the calls and re-ask the model for the same calls.
+    Drop,
+}
+
+fn resume_at_stream_end(has_pending_resume: bool, actions_were_queued: bool) -> ResumeAtStreamEnd {
+    match (has_pending_resume, actions_were_queued) {
+        (false, _) => ResumeAtStreamEnd::NoResume,
+        (true, false) => ResumeAtStreamEnd::Schedule,
+        (true, true) => ResumeAtStreamEnd::Drop,
+    }
 }
 
 #[allow(clippy::too_many_arguments)]

@@ -9267,6 +9267,32 @@ def lab_teardown_line_with_cid_none():
     assert "container 0123456789ab stopped" in labmod.stopped_line("agent", ctr)
 
 
+@check
+def settings_text_matches_shipped_proxy_behaviour():
+    """#1816: the Network settings description (en, zh-CN, ja) no longer says System follows the OS / environment proxy (it is ignored; only Custom is
+    used), and the manual's WarpifySettings row no longer lists the deleted warpify.ssh.use_ssh_tmux_wrapper"""
+    root = os.path.abspath(os.path.join(HERE, "..", "..", ".."))
+
+    def description(lang):
+        with open(os.path.join(root, "app", "i18n", lang, "warp.ftl"), encoding="utf-8") as f:
+            lines = [l for l in f.read().splitlines() if l.startswith("settings-network-mode-description")]
+        assert len(lines) == 1, (lang, lines)
+        return lines[0]
+    en, zh, ja = description("en"), description("zh-CN"), description("ja")
+    for lang, line in (("en", en), ("zh-CN", zh), ("ja", ja)):
+        assert "Custom" in line, (lang, "the description must still say Custom uses the URL", line)
+    assert "follows OS" not in en and "(default)" not in en, en
+    assert "System and Off both mean no proxy" in en and "ignores the OS and environment proxy" in en, en
+    assert "跟随系统" not in zh and "System 和 Off 都表示不使用代理" in zh, zh
+    assert "OS / 環境変数に従う" not in ja and "System と Off はどちらもプロキシなし" in ja, ja
+    with open(os.path.join(root, "docs", "manual", "03-settings-reference.md"), encoding="utf-8") as f:
+        rows = [l for l in f.read().splitlines() if l.startswith("| `WarpifySettings`")]
+    assert len(rows) == 1, rows
+    assert "use_ssh_tmux_wrapper" not in rows[0], rows[0]
+    assert "warpify.ssh.enable_legacy_ssh_wrapper" in rows[0] and "warpify.ssh.ssh_extension_install_mode" in rows[0], \
+        "the row lost its other settings: " + rows[0]
+
+
 def main(argv=None):
     """`--require a,b`: besides running every check, fail unless the named ones ran and passed. The guards job names the two checks whose absence
     nothing else would notice (#2086, #2089 / #2090): a selftest_*.py file is registered by two lines at this file's tail, and a merge that drops

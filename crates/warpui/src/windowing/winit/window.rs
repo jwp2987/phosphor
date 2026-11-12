@@ -134,6 +134,37 @@ impl WindowOrderingState {
     }
 }
 
+/// How loudly a failed connection to the X server is logged (#1863). A pure Wayland session
+/// (`WAYLAND_DISPLAY` set, `DISPLAY` unset) has no X server to reach, and the X11 manager only
+/// serves X11-only extras, so that is the expected state: `Debug`. Any other failure stays
+/// `Error`.
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
+fn x11_connect_failure_level(wayland_display_set: bool, display_set: bool) -> log::Level {
+    if wayland_display_set && !display_set {
+        log::Level::Debug
+    } else {
+        log::Level::Error
+    }
+}
+
+#[cfg(all(test, any(target_os = "linux", target_os = "freebsd")))]
+mod x11_connect_failure_level_tests {
+    use super::x11_connect_failure_level;
+
+    #[test]
+    fn a_pure_wayland_session_is_not_an_error() {
+        assert_eq!(x11_connect_failure_level(true, false), log::Level::Debug);
+    }
+
+    #[test]
+    fn every_other_failure_stays_an_error() {
+        // X11 session, XWayland session (both set), and a session with neither variable.
+        assert_eq!(x11_connect_failure_level(false, true), log::Level::Error);
+        assert_eq!(x11_connect_failure_level(true, true), log::Level::Error);
+        assert_eq!(x11_connect_failure_level(false, false), log::Level::Error);
+    }
+}
+
 impl WindowManager {
     pub(crate) fn new(
         event_loop_proxy: EventLoopProxy<CustomEvent>,
@@ -150,9 +181,11 @@ impl WindowManager {
                 Err(err) => {
                     // A pure Wayland session has no X server to reach: that is the expected
                     // state (x11_manager only serves X11-only extras), not an error.
-                    let wayland_only = std::env::var_os("WAYLAND_DISPLAY").is_some()
-                        && std::env::var_os("DISPLAY").is_none();
-                    if wayland_only {
+                    let level = x11_connect_failure_level(
+                        std::env::var_os("WAYLAND_DISPLAY").is_some(),
+                        std::env::var_os("DISPLAY").is_some(),
+                    );
+                    if level == log::Level::Debug {
                         log::debug!("no Xorg server connection (Wayland session): {err:?}");
                     } else {
                         log::error!("error creating connection to Xorg server: {err:?}");
