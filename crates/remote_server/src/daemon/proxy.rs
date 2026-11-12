@@ -411,15 +411,36 @@ fn flock_wait(fd: std::os::unix::io::RawFd, operation: libc::c_int) -> anyhow::R
 ///
 /// [Shutdown]: std::net::Shutdown
 fn bridge_stdio_to_socket(socket_path: &std::path::Path) -> anyhow::Result<()> {
-    use std::io::{Read, Write};
-    use std::net::Shutdown;
-
     log::info!(
         "Proxy: connecting to daemon socket at {}",
         socket_path.display()
     );
     let stream = std::os::unix::net::UnixStream::connect(socket_path)?;
     log::info!("Proxy: connected, bridging stdio");
+    bridge_streams(stream, std::io::stdin(), std::io::stdout())
+}
+
+/// The bridge of [`bridge_stdio_to_socket`] over any reader / writer (the tests use pipes).
+///
+/// **Daemon death ends the proxy at once (#2195).** The socket->output thread reads EOF the
+/// moment the daemon dies; the input->socket thread is usually parked in a blocking read of
+/// stdin, which a socket shutdown does NOT wake. Joining it first (as this used to) kept the
+/// proxy, its ssh channel and so the client's connection alive until the client happened to
+/// send something -- the app learned the helper was gone only when its next request failed,
+/// and its read then still went to the helper. So the proxy waits for the output direction
+/// only; the input thread is left to die with the process (it is detached, the process exits
+/// as soon as this returns), and the client sees the connection close immediately.
+fn bridge_streams<R, W>(
+    stream: std::os::unix::net::UnixStream,
+    mut input: R,
+    mut output: W,
+) -> anyhow::Result<()>
+where
+    R: std::io::Read + Send + 'static,
+    W: std::io::Write + Send + 'static,
+{
+    use std::io::Read;
+    use std::net::Shutdown;
 
     // Each thread holds two clones: one it actively reads/writes, and
     // one used solely to `shutdown(Both)` on exit so the peer thread's
@@ -435,7 +456,7 @@ fn bridge_stdio_to_socket(socket_path: &std::path::Path) -> anyhow::Result<()> {
     let t1 = std::thread::Builder::new()
         .name("proxy-stdin-fwd".into())
         .spawn(move || {
-            let result = std::io::copy(&mut std::io::stdin(), &mut &stream_for_t1);
+            let result = std::io::copy(&mut input, &mut &stream_for_t1);
             match &result {
                 Ok(total) => log::info!(
                     "Proxy: stdin->socket copy ended ({total} bytes); \
@@ -456,7 +477,6 @@ fn bridge_stdio_to_socket(socket_path: &std::path::Path) -> anyhow::Result<()> {
     let t2 = std::thread::Builder::new()
         .name("proxy-stdout-fwd".into())
         .spawn(move || -> std::io::Result<u64> {
-            let mut stdout = std::io::stdout().lock();
             let mut buf = [0u8; 8192];
             let mut total = 0u64;
             let result = loop {
@@ -465,10 +485,10 @@ fn bridge_stdio_to_socket(socket_path: &std::path::Path) -> anyhow::Result<()> {
                     Ok(n) => n,
                     Err(e) => break Err(e),
                 };
-                if let Err(e) = stdout.write_all(&buf[..n]) {
+                if let Err(e) = output.write_all(&buf[..n]) {
                     break Err(e);
                 }
-                if let Err(e) = stdout.flush() {
+                if let Err(e) = output.flush() {
                     break Err(e);
                 }
                 total += n as u64;
@@ -487,8 +507,11 @@ fn bridge_stdio_to_socket(socket_path: &std::path::Path) -> anyhow::Result<()> {
             result
         })?;
 
-    let _ = t1.join();
     let _ = t2.join();
+    // Only reap the input thread when it already ended; never wait on a read of stdin.
+    if t1.is_finished() {
+        let _ = t1.join();
+    }
 
     log::info!("Proxy: bridge closed, exiting");
     Ok(())
