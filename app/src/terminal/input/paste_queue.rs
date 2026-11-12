@@ -189,7 +189,10 @@ impl Host for InputQueueHost<'_, '_> {
             }
             // ^C met the Enter's gate: the keys typed behind that Enter are dropped with it.
             DiscardReason::SignalDiscard(
-                GateKind::EnterVerdict | GateKind::TabCompletion | GateKind::HistoryRecall,
+                GateKind::EnterVerdict
+                | GateKind::TabCompletion
+                | GateKind::HistoryRecall
+                | GateKind::RemoteTabCompletion,
             ) => {}
             other => log::warn!("input queue: editor paste entry discarded: {other:?}"),
         }
@@ -314,6 +317,12 @@ impl Input {
         // #2107: the history-recall gate's net closes the menu, then replays the held keys.
         if self.is_history_recall_token(token, ctx) {
             self.give_up_history_recall(token, ctx);
+            return;
+        }
+        // #2188: the remote Tab completion gate's net cancels the completion, then replays the
+        // held keys in order on the line as typed.
+        if self.is_remote_tab_token(token, ctx) {
+            self.give_up_remote_tab_gate(token, ctx);
             return;
         }
         // #1571: the net of a verdict gate that now holds an Enter refused by an unready shell

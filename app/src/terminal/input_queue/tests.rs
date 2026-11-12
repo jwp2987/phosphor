@@ -2567,3 +2567,103 @@ fn history_recall_gate_ctrl_c_discards_the_edits_and_an_enter_ahead_is_visible()
     );
     assert!(q.is_idle(), "the gate is gone");
 }
+
+// ---- the remote Tab completion gate (#2188) --------------------------------------------------
+
+/// Every key typed while a remote Tab completion is being answered waits (the fast Enter first of
+/// all), and the gate's event releases exactly those keys in exactly the order they were typed.
+#[test]
+fn remote_tab_gate_holds_every_key_and_the_answer_releases_them_in_order() {
+    let mut q = InputQueue::new();
+    let mut h = MockHost::new();
+    q.open_gate(&mut h, GateSpec::new(GateKind::RemoteTabCompletion, 1));
+    assert!(q.holds_keys());
+    let ids = vec![
+        q.offer(&mut h, text("x")),
+        q.offer(&mut h, EntryKind::Enter),
+        q.offer(&mut h, text("ls")),
+    ];
+    assert!(
+        h.delivered.is_empty(),
+        "nothing is delivered before the completion is answered"
+    );
+    assert_eq!(q.queued_len(), 3);
+    assert!(q.holds_enter_behind_gate(GateKind::RemoteTabCompletion, 1));
+    // Not the gate's event: a wrong key or kind leaves the keys held.
+    assert!(!q.on_gate_event(&mut h, GateKind::RemoteTabCompletion, 2));
+    assert!(!q.on_gate_event(&mut h, GateKind::TabCompletion, 1));
+    assert!(h.delivered.is_empty());
+    assert!(q.on_gate_event(&mut h, GateKind::RemoteTabCompletion, 1));
+    assert_eq!(
+        h.delivered_ids(),
+        ids.iter().map(|id| id.0).collect::<Vec<_>>(),
+        "exactly the typed order"
+    );
+    assert_eq!(
+        h.delivered.iter().map(|d| d.tag).collect::<Vec<_>>(),
+        vec!["text", "enter", "text"]
+    );
+    assert!(q.is_idle());
+    // A late duplicate of the event is a no-op.
+    assert!(!q.on_gate_event(&mut h, GateKind::RemoteTabCompletion, 1));
+}
+
+/// The net is sized for the link (5 s: 33 round trips at 150 ms). When it fires everything held
+/// is delivered in order, the Enter included (none dropped or reordered), with a warning naming
+/// the gate, and a stale timer of the closed gate finds nothing.
+#[test]
+fn remote_tab_gate_give_up_delivers_the_enter_and_everything_else_in_order_and_logs() {
+    let mut q = InputQueue::new();
+    let mut h = MockHost::new();
+    let token = q.open_gate(&mut h, GateSpec::new(GateKind::RemoteTabCompletion, 1));
+    assert_eq!(h.armed.len(), 1);
+    assert_eq!(h.armed[0].1, GateKind::RemoteTabCompletion);
+    assert_eq!(h.armed[0].2, Duration::from_secs(5));
+    // At least a few round trips of a 150 ms link, and the Enter holds' own nets come later.
+    assert!(h.armed[0].2 >= Duration::from_millis(150) * 8);
+    assert!(h.armed[0].2 < Duration::from_secs(9));
+    let ids = vec![
+        q.offer(&mut h, EntryKind::Enter),
+        q.offer(&mut h, text("ls")),
+        q.offer(&mut h, EntryKind::Enter),
+    ];
+    assert!(h.delivered.is_empty());
+    assert!(q.give_up(&mut h, token));
+    assert_eq!(
+        h.delivered_ids(),
+        ids.iter().map(|id| id.0).collect::<Vec<_>>()
+    );
+    assert!(h.discarded.is_empty(), "no key is dropped");
+    assert!(
+        h.warns
+            .iter()
+            .any(|line| line.contains("remote_tab_completion")),
+        "the give-up is logged: {:?}",
+        h.warns
+    );
+    assert!(!q.give_up(&mut h, token), "one-shot");
+}
+
+/// ^C meeting the gate: as at the local Tab hold, the keys typed behind the Tab are discarded
+/// (a held Enter with them: the line is void) and the signal goes at once.
+#[test]
+fn remote_tab_gate_ctrl_c_discards_the_held_keys_and_the_enter() {
+    let mut q = InputQueue::new();
+    let mut h = MockHost::new();
+    q.open_gate(&mut h, GateSpec::new(GateKind::RemoteTabCompletion, 1));
+    q.offer(&mut h, text("x"));
+    q.offer(&mut h, EntryKind::Enter);
+    q.offer(&mut h, EntryKind::Signal(SignalKind::Interrupt));
+    assert_eq!(h.discarded.len(), 2, "the held keys are discarded");
+    assert!(
+        h.discarded
+            .iter()
+            .all(|(_, why)| *why == DiscardReason::SignalDiscard(GateKind::RemoteTabCompletion))
+    );
+    assert_eq!(
+        h.delivered.iter().map(|d| d.tag).collect::<Vec<_>>(),
+        vec!["signal"],
+        "the ^C goes at once, and the Enter never runs"
+    );
+    assert!(q.is_idle(), "the gate is gone");
+}

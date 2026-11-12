@@ -968,6 +968,13 @@ impl TerminalView {
                 .update(ctx, |input, ctx| input.give_up_history_recall(token, ctx));
             return;
         }
+        if kind == Some(GateKind::RemoteTabCompletion) {
+            // #2188: the remote completion never answered: the input cancels it, then the held
+            // keys replay in order on the line as typed.
+            self.input
+                .update(ctx, |input, ctx| input.give_up_remote_tab_gate(token, ctx));
+            return;
+        }
         if kind == Some(GateKind::LineEditorActive) {
             let key = queue
                 .try_peek()

@@ -424,7 +424,10 @@ impl Host for EditorQueueHost<'_, '_> {
             // ^C voided the Enter that waited: what was typed behind it goes with it, as the
             // buffer did before.
             DiscardReason::SignalDiscard(
-                GateKind::EnterVerdict | GateKind::TabCompletion | GateKind::HistoryRecall,
+                GateKind::EnterVerdict
+                | GateKind::TabCompletion
+                | GateKind::HistoryRecall
+                | GateKind::RemoteTabCompletion,
             ) => {}
             other => log::warn!("input queue: editor entry discarded: {other:?}"),
         }

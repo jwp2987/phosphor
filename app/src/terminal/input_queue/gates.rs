@@ -53,6 +53,15 @@ pub enum GateKind {
     /// buffer and the recalled line then replaced them. Opened only when the menu's list is
     /// pending (a small history answers inline and never opens it).
     HistoryRecall,
+    /// #2188: a Tab in a REMOTE (managed ssh) session started a completion the remote side
+    /// answers (the helper, or a side command on the session's connection: at least one round
+    /// trip). Every key typed until that answer waits here, in order, and is applied once the
+    /// completion is in the buffer: Tab then a fast Enter runs the COMPLETED line, and Tab, text,
+    /// Enter runs the completed word with the text after it, as plain ssh does (the Tab and the
+    /// keys behind it reach the remote shell in order). Opened only by an explicit Tab whose
+    /// completer runs over the link (`Input::open_remote_tab_gate`); a local Tab and the remote
+    /// shell's in-band answer (#1801) hold the Enter themselves (`TabCompletion`).
+    RemoteTabCompletion,
 }
 
 /// #1571: the key flag of an `EnterVerdict` gate that holds the keys typed behind an Enter the
@@ -97,7 +106,7 @@ pub enum SignalPlan {
 }
 
 impl GateKind {
-    pub const ALL: [GateKind; 13] = [
+    pub const ALL: [GateKind; 14] = [
         GateKind::PasteReading,
         GateKind::EnterVerdict,
         GateKind::TabCompletion,
@@ -111,6 +120,7 @@ impl GateKind {
         GateKind::SshConnect,
         GateKind::EditorDisplayMap,
         GateKind::HistoryRecall,
+        GateKind::RemoteTabCompletion,
     ];
 
     pub fn name(self) -> &'static str {
@@ -128,6 +138,7 @@ impl GateKind {
             GateKind::SshConnect => "ssh_connect",
             GateKind::EditorDisplayMap => "editor_display_map",
             GateKind::HistoryRecall => "history_recall",
+            GateKind::RemoteTabCompletion => "remote_tab_completion",
         }
     }
 
@@ -147,6 +158,7 @@ impl GateKind {
             GateKind::SshConnect => "ssh_connect_started",
             GateKind::EditorDisplayMap => "editor_key_needs_fresh_display_map",
             GateKind::HistoryRecall => "history_menu_opened_with_pending_list",
+            GateKind::RemoteTabCompletion => "tab_with_remote_completer",
         }
     }
 
@@ -171,6 +183,9 @@ impl GateKind {
             // The first row of the menu's list has put the recalled line in the buffer; also the
             // list found empty, the menu closed or left, or ^C cancelling the recall.
             GateKind::HistoryRecall => "history_list_ready_and_first_row_selected",
+            // The completer's answer was applied to the buffer (or had nothing to apply); also
+            // the completion being superseded or cancelled, or ^C.
+            GateKind::RemoteTabCompletion => "remote_completion_answered_or_cancelled",
         }
     }
 
@@ -188,7 +203,10 @@ impl GateKind {
             GateKind::EnterVerdict
             | GateKind::TabCompletion
             | GateKind::SshConnect
-            | GateKind::HistoryRecall => SignalPlan::DiscardThenSignal,
+            | GateKind::HistoryRecall
+            // #2188: as the local Tab hold (`TabCompletion`): ^C voids the completion and the
+            // keys typed behind the Tab are discarded with the line.
+            | GateKind::RemoteTabCompletion => SignalPlan::DiscardThenSignal,
             GateKind::HandoffReport
             | GateKind::PromptSeen
             | GateKind::LineEditorActive
@@ -226,6 +244,18 @@ impl GateKind {
             // whose list event never came. The give-up closes the menu, then replays the held
             // keys in order on the unchanged buffer (none dropped or reordered).
             GateKind::HistoryRecall => Some(Duration::from_secs(125)),
+            // #2188: the net of a remote completion that never answers, sized for the link, not
+            // for the completer: an answer is one to three exchanges over the session's
+            // connection (a listing, with a command lookup or a generator before it), which is
+            // under 0.5 s at the lab's slowest link (150 ms round trip) and about 2 s at 600 ms.
+            // 5 s is 33 round trips at 150 ms and 8 at 600 ms, over the 2 s at which the app
+            // itself calls a remote command slow (`REMOTE_COMMAND_SLOW`), and well under the
+            // Enter holds' own nets (`HOLD_BACKSTOP_LIMIT` 9 s, `ENTER_GATE_LEAK_NET` 20 s). The
+            // answer ends the wait first in every normal case. The give-up cancels the completion
+            // and replays the held keys in order on the unchanged line (the Enter runs the line
+            // as typed, which is what plain ssh runs when the remote shell completes nothing);
+            // none is dropped or reordered, and it is logged.
+            GateKind::RemoteTabCompletion => Some(Duration::from_secs(5)),
         }
     }
 }
@@ -279,6 +309,9 @@ pub fn signal_plan(gate: GateKind, signal: SignalKind) -> GateSignalPlan {
         // the recall like ^C (an Enter held ahead of a ^C makes the editor queue it instead).
         GateKind::HistoryRecall if eof => GateSignalPlan::WaitInOrder,
         GateKind::HistoryRecall => GateSignalPlan::DiscardThenSignal,
+        // #2188: every signal the editor offers voids the completion and discards the keys typed
+        // behind the Tab, exactly as at the local Tab hold (`TabCompletion`).
+        GateKind::RemoteTabCompletion => GateSignalPlan::DiscardThenSignal,
         GateKind::HandoffReport if eof => GateSignalPlan::WaitInOrder,
         GateKind::HandoffReport => GateSignalPlan::CancelDeferredEnterThenSignal,
         GateKind::PromptSeen | GateKind::LineEditorActive if eof => GateSignalPlan::FlushThenSignal,

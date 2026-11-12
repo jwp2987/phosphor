@@ -9443,3 +9443,5 @@ import selftest_r27_labharness  # noqa: E402  (r27 lab harness: nu kill line, dr
 CHECKS.extend(selftest_r27_labharness.CHECKS)
 import selftest_r27_recallorder  # noqa: E402  (#2107 history_up_recall long-history arm: seed size, kill switch name, seed-after-stop order; own file)
 CHECKS.extend(selftest_r27_recallorder.CHECKS)
+import selftest_r27_remotetabenter  # noqa: E402  (#2188 lab_tab_remote_dir fast Enter: received-line verdict, the app's remote_tab_wait note, kill switch name; own file)
+CHECKS.extend(selftest_r27_remotetabenter.CHECKS)

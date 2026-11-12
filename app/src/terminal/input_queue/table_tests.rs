@@ -1246,7 +1246,7 @@ const SIGNALS: [SignalKind; 4] = [
 fn the_gate_by_signal_plan_matrix() {
     use GateSignalPlan::*;
     // [Interrupt, Eof, Suspend, Quit] per gate kind: the 14 x 4 plan of design revision 3.
-    let expected: [(GateKind, [GateSignalPlan; 4]); 13] = [
+    let expected: [(GateKind, [GateSignalPlan; 4]); 14] = [
         (GateKind::PasteReading, [CancelPasteThenFlush; 4]),
         (GateKind::CliSubmit, [CancelPasteThenFlush; 4]),
         (GateKind::EnterVerdict, [DiscardThenSignal; 4]),
@@ -1291,6 +1291,9 @@ fn the_gate_by_signal_plan_matrix() {
                 DiscardThenSignal,
             ],
         ),
+        // #2188: as the local Tab hold: every signal voids the completion and the keys typed
+        // behind the Tab.
+        (GateKind::RemoteTabCompletion, [DiscardThenSignal; 4]),
         (GateKind::SubshellSetup, [SignalThenRelease; 4]),
         (
             GateKind::SubshellBootstrapWrite,
