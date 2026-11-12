@@ -1,0 +1,1395 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="appci-windows" tests="496" failures="43" skipped="238">
+<testcase classname="terminal" name="mode_proof" time="2.90">
+<failure message="terminal mode expected but the screen shows agent markers ('New agent conversation' / 'ESC for terminal' / 'Ask anything')">terminal mode expected but the screen shows agent markers ('New agent conversation' / 'ESC for terminal' / 'Ask anything')
+the app log says terminal but the screen reads as agent (OCR); the log decides
+injector accounting: injector sent 1 keys (0 Enter); app key trace not available, so nothing to compare</failure>
+</testcase>
+<testcase classname="terminal" name="key_delivery" time="0.00">
+</testcase>
+<testcase classname="terminal" name="cadence" time="6.10">
+</testcase>
+<testcase classname="terminal" name="mac_pointer_chord_proof" time="0.00">
+<skipped message="not run on Windows: r15 T32 (#2061): macOS only by design: it proves the Mac harness's own pointer tool (mptr) and app-only chords (appkey)"/>
+</testcase>
+<testcase classname="terminal" name="key_loss_control" time="0.00">
+<skipped message="not run in the PowerShell pane: compares the typed line with the shell's own rec.log; a PowerShell pane has no rc hook (the app starts it with -NoProfile): runs in the Git Bash pane"/>
+</testcase>
+<testcase classname="terminal" name="enter_loss_control" time="98.80">
+</testcase>
+<testcase classname="terminal" name="fast_typing" time="53.30">
+</testcase>
+<testcase classname="terminal" name="rollover" time="22.60">
+</testcase>
+<testcase classname="terminal" name="expert_fuzz" time="0.00">
+<skipped message="not run in the PowerShell pane: BackSpace / Left / Ctrl-W editing of `echo ... &gt;&gt;` lines; PSReadLine's Ctrl-W differs: runs in the Git Bash pane"/>
+</testcase>
+<testcase classname="terminal" name="paste_instant_enter" time="5.50">
+</testcase>
+<testcase classname="terminal" name="arrows_behind_paste" time="7.30">
+</testcase>
+<testcase classname="terminal" name="keydown_count" time="25.80">
+</testcase>
+<testcase classname="terminal" name="big_paste" time="0.00">
+<skipped message="not run in the PowerShell pane: `cat &gt; file` + Ctrl-D end-of-input: runs in the Git Bash pane"/>
+</testcase>
+<testcase classname="terminal" name="tab_enter" time="23.90">
+</testcase>
+<testcase classname="terminal" name="ctrl_c_d" time="330.60">
+</testcase>
+<testcase classname="terminal" name="read_x" time="0.00">
+<skipped message="not run in the PowerShell pane: bash `read x` / printf: runs in the Git Bash pane"/>
+</testcase>
+<testcase classname="terminal" name="subshells" time="0.00">
+<skipped message="not run on Windows: uses `sh -c 'ps -o comm= -p $PPID'` to prove the subshell's parent; msys ps output differs. Not yet ported (gitbash_subshell and ctrl_c_d cover bash inside the pane)"/>
+</testcase>
+<testcase classname="terminal" name="subshell_sh_probe" time="0.00">
+<skipped message="not run on Windows: dash / busybox ash / su do not exist in a Windows pane; the sh probe path is POSIX (#1710)"/>
+</testcase>
+<testcase classname="terminal" name="alt_screen" time="0.00">
+<skipped message="not run in the PowerShell pane: `seq | less` and vim: runs in the Git Bash pane"/>
+</testcase>
+<testcase classname="terminal" name="gitbash_subshell" time="41.40">
+</testcase>
+<testcase classname="terminal" name="alt_screen_programs" time="0.00">
+<skipped message="not run in the PowerShell pane: vim/less/htop/tmux with bash effect lines and rec.log: runs in the Git Bash pane; a program that is not installed makes the case unverifiable (#1537)"/>
+</testcase>
+<testcase classname="terminal" name="subshell_ready_rc_questions" time="0.00">
+<skipped message="not run in the PowerShell pane: bash --rcfile with read -p questions: the Git Bash pane (#1886: no tty probe on ConPTY, the judge uses screen facts)"/>
+</testcase>
+<testcase classname="terminal" name="subshell_ready_vim_typeahead" time="0.00">
+<skipped message="not run on Windows: bash --rcfile + vim on a real pty (#1679 step 3)"/>
+</testcase>
+<testcase classname="terminal" name="subshell_ready_unsupported_tcsh" time="0.00">
+<skipped message="not run on Windows: tcsh does not exist in a Windows pane (#1679 step 3)"/>
+</testcase>
+<testcase classname="terminal" name="subshell_ready_secret_after_prompt" time="0.00">
+<skipped message="not run on Windows: bash --rcfile + Phosphorize (ctrl+i) with a PROMPT_COMMAND read -s, on the subshell readiness judge, which has no OS facts on ConPTY (#1679 step 3, audit finding 5); the ConPTY pro"/>
+</testcase>
+<testcase classname="terminal" name="subshell_ready_secret_after_probe" time="0.00">
+<skipped message="not run on Windows: as subshell_ready_secret_after_prompt: a PROMPT_COMMAND read -s behind the sh probe needs the tty facts ConPTY does not have (#1905)"/>
+</testcase>
+<testcase classname="terminal" name="subshell_sh_probe_empty_ps1" time="0.00">
+<skipped message="not run on Windows: dash does not exist in a Windows pane; the sh probe path is POSIX (#1935)"/>
+</testcase>
+<testcase classname="terminal" name="subshell_ready_relay_shape" time="0.00">
+<skipped message="not run on Windows: sudo -s with use_pty does not exist on Windows (#1679 step 3); by design, no machine change makes it run here"/>
+</testcase>
+<testcase classname="terminal" name="subshell_ready_exec_fish_rc" time="0.00">
+<skipped message="not run on Windows: fish exec'd from a bash rc on a real pty (#1679 step 3)"/>
+</testcase>
+<testcase classname="terminal" name="subshell_ready_docker_t_without_i" time="0.00">
+<skipped message="not run on Windows: docker -t without -i against a Linux pty (#1679 step 3); by design, no machine change makes it run here"/>
+</testcase>
+<testcase classname="terminal" name="subshell_ready_zsh_newuser_install" time="0.00">
+<skipped message="not run on Windows: zsh-newuser-install needs zsh and a POSIX HOME (#1679 step 3)"/>
+</testcase>
+<testcase classname="terminal" name="subshell_ready_rc_clear" time="0.00">
+<skipped message="not run in the PowerShell pane: bash --rcfile with clear: the Git Bash pane (#1886: no tty probe on ConPTY, the judge uses screen facts)"/>
+</testcase>
+<testcase classname="terminal" name="subshell_line_editor_proof" time="0.00">
+<skipped message="not run on Windows: the line-editor write is recorded from the tty probe (termios + /proc), which a ConPTY pane does not have (#1991)"/>
+</testcase>
+<testcase classname="terminal" name="job_control" time="0.00">
+<skipped message="not run on Windows: #2072 (T7): Ctrl-Z / bg / fg are POSIX tty job control judged from `ps` process states; PowerShell has no job-control keys and an msys bash under ConPTY gets no SIGTSTP from the te"/>
+</testcase>
+<testcase classname="terminal" name="ssh_connect_typing" time="50.60">
+</testcase>
+<testcase classname="terminal" name="ssh_enter_then_immediate_command" time="13.60">
+</testcase>
+<testcase classname="terminal" name="ssh_nested_typeahead" time="8.90">
+</testcase>
+<testcase classname="terminal" name="ssh_connect_typing_wrapper" time="0.00">
+<skipped message="not run in the PowerShell pane: bash pane with the managed-ssh wrapper pinned on (APPCI_SSH_WRAPPER=1, a variable of the app-test-windows job since #2066; #1884); skips itself without it"/>
+</testcase>
+<testcase classname="terminal" name="ssh_nested_typeahead_wrapper" time="0.00">
+<skipped message="not run in the PowerShell pane: bash pane with the managed-ssh wrapper pinned on (APPCI_SSH_WRAPPER=1, a variable of the app-test-windows job since #2066; #1884); skips itself without it"/>
+</testcase>
+<testcase classname="terminal" name="ssh_failing_not_local" time="16.00">
+</testcase>
+<testcase classname="terminal" name="idle_cpu" time="24.40">
+</testcase>
+<testcase classname="terminal" name="latency_enter" time="285.50">
+<skipped message="NO-REFERENCE (not a pass): app share of Enter-&gt;start: enter_begin -&gt; pty_write median 1.77 ms (from the app's input_order log); the remaining overhead is shell/ConPTY side"/>
+</testcase>
+<testcase classname="terminal" name="latency_key_log" time="0.00">
+<skipped message="not run in the PowerShell pane: types into a running `cat &gt; /dev/null`: no equivalent stdin-echo program in PowerShell: runs in the Git Bash pane"/>
+</testcase>
+<testcase classname="terminal" name="latency_paint" time="1.10">
+<skipped message="kl3 (ScreenCaptureKit) is macOS only; no key-&gt;paint read-back exists on this platform, so there is nothing to compare"/>
+</testcase>
+<testcase classname="terminal" name="latency_first_key_after_idle" time="0.00">
+<skipped message="not run in the PowerShell pane: types into a running `cat &gt; /dev/null` (key -&gt; frame from the app log): no PowerShell equivalent: runs in the Git Bash pane"/>
+</testcase>
+<testcase classname="terminal" name="routing_table" time="0.00">
+<skipped message="not run in the PowerShell pane: asserts what the shell received from rec.log: runs in the Git Bash pane"/>
+</testcase>
+<testcase classname="terminal" name="routing_table_powershell" time="61.30">
+</testcase>
+<testcase classname="terminal" name="remote_session_legacy" time="0.00">
+<skipped message="not run in the PowerShell pane: uses rec.log and prompt.log of the local shell and `ssh.cmd` Ctrl-C paths: runs in the Git Bash pane"/>
+</testcase>
+<testcase classname="terminal" name="intl_wide_type" time="20.70">
+</testcase>
+<testcase classname="terminal" name="remote_session_ext" time="0.00">
+<skipped message="not run in the PowerShell pane: uses rec.log and prompt.log of the local shell: runs in the Git Bash pane"/>
+</testcase>
+<testcase classname="terminal" name="remote_tab_no_helper" time="0.00">
+<skipped message="not run in the PowerShell pane: rec.log of the remote bash and `cd`/`pwd` there, the local shell's rec.log for the not-local check (#1801): runs in the Git Bash pane"/>
+</testcase>
+<testcase classname="terminal" name="remote_tab_enter_no_helper" time="0.00">
+<skipped message="not run in the PowerShell pane: rec.log of the remote bash for the completed `cd`, the local shell's rec.log for the not-local check (#1801): runs in the Git Bash pane"/>
+</testcase>
+<testcase classname="terminal" name="intl_wide_paste" time="16.70">
+</testcase>
+<testcase classname="terminal" name="flood_scrollback_find" time="0.00">
+<skipped message="not run on Windows: needs the Linux find flow and POSIX floods (the OCR half exists since r23: winocr)"/>
+</testcase>
+<testcase classname="terminal" name="remote_heredoc_paste" time="0.00">
+<skipped message="not run in the PowerShell pane: POSIX here-doc / printf commands in the remote bash (#1129): runs in the Git Bash pane"/>
+</testcase>
+<testcase classname="terminal" name="intl_wide_edit" time="19.30">
+</testcase>
+<testcase classname="terminal" name="ssh_gitbash_managed" time="0.00">
+<skipped message="not run in the PowerShell pane: the bash ssh wrapper's one-connection managed session (#1933): only the Git Bash pane has the wrapper"/>
+</testcase>
+<testcase classname="terminal" name="ssh_gitbash_failing_not_local_managed" time="0.00">
+<skipped message="not run in the PowerShell pane: a failing ssh behind the bash ssh wrapper with the one-connection path switched on (round 14): only the Git Bash pane has the wrapper"/>
+</testcase>
+<testcase classname="terminal" name="ssh_gitbash_bootstrap_in_command" time="0.00">
+<skipped message="not run in the PowerShell pane: the one-connection managed ssh sends the bootstrap in the remote command (#2051): only the Git Bash pane has the wrapper"/>
+</testcase>
+<testcase classname="terminal" name="ssh_gitbash_typeahead_managed" time="0.00">
+<skipped message="not run in the PowerShell pane: keys typed during a one-connection managed ssh login stay managed (#1959): only the Git Bash pane has the wrapper"/>
+</testcase>
+<testcase classname="terminal" name="ssh_gitbash_kill_switch" time="0.00">
+<skipped message="not run in the PowerShell pane: the default and PHOSPHOR_MSYS_MANAGED_SSH=0 in the bash pane are plain ssh (#1933, #2051): only the Git Bash pane has the wrapper"/>
+</testcase>
+<testcase classname="terminal" name="ui_palette" time="0.00">
+<skipped message="not run in the PowerShell pane: asserts the exact line from rec.log: runs in the Git Bash pane"/>
+</testcase>
+<testcase classname="terminal" name="intl_wide_program" time="0.00">
+<skipped message="not run in the PowerShell pane: `head -n 1 &gt; file` is the receiving program: runs in the Git Bash pane"/>
+</testcase>
+<testcase classname="terminal" name="hostile_output_recovers" time="0.00">
+<skipped message="not run in the PowerShell pane: #2072 (T8): `cat` of a binary file, a POSIX command list around hostile_out.py and rec.log for the exact line: runs in the Git Bash pane"/>
+</testcase>
+<testcase classname="terminal" name="ui_completions_as_you_type_local" time="0.00">
+<skipped message="not run in the PowerShell pane: asserts the menu on screen after typing in the Git Bash pane (the as-you-type default under test)"/>
+</testcase>
+<testcase classname="terminal" name="latency_enter_ssh" time="0.00">
+<skipped message="not run in the PowerShell pane: the plain-ssh control is the conhost reference running the pane's shell; a PowerShell reference's `ssh fake` path (ssh.cmd) differs from the pane's: runs in the Git Bas"/>
+</testcase>
+<testcase classname="terminal" name="intl_compose_linux" time="0.00">
+<skipped message="not run on Windows: Linux xkb compose / dead keys (Windows has intl_altgr_ps / intl_altgr_bash)"/>
+</testcase>
+<testcase classname="terminal" name="history_up_recall" time="17.70">
+<failure message="hu.txt holds ['t245_l2j3g8h8', 't246_uu59vu93', 't247_u5z8nkp8', 't246_uu59vu93', 't246_uu59vu93e9z'], expected ['t245_l2j3g8h8', 't246_uu59vu93', 't247_u5z8nkp8', 't246_uu59vu93', 't246_uu59ve9z', 't248_mpdudv0b'] (first difference at line 5)">hu.txt holds ['t245_l2j3g8h8', 't246_uu59vu93', 't247_u5z8nkp8', 't246_uu59vu93', 't246_uu59vu93e9z'], expected ['t245_l2j3g8h8', 't246_uu59vu93', 't247_u5z8nkp8', 't246_uu59vu93', 't246_uu59ve9z', 't248_mpdudv0b'] (first difference at line 5)
+the shell did not receive exactly the six lines: line 5, Up, edit, Enter (the edited second command): expected 'Add-Content hu.txt t246_uu59ve9z', the shell received 'Add-Content hu.txt t246_uu59vu93e9z'
+the pane's history holds 21714 lines, more than the 5000 the app lists inline: the Up-arrow list was built in the background in this run (#2107: keys typed before it arrives are applied first)
+injector accounting: injector sent 151; app saw 151; lost-before-app 0 (Enter: sent 6, app saw 6); of the app's: 131 unbound keydown/typed, 14 taken by a key binding, 6 Enter by a binding
+pty writes: 12, of which carrying a CR (\r): 0; Enter(s) the input editor started: 7 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="terminal" name="intl_ime_japanese" time="0.00">
+<skipped message="not run on Windows: macOS input methods (TISSelectInputSource). NEEDS: a Windows IME arm in the harness (not built; r14-test-gaps T39)"/>
+</testcase>
+<testcase classname="terminal" name="intl_ime_pinyin" time="0.00">
+<skipped message="not run on Windows: macOS input methods (TISSelectInputSource). NEEDS: a Windows IME arm in the harness (not built; r14-test-gaps T39)"/>
+</testcase>
+<testcase classname="terminal" name="ssh_drop_reconnect" time="0.00">
+<skipped message="not run on Windows: not yet ported: the `~.` escape and `kill -9 $$` need verifying against the msys/Win32 ssh clients (#1535)"/>
+</testcase>
+<testcase classname="terminal" name="scroll_keys_position" time="0.00">
+<skipped message="not run in the PowerShell pane: r23 (#2060): bash `cat` of numbered lines, a bash background job, rec.log; the scroll position is read by Windows.Media.Ocr (winocr): runs in the Git Bash pane, SKIPs w"/>
+</testcase>
+<testcase classname="terminal" name="ime_compose" time="0.00">
+<skipped message="not run in the PowerShell pane: r15 T39: the committed text is checked as the UTF-8 bytes of a file written by `echo ... &gt;&gt; file` (Windows PowerShell 5.1 writes UTF-16 there) and against rec.log"/>
+</testcase>
+<testcase classname="terminal" name="intl_deadkey_option" time="0.00">
+<skipped message="not run on Windows: macOS Option dead keys"/>
+</testcase>
+<testcase classname="terminal" name="scroll_keys_foreground" time="0.00">
+<skipped message="not run in the PowerShell pane: #2080: the foreground program is a POSIX raw reader started from a bash script (bytes_reader.sh), with a bash job printing next to it: runs in the Git Bash pane"/>
+</testcase>
+<testcase classname="terminal" name="intl_altgr_ps" time="6.10">
+</testcase>
+<testcase classname="terminal" name="intl_altgr_bash" time="19.20">
+<skipped message="NO-REFERENCE (not a pass): injector accounting: injector sent 300; app saw 297; lost-before-app 3 (Enter: sent 5, app saw 5); of the app's: 293 unbound keydown/typed, 2 taken by a key binding, 2 Enter by a b"/>
+</testcase>
+<testcase classname="terminal" name="ui_mouse_select_copy" time="0.00">
+<skipped message="not run in the PowerShell pane: T31: the token is printed by bash `printf` and the command is checked against rec.log: runs in the Git Bash pane (pointer by SendInput, position from the app's find hoo"/>
+</testcase>
+<testcase classname="terminal" name="ui_copy_wrapped_output" time="0.00">
+<skipped message="not run in the PowerShell pane: #1976: `stty size` and `cat` of the fixture file in bash, the command checked against rec.log: runs in the Git Bash pane (keyboard and clipboard only)"/>
+</testcase>
+<testcase classname="terminal" name="ui_copy_wrapped_drag" time="0.00">
+<skipped message="not run in the PowerShell pane: T31 (#1976): `stty size` and `cat` of the fixture file in bash, the command checked against rec.log: runs in the Git Bash pane (pointer by SendInput, positions from the"/>
+</testcase>
+<testcase classname="terminal" name="ui_right_click_paste" time="0.00">
+<skipped message="not run on Windows: not ported: it falls back to OCR for the menu entry and has never passed anywhere (r14-test-gaps F13); on Windows the same path is context_menu_actions (the input's Paste entry, pl"/>
+</testcase>
+<testcase classname="terminal" name="selection_modes" time="0.00">
+<skipped message="not run in the PowerShell pane: T31 (r14 T22): `cat` of the fixture files, the `sh` stream program and rec.log: runs in the Git Bash pane (pointer and held Shift by SendInput, positions from the app's"/>
+</testcase>
+<testcase classname="terminal" name="primary_and_middle_click" time="0.00">
+<skipped message="not run on Windows: T23: the PRIMARY selection is an X11 / Wayland concept; Windows has one clipboard"/>
+</testcase>
+<testcase classname="terminal" name="ui_drag_drop_file" time="0.00">
+<skipped message="not run on Windows: no way to synthesize a drag source on Windows from the harness. NEEDS: a harness capability that is not built (an OLE drag source; r14-test-gaps T38)"/>
+</testcase>
+<testcase classname="terminal" name="startup_shell_pane" time="1.40">
+<skipped message="runs in the pane-shell passes only (terminal@pwsh7, terminal@cmd, terminal@wsl: APPCI_WIN_SHELLS of the app-test-windows job names them; a pass whose shell is not installed is one startup_shell_pass S"/>
+</testcase>
+<testcase classname="terminal" name="link_and_path_click" time="0.00">
+<skipped message="not run on Windows: T21: not ported: the recording opener is a POSIX xdg-open on the app's PATH and the network trace is strace (the pointer itself exists since r15 wave 4)"/>
+</testcase>
+<testcase classname="terminal" name="wheel_scroll" time="0.00">
+<skipped message="not run on Windows: T24: not ported: bytes_reader.py needs termios (the wheel event exists since r15 wave 4: winapi.mouse_wheel_event; the OCR read exists since r23: winocr, Windows.Media.Ocr)"/>
+</testcase>
+<testcase classname="terminal" name="resize_reflow_output" time="0.00">
+<skipped message="not run in the PowerShell pane: T33 (r14 T26): a bash SIGWINCH trap, `stty size` and vim: runs in the Git Bash pane (window size by SetWindowPos)"/>
+</testcase>
+<testcase classname="terminal" name="editor_daily" time="52.60">
+</testcase>
+<testcase classname="terminal" name="suggestion_chip_keeps_output" time="0.00">
+<skipped message="not run in the PowerShell pane: #2138: the fixture is printed with `cat` and its command is confirmed from the bash prompt hook; the chip's layout does not depend on the pane's shell: runs in the Git "/>
+</testcase>
+<testcase classname="terminal" name="focus_cycle" time="19.40">
+</testcase>
+<testcase classname="terminal" name="gitbash_typeahead_reps" time="0.00">
+<skipped message="not run in the PowerShell pane: bash precmd_functions and rec.log of the pane's bash, the ConPTY prompt hold of a bash pane (#1393): runs in the Git Bash pane"/>
+</testcase>
+<testcase classname="terminal" name="minimize_fullscreen" time="0.00">
+<skipped message="not run on Windows: r14 T30: no window-state call (minimise, restore, fullscreen) in the Windows backend yet (r14-test-gaps T33 built the resize only)"/>
+</testcase>
+<testcase classname="terminal" name="desktop_notification" time="92.30">
+</testcase>
+<testcase classname="terminal" name="md_viewer" time="8.60">
+</testcase>
+<testcase classname="terminal" name="md_viewer_big" time="15.20">
+</testcase>
+<testcase classname="terminal" name="md_viewer_first_frame" time="6.70">
+</testcase>
+<testcase classname="terminal" name="zero_network_startup" time="0.00">
+<skipped message="not run in the PowerShell pane: the network trace does not depend on the pane's shell and one run is about 4 minutes: runs once, in the Git Bash pane (#2076 T41)"/>
+</testcase>
+<testcase classname="terminal" name="editor_memory_7mb" time="638.60">
+</testcase>
+<testcase classname="terminal" name="restore_shows_history" time="0.00">
+<skipped message="not run in the PowerShell pane: r14 T20: the token is printed by bash `printf '%s%s\n' A B` so the command text never holds it, and rec.log proves nothing re-ran: runs in the Git Bash pane"/>
+</testcase>
+<testcase classname="terminal" name="ui_vertical_tabs_many" time="0.00">
+<skipped message="not run in the PowerShell pane: T33 (#1990): every tab's `cd`, `echo` and `pwd -W` lines are bash and are checked against rec.log: runs in the Git Bash pane (the panel is switched on in the settings f"/>
+</testcase>
+<testcase classname="terminal" name="ui_vertical_tabs_panel_click" time="0.00">
+<skipped message="not run in the PowerShell pane: T31 (#1990): every tab's `cd`, `echo` and `pwd -W` lines are bash and are checked against rec.log: runs in the Git Bash pane (panel rows from the app's find hook, click"/>
+</testcase>
+<testcase classname="terminal" name="tab_pointer_use" time="0.00">
+<skipped message="not run on Windows: r14 T28: not ported in r15 wave 4 (r14-test-gaps T31 names five cases, this is not one): the pointer, the middle button and the live settings rewrite now exist; the shell-pid probe"/>
+</testcase>
+<testcase classname="terminal" name="network_gate_switch" time="0.00">
+<skipped message="not run in the PowerShell pane: the gate does not depend on the pane's shell (three relaunches): runs once, in the Git Bash pane (#2077)"/>
+</testcase>
+<testcase classname="terminal" name="tab_lifecycle_keys" time="51.70">
+</testcase>
+<testcase classname="terminal" name="keybinding_rebind" time="12.70">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: this pane has no prompt log and the app logged no hop=tab_activate line: nothing can count tabs, so no arm is judged"/>
+</testcase>
+<testcase classname="terminal" name="soak" time="655.80">
+</testcase>
+<testcase classname="terminal" name="output_frames" time="76.50">
+</testcase>
+<testcase classname="terminal" name="tabs_two_windows" time="107.80">
+<failure message="cleanup of tabs_two_windows: after 13 close key(s) the shell in front has pid None, expected the pass's own shell 10988 (a tab is still open: later cases would type into it)">cleanup of tabs_two_windows: after 13 close key(s) the shell in front has pid None, expected the pass's own shell 10988 (a tab is still open: later cases would type into it)
+injector accounting: injector sent 3253; app saw 3253; lost-before-app 0 (Enter: sent 44, app saw 44); of the app's: 3168 unbound keydown/typed, 44 taken by a key binding, 41 Enter by a binding
+pty writes: 303, of which carrying a CR (\r): 16; Enter(s) the input editor started: 41 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="terminal" name="upgrade_over_previous" time="67.20">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: the PREVIOUS release could not be brought up and driven on this pass's profile, so the build under test was not started on its data and the upgrade is N"/>
+</testcase>
+<testcase classname="terminal" name="history_survives_restart" time="88.10">
+</testcase>
+<testcase classname="terminal" name="tabs_streaming" time="112.50">
+<failure message="typing under 12 streaming tabs: 1/10 exact lines (9 got, 1 expected line(s) missing)">typing under 12 streaming tabs: 1/10 exact lines (9 got, 1 expected line(s) missing)
+injector accounting: injector sent 2644; app saw 2644; lost-before-app 0 (Enter: sent 37, app saw 37); of the app's: 2564 unbound keydown/typed, 43 taken by a key binding, 37 Enter by a binding
+pty writes: 158, of which carrying a CR (\r): 13; Enter(s) the input editor started: 37 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="terminal" name="cb_ui_action_latency" time="0.00">
+<skipped message="not run on Windows: needs Pillow screenshot diffs of new-tab/switch chords not mapped in the Windows backend"/>
+</testcase>
+<testcase classname="terminal" name="meta_and_word_keys" time="19.80">
+</testcase>
+<testcase classname="terminal@gitbash" name="mode_proof" time="2.80">
+<failure message="terminal mode expected but the screen shows agent markers ('New agent conversation' / 'ESC for terminal' / 'Ask anything')">terminal mode expected but the screen shows agent markers ('New agent conversation' / 'ESC for terminal' / 'Ask anything')
+the app log says terminal but the screen reads as agent (OCR); the log decides
+injector accounting: injector sent 1 keys (0 Enter); app key trace not available, so nothing to compare</failure>
+</testcase>
+<testcase classname="terminal@gitbash" name="key_delivery" time="0.00">
+</testcase>
+<testcase classname="terminal@gitbash" name="cadence" time="6.20">
+</testcase>
+<testcase classname="terminal@gitbash" name="mac_pointer_chord_proof" time="0.00">
+<skipped message="not run on Windows: r15 T32 (#2061): macOS only by design: it proves the Mac harness's own pointer tool (mptr) and app-only chords (appkey)"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="key_loss_control" time="33.40">
+</testcase>
+<testcase classname="terminal@gitbash" name="enter_loss_control" time="56.80">
+</testcase>
+<testcase classname="terminal@gitbash" name="fast_typing" time="48.10">
+</testcase>
+<testcase classname="terminal@gitbash" name="rollover" time="19.30">
+</testcase>
+<testcase classname="terminal@gitbash" name="expert_fuzz" time="15.30">
+</testcase>
+<testcase classname="terminal@gitbash" name="paste_instant_enter" time="5.50">
+</testcase>
+<testcase classname="terminal@gitbash" name="arrows_behind_paste" time="7.60">
+</testcase>
+<testcase classname="terminal@gitbash" name="keydown_count" time="24.00">
+</testcase>
+<testcase classname="terminal@gitbash" name="big_paste" time="239.70">
+<skipped message="NO-REFERENCE (not a pass): big_paste: time-to-Enter not measured (big.out never reached its full 1000001 bytes within the wait: the byte check below says why)"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="tab_enter" time="16.00">
+</testcase>
+<testcase classname="terminal@gitbash" name="ctrl_c_d" time="265.40">
+<skipped message="NO-REFERENCE (not a pass): #1570: the harness process ignores Ctrl-C (inherited from the runner's process group); the app inherits it and must clear it for its shells"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="read_x" time="3.40">
+</testcase>
+<testcase classname="terminal@gitbash" name="subshells" time="0.00">
+<skipped message="not run on Windows: uses `sh -c 'ps -o comm= -p $PPID'` to prove the subshell's parent; msys ps output differs. Not yet ported (gitbash_subshell and ctrl_c_d cover bash inside the pane)"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="subshell_sh_probe" time="0.00">
+<skipped message="not run on Windows: dash / busybox ash / su do not exist in a Windows pane; the sh probe path is POSIX (#1710)"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="alt_screen" time="1.20">
+</testcase>
+<testcase classname="terminal@gitbash" name="gitbash_subshell" time="0.70">
+<skipped message="the pane IS Git Bash in this pass; bash inside bash is covered by ctrl_c_d / subshells"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="alt_screen_programs" time="10.20">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: htop is not installed (package htop): that part of the alt-screen coverage did not run"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="subshell_ready_rc_questions" time="12.20">
+</testcase>
+<testcase classname="terminal@gitbash" name="subshell_ready_vim_typeahead" time="0.00">
+<skipped message="not run on Windows: bash --rcfile + vim on a real pty (#1679 step 3)"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="subshell_ready_unsupported_tcsh" time="0.00">
+<skipped message="not run on Windows: tcsh does not exist in a Windows pane (#1679 step 3)"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="subshell_ready_secret_after_prompt" time="0.00">
+<skipped message="not run on Windows: bash --rcfile + Phosphorize (ctrl+i) with a PROMPT_COMMAND read -s, on the subshell readiness judge, which has no OS facts on ConPTY (#1679 step 3, audit finding 5); the ConPTY pro"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="subshell_ready_secret_after_probe" time="0.00">
+<skipped message="not run on Windows: as subshell_ready_secret_after_prompt: a PROMPT_COMMAND read -s behind the sh probe needs the tty facts ConPTY does not have (#1905)"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="subshell_sh_probe_empty_ps1" time="0.00">
+<skipped message="not run on Windows: dash does not exist in a Windows pane; the sh probe path is POSIX (#1935)"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="subshell_ready_relay_shape" time="0.00">
+<skipped message="not run on Windows: sudo -s with use_pty does not exist on Windows (#1679 step 3); by design, no machine change makes it run here"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="subshell_ready_exec_fish_rc" time="0.00">
+<skipped message="not run on Windows: fish exec'd from a bash rc on a real pty (#1679 step 3)"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="subshell_ready_docker_t_without_i" time="0.00">
+<skipped message="not run on Windows: docker -t without -i against a Linux pty (#1679 step 3); by design, no machine change makes it run here"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="subshell_ready_zsh_newuser_install" time="0.00">
+<skipped message="not run on Windows: zsh-newuser-install needs zsh and a POSIX HOME (#1679 step 3)"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="subshell_ready_rc_clear" time="11.40">
+</testcase>
+<testcase classname="terminal@gitbash" name="subshell_line_editor_proof" time="0.00">
+<skipped message="not run on Windows: the line-editor write is recorded from the tty probe (termios + /proc), which a ConPTY pane does not have (#1991)"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="job_control" time="0.00">
+<skipped message="not run on Windows: #2072 (T7): Ctrl-Z / bg / fg are POSIX tty job control judged from `ps` process states; PowerShell has no job-control keys and an msys bash under ConPTY gets no SIGTSTP from the te"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="ssh_connect_typing" time="157.80">
+</testcase>
+<testcase classname="terminal@gitbash" name="ssh_enter_then_immediate_command" time="40.50">
+</testcase>
+<testcase classname="terminal@gitbash" name="ssh_nested_typeahead" time="17.00">
+</testcase>
+<testcase classname="terminal@gitbash" name="ssh_connect_typing_wrapper" time="93.90">
+<failure message="ssh_connect_typing (gap 0.0 s): T244_5hxqt8 never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log). Test host: sshd.log:  pty | 08:25:44 exec pty arm app (a pseudo console of the app's own conpty.dll) | 08:25:44 conpty exec pid 10496 | 08:25:44 conpty first output after 0.01 s: 4 bytes (starts 1b5b3174) | 08:25:44 console host start-up request 1b5b3174 dropped by the test sshd, not sent to the client | 08:25:44 console host start-up request 1b5b63 answered by the test sshd, not sent to the client | 08:25:44 console host start-up request 1b5b3f3130303468 dropped by the test sshd, not sent to the client | 08:25:44 console host start-up request 1b5b3f3930303168 dropped by the test sshd, not sent to the client; fakesshd.stderr: (empty); test sshd (fakesshd-win) listening on 127.0.0.1:63132; exec+pty of the test sshd is served by a pseudo console of the app's own conpty.dll, measured byte-exact both ways. Measured: app: out ok, in ok (a 610-byte OSC arrived whole; a counted raw read of 3827 bytes got exactly what was sent) | inbox: out BROKEN, in ok (a 610-byte OSC did NOT arrive whole: the longest piece of its 600 payload characters is 80 (205 bytes seen); a counted raw read of 3827 bytes got exactly what was sent); no msys pty host: Git for Windows has no usr\bin\sshd.exe next to its bash (C:\Program Files\Git\usr\bin); app ssh hops: [DEBUG] input_order hop=kh_hold_entry seq=8117 holding=false held_bytes=0 gate_armed=true pending_session=false table=1 t=1794500771450.822 | [DEBUG] input_order hop=kh_hold_exit seq=8117 branch=held held_bytes=0 table=1 t=1794500771450.833 | [DEBUG] input_order hop=kh_hold_entry seq=8118 holding=false held_bytes=0 gate_armed=true pending_session=false table=1 t=1794500771469.342 | [DEBUG] input_order hop=kh_hold_exit seq=8118 branch=held held_bytes=0 table=1 t=1794500771469.358 | [DEBUG] input_order hop=kh_hold_entry seq=8119 holding=false held_bytes=0 gate_armed=true pending_session=false table=1 t=1794500771483.006 | [DEBUG] input_order hop=kh_hold_exit seq=8119 branch=held held_bytes=0 table=1 t=1794500771483.023 | [DEBUG] input_order hop=kh_hold_entry seq=8120 holding=false held_bytes=0 gate_armed=true pending_session=false table=1 t=1794500771499.424 | [DEBUG] input_order hop=kh_hold_exit seq=8120 branch=held held_bytes=0 table=1 t=1794500771499.441 | [DEBUG] input_order hop=handoff_commit_source ssh_gate_armed=false ssh_holding=false remote_prompt_seen=false t=1794500771640.300 | [DEBUG] input_order hop=handoff_commit_at_prompt committed=false still_pty_owned=true t=1794500771640.314; PROBE: Git Bash pane: C:\Program Files\Git\usr\bin\ssh.exe cannot start a ControlMaster (exit 255: mux_client_request_session: read from master failed: Connection reset by peer Failed to connect to new control master). Background only: since #1551 / #1933 the app's bash ssh wrapper never multiplexes under msys (one connection with LocalCommand, or plain ssh), so this does NOT explain a failing case">ssh_connect_typing (gap 0.0 s): T244_5hxqt8 never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log). Test host: sshd.log:  pty | 08:25:44 exec pty arm app (a pseudo console of the app's own conpty.dll) | 08:25:44 conpty exec pid 10496 | 08:25:44 conpty first output after 0.01 s: 4 bytes (starts 1b5b3174) | 08:25:44 console host start-up request 1b5b3174 dropped by the test sshd, not sent to the client | 08:25:44 console host start-up request 1b5b63 answered by the test sshd, not sent to the client | 08:25:44 console host start-up request 1b5b3f3130303468 dropped by the test sshd, not sent to the client | 08:25:44 console host start-up request 1b5b3f3930303168 dropped by the test sshd, not sent to the client; fakesshd.stderr: (empty); test sshd (fakesshd-win) listening on 127.0.0.1:63132; exec+pty of the test sshd is served by a pseudo console of the app's own conpty.dll, measured byte-exact both ways. Measured: app: out ok, in ok (a 610-byte OSC arrived whole; a counted raw read of 3827 bytes got exactly what was sent) | inbox: out BROKEN, in ok (a 610-byte OSC did NOT arrive whole: the longest piece of its 600 payload characters is 80 (205 bytes seen); a counted raw read of 3827 bytes got exactly what was sent); no msys pty host: Git for Windows has no usr\bin\sshd.exe next to its bash (C:\Program Files\Git\usr\bin); app ssh hops: [DEBUG] input_order hop=kh_hold_entry seq=8117 holding=false held_bytes=0 gate_armed=true pending_session=false table=1 t=1794500771450.822 | [DEBUG] input_order hop=kh_hold_exit seq=8117 branch=held held_bytes=0 table=1 t=1794500771450.833 | [DEBUG] input_order hop=kh_hold_entry seq=8118 holding=false held_bytes=0 gate_armed=true pending_session=false table=1 t=1794500771469.342 | [DEBUG] input_order hop=kh_hold_exit seq=8118 branch=held held_bytes=0 table=1 t=1794500771469.358 | [DEBUG] input_order hop=kh_hold_entry seq=8119 holding=false held_bytes=0 gate_armed=true pending_session=false table=1 t=1794500771483.006 | [DEBUG] input_order hop=kh_hold_exit seq=8119 branch=held held_bytes=0 table=1 t=1794500771483.023 | [DEBUG] input_order hop=kh_hold_entry seq=8120 holding=false held_bytes=0 gate_armed=true pending_session=false table=1 t=1794500771499.424 | [DEBUG] input_order hop=kh_hold_exit seq=8120 branch=held held_bytes=0 table=1 t=1794500771499.441 | [DEBUG] input_order hop=handoff_commit_source ssh_gate_armed=false ssh_holding=false remote_prompt_seen=false t=1794500771640.300 | [DEBUG] input_order hop=handoff_commit_at_prompt committed=false still_pty_owned=true t=1794500771640.314; PROBE: Git Bash pane: C:\Program Files\Git\usr\bin\ssh.exe cannot start a ControlMaster (exit 255: mux_client_request_session: read from master failed: Connection reset by peer Failed to connect to new control master). Background only: since #1551 / #1933 the app's bash ssh wrapper never multiplexes under msys (one connection with LocalCommand, or plain ssh), so this does NOT explain a failing case
+remote shell received 1/2 typed-ahead commands exactly (missing 1)
+remote rec.log lacks the exact typed command for some trials
+ssh_connect_typing gap 0.0 s trial 2: #1292: no ssh hold was seen and the remote shell logged nothing for the line; held 0 key(s)/0 byte(s), hand-over none, finish none; the app saw every key of the line; remote got None
+ssh_connect_typing loss: 1 of 2 typed-ahead commands lost (observed 50.0 %); 95 % upper confidence bound 97.5 %; this n cannot exclude a 1/40 (2.5 %) rate: needs 119 clean trials
+ssh trial verdicts: #1292=1, exact=1
+injector accounting: injector sent 529; app saw 529; lost-before-app 0 (Enter: sent 16, app saw 16); of the app's: 507 unbound keydown/typed, 9 taken by a key binding, 13 Enter by a binding
+pty writes: 152, of which carrying a CR (\r): 4; Enter(s) the input editor started: 13 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="terminal@gitbash" name="pane_switch_left_on_after_ssh_connect_typing_wrapper" time="0.00">
+<failure message="after ssh_connect_typing_wrapper: the `unset PHOSPHOR_MSYS_MANAGED_SSH` after the case is not proven in the pane's local shell: the proof line ran in the REMOTE shell and answered ['off']; the app is relaunched so later cases start with the default">after ssh_connect_typing_wrapper: the `unset PHOSPHOR_MSYS_MANAGED_SSH` after the case is not proven in the pane's local shell: the proof line ran in the REMOTE shell and answered ['off']; the app is relaunched so later cases start with the default</failure>
+</testcase>
+<testcase classname="terminal@gitbash" name="key_delivery" time="0.00">
+</testcase>
+<testcase classname="terminal@gitbash" name="ssh_nested_typeahead_wrapper" time="97.00">
+</testcase>
+<testcase classname="terminal@gitbash" name="pane_not_local_after_ssh_nested_typeahead_wrapper" time="0.00">
+<failure message="after ssh_nested_typeahead_wrapper the pane could not be proven back in the local shell (remote); the app is relaunched so later cases start clean">after ssh_nested_typeahead_wrapper the pane could not be proven back in the local shell (remote); the app is relaunched so later cases start clean</failure>
+</testcase>
+<testcase classname="terminal@gitbash" name="key_delivery" time="0.00">
+</testcase>
+<testcase classname="terminal@gitbash" name="ssh_failing_not_local" time="15.00">
+</testcase>
+<testcase classname="terminal@gitbash" name="idle_cpu" time="24.00">
+</testcase>
+<testcase classname="terminal@gitbash" name="latency_enter" time="183.00">
+<skipped message="NO-REFERENCE (not a pass): G1: Git Bash fork+exec costs 44.0 ms per process on this host (outside the app); every forking shell hook adds about that"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="latency_key_log" time="22.80">
+<failure message="REGRESSION key to frame: median 3.96 vs baseline build +0.56 ms (+16.5%); re-measured once: median 4.02 (fail)">REGRESSION key to frame: median 3.96 vs baseline build +0.56 ms (+16.5%); re-measured once: median 4.02 (fail)
+#1176 key -&gt; pty write median 0.76 ms (p95 0.89, n=60): within the 1 ms target
+#1995 notifies logged before 11 of 78 key frame build(s): Input:new_10 x20, Input:handle_completion_suggestions_results_3 x11, Input:clear_selected_workflow x1, Input:notify_and_notify_children x1 (+4 more)
+#1958 platform samples while typing 63 key(s): 0 (median 0 us, max 0 us, 0 at or over 1 ms); foreground-group lookups by path: none logged
+key to frame: no reference terminal exists for this measurement, so the overhead budget was not judged; JUDGED on the app's own share (key_to_pty_write): 0.76 ms against its 1.0 ms budget (n=60): PASS
+key to frame: Phosphor-side keydown to first frame; no same-method reference exists
+UI work: 2 frame item(s) &gt;= 4 ms while typing (max 4.9 ms); frame items include rasterisation, so this is a WARN on software GL
+injector accounting: injector sent 166; app saw 166; lost-before-app 0 (Enter: sent 2, app saw 2); of the app's: 156 unbound keydown/typed, 8 taken by a key binding, 2 Enter by a binding
+pty writes: 130, of which carrying a CR (\r): 0; Enter(s) the input editor started: 2 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="terminal@gitbash" name="latency_paint" time="0.60">
+<skipped message="kl3 (ScreenCaptureKit) is macOS only; no key-&gt;paint read-back exists on this platform, so there is nothing to compare"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="latency_first_key_after_idle" time="385.30">
+<failure message="REGRESSION First key after 2 s idle: median 4.2 vs baseline build +0.59 ms (+16.3%); re-measured once: median 4.26 (fail)">REGRESSION First key after 2 s idle: median 4.2 vs baseline build +0.59 ms (+16.3%); re-measured once: median 4.26 (fail)
+First key after 1 s idle: key -&gt; first frame from the app's input_order log (Phosphor-side); the control is the following non-idle key, so the figure is the idle penalty, not an overhead vs another terminal
+First key after 2 s idle: key -&gt; first frame from the app's input_order log (Phosphor-side); the control is the following non-idle key, so the figure is the idle penalty, not an overhead vs another terminal
+First key after 5 s idle: key -&gt; first frame from the app's input_order log (Phosphor-side); the control is the following non-idle key, so the figure is the idle penalty, not an overhead vs another terminal
+injector accounting: injector sent 338; app saw 338; lost-before-app 0 (Enter: sent 4, app saw 4); of the app's: 324 unbound keydown/typed, 10 taken by a key binding, 4 Enter by a binding
+pty writes: 272, of which carrying a CR (\r): 0; Enter(s) the input editor started: 4 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="terminal@gitbash" name="routing_table" time="57.90">
+</testcase>
+<testcase classname="terminal@gitbash" name="routing_table_powershell" time="0.00">
+<skipped message="not run in the Git Bash pane: #2072: the routing table judged from PSReadLine's history file; the Git Bash pane has routing_table (rec.log)"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="remote_session_legacy" time="36.00">
+<skipped message="NO-REFERENCE (not a pass): mode guard: the pane was in agent before this terminal case; put back with escape"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="intl_wide_type" time="5.90">
+</testcase>
+<testcase classname="terminal@gitbash" name="remote_session_ext" time="55.30">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: [ext] clean-env subshell step NOT RUN on Windows: `env -i` under msys ends the fake sshd session (harness limitation, H6); the bash/sh subshell steps ran"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="remote_tab_no_helper" time="113.50">
+<failure message="after the completed cd the remote cwd should be .../phxtab_t325_c8ebxp, got []">after the completed cd the remote cwd should be .../phxtab_t325_c8ebxp, got []
+the app log has no 'candidates from the remote shell' line: Tab did not take the in-band path (#1801)
+not provably remote (probe ran in: none), `exit` NOT typed
+path highlighting of a typed remote directory is not observable from the harness; not judged here (#1801 follow-up: prompt-hook cwd listing)
+injector accounting: injector sent 706; app saw 706; lost-before-app 0 (Enter: sent 22, app saw 22); of the app's: 671 unbound keydown/typed, 13 taken by a key binding, 22 Enter by a binding
+pty writes: 44, of which carrying a CR (\r): 0; Enter(s) the input editor started: 22 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="terminal@gitbash" name="pane_not_local_after_remote_tab_no_helper" time="0.00">
+<failure message="after remote_tab_no_helper the pane could not be proven back in the local shell (remote); the app is relaunched so later cases start clean">after remote_tab_no_helper the pane could not be proven back in the local shell (remote); the app is relaunched so later cases start clean</failure>
+</testcase>
+<testcase classname="terminal@gitbash" name="key_delivery" time="0.00">
+</testcase>
+<testcase classname="terminal@gitbash" name="remote_tab_enter_no_helper" time="100.00">
+<failure message="Tab + Enter 30 ms later: the remote shell received ['cd ~cd phxte_t348_f'], want the COMPLETED 'cd phxte_t348_faeblr/' (the uncompleted 'cd phxte_t348_f' must never run)">Tab + Enter 30 ms later: the remote shell received ['cd ~cd phxte_t348_f'], want the COMPLETED 'cd phxte_t348_faeblr/' (the uncompleted 'cd phxte_t348_f' must never run)
+Tab + Enter 30 ms later: the remote shell received ['cd ~cd phxte_t349_m'], want the COMPLETED 'cd phxte_t349_m3z86r/' (the uncompleted 'cd phxte_t349_m' must never run)
+not provably remote (probe ran in: none), `exit` NOT typed
+injector accounting: injector sent 690; app saw 690; lost-before-app 0 (Enter: sent 25, app saw 25); of the app's: 652 unbound keydown/typed, 13 taken by a key binding, 25 Enter by a binding
+pty writes: 50, of which carrying a CR (\r): 0; Enter(s) the input editor started: 25 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="terminal@gitbash" name="pane_not_local_after_remote_tab_enter_no_helper" time="0.00">
+<failure message="after remote_tab_enter_no_helper the pane could not be proven back in the local shell (none); the app is relaunched so later cases start clean">after remote_tab_enter_no_helper the pane could not be proven back in the local shell (none); the app is relaunched so later cases start clean</failure>
+</testcase>
+<testcase classname="terminal@gitbash" name="key_delivery" time="0.00">
+</testcase>
+<testcase classname="terminal@gitbash" name="intl_wide_paste" time="5.90">
+</testcase>
+<testcase classname="terminal@gitbash" name="flood_scrollback_find" time="0.00">
+<skipped message="not run on Windows: needs the Linux find flow and POSIX floods (the OCR half exists since r23: winocr)"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="remote_heredoc_paste" time="622.40">
+<skipped message="NO-REFERENCE (not a pass): bash: 2000-line here-doc (142166 bytes): the remote shell was still busy with the payload after the timeout; the harness ended it (taskkill /T /F of the remote shell (Windows pid 8"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="intl_wide_edit" time="5.20">
+</testcase>
+<testcase classname="terminal@gitbash" name="ssh_gitbash_managed" time="102.80">
+<failure message="not provably remote (probe ran in: None), `exit` NOT typed">not provably remote (probe ran in: None), `exit` NOT typed
+injector accounting: injector sent 646; app saw 646; lost-before-app 0 (Enter: sent 21, app saw 21); of the app's: 615 unbound keydown/typed, 10 taken by a key binding, 21 Enter by a binding
+pty writes: 42, of which carrying a CR (\r): 0; Enter(s) the input editor started: 21 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="terminal@gitbash" name="pane_not_local_after_ssh_gitbash_managed" time="0.00">
+<failure message="after ssh_gitbash_managed the pane could not be proven back in the local shell (none); the app is relaunched so later cases start clean">after ssh_gitbash_managed the pane could not be proven back in the local shell (none); the app is relaunched so later cases start clean</failure>
+</testcase>
+<testcase classname="terminal@gitbash" name="key_delivery" time="0.00">
+</testcase>
+<testcase classname="terminal@gitbash" name="ssh_gitbash_failing_not_local_managed" time="23.20">
+</testcase>
+<testcase classname="terminal@gitbash" name="ssh_gitbash_bootstrap_in_command" time="102.20">
+<failure message="not provably remote (probe ran in: None), `exit` NOT typed">not provably remote (probe ran in: None), `exit` NOT typed
+the test sshd logged no client-input count for this session (only the Windows fake sshd does)
+injector accounting: injector sent 646; app saw 646; lost-before-app 0 (Enter: sent 21, app saw 21); of the app's: 615 unbound keydown/typed, 10 taken by a key binding, 21 Enter by a binding
+pty writes: 41, of which carrying a CR (\r): 0; Enter(s) the input editor started: 21 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="terminal@gitbash" name="pane_not_local_after_ssh_gitbash_bootstrap_in_command" time="0.00">
+<failure message="after ssh_gitbash_bootstrap_in_command the pane could not be proven back in the local shell (none); the app is relaunched so later cases start clean">after ssh_gitbash_bootstrap_in_command the pane could not be proven back in the local shell (none); the app is relaunched so later cases start clean</failure>
+</testcase>
+<testcase classname="terminal@gitbash" name="key_delivery" time="0.00">
+</testcase>
+<testcase classname="terminal@gitbash" name="ssh_gitbash_typeahead_managed" time="234.60">
+<failure message="trial 1: `exit` did not bring the local prompt back">trial 1: `exit` did not bring the local prompt back
+trial 2: the line typed during the connect never reached the remote shell. Test host: sshd.log:  pty | 09:07:01 exec pty arm app (a pseudo console of the app's own conpty.dll) | 09:07:01 conpty exec pid 11940 | 09:07:01 conpty first output after 0.01 s: 4 bytes (starts 1b5b3174) | 09:07:01 console host start-up request 1b5b3174 dropped by the test sshd, not sent to the client | 09:07:01 console host start-up request 1b5b63 answered by the test sshd, not sent to the client | 09:07:01 console host start-up request 1b5b3f3130303468 dropped by the test sshd, not sent to the client | 09:07:01 console host start-up request 1b5b3f3930303168 dropped by the test sshd, not sent to the client; fakesshd.stderr: (empty); test sshd (fakesshd-win) listening on 127.0.0.1:63132; exec+pty of the test sshd is served by a pseudo console of the app's own conpty.dll, measured byte-exact both ways. Measured: app: out ok, in ok (a 610-byte OSC arrived whole; a counted raw read of 3827 bytes got exactly what was sent) | inbox: out BROKEN, in ok (a 610-byte OSC did NOT arrive whole: the longest piece of its 600 payload characters is 80 (205 bytes seen); a counted raw read of 3827 bytes got exactly what was sent); no msys pty host: Git for Windows has no usr\bin\sshd.exe next to its bash (C:\Program Files\Git\usr\bin); app ssh hops: [DEBUG] input_order hop=handoff_commit_source ssh_gate_armed=false ssh_holding=false remote_prompt_seen=false t=1794503228639.018 | [DEBUG] input_order hop=handoff_commit_at_prompt committed=false still_pty_owned=true t=1794503228639.032 | [DEBUG] input_order hop=handoff_commit_source ssh_gate_armed=false ssh_holding=false remote_prompt_seen=false t=1794503228847.646 | [DEBUG] input_order hop=handoff_commit_at_prompt committed=false still_pty_owned=true t=1794503228847.657 | [DEBUG] input_order hop=handoff_commit_source ssh_gate_armed=false ssh_holding=false remote_prompt_seen=false t=1794503229070.454 | [DEBUG] input_order hop=handoff_commit_at_prompt committed=false still_pty_owned=false t=1794503229070.465 | [DEBUG] input_order hop=handoff_commit_source ssh_gate_armed=false ssh_holding=false remote_prompt_seen=false t=1794503244260.302 | [DEBUG] input_order hop=handoff_commit_at_prompt committed=false still_pty_owned=false t=1794503244260.323 | [DEBUG] input_order hop=handoff_commit_source ssh_gate_armed=false ssh_holding=false remote_prompt_seen=false t=1794503244904.742 | [DEBUG] input_order hop=handoff_commit_at_prompt committed=false still_pty_owned=false t=1794503244904.768; PROBE: Git Bash pane: C:\Program Files\Git\usr\bin\ssh.exe cannot start a ControlMaster (exit 255: mux_client_request_session: read from master failed: Connection reset by peer Failed to connect to new control master). Background only: since #1551 / #1933 the app's bash ssh wrapper never multiplexes under msys (one connection with LocalCommand, or plain ssh), so this does NOT explain a failing case
+trial 2: the remote shell received [], want exactly ['echo T424_yok85k']
+trial 2: one-connection stages in the app log: [], want auth, auth_done, managed (a final `plain` is the old #1959 behaviour)
+trial 2: the wrapper's verdict was managed=true
+trial 2: `exit` did not bring the local prompt back
+trial 3: one-connection stages in the app log: [], want auth, auth_done, managed (a final `plain` is the old #1959 behaviour)
+trial 3: the wrapper's verdict was managed=true
+trial 3: `exit` did not bring the local prompt back
+typed-during-connect: in 1 of 3 trials keys were in the console before the session and were held at the front (typeahead_front adopted=true); in the others every key was typed after auth_done or consumed by the login
+injector accounting: injector sent 900; app saw 900; lost-before-app 0 (Enter: sent 32, app saw 32); of the app's: 857 unbound keydown/typed, 12 taken by a key binding, 31 Enter by a binding
+pty writes: 66, of which carrying a CR (\r): 2; Enter(s) the input editor started: 31 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="terminal@gitbash" name="pane_not_local_after_ssh_gitbash_typeahead_managed" time="0.00">
+<failure message="after ssh_gitbash_typeahead_managed the pane could not be proven back in the local shell (remote); the app is relaunched so later cases start clean">after ssh_gitbash_typeahead_managed the pane could not be proven back in the local shell (remote); the app is relaunched so later cases start clean</failure>
+</testcase>
+<testcase classname="terminal@gitbash" name="key_delivery" time="0.00">
+</testcase>
+<testcase classname="terminal@gitbash" name="ssh_gitbash_kill_switch" time="16.60">
+</testcase>
+<testcase classname="terminal@gitbash" name="ui_palette" time="30.20">
+</testcase>
+<testcase classname="terminal@gitbash" name="intl_wide_program" time="19.10">
+</testcase>
+<testcase classname="terminal@gitbash" name="hostile_output_recovers" time="48.90">
+</testcase>
+<testcase classname="terminal@gitbash" name="ui_completions_as_you_type_local" time="4.80">
+<failure message="no completion menu with both candidates after typing a shared prefix without Tab">no completion menu with both candidates after typing a shared prefix without Tab
+fixture dir C:\gl\b\07xLPX_fG\0\winters-phosphor\phosphor\appci-out\windows\run\home/w\tc exists=True files=['cayt_alpha.txt', 'cayt_bravo.txt', 'zzcompl_alpha_unique.txt']; menu hops: ['from=[closed] to=[completions trigger=AsYouType candidates=240] t=1794503663496.539', 'from=[completions trigger=AsYouType candidates=240] to=[completions trigger=AsYouType cand', 'from=[completions trigger=AsYouType candidates=41] to=[closed] t=1794503663535.192']
+injector accounting: injector sent 16; app saw 16; lost-before-app 0 (Enter: sent 0, app saw 0); of the app's: 11 unbound keydown/typed, 5 taken by a key binding, 0 Enter by a binding</failure>
+</testcase>
+<testcase classname="terminal@gitbash" name="latency_enter_ssh" time="69.80">
+<skipped message="NO-REFERENCE (not a pass): measurement mode: sequential (this backend cannot keep both windows, or interleaving is disabled (APPCI_LAT_INTERLEAVE=0))"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="intl_compose_linux" time="0.00">
+<skipped message="not run on Windows: Linux xkb compose / dead keys (Windows has intl_altgr_ps / intl_altgr_bash)"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="history_up_recall" time="8.10">
+</testcase>
+<testcase classname="terminal@gitbash" name="intl_ime_japanese" time="0.00">
+<skipped message="not run on Windows: macOS input methods (TISSelectInputSource). NEEDS: a Windows IME arm in the harness (not built; r14-test-gaps T39)"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="intl_ime_pinyin" time="0.00">
+<skipped message="not run on Windows: macOS input methods (TISSelectInputSource). NEEDS: a Windows IME arm in the harness (not built; r14-test-gaps T39)"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="ssh_drop_reconnect" time="0.00">
+<skipped message="not run on Windows: not yet ported: the `~.` escape and `kill -9 $$` need verifying against the msys/Win32 ssh clients (#1535)"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="scroll_keys_position" time="35.90">
+</testcase>
+<testcase classname="terminal@gitbash" name="ime_compose" time="1.30">
+<skipped message="Windows: NEEDS: the language Chinese (Simplified, China) with the Microsoft Pinyin keyboard added for the runner user on the Windows VM (Settings &gt; Time &amp; Language &gt; Language &gt; Add a language). Owner:"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="intl_deadkey_option" time="0.00">
+<skipped message="not run on Windows: macOS Option dead keys"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="scroll_keys_foreground" time="21.70">
+</testcase>
+<testcase classname="terminal@gitbash" name="intl_altgr_ps" time="0.80">
+<skipped message="PowerShell variant: runs in the PowerShell pane pass (intl_altgr_bash covers the Git Bash pane)"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="intl_altgr_bash" time="4.70">
+</testcase>
+<testcase classname="terminal@gitbash" name="ui_mouse_select_copy" time="9.20">
+</testcase>
+<testcase classname="terminal@gitbash" name="ui_copy_wrapped_output" time="10.10">
+</testcase>
+<testcase classname="terminal@gitbash" name="ui_copy_wrapped_drag" time="9.70">
+</testcase>
+<testcase classname="terminal@gitbash" name="ui_right_click_paste" time="0.00">
+<skipped message="not run on Windows: not ported: it falls back to OCR for the menu entry and has never passed anywhere (r14-test-gaps F13); on Windows the same path is context_menu_actions (the input's Paste entry, pl"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="selection_modes" time="24.30">
+</testcase>
+<testcase classname="terminal@gitbash" name="primary_and_middle_click" time="0.00">
+<skipped message="not run on Windows: T23: the PRIMARY selection is an X11 / Wayland concept; Windows has one clipboard"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="ui_drag_drop_file" time="0.00">
+<skipped message="not run on Windows: no way to synthesize a drag source on Windows from the harness. NEEDS: a harness capability that is not built (an OLE drag source; r14-test-gaps T38)"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="startup_shell_pane" time="0.90">
+<skipped message="runs in the pane-shell passes only (terminal@pwsh7, terminal@cmd, terminal@wsl: APPCI_WIN_SHELLS of the app-test-windows job names them; a pass whose shell is not installed is one startup_shell_pass S"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="link_and_path_click" time="0.00">
+<skipped message="not run on Windows: T21: not ported: the recording opener is a POSIX xdg-open on the app's PATH and the network trace is strace (the pointer itself exists since r15 wave 4)"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="wheel_scroll" time="0.00">
+<skipped message="not run on Windows: T24: not ported: bytes_reader.py needs termios (the wheel event exists since r15 wave 4: winapi.mouse_wheel_event; the OCR read exists since r23: winocr, Windows.Media.Ocr)"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="resize_reflow_output" time="3.10">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: the resize case was not run: NEEDS: a desktop of at least 1300x800 px on the Windows VM (it is 1280x800): the window sizes this case cycles through are "/>
+</testcase>
+<testcase classname="terminal@gitbash" name="editor_daily" time="51.80">
+</testcase>
+<testcase classname="terminal@gitbash" name="suggestion_chip_keeps_output" time="14.20">
+</testcase>
+<testcase classname="terminal@gitbash" name="focus_cycle" time="19.10">
+</testcase>
+<testcase classname="terminal@gitbash" name="gitbash_typeahead_reps" time="177.30">
+</testcase>
+<testcase classname="terminal@gitbash" name="minimize_fullscreen" time="0.00">
+<skipped message="not run on Windows: r14 T30: no window-state call (minimise, restore, fullscreen) in the Windows backend yet (r14-test-gaps T33 built the resize only)"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="desktop_notification" time="65.60">
+</testcase>
+<testcase classname="terminal@gitbash" name="md_viewer" time="8.90">
+</testcase>
+<testcase classname="terminal@gitbash" name="md_viewer_big" time="15.70">
+</testcase>
+<testcase classname="terminal@gitbash" name="md_viewer_first_frame" time="6.70">
+</testcase>
+<testcase classname="terminal@gitbash" name="zero_network_startup" time="157.00">
+</testcase>
+<testcase classname="terminal@gitbash" name="editor_memory_7mb" time="485.60">
+</testcase>
+<testcase classname="terminal@gitbash" name="restore_shows_history" time="74.70">
+</testcase>
+<testcase classname="terminal@gitbash" name="ui_vertical_tabs_many" time="112.50">
+</testcase>
+<testcase classname="terminal@gitbash" name="ui_vertical_tabs_panel_click" time="47.40">
+</testcase>
+<testcase classname="terminal@gitbash" name="tab_pointer_use" time="0.00">
+<skipped message="not run on Windows: r14 T28: not ported in r15 wave 4 (r14-test-gaps T31 names five cases, this is not one): the pointer, the middle button and the live settings rewrite now exist; the shell-pid probe"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="network_gate_switch" time="67.60">
+<skipped message="NO-REFERENCE (not a pass): Escape left the settings page open (the shell did not take the probe line); closed it with key ctrl+shift+w"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="tab_lifecycle_keys" time="48.50">
+</testcase>
+<testcase classname="terminal@gitbash" name="keybinding_rebind" time="89.20">
+</testcase>
+<testcase classname="terminal@gitbash" name="soak" time="655.70">
+</testcase>
+<testcase classname="terminal@gitbash" name="output_frames" time="68.70">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: hidden streaming tabs: only 9 wakeups of hidden views in 6 s with 4 tabs meant to stream: the hidden streams were not running"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="tabs_two_windows" time="118.00">
+<failure message="typing/paste in window 2 under 12 streaming tabs: 1/16 exact lines (1 got, 15 expected line(s) missing)">typing/paste in window 2 under 12 streaming tabs: 1/16 exact lines (1 got, 15 expected line(s) missing)
+cleanup of tabs_two_windows: after 13 close key(s) the shell in front has pid None, expected the pass's own shell 1081 (a tab is still open: later cases would type into it)
+injector accounting: injector sent 3011; app saw 3011; lost-before-app 0 (Enter: sent 43, app saw 43); of the app's: 2938 unbound keydown/typed, 44 taken by a key binding, 29 Enter by a binding
+pty writes: 729, of which carrying a CR (\r): 27; Enter(s) the input editor started: 29 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="terminal@gitbash" name="upgrade_over_previous" time="104.00">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: the PREVIOUS release could not be brought up and driven on this pass's profile, so the build under test was not started on its data and the upgrade is N"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="history_survives_restart" time="58.60">
+</testcase>
+<testcase classname="terminal@gitbash" name="tabs_streaming" time="109.10">
+<failure message="typing under 12 streaming tabs: 2/10 exact lines (9 got, 1 expected line(s) missing)">typing under 12 streaming tabs: 2/10 exact lines (9 got, 1 expected line(s) missing)
+injector accounting: injector sent 2524; app saw 2524; lost-before-app 0 (Enter: sent 37, app saw 37); of the app's: 2445 unbound keydown/typed, 43 taken by a key binding, 36 Enter by a binding
+pty writes: 169, of which carrying a CR (\r): 14; Enter(s) the input editor started: 36 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="terminal@gitbash" name="cb_ui_action_latency" time="0.00">
+<skipped message="not run on Windows: needs Pillow screenshot diffs of new-tab/switch chords not mapped in the Windows backend"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="meta_and_word_keys" time="29.80">
+</testcase>
+<testcase classname="terminal@pwsh7" name="mode_proof" time="3.30">
+<failure message="terminal mode expected but the screen shows agent markers ('New agent conversation' / 'ESC for terminal' / 'Ask anything')">terminal mode expected but the screen shows agent markers ('New agent conversation' / 'ESC for terminal' / 'Ask anything')
+the app log says terminal but the screen reads as agent (OCR); the log decides
+injector accounting: injector sent 1 keys (0 Enter); app key trace not available, so nothing to compare</failure>
+</testcase>
+<testcase classname="terminal@pwsh7" name="key_delivery" time="0.00">
+</testcase>
+<testcase classname="terminal@pwsh7" name="fast_typing" time="52.60">
+</testcase>
+<testcase classname="terminal@pwsh7" name="paste_instant_enter" time="5.50">
+</testcase>
+<testcase classname="terminal@pwsh7" name="tab_enter" time="22.10">
+</testcase>
+<testcase classname="terminal@pwsh7" name="ctrl_c_d" time="330.70">
+</testcase>
+<testcase classname="terminal@pwsh7" name="routing_table_powershell" time="73.30">
+</testcase>
+<testcase classname="terminal@pwsh7" name="history_up_recall" time="17.60">
+<failure message="hu.txt holds ['t86_xy7ug0wi', 't87_ect8u0tu', 't88_wru76a7h', 't87_ect8u0tu', 't87_ect8u0tu9z'], expected ['t86_xy7ug0wi', 't87_ect8u0tu', 't88_wru76a7h', 't87_ect8u0tu', 't87_ect8ue9z', 't89_juuue2r4'] (first difference at line 5)">hu.txt holds ['t86_xy7ug0wi', 't87_ect8u0tu', 't88_wru76a7h', 't87_ect8u0tu', 't87_ect8u0tu9z'], expected ['t86_xy7ug0wi', 't87_ect8u0tu', 't88_wru76a7h', 't87_ect8u0tu', 't87_ect8ue9z', 't89_juuue2r4'] (first difference at line 5)
+the shell did not receive exactly the six lines: line 5, Up, edit, Enter (the edited second command): expected 'Add-Content hu.txt t87_ect8ue9z', the shell received 'Add-Content hu.txt t87_ect8u0tu9z'
+mode guard: the pane was in agent before this terminal case; put back with escape
+the pane's history holds 22153 lines, more than the 5000 the app lists inline: the Up-arrow list was built in the background in this run (#2107: keys typed before it arrives are applied first)
+injector accounting: injector sent 147; app saw 147; lost-before-app 0 (Enter: sent 6, app saw 6); of the app's: 127 unbound keydown/typed, 14 taken by a key binding, 6 Enter by a binding
+pty writes: 12, of which carrying a CR (\r): 0; Enter(s) the input editor started: 7 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="terminal@pwsh7" name="startup_shell_pane" time="23.30">
+</testcase>
+<testcase classname="terminal@wsl" name="startup_shell_pass" time="0.00">
+<skipped message="a WSL distribution is not installed on this machine: the wsl pass cannot run (the harness installs nothing). NEEDS: the Windows Subsystem for Linux with one distribution installed and started once for"/>
+</testcase>
+<testcase classname="agent" name="mode_proof" time="2.30">
+</testcase>
+<testcase classname="agent" name="key_delivery" time="0.00">
+</testcase>
+<testcase classname="agent" name="cadence" time="6.10">
+</testcase>
+<testcase classname="agent" name="mac_pointer_chord_proof" time="0.00">
+<skipped message="not run on Windows: r15 T32 (#2061): macOS only by design: it proves the Mac harness's own pointer tool (mptr) and app-only chords (appkey)"/>
+</testcase>
+<testcase classname="agent" name="fast_typing" time="52.60">
+</testcase>
+<testcase classname="agent" name="rollover" time="19.90">
+</testcase>
+<testcase classname="agent" name="expert_fuzz" time="0.00">
+<skipped message="not run in the PowerShell pane: BackSpace / Left / Ctrl-W editing of `echo ... &gt;&gt;` lines; PSReadLine's Ctrl-W differs: runs in the Git Bash pane"/>
+</testcase>
+<testcase classname="agent" name="paste_instant_enter" time="5.50">
+</testcase>
+<testcase classname="agent" name="arrows_behind_paste" time="7.30">
+</testcase>
+<testcase classname="agent" name="keydown_count" time="25.30">
+</testcase>
+<testcase classname="agent" name="big_paste" time="0.00">
+<skipped message="not run in the PowerShell pane: `cat &gt; file` + Ctrl-D end-of-input: runs in the Git Bash pane"/>
+</testcase>
+<testcase classname="agent" name="tab_enter" time="23.30">
+</testcase>
+<testcase classname="agent" name="ctrl_c_d" time="332.70">
+</testcase>
+<testcase classname="agent" name="read_x" time="0.00">
+<skipped message="not run in the PowerShell pane: bash `read x` / printf: runs in the Git Bash pane"/>
+</testcase>
+<testcase classname="agent" name="subshells" time="0.00">
+<skipped message="not run on Windows: uses `sh -c 'ps -o comm= -p $PPID'` to prove the subshell's parent; msys ps output differs. Not yet ported (gitbash_subshell and ctrl_c_d cover bash inside the pane)"/>
+</testcase>
+<testcase classname="agent" name="subshell_sh_probe" time="0.00">
+<skipped message="not run on Windows: dash / busybox ash / su do not exist in a Windows pane; the sh probe path is POSIX (#1710)"/>
+</testcase>
+<testcase classname="agent" name="alt_screen" time="0.00">
+<skipped message="not run in the PowerShell pane: `seq | less` and vim: runs in the Git Bash pane"/>
+</testcase>
+<testcase classname="agent" name="gitbash_subshell" time="42.60">
+</testcase>
+<testcase classname="agent" name="alt_screen_programs" time="0.00">
+<skipped message="not run in the PowerShell pane: vim/less/htop/tmux with bash effect lines and rec.log: runs in the Git Bash pane; a program that is not installed makes the case unverifiable (#1537)"/>
+</testcase>
+<testcase classname="agent" name="subshell_ready_rc_questions" time="0.00">
+<skipped message="not run in the PowerShell pane: bash --rcfile with read -p questions: the Git Bash pane (#1886: no tty probe on ConPTY, the judge uses screen facts)"/>
+</testcase>
+<testcase classname="agent" name="subshell_ready_vim_typeahead" time="0.00">
+<skipped message="not run on Windows: bash --rcfile + vim on a real pty (#1679 step 3)"/>
+</testcase>
+<testcase classname="agent" name="subshell_ready_unsupported_tcsh" time="0.00">
+<skipped message="not run on Windows: tcsh does not exist in a Windows pane (#1679 step 3)"/>
+</testcase>
+<testcase classname="agent" name="subshell_ready_secret_after_prompt" time="0.00">
+<skipped message="not run on Windows: bash --rcfile + Phosphorize (ctrl+i) with a PROMPT_COMMAND read -s, on the subshell readiness judge, which has no OS facts on ConPTY (#1679 step 3, audit finding 5); the ConPTY pro"/>
+</testcase>
+<testcase classname="agent" name="subshell_ready_secret_after_probe" time="0.00">
+<skipped message="not run on Windows: as subshell_ready_secret_after_prompt: a PROMPT_COMMAND read -s behind the sh probe needs the tty facts ConPTY does not have (#1905)"/>
+</testcase>
+<testcase classname="agent" name="subshell_sh_probe_empty_ps1" time="0.00">
+<skipped message="not run on Windows: dash does not exist in a Windows pane; the sh probe path is POSIX (#1935)"/>
+</testcase>
+<testcase classname="agent" name="subshell_ready_relay_shape" time="0.00">
+<skipped message="not run on Windows: sudo -s with use_pty does not exist on Windows (#1679 step 3); by design, no machine change makes it run here"/>
+</testcase>
+<testcase classname="agent" name="subshell_ready_exec_fish_rc" time="0.00">
+<skipped message="not run on Windows: fish exec'd from a bash rc on a real pty (#1679 step 3)"/>
+</testcase>
+<testcase classname="agent" name="subshell_ready_docker_t_without_i" time="0.00">
+<skipped message="not run on Windows: docker -t without -i against a Linux pty (#1679 step 3); by design, no machine change makes it run here"/>
+</testcase>
+<testcase classname="agent" name="subshell_ready_zsh_newuser_install" time="0.00">
+<skipped message="not run on Windows: zsh-newuser-install needs zsh and a POSIX HOME (#1679 step 3)"/>
+</testcase>
+<testcase classname="agent" name="subshell_ready_rc_clear" time="0.00">
+<skipped message="not run in the PowerShell pane: bash --rcfile with clear: the Git Bash pane (#1886: no tty probe on ConPTY, the judge uses screen facts)"/>
+</testcase>
+<testcase classname="agent" name="subshell_line_editor_proof" time="0.00">
+<skipped message="not run on Windows: the line-editor write is recorded from the tty probe (termios + /proc), which a ConPTY pane does not have (#1991)"/>
+</testcase>
+<testcase classname="agent" name="job_control" time="0.00">
+<skipped message="not run on Windows: #2072 (T7): Ctrl-Z / bg / fg are POSIX tty job control judged from `ps` process states; PowerShell has no job-control keys and an msys bash under ConPTY gets no SIGTSTP from the te"/>
+</testcase>
+<testcase classname="agent" name="ssh_connect_typing" time="50.60">
+</testcase>
+<testcase classname="agent" name="ssh_enter_then_immediate_command" time="13.50">
+</testcase>
+<testcase classname="agent" name="ssh_nested_typeahead" time="8.30">
+</testcase>
+<testcase classname="agent" name="ssh_connect_typing_wrapper" time="0.00">
+<skipped message="not run in the PowerShell pane: bash pane with the managed-ssh wrapper pinned on (APPCI_SSH_WRAPPER=1, a variable of the app-test-windows job since #2066; #1884); skips itself without it"/>
+</testcase>
+<testcase classname="agent" name="ssh_nested_typeahead_wrapper" time="0.00">
+<skipped message="not run in the PowerShell pane: bash pane with the managed-ssh wrapper pinned on (APPCI_SSH_WRAPPER=1, a variable of the app-test-windows job since #2066; #1884); skips itself without it"/>
+</testcase>
+<testcase classname="agent" name="ssh_failing_not_local" time="15.90">
+</testcase>
+<testcase classname="agent" name="idle_cpu" time="24.30">
+</testcase>
+<testcase classname="agent" name="latency_enter" time="286.40">
+<skipped message="NO-REFERENCE (not a pass): app share of Enter-&gt;start: enter_begin -&gt; pty_write median 4.24 ms (from the app's input_order log); the remaining overhead is shell/ConPTY side"/>
+</testcase>
+<testcase classname="agent" name="latency_key_log" time="0.00">
+<skipped message="not run in the PowerShell pane: types into a running `cat &gt; /dev/null`: no equivalent stdin-echo program in PowerShell: runs in the Git Bash pane"/>
+</testcase>
+<testcase classname="agent" name="latency_paint" time="1.20">
+<skipped message="kl3 (ScreenCaptureKit) is macOS only; no key-&gt;paint read-back exists on this platform, so there is nothing to compare"/>
+</testcase>
+<testcase classname="agent" name="latency_first_key_after_idle" time="0.00">
+<skipped message="not run in the PowerShell pane: types into a running `cat &gt; /dev/null` (key -&gt; frame from the app log): no PowerShell equivalent: runs in the Git Bash pane"/>
+</testcase>
+<testcase classname="agent" name="approval_card_pause" time="1.20">
+<skipped message="tesseract missing: cannot detect the approval card on screen"/>
+</testcase>
+<testcase classname="agent" name="routing_table" time="0.00">
+<skipped message="not run in the PowerShell pane: asserts what the shell received from rec.log: runs in the Git Bash pane"/>
+</testcase>
+<testcase classname="agent" name="routing_table_powershell" time="66.50">
+</testcase>
+<testcase classname="agent" name="agent_lrc_no_false_takeover" time="136.00">
+</testcase>
+<testcase classname="agent" name="cb_agent_pickers" time="0.00">
+<skipped message="not run in the PowerShell pane: reads the agent input from the app log and uses rec.log to prove nothing reached the shell: runs in the Git Bash pane"/>
+</testcase>
+<testcase classname="agent" name="remote_session_legacy" time="0.00">
+<skipped message="not run in the PowerShell pane: uses rec.log and prompt.log of the local shell and `ssh.cmd` Ctrl-C paths: runs in the Git Bash pane"/>
+</testcase>
+<testcase classname="agent" name="intl_wide_type" time="20.90">
+</testcase>
+<testcase classname="agent" name="remote_session_ext" time="0.00">
+<skipped message="not run in the PowerShell pane: uses rec.log and prompt.log of the local shell: runs in the Git Bash pane"/>
+</testcase>
+<testcase classname="agent" name="remote_tab_no_helper" time="0.00">
+<skipped message="not run in the PowerShell pane: rec.log of the remote bash and `cd`/`pwd` there, the local shell's rec.log for the not-local check (#1801): runs in the Git Bash pane"/>
+</testcase>
+<testcase classname="agent" name="remote_tab_enter_no_helper" time="0.00">
+<skipped message="not run in the PowerShell pane: rec.log of the remote bash for the completed `cd`, the local shell's rec.log for the not-local check (#1801): runs in the Git Bash pane"/>
+</testcase>
+<testcase classname="agent" name="intl_wide_paste" time="17.30">
+</testcase>
+<testcase classname="agent" name="flood_scrollback_find" time="0.00">
+<skipped message="not run on Windows: needs the Linux find flow and POSIX floods (the OCR half exists since r23: winocr)"/>
+</testcase>
+<testcase classname="agent" name="remote_heredoc_paste" time="0.00">
+<skipped message="not run in the PowerShell pane: POSIX here-doc / printf commands in the remote bash (#1129): runs in the Git Bash pane"/>
+</testcase>
+<testcase classname="agent" name="intl_wide_edit" time="20.40">
+</testcase>
+<testcase classname="agent" name="ssh_gitbash_managed" time="0.00">
+<skipped message="not run in the PowerShell pane: the bash ssh wrapper's one-connection managed session (#1933): only the Git Bash pane has the wrapper"/>
+</testcase>
+<testcase classname="agent" name="ssh_gitbash_failing_not_local_managed" time="0.00">
+<skipped message="not run in the PowerShell pane: a failing ssh behind the bash ssh wrapper with the one-connection path switched on (round 14): only the Git Bash pane has the wrapper"/>
+</testcase>
+<testcase classname="agent" name="ssh_gitbash_bootstrap_in_command" time="0.00">
+<skipped message="not run in the PowerShell pane: the one-connection managed ssh sends the bootstrap in the remote command (#2051): only the Git Bash pane has the wrapper"/>
+</testcase>
+<testcase classname="agent" name="ssh_gitbash_typeahead_managed" time="0.00">
+<skipped message="not run in the PowerShell pane: keys typed during a one-connection managed ssh login stay managed (#1959): only the Git Bash pane has the wrapper"/>
+</testcase>
+<testcase classname="agent" name="ssh_gitbash_kill_switch" time="0.00">
+<skipped message="not run in the PowerShell pane: the default and PHOSPHOR_MSYS_MANAGED_SSH=0 in the bash pane are plain ssh (#1933, #2051): only the Git Bash pane has the wrapper"/>
+</testcase>
+<testcase classname="agent" name="ui_palette" time="0.00">
+<skipped message="not run in the PowerShell pane: asserts the exact line from rec.log: runs in the Git Bash pane"/>
+</testcase>
+<testcase classname="agent" name="intl_wide_program" time="0.00">
+<skipped message="not run in the PowerShell pane: `head -n 1 &gt; file` is the receiving program: runs in the Git Bash pane"/>
+</testcase>
+<testcase classname="agent" name="hostile_output_recovers" time="0.00">
+<skipped message="not run in the PowerShell pane: #2072 (T8): `cat` of a binary file, a POSIX command list around hostile_out.py and rec.log for the exact line: runs in the Git Bash pane"/>
+</testcase>
+<testcase classname="agent" name="latency_enter_ssh" time="0.00">
+<skipped message="not run in the PowerShell pane: the plain-ssh control is the conhost reference running the pane's shell; a PowerShell reference's `ssh fake` path (ssh.cmd) differs from the pane's: runs in the Git Bas"/>
+</testcase>
+<testcase classname="agent" name="intl_compose_linux" time="0.00">
+<skipped message="not run on Windows: Linux xkb compose / dead keys (Windows has intl_altgr_ps / intl_altgr_bash)"/>
+</testcase>
+<testcase classname="agent" name="history_up_recall" time="21.20">
+<failure message="hu.txt holds ['t189_uvs7ic2x', 't190_cbu0k9c7', 't191_1lmohi6h', 't190_cbu0k9c7', 't190_cbu0k9c79z'], expected ['t189_uvs7ic2x', 't190_cbu0k9c7', 't191_1lmohi6h', 't190_cbu0k9c7', 't190_cbu0ke9z', 't192_r3mdx3vw'] (first difference at line 5)">hu.txt holds ['t189_uvs7ic2x', 't190_cbu0k9c7', 't191_1lmohi6h', 't190_cbu0k9c7', 't190_cbu0k9c79z'], expected ['t189_uvs7ic2x', 't190_cbu0k9c7', 't191_1lmohi6h', 't190_cbu0k9c7', 't190_cbu0ke9z', 't192_r3mdx3vw'] (first difference at line 5)
+the shell did not receive exactly the six lines: line 5, Up, edit, Enter (the edited second command): expected 'Add-Content hu.txt t190_cbu0ke9z', the shell received 'Add-Content hu.txt t190_cbu0k9c79z'
+the pane's history holds 22498 lines, more than the 5000 the app lists inline: the Up-arrow list was built in the background in this run (#2107: keys typed before it arrives are applied first)
+injector accounting: injector sent 150; app saw 150; lost-before-app 0 (Enter: sent 6, app saw 6); of the app's: 131 unbound keydown/typed, 13 taken by a key binding, 6 Enter by a binding
+pty writes: 10, of which carrying a CR (\r): 0; Enter(s) the input editor started: 7 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="agent" name="intl_ime_japanese" time="0.00">
+<skipped message="not run on Windows: macOS input methods (TISSelectInputSource). NEEDS: a Windows IME arm in the harness (not built; r14-test-gaps T39)"/>
+</testcase>
+<testcase classname="agent" name="intl_ime_pinyin" time="0.00">
+<skipped message="not run on Windows: macOS input methods (TISSelectInputSource). NEEDS: a Windows IME arm in the harness (not built; r14-test-gaps T39)"/>
+</testcase>
+<testcase classname="agent" name="scroll_keys_position" time="0.00">
+<skipped message="not run in the PowerShell pane: r23 (#2060): bash `cat` of numbered lines, a bash background job, rec.log; the scroll position is read by Windows.Media.Ocr (winocr): runs in the Git Bash pane, SKIPs w"/>
+</testcase>
+<testcase classname="agent" name="ime_compose" time="0.00">
+<skipped message="not run in the PowerShell pane: r15 T39: the committed text is checked as the UTF-8 bytes of a file written by `echo ... &gt;&gt; file` (Windows PowerShell 5.1 writes UTF-16 there) and against rec.log"/>
+</testcase>
+<testcase classname="agent" name="intl_deadkey_option" time="0.00">
+<skipped message="not run on Windows: macOS Option dead keys"/>
+</testcase>
+<testcase classname="agent" name="scroll_keys_foreground" time="0.00">
+<skipped message="not run in the PowerShell pane: #2080: the foreground program is a POSIX raw reader started from a bash script (bytes_reader.sh), with a bash job printing next to it: runs in the Git Bash pane"/>
+</testcase>
+<testcase classname="agent" name="intl_altgr_ps" time="6.30">
+</testcase>
+<testcase classname="agent" name="intl_altgr_bash" time="21.70">
+<skipped message="NO-REFERENCE (not a pass): injector accounting: injector sent 300; app saw 297; lost-before-app 3 (Enter: sent 5, app saw 5); of the app's: 293 unbound keydown/typed, 2 taken by a key binding, 2 Enter by a b"/>
+</testcase>
+<testcase classname="agent" name="ui_mouse_select_copy" time="0.00">
+<skipped message="not run in the PowerShell pane: T31: the token is printed by bash `printf` and the command is checked against rec.log: runs in the Git Bash pane (pointer by SendInput, position from the app's find hoo"/>
+</testcase>
+<testcase classname="agent" name="ui_copy_wrapped_output" time="0.00">
+<skipped message="not run in the PowerShell pane: #1976: `stty size` and `cat` of the fixture file in bash, the command checked against rec.log: runs in the Git Bash pane (keyboard and clipboard only)"/>
+</testcase>
+<testcase classname="agent" name="ui_copy_wrapped_drag" time="0.00">
+<skipped message="not run in the PowerShell pane: T31 (#1976): `stty size` and `cat` of the fixture file in bash, the command checked against rec.log: runs in the Git Bash pane (pointer by SendInput, positions from the"/>
+</testcase>
+<testcase classname="agent" name="selection_modes" time="0.00">
+<skipped message="not run in the PowerShell pane: T31 (r14 T22): `cat` of the fixture files, the `sh` stream program and rec.log: runs in the Git Bash pane (pointer and held Shift by SendInput, positions from the app's"/>
+</testcase>
+<testcase classname="agent" name="primary_and_middle_click" time="0.00">
+<skipped message="not run on Windows: T23: the PRIMARY selection is an X11 / Wayland concept; Windows has one clipboard"/>
+</testcase>
+<testcase classname="agent" name="link_and_path_click" time="0.00">
+<skipped message="not run on Windows: T21: not ported: the recording opener is a POSIX xdg-open on the app's PATH and the network trace is strace (the pointer itself exists since r15 wave 4)"/>
+</testcase>
+<testcase classname="agent" name="wheel_scroll" time="0.00">
+<skipped message="not run on Windows: T24: not ported: bytes_reader.py needs termios (the wheel event exists since r15 wave 4: winapi.mouse_wheel_event; the OCR read exists since r23: winocr, Windows.Media.Ocr)"/>
+</testcase>
+<testcase classname="agent" name="resize_reflow_output" time="0.00">
+<skipped message="not run in the PowerShell pane: T33 (r14 T26): a bash SIGWINCH trap, `stty size` and vim: runs in the Git Bash pane (window size by SetWindowPos)"/>
+</testcase>
+<testcase classname="agent" name="editor_daily" time="58.30">
+</testcase>
+<testcase classname="agent" name="suggestion_chip_keeps_output" time="0.00">
+<skipped message="not run in the PowerShell pane: #2138: the fixture is printed with `cat` and its command is confirmed from the bash prompt hook; the chip's layout does not depend on the pane's shell: runs in the Git "/>
+</testcase>
+<testcase classname="agent" name="focus_cycle" time="20.30">
+</testcase>
+<testcase classname="agent" name="gitbash_typeahead_reps" time="0.00">
+<skipped message="not run in the PowerShell pane: bash precmd_functions and rec.log of the pane's bash, the ConPTY prompt hold of a bash pane (#1393): runs in the Git Bash pane"/>
+</testcase>
+<testcase classname="agent" name="minimize_fullscreen" time="0.00">
+<skipped message="not run on Windows: r14 T30: no window-state call (minimise, restore, fullscreen) in the Windows backend yet (r14-test-gaps T33 built the resize only)"/>
+</testcase>
+<testcase classname="agent" name="desktop_notification" time="93.60">
+</testcase>
+<testcase classname="agent" name="md_viewer" time="8.80">
+</testcase>
+<testcase classname="agent" name="md_viewer_ai_answer" time="18.10">
+</testcase>
+<testcase classname="agent" name="md_viewer_first_frame" time="6.70">
+</testcase>
+<testcase classname="agent" name="restore_shows_history" time="0.00">
+<skipped message="not run in the PowerShell pane: r14 T20: the token is printed by bash `printf '%s%s\n' A B` so the command text never holds it, and rec.log proves nothing re-ran: runs in the Git Bash pane"/>
+</testcase>
+<testcase classname="agent" name="ui_vertical_tabs_many" time="0.00">
+<skipped message="not run in the PowerShell pane: T33 (#1990): every tab's `cd`, `echo` and `pwd -W` lines are bash and are checked against rec.log: runs in the Git Bash pane (the panel is switched on in the settings f"/>
+</testcase>
+<testcase classname="agent" name="ui_vertical_tabs_panel_click" time="0.00">
+<skipped message="not run in the PowerShell pane: T31 (#1990): every tab's `cd`, `echo` and `pwd -W` lines are bash and are checked against rec.log: runs in the Git Bash pane (panel rows from the app's find hook, click"/>
+</testcase>
+<testcase classname="agent" name="tab_pointer_use" time="0.00">
+<skipped message="not run on Windows: r14 T28: not ported in r15 wave 4 (r14-test-gaps T31 names five cases, this is not one): the pointer, the middle button and the live settings rewrite now exist; the shell-pid probe"/>
+</testcase>
+<testcase classname="agent" name="tab_lifecycle_keys" time="52.10">
+</testcase>
+<testcase classname="agent" name="keybinding_rebind" time="12.70">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: this pane has no prompt log and the app logged no hop=tab_activate line: nothing can count tabs, so no arm is judged"/>
+</testcase>
+<testcase classname="agent" name="soak" time="676.40">
+</testcase>
+<testcase classname="agent" name="output_frames" time="76.80">
+</testcase>
+<testcase classname="agent" name="tabs_two_windows" time="119.80">
+<failure message="cleanup of tabs_two_windows: after 13 close key(s) the shell in front has pid None, expected the pass's own shell 10520 (a tab is still open: later cases would type into it)">cleanup of tabs_two_windows: after 13 close key(s) the shell in front has pid None, expected the pass's own shell 10520 (a tab is still open: later cases would type into it)
+no hop=view_mode line in the app log: the mode is read from the screen (OCR): agent
+injector accounting: injector sent 3253; app saw 3253; lost-before-app 0 (Enter: sent 44, app saw 44); of the app's: 3168 unbound keydown/typed, 44 taken by a key binding, 41 Enter by a binding
+pty writes: 291, of which carrying a CR (\r): 16; Enter(s) the input editor started: 41 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="agent" name="history_survives_restart" time="92.10">
+</testcase>
+<testcase classname="agent" name="tabs_streaming" time="73.70">
+</testcase>
+<testcase classname="agent" name="meta_and_word_keys" time="19.50">
+</testcase>
+<testcase classname="agent@gitbash" name="mode_proof" time="2.10">
+</testcase>
+<testcase classname="agent@gitbash" name="key_delivery" time="0.00">
+</testcase>
+<testcase classname="agent@gitbash" name="cadence" time="6.20">
+</testcase>
+<testcase classname="agent@gitbash" name="mac_pointer_chord_proof" time="0.00">
+<skipped message="not run on Windows: r15 T32 (#2061): macOS only by design: it proves the Mac harness's own pointer tool (mptr) and app-only chords (appkey)"/>
+</testcase>
+<testcase classname="agent@gitbash" name="fast_typing" time="46.90">
+</testcase>
+<testcase classname="agent@gitbash" name="rollover" time="17.10">
+</testcase>
+<testcase classname="agent@gitbash" name="expert_fuzz" time="16.60">
+</testcase>
+<testcase classname="agent@gitbash" name="paste_instant_enter" time="9.40">
+</testcase>
+<testcase classname="agent@gitbash" name="arrows_behind_paste" time="8.80">
+</testcase>
+<testcase classname="agent@gitbash" name="keydown_count" time="23.70">
+</testcase>
+<testcase classname="agent@gitbash" name="big_paste" time="241.30">
+<skipped message="NO-REFERENCE (not a pass): big_paste: time-to-Enter not measured (big.out never reached its full 1000001 bytes within the wait: the byte check below says why)"/>
+</testcase>
+<testcase classname="agent@gitbash" name="tab_enter" time="16.10">
+</testcase>
+<testcase classname="agent@gitbash" name="ctrl_c_d" time="265.90">
+<skipped message="NO-REFERENCE (not a pass): #1570: the harness process ignores Ctrl-C (inherited from the runner's process group); the app inherits it and must clear it for its shells"/>
+</testcase>
+<testcase classname="agent@gitbash" name="read_x" time="3.40">
+</testcase>
+<testcase classname="agent@gitbash" name="subshells" time="0.00">
+<skipped message="not run on Windows: uses `sh -c 'ps -o comm= -p $PPID'` to prove the subshell's parent; msys ps output differs. Not yet ported (gitbash_subshell and ctrl_c_d cover bash inside the pane)"/>
+</testcase>
+<testcase classname="agent@gitbash" name="subshell_sh_probe" time="0.00">
+<skipped message="not run on Windows: dash / busybox ash / su do not exist in a Windows pane; the sh probe path is POSIX (#1710)"/>
+</testcase>
+<testcase classname="agent@gitbash" name="alt_screen" time="1.20">
+</testcase>
+<testcase classname="agent@gitbash" name="gitbash_subshell" time="0.70">
+<skipped message="the pane IS Git Bash in this pass; bash inside bash is covered by ctrl_c_d / subshells"/>
+</testcase>
+<testcase classname="agent@gitbash" name="alt_screen_programs" time="9.50">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: htop is not installed (package htop): that part of the alt-screen coverage did not run"/>
+</testcase>
+<testcase classname="agent@gitbash" name="subshell_ready_rc_questions" time="12.30">
+</testcase>
+<testcase classname="agent@gitbash" name="subshell_ready_vim_typeahead" time="0.00">
+<skipped message="not run on Windows: bash --rcfile + vim on a real pty (#1679 step 3)"/>
+</testcase>
+<testcase classname="agent@gitbash" name="subshell_ready_unsupported_tcsh" time="0.00">
+<skipped message="not run on Windows: tcsh does not exist in a Windows pane (#1679 step 3)"/>
+</testcase>
+<testcase classname="agent@gitbash" name="subshell_ready_secret_after_prompt" time="0.00">
+<skipped message="not run on Windows: bash --rcfile + Phosphorize (ctrl+i) with a PROMPT_COMMAND read -s, on the subshell readiness judge, which has no OS facts on ConPTY (#1679 step 3, audit finding 5); the ConPTY pro"/>
+</testcase>
+<testcase classname="agent@gitbash" name="subshell_ready_secret_after_probe" time="0.00">
+<skipped message="not run on Windows: as subshell_ready_secret_after_prompt: a PROMPT_COMMAND read -s behind the sh probe needs the tty facts ConPTY does not have (#1905)"/>
+</testcase>
+<testcase classname="agent@gitbash" name="subshell_sh_probe_empty_ps1" time="0.00">
+<skipped message="not run on Windows: dash does not exist in a Windows pane; the sh probe path is POSIX (#1935)"/>
+</testcase>
+<testcase classname="agent@gitbash" name="subshell_ready_relay_shape" time="0.00">
+<skipped message="not run on Windows: sudo -s with use_pty does not exist on Windows (#1679 step 3); by design, no machine change makes it run here"/>
+</testcase>
+<testcase classname="agent@gitbash" name="subshell_ready_exec_fish_rc" time="0.00">
+<skipped message="not run on Windows: fish exec'd from a bash rc on a real pty (#1679 step 3)"/>
+</testcase>
+<testcase classname="agent@gitbash" name="subshell_ready_docker_t_without_i" time="0.00">
+<skipped message="not run on Windows: docker -t without -i against a Linux pty (#1679 step 3); by design, no machine change makes it run here"/>
+</testcase>
+<testcase classname="agent@gitbash" name="subshell_ready_zsh_newuser_install" time="0.00">
+<skipped message="not run on Windows: zsh-newuser-install needs zsh and a POSIX HOME (#1679 step 3)"/>
+</testcase>
+<testcase classname="agent@gitbash" name="subshell_ready_rc_clear" time="11.30">
+</testcase>
+<testcase classname="agent@gitbash" name="subshell_line_editor_proof" time="0.00">
+<skipped message="not run on Windows: the line-editor write is recorded from the tty probe (termios + /proc), which a ConPTY pane does not have (#1991)"/>
+</testcase>
+<testcase classname="agent@gitbash" name="job_control" time="0.00">
+<skipped message="not run on Windows: #2072 (T7): Ctrl-Z / bg / fg are POSIX tty job control judged from `ps` process states; PowerShell has no job-control keys and an msys bash under ConPTY gets no SIGTSTP from the te"/>
+</testcase>
+<testcase classname="agent@gitbash" name="ssh_connect_typing" time="157.00">
+</testcase>
+<testcase classname="agent@gitbash" name="ssh_enter_then_immediate_command" time="40.70">
+</testcase>
+<testcase classname="agent@gitbash" name="ssh_nested_typeahead" time="17.00">
+</testcase>
+<testcase classname="agent@gitbash" name="ssh_connect_typing_wrapper" time="126.50">
+<failure message="ssh_connect_typing (gap 0.0 s): T159_6tn8e9 never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log). Test host: sshd.log:  pty | 11:16:26 exec pty arm app (a pseudo console of the app's own conpty.dll) | 11:16:26 conpty exec pid 5388 | 11:16:26 conpty first output after 0.01 s: 4 bytes (starts 1b5b3174) | 11:16:26 console host start-up request 1b5b3174 dropped by the test sshd, not sent to the client | 11:16:26 console host start-up request 1b5b63 answered by the test sshd, not sent to the client | 11:16:26 console host start-up request 1b5b3f3130303468 dropped by the test sshd, not sent to the client | 11:16:26 console host start-up request 1b5b3f3930303168 dropped by the test sshd, not sent to the client; fakesshd.stderr: (empty); test sshd (fakesshd-win) listening on 127.0.0.1:50490; exec+pty of the test sshd is served by a pseudo console of the app's own conpty.dll, measured byte-exact both ways. Measured: app: out ok, in ok (a 610-byte OSC arrived whole; a counted raw read of 3827 bytes got exactly what was sent) | inbox: out BROKEN, in ok (a 610-byte OSC did NOT arrive whole: the longest piece of its 600 payload characters is 80 (205 bytes seen); a counted raw read of 3827 bytes got exactly what was sent); no msys pty host: Git for Windows has no usr\bin\sshd.exe next to its bash (C:\Program Files\Git\usr\bin); app ssh hops: [DEBUG] input_order hop=kh_hold_exit seq=8073 branch=gate_open_live gate_armed=false table=1 t=1794510991295.236 | [DEBUG] input_order hop=hand_route reason=held_prompt_hold_started state=pty_owned awaiting_ready=false in_flight=0 evidence=None command_interactive= | [DEBUG] input_order hop=kh_hold_entry seq=8074 holding=false held_bytes=0 gate_armed=false pending_session=false table=1 t=1794510991308.121 | [DEBUG] input_order hop=kh_hold_exit seq=8074 branch=held held_bytes=0 table=1 t=1794510991308.127 | [DEBUG] input_order hop=handoff_commit_source ssh_gate_armed=false ssh_holding=false remote_prompt_seen=false t=1794510991323.728 | [DEBUG] input_order hop=handoff_commit_at_prompt committed=false still_pty_owned=true t=1794510991323.744 | [DEBUG] input_order hop=handoff_commit_source ssh_gate_armed=false ssh_holding=false remote_prompt_seen=false t=1794510991559.636 | [DEBUG] input_order hop=handoff_commit_at_prompt committed=false still_pty_owned=true t=1794510991559.647 | [DEBUG] input_order hop=handoff_commit_source ssh_gate_armed=false ssh_holding=false remote_prompt_seen=false t=1794510991817.075 | [DEBUG] input_order hop=handoff_commit_at_prompt committed=false still_pty_owned=false t=1794510991817.089; PROBE: Git Bash pane: C:\Program Files\Git\usr\bin\ssh.exe cannot start a ControlMaster (exit 255: mux_client_request_session: read from master failed: Connection reset by peer Failed to connect to new control master). Background only: since #1551 / #1933 the app's bash ssh wrapper never multiplexes under msys (one connection with LocalCommand, or plain ssh), so this does NOT explain a failing case">ssh_connect_typing (gap 0.0 s): T159_6tn8e9 never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log). Test host: sshd.log:  pty | 11:16:26 exec pty arm app (a pseudo console of the app's own conpty.dll) | 11:16:26 conpty exec pid 5388 | 11:16:26 conpty first output after 0.01 s: 4 bytes (starts 1b5b3174) | 11:16:26 console host start-up request 1b5b3174 dropped by the test sshd, not sent to the client | 11:16:26 console host start-up request 1b5b63 answered by the test sshd, not sent to the client | 11:16:26 console host start-up request 1b5b3f3130303468 dropped by the test sshd, not sent to the client | 11:16:26 console host start-up request 1b5b3f3930303168 dropped by the test sshd, not sent to the client; fakesshd.stderr: (empty); test sshd (fakesshd-win) listening on 127.0.0.1:50490; exec+pty of the test sshd is served by a pseudo console of the app's own conpty.dll, measured byte-exact both ways. Measured: app: out ok, in ok (a 610-byte OSC arrived whole; a counted raw read of 3827 bytes got exactly what was sent) | inbox: out BROKEN, in ok (a 610-byte OSC did NOT arrive whole: the longest piece of its 600 payload characters is 80 (205 bytes seen); a counted raw read of 3827 bytes got exactly what was sent); no msys pty host: Git for Windows has no usr\bin\sshd.exe next to its bash (C:\Program Files\Git\usr\bin); app ssh hops: [DEBUG] input_order hop=kh_hold_exit seq=8073 branch=gate_open_live gate_armed=false table=1 t=1794510991295.236 | [DEBUG] input_order hop=hand_route reason=held_prompt_hold_started state=pty_owned awaiting_ready=false in_flight=0 evidence=None command_interactive= | [DEBUG] input_order hop=kh_hold_entry seq=8074 holding=false held_bytes=0 gate_armed=false pending_session=false table=1 t=1794510991308.121 | [DEBUG] input_order hop=kh_hold_exit seq=8074 branch=held held_bytes=0 table=1 t=1794510991308.127 | [DEBUG] input_order hop=handoff_commit_source ssh_gate_armed=false ssh_holding=false remote_prompt_seen=false t=1794510991323.728 | [DEBUG] input_order hop=handoff_commit_at_prompt committed=false still_pty_owned=true t=1794510991323.744 | [DEBUG] input_order hop=handoff_commit_source ssh_gate_armed=false ssh_holding=false remote_prompt_seen=false t=1794510991559.636 | [DEBUG] input_order hop=handoff_commit_at_prompt committed=false still_pty_owned=true t=1794510991559.647 | [DEBUG] input_order hop=handoff_commit_source ssh_gate_armed=false ssh_holding=false remote_prompt_seen=false t=1794510991817.075 | [DEBUG] input_order hop=handoff_commit_at_prompt committed=false still_pty_owned=false t=1794510991817.089; PROBE: Git Bash pane: C:\Program Files\Git\usr\bin\ssh.exe cannot start a ControlMaster (exit 255: mux_client_request_session: read from master failed: Connection reset by peer Failed to connect to new control master). Background only: since #1551 / #1933 the app's bash ssh wrapper never multiplexes under msys (one connection with LocalCommand, or plain ssh), so this does NOT explain a failing case
+remote shell received 1/2 typed-ahead commands exactly (missing 1)
+remote rec.log lacks the exact typed command for some trials
+ssh_connect_typing gap 0.0 s trial 2: #1292: no ssh hold was seen and the remote shell logged nothing for the line; held 0 key(s)/0 byte(s), hand-over none, finish none; the app saw every key of the line; remote got None
+ssh_connect_typing loss: 1 of 2 typed-ahead commands lost (observed 50.0 %); 95 % upper confidence bound 97.5 %; this n cannot exclude a 1/40 (2.5 %) rate: needs 119 clean trials
+ssh trial verdicts: #1292=1, exact=1
+injector accounting: injector sent 659; app saw 659; lost-before-app 0 (Enter: sent 22, app saw 22); of the app's: 627 unbound keydown/typed, 11 taken by a key binding, 21 Enter by a binding
+pty writes: 52, of which carrying a CR (\r): 2; Enter(s) the input editor started: 21 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="agent@gitbash" name="pane_not_local_after_ssh_connect_typing_wrapper" time="0.00">
+<failure message="after ssh_connect_typing_wrapper the pane could not be proven back in the local shell (remote); the app is relaunched so later cases start clean">after ssh_connect_typing_wrapper the pane could not be proven back in the local shell (remote); the app is relaunched so later cases start clean</failure>
+</testcase>
+<testcase classname="agent@gitbash" name="key_delivery" time="0.00">
+</testcase>
+<testcase classname="agent@gitbash" name="ssh_nested_typeahead_wrapper" time="105.30">
+</testcase>
+<testcase classname="agent@gitbash" name="pane_not_local_after_ssh_nested_typeahead_wrapper" time="0.00">
+<failure message="after ssh_nested_typeahead_wrapper the pane could not be proven back in the local shell (remote); the app is relaunched so later cases start clean">after ssh_nested_typeahead_wrapper the pane could not be proven back in the local shell (remote); the app is relaunched so later cases start clean</failure>
+</testcase>
+<testcase classname="agent@gitbash" name="key_delivery" time="0.00">
+</testcase>
+<testcase classname="agent@gitbash" name="ssh_failing_not_local" time="15.00">
+</testcase>
+<testcase classname="agent@gitbash" name="idle_cpu" time="24.00">
+</testcase>
+<testcase classname="agent@gitbash" name="latency_enter" time="183.20">
+<skipped message="NO-REFERENCE (not a pass): G1: Git Bash fork+exec costs 42.4 ms per process on this host (outside the app); every forking shell hook adds about that"/>
+</testcase>
+<testcase classname="agent@gitbash" name="latency_key_log" time="11.90">
+</testcase>
+<testcase classname="agent@gitbash" name="latency_paint" time="0.60">
+<skipped message="kl3 (ScreenCaptureKit) is macOS only; no key-&gt;paint read-back exists on this platform, so there is nothing to compare"/>
+</testcase>
+<testcase classname="agent@gitbash" name="latency_first_key_after_idle" time="305.30">
+</testcase>
+<testcase classname="agent@gitbash" name="approval_card_pause" time="0.70">
+<skipped message="tesseract missing: cannot detect the approval card on screen"/>
+</testcase>
+<testcase classname="agent@gitbash" name="routing_table" time="58.70">
+</testcase>
+<testcase classname="agent@gitbash" name="routing_table_powershell" time="0.00">
+<skipped message="not run in the Git Bash pane: #2072: the routing table judged from PSReadLine's history file; the Git Bash pane has routing_table (rec.log)"/>
+</testcase>
+<testcase classname="agent@gitbash" name="agent_lrc_no_false_takeover" time="164.90">
+</testcase>
+<testcase classname="agent@gitbash" name="cb_agent_pickers" time="9.50">
+</testcase>
+<testcase classname="agent@gitbash" name="remote_session_legacy" time="38.10">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: [legacy] clean-env subshell step NOT RUN on Windows: `env -i` under msys ends the fake sshd session (harness limitation, H6); the bash/sh subshell steps ran"/>
+</testcase>
+<testcase classname="agent@gitbash" name="intl_wide_type" time="6.80">
+</testcase>
+<testcase classname="agent@gitbash" name="remote_session_ext" time="55.90">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: [ext] clean-env subshell step NOT RUN on Windows: `env -i` under msys ends the fake sshd session (harness limitation, H6); the bash/sh subshell steps ran"/>
+</testcase>
+<testcase classname="agent@gitbash" name="agent_view_not_restored_after_remote_session_ext" time="0.00">
+</testcase>
+<testcase classname="agent@gitbash" name="key_delivery" time="0.00">
+</testcase>
+<testcase classname="agent@gitbash" name="remote_tab_no_helper" time="112.90">
+<failure message="after the completed cd the remote cwd should be .../phxtab_t254_282xnd, got []">after the completed cd the remote cwd should be .../phxtab_t254_282xnd, got []
+the app log has no 'candidates from the remote shell' line: Tab did not take the in-band path (#1801)
+not provably remote (probe ran in: none), `exit` NOT typed
+path highlighting of a typed remote directory is not observable from the harness; not judged here (#1801 follow-up: prompt-hook cwd listing)
+injector accounting: injector sent 666; app saw 666; lost-before-app 0 (Enter: sent 21, app saw 21); of the app's: 634 unbound keydown/typed, 11 taken by a key binding, 21 Enter by a binding
+pty writes: 40, of which carrying a CR (\r): 0; Enter(s) the input editor started: 21 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="agent@gitbash" name="pane_not_local_after_remote_tab_no_helper" time="0.00">
+<failure message="after remote_tab_no_helper the pane could not be proven back in the local shell (none); the app is relaunched so later cases start clean">after remote_tab_no_helper the pane could not be proven back in the local shell (none); the app is relaunched so later cases start clean</failure>
+</testcase>
+<testcase classname="agent@gitbash" name="key_delivery" time="0.00">
+</testcase>
+<testcase classname="agent@gitbash" name="remote_tab_enter_no_helper" time="107.80">
+<failure message="Tab + Enter 30 ms later: the remote shell received ['cd ~cd phxte_t272_y'], want the COMPLETED 'cd phxte_t272_yswlrl/' (the uncompleted 'cd phxte_t272_y' must never run)">Tab + Enter 30 ms later: the remote shell received ['cd ~cd phxte_t272_y'], want the COMPLETED 'cd phxte_t272_yswlrl/' (the uncompleted 'cd phxte_t272_y' must never run)
+Tab + Enter 30 ms later: the remote shell received ['cd ~cd phxte_t273_b'], want the COMPLETED 'cd phxte_t273_b9de9o/' (the uncompleted 'cd phxte_t273_b' must never run)
+not provably remote (probe ran in: none), `exit` NOT typed
+injector accounting: injector sent 690; app saw 690; lost-before-app 0 (Enter: sent 25, app saw 25); of the app's: 652 unbound keydown/typed, 13 taken by a key binding, 25 Enter by a binding
+pty writes: 50, of which carrying a CR (\r): 0; Enter(s) the input editor started: 25 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="agent@gitbash" name="pane_not_local_after_remote_tab_enter_no_helper" time="0.00">
+<failure message="after remote_tab_enter_no_helper the pane could not be proven back in the local shell (remote); the app is relaunched so later cases start clean">after remote_tab_enter_no_helper the pane could not be proven back in the local shell (remote); the app is relaunched so later cases start clean</failure>
+</testcase>
+<testcase classname="agent@gitbash" name="key_delivery" time="0.00">
+</testcase>
+<testcase classname="agent@gitbash" name="intl_wide_paste" time="6.10">
+</testcase>
+<testcase classname="agent@gitbash" name="flood_scrollback_find" time="0.00">
+<skipped message="not run on Windows: needs the Linux find flow and POSIX floods (the OCR half exists since r23: winocr)"/>
+</testcase>
+<testcase classname="agent@gitbash" name="remote_heredoc_paste" time="626.70">
+<skipped message="NO-REFERENCE (not a pass): bash: 2000-line here-doc (142166 bytes): the remote shell was still busy with the payload after the timeout; the harness ended it (taskkill /T /F of the remote shell (Windows pid 1"/>
+</testcase>
+<testcase classname="agent@gitbash" name="intl_wide_edit" time="5.10">
+</testcase>
+<testcase classname="agent@gitbash" name="ssh_gitbash_managed" time="110.40">
+<failure message="not provably remote (probe ran in: None), `exit` NOT typed">not provably remote (probe ran in: None), `exit` NOT typed
+injector accounting: injector sent 646; app saw 646; lost-before-app 0 (Enter: sent 21, app saw 21); of the app's: 615 unbound keydown/typed, 10 taken by a key binding, 21 Enter by a binding
+pty writes: 36, of which carrying a CR (\r): 0; Enter(s) the input editor started: 21 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="agent@gitbash" name="pane_not_local_after_ssh_gitbash_managed" time="0.00">
+<failure message="after ssh_gitbash_managed the pane could not be proven back in the local shell (remote); the app is relaunched so later cases start clean">after ssh_gitbash_managed the pane could not be proven back in the local shell (remote); the app is relaunched so later cases start clean</failure>
+</testcase>
+<testcase classname="agent@gitbash" name="key_delivery" time="0.00">
+</testcase>
+<testcase classname="agent@gitbash" name="ssh_gitbash_failing_not_local_managed" time="23.20">
+</testcase>
+<testcase classname="agent@gitbash" name="ssh_gitbash_bootstrap_in_command" time="110.00">
+<failure message="not provably remote (probe ran in: None), `exit` NOT typed">not provably remote (probe ran in: None), `exit` NOT typed
+the test sshd logged no client-input count for this session (only the Windows fake sshd does)
+injector accounting: injector sent 646; app saw 646; lost-before-app 0 (Enter: sent 21, app saw 21); of the app's: 615 unbound keydown/typed, 10 taken by a key binding, 21 Enter by a binding
+pty writes: 38, of which carrying a CR (\r): 0; Enter(s) the input editor started: 21 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="agent@gitbash" name="pane_not_local_after_ssh_gitbash_bootstrap_in_command" time="0.00">
+<failure message="after ssh_gitbash_bootstrap_in_command the pane could not be proven back in the local shell (none); the app is relaunched so later cases start clean">after ssh_gitbash_bootstrap_in_command the pane could not be proven back in the local shell (none); the app is relaunched so later cases start clean</failure>
+</testcase>
+<testcase classname="agent@gitbash" name="key_delivery" time="0.00">
+</testcase>
+<testcase classname="agent@gitbash" name="ssh_gitbash_typeahead_managed" time="181.60">
+<failure message="trial 1: `exit` did not bring the local prompt back">trial 1: `exit` did not bring the local prompt back
+trial 2: the line typed during the connect never reached the remote shell. Test host: sshd.log:  pty | 12:01:33 exec pty arm app (a pseudo console of the app's own conpty.dll) | 12:01:33 conpty exec pid 7376 | 12:01:33 conpty first output after 0.01 s: 4 bytes (starts 1b5b3174) | 12:01:33 console host start-up request 1b5b3174 dropped by the test sshd, not sent to the client | 12:01:33 console host start-up request 1b5b63 answered by the test sshd, not sent to the client | 12:01:33 console host start-up request 1b5b3f3130303468 dropped by the test sshd, not sent to the client | 12:01:33 console host start-up request 1b5b3f3930303168 dropped by the test sshd, not sent to the client; fakesshd.stderr: (empty); test sshd (fakesshd-win) listening on 127.0.0.1:50490; exec+pty of the test sshd is served by a pseudo console of the app's own conpty.dll, measured byte-exact both ways. Measured: app: out ok, in ok (a 610-byte OSC arrived whole; a counted raw read of 3827 bytes got exactly what was sent) | inbox: out BROKEN, in ok (a 610-byte OSC did NOT arrive whole: the longest piece of its 600 payload characters is 80 (205 bytes seen); a counted raw read of 3827 bytes got exactly what was sent); no msys pty host: Git for Windows has no usr\bin\sshd.exe next to its bash (C:\Program Files\Git\usr\bin); app ssh hops: [DEBUG] input_order hop=handoff_commit_source ssh_gate_armed=false ssh_holding=false remote_prompt_seen=false t=1794513699622.277 | [DEBUG] input_order hop=handoff_commit_at_prompt committed=false still_pty_owned=true t=1794513699622.288 | [DEBUG] input_order hop=handoff_commit_source ssh_gate_armed=false ssh_holding=false remote_prompt_seen=false t=1794513699923.953 | [DEBUG] input_order hop=handoff_commit_at_prompt committed=false still_pty_owned=false t=1794513699923.964 | [DEBUG] input_order hop=handoff_commit_source ssh_gate_armed=false ssh_holding=false remote_prompt_seen=false t=1794513700178.367 | [DEBUG] input_order hop=handoff_commit_at_prompt committed=false still_pty_owned=true t=1794513700178.382 | [DEBUG] input_order hop=handoff_commit_source ssh_gate_armed=false ssh_holding=false remote_prompt_seen=false t=1794513700430.484 | [DEBUG] input_order hop=handoff_commit_at_prompt committed=false still_pty_owned=true t=1794513700430.505 | [DEBUG] input_order hop=handoff_commit_source ssh_gate_armed=false ssh_holding=false remote_prompt_seen=false t=1794513700664.737 | [DEBUG] input_order hop=handoff_commit_at_prompt committed=false still_pty_owned=false t=1794513700664.748; PROBE: Git Bash pane: C:\Program Files\Git\usr\bin\ssh.exe cannot start a ControlMaster (exit 255: mux_client_request_session: read from master failed: Connection reset by peer Failed to connect to new control master). Background only: since #1551 / #1933 the app's bash ssh wrapper never multiplexes under msys (one connection with LocalCommand, or plain ssh), so this does NOT explain a failing case
+trial 2: the remote shell received [], want exactly ['echo T351_souzyl']
+trial 2: one-connection stages in the app log: [], want auth, auth_done, managed (a final `plain` is the old #1959 behaviour)
+trial 2: the wrapper's verdict was managed=true
+trial 2: `exit` did not bring the local prompt back
+trial 3: one-connection stages in the app log: [], want auth, auth_done, managed (a final `plain` is the old #1959 behaviour)
+trial 3: the wrapper's verdict was managed=true
+trial 3: `exit` did not bring the local prompt back
+typed-during-connect: in 1 of 3 trials keys were in the console before the session and were held at the front (typeahead_front adopted=true); in the others every key was typed after auth_done or consumed by the login
+injector accounting: injector sent 689; app saw 689; lost-before-app 0 (Enter: sent 24, app saw 24); of the app's: 662 unbound keydown/typed, 6 taken by a key binding, 21 Enter by a binding
+pty writes: 50, of which carrying a CR (\r): 2; Enter(s) the input editor started: 21 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="agent@gitbash" name="pane_not_local_after_ssh_gitbash_typeahead_managed" time="0.00">
+<failure message="after ssh_gitbash_typeahead_managed the pane could not be proven back in the local shell (remote); the app is relaunched so later cases start clean">after ssh_gitbash_typeahead_managed the pane could not be proven back in the local shell (remote); the app is relaunched so later cases start clean</failure>
+</testcase>
+<testcase classname="agent@gitbash" name="key_delivery" time="0.00">
+</testcase>
+<testcase classname="agent@gitbash" name="ssh_gitbash_kill_switch" time="16.90">
+</testcase>
+<testcase classname="agent@gitbash" name="ui_palette" time="29.40">
+</testcase>
+<testcase classname="agent@gitbash" name="intl_wide_program" time="19.30">
+</testcase>
+<testcase classname="agent@gitbash" name="hostile_output_recovers" time="50.20">
+</testcase>
+<testcase classname="agent@gitbash" name="latency_enter_ssh" time="70.40">
+<skipped message="NO-REFERENCE (not a pass): measurement mode: sequential (this backend cannot keep both windows, or interleaving is disabled (APPCI_LAT_INTERLEAVE=0))"/>
+</testcase>
+<testcase classname="agent@gitbash" name="intl_compose_linux" time="0.00">
+<skipped message="not run on Windows: Linux xkb compose / dead keys (Windows has intl_altgr_ps / intl_altgr_bash)"/>
+</testcase>
+<testcase classname="agent@gitbash" name="history_up_recall" time="8.00">
+</testcase>
+<testcase classname="agent@gitbash" name="intl_ime_japanese" time="0.00">
+<skipped message="not run on Windows: macOS input methods (TISSelectInputSource). NEEDS: a Windows IME arm in the harness (not built; r14-test-gaps T39)"/>
+</testcase>
+<testcase classname="agent@gitbash" name="intl_ime_pinyin" time="0.00">
+<skipped message="not run on Windows: macOS input methods (TISSelectInputSource). NEEDS: a Windows IME arm in the harness (not built; r14-test-gaps T39)"/>
+</testcase>
+<testcase classname="agent@gitbash" name="scroll_keys_position" time="36.60">
+<skipped message="NO-REFERENCE (not a pass): control: the job printed 23 lines and none is on screen at the bottom of the agent view (shots/*skp_0_stream.png): the agent view does not draw a background job's output (#2145)"/>
+</testcase>
+<testcase classname="agent@gitbash" name="ime_compose" time="1.40">
+<skipped message="Windows: NEEDS: the language Chinese (Simplified, China) with the Microsoft Pinyin keyboard added for the runner user on the Windows VM (Settings &gt; Time &amp; Language &gt; Language &gt; Add a language). Owner:"/>
+</testcase>
+<testcase classname="agent@gitbash" name="intl_deadkey_option" time="0.00">
+<skipped message="not run on Windows: macOS Option dead keys"/>
+</testcase>
+<testcase classname="agent@gitbash" name="scroll_keys_foreground" time="21.40">
+</testcase>
+<testcase classname="agent@gitbash" name="intl_altgr_ps" time="0.80">
+<skipped message="PowerShell variant: runs in the PowerShell pane pass (intl_altgr_bash covers the Git Bash pane)"/>
+</testcase>
+<testcase classname="agent@gitbash" name="intl_altgr_bash" time="4.70">
+</testcase>
+<testcase classname="agent@gitbash" name="ui_mouse_select_copy" time="10.00">
+</testcase>
+<testcase classname="agent@gitbash" name="ui_copy_wrapped_output" time="10.10">
+</testcase>
+<testcase classname="agent@gitbash" name="ui_copy_wrapped_drag" time="10.80">
+</testcase>
+<testcase classname="agent@gitbash" name="selection_modes" time="28.10">
+</testcase>
+<testcase classname="agent@gitbash" name="primary_and_middle_click" time="0.00">
+<skipped message="not run on Windows: T23: the PRIMARY selection is an X11 / Wayland concept; Windows has one clipboard"/>
+</testcase>
+<testcase classname="agent@gitbash" name="link_and_path_click" time="0.00">
+<skipped message="not run on Windows: T21: not ported: the recording opener is a POSIX xdg-open on the app's PATH and the network trace is strace (the pointer itself exists since r15 wave 4)"/>
+</testcase>
+<testcase classname="agent@gitbash" name="wheel_scroll" time="0.00">
+<skipped message="not run on Windows: T24: not ported: bytes_reader.py needs termios (the wheel event exists since r15 wave 4: winapi.mouse_wheel_event; the OCR read exists since r23: winocr, Windows.Media.Ocr)"/>
+</testcase>
+<testcase classname="agent@gitbash" name="resize_reflow_output" time="3.40">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: the resize case was not run: NEEDS: a desktop of at least 1300x800 px on the Windows VM (it is 1280x800): the window sizes this case cycles through are "/>
+</testcase>
+<testcase classname="agent@gitbash" name="editor_daily" time="52.40">
+</testcase>
+<testcase classname="agent@gitbash" name="suggestion_chip_keeps_output" time="18.10">
+</testcase>
+<testcase classname="agent@gitbash" name="focus_cycle" time="17.90">
+</testcase>
+<testcase classname="agent@gitbash" name="gitbash_typeahead_reps" time="173.90">
+</testcase>
+<testcase classname="agent@gitbash" name="minimize_fullscreen" time="0.00">
+<skipped message="not run on Windows: r14 T30: no window-state call (minimise, restore, fullscreen) in the Windows backend yet (r14-test-gaps T33 built the resize only)"/>
+</testcase>
+<testcase classname="agent@gitbash" name="desktop_notification" time="63.90">
+</testcase>
+<testcase classname="agent@gitbash" name="md_viewer" time="8.70">
+</testcase>
+<testcase classname="agent@gitbash" name="md_viewer_ai_answer" time="8.30">
+</testcase>
+<testcase classname="agent@gitbash" name="md_viewer_first_frame" time="6.70">
+</testcase>
+<testcase classname="agent@gitbash" name="restore_shows_history" time="95.40">
+</testcase>
+<testcase classname="agent@gitbash" name="ui_vertical_tabs_many" time="112.20">
+</testcase>
+<testcase classname="agent@gitbash" name="ui_vertical_tabs_panel_click" time="39.90">
+<skipped message="NO-REFERENCE (not a pass): vertical tabs: on in the profile's settings (the owner's layout)"/>
+</testcase>
+<testcase classname="agent@gitbash" name="tab_pointer_use" time="0.00">
+<skipped message="not run on Windows: r14 T28: not ported in r15 wave 4 (r14-test-gaps T31 names five cases, this is not one): the pointer, the middle button and the live settings rewrite now exist; the shell-pid probe"/>
+</testcase>
+<testcase classname="agent@gitbash" name="tab_lifecycle_keys" time="50.60">
+</testcase>
+<testcase classname="agent@gitbash" name="keybinding_rebind" time="90.50">
+</testcase>
+<testcase classname="agent@gitbash" name="soak" time="676.60">
+</testcase>
+<testcase classname="agent@gitbash" name="output_frames" time="70.40">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: hidden streaming tabs: only 11 wakeups of hidden views in 6 s with 4 tabs meant to stream: the hidden streams were not running"/>
+</testcase>
+<testcase classname="agent@gitbash" name="tabs_two_windows" time="117.40">
+<failure message="typing/paste in window 2 under 12 streaming tabs: 5/16 exact lines (5 got, 11 expected line(s) missing)">typing/paste in window 2 under 12 streaming tabs: 5/16 exact lines (5 got, 11 expected line(s) missing)
+cleanup of tabs_two_windows: after 13 close key(s) the shell in front has pid 3331, expected the pass's own shell 1698 (a tab is still open: later cases would type into it)
+injector accounting: injector sent 3010; app saw 3010; lost-before-app 0 (Enter: sent 43, app saw 43); of the app's: 2935 unbound keydown/typed, 43 taken by a key binding, 32 Enter by a binding
+pty writes: 563, of which carrying a CR (\r): 25; Enter(s) the input editor started: 30 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="agent@gitbash" name="history_survives_restart" time="60.80">
+</testcase>
+<testcase classname="agent@gitbash" name="tabs_streaming" time="110.30">
+<failure message="typing under 12 streaming tabs: 2/10 exact lines (9 got, 1 expected line(s) missing)">typing under 12 streaming tabs: 2/10 exact lines (9 got, 1 expected line(s) missing)
+injector accounting: injector sent 2498; app saw 2498; lost-before-app 0 (Enter: sent 37, app saw 37); of the app's: 2419 unbound keydown/typed, 42 taken by a key binding, 37 Enter by a binding
+pty writes: 164, of which carrying a CR (\r): 14; Enter(s) the input editor started: 36 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="agent@gitbash" name="meta_and_word_keys" time="29.70">
+</testcase>
+<testcase classname="agent@pwsh7" name="mode_proof" time="2.30">
+</testcase>
+<testcase classname="agent@pwsh7" name="key_delivery" time="0.00">
+</testcase>
+<testcase classname="agent@pwsh7" name="fast_typing" time="52.80">
+</testcase>
+<testcase classname="agent@pwsh7" name="paste_instant_enter" time="5.50">
+</testcase>
+<testcase classname="agent@pwsh7" name="tab_enter" time="22.00">
+</testcase>
+<testcase classname="agent@pwsh7" name="ctrl_c_d" time="328.00">
+</testcase>
+<testcase classname="agent@pwsh7" name="routing_table_powershell" time="66.60">
+</testcase>
+<testcase classname="agent@pwsh7" name="history_up_recall" time="20.80">
+<failure message="hu.txt holds ['t85_0wiect8u', 't86_0tuwru76', 't87_a7hjuuue', 't86_0tuwru76', 't86_0tuwru769z'], expected ['t85_0wiect8u', 't86_0tuwru76', 't87_a7hjuuue', 't86_0tuwru76', 't86_0tuwre9z', 't88_2r43xyfd'] (first difference at line 5)">hu.txt holds ['t85_0wiect8u', 't86_0tuwru76', 't87_a7hjuuue', 't86_0tuwru76', 't86_0tuwru769z'], expected ['t85_0wiect8u', 't86_0tuwru76', 't87_a7hjuuue', 't86_0tuwru76', 't86_0tuwre9z', 't88_2r43xyfd'] (first difference at line 5)
+the shell did not receive exactly the six lines: line 5, Up, edit, Enter (the edited second command): expected 'Add-Content hu.txt t86_0tuwre9z', the shell received 'Add-Content hu.txt t86_0tuwru769z'
+the pane's history holds 22921 lines, more than the 5000 the app lists inline: the Up-arrow list was built in the background in this run (#2107: keys typed before it arrives are applied first)
+injector accounting: injector sent 146; app saw 146; lost-before-app 0 (Enter: sent 6, app saw 6); of the app's: 127 unbound keydown/typed, 13 taken by a key binding, 6 Enter by a binding
+pty writes: 10, of which carrying a CR (\r): 0; Enter(s) the input editor started: 7 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="agent@wsl" name="startup_shell_pass" time="0.00">
+<skipped message="a WSL distribution is not installed on this machine: the wsl pass cannot run (the harness installs nothing). NEEDS: the Windows Subsystem for Linux with one distribution installed and started once for"/>
+</testcase>
+<testcase classname="agent@fake" name="agent_suggestion_chip_keeps_output" time="0.00">
+<skipped message="not run in the PowerShell pane: #2138: as suggestion_chip_keeps_output (a `cat` confirmed from the bash prompt hook): runs once, in the Git Bash pane's fake-model pass"/>
+</testcase>
+<testcase classname="agent@fake" name="key_delivery" time="0.00">
+</testcase>
+<testcase classname="agent@fake" name="desktop_notification_agent_question" time="88.70">
+</testcase>
+<testcase classname="agent@fake" name="agent_close_undo_call_status" time="0.00">
+<skipped message="not run in the PowerShell pane: #2103: the scripted command is a POSIX printf whose output is not in its command line; the agent path does not depend on the pane's shell: runs once, in the Git Bash pa"/>
+</testcase>
+<testcase classname="agent@gitbash+fake" name="key_delivery" time="0.00">
+</testcase>
+<testcase classname="agent@gitbash+fake" name="agent_suggestion_chip_keeps_output" time="14.80">
+</testcase>
+<testcase classname="agent@gitbash+fake" name="desktop_notification_agent_question" time="61.60">
+</testcase>
+<testcase classname="agent@gitbash+fake" name="agent_close_undo_call_status" time="25.00">
+</testcase>
+<testcase classname="-" name="restore" time="0.00">
+</testcase>
+</testsuite>
