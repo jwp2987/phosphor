@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # script/ci/ci_seq.py: drive one GitLab pipeline for a build/* ref through a TEST TIER (docs/testing.md "Test tiers").
 #
-#   python3 script/ci/ci_seq.py build/<ref> [--tier fix|candidate|release] [--platforms linux,macos,windows]
+#   python3 script/ci/ci_seq.py build/<ref> [--tier fix|candidate|release|repo-validation] [--platforms linux,macos,windows]
 #                               [--tests '<nextest filterset>'] [--base <git ref>] [--skip job ...] [--dry-run]
 #   python3 script/ci/ci_seq.py build/<ref> --tier targeted --cases-file FILE [--skip job ...] [--collect] [--dry-run]
 #   (legacy positional job names after the ref still mean --skip)
@@ -24,11 +24,14 @@
 #                      Round 15 (#2056, #2063): sshlab-image and lab-helper right after check-linux; on the box after the Wayland and X11 app
 #                      jobs the lab job with every lab family (LAB_CANDIDATE_MATRIX) and app-test-replay-linux; on the Mac and on Windows the
 #                      lab job (quick matrix, the fixed slot on the box) after that platform's app tests. `--dry-run` prints the plan.
-#   release   (~16 h)  candidate + on the box test-shuttle-loom, fuzz-smoke, bench, mutants, mutants-warpui-core, and on EACH of
+#   release   (~16 h)  candidate + on the box input-timers-strict, test-shuttle-loom, fuzz-smoke, and on EACH of
 #                      macOS and Windows the same heavy set (-macos / -windows suffix), after that platform's unit suites. Every
 #                      suite runs on Linux, macOS and Windows ("the tests need to be the same on all boxes"); the one exception
 #                      is fuzz-smoke-windows (cargo-fuzz is Unix-only): it is never played, it is reported "unsupported" (neutral).
 #                      Times are estimates: the Mac/Windows suites have never run; the first release run records them.
+#   repo-validation    (owner 2026-11-12; alias `repo`) NOT a release gate and not part of any other tier: ONLY bench, bench-remote-server (box),
+#                      mutants, mutants-warpui-core and their -macos / -windows twins, one job at a time per machine, no build, no unit or app test.
+#                      They measure the code and its tests, not the app. Run on demand; --collect archives them like any suite (test-results/).
 #   targeted           (owner 2026-11-11) the proof run of a round's fixes, BEFORE the whole harness: only what --cases-file names. Per platform
 #                      (linux-wayland, linux-x11, linux-lab, macos, macos-lab, windows, windows-lab) the case names or globs, passed to that job
 #                      as APPCI_CASES exactly, with optional arm filters (modes -> APPCI_MODES, win_shells -> APPCI_WIN_SHELLS); per machine the
@@ -48,7 +51,12 @@ LINUX, MAC, WIN = "linux", "macos", "windows"
 BUILD = {LINUX: "build-linux-x86_64", MAC: "build-macos-arm64", WIN: "build-windows-x86_64"}
 APP = {LINUX: ["app-test-linux-wayland", "app-test-linux-x11"], MAC: ["app-test-macos"], WIN: ["app-test-windows"]}
 UNIT_SUFFIX = ["test", "test-warpui-core", "test-workspace-rest"]
-HEAVY_SUFFIX = ["input-timers-strict", "test-shuttle-loom", "fuzz-smoke", "bench", "mutants", "mutants-warpui-core"]
+HEAVY_SUFFIX = ["input-timers-strict", "test-shuttle-loom", "fuzz-smoke"]
+# Owner 2026-11-12: bench and mutants measure the code and its tests, not the app, so they are NOT in the release tier; the `repo-validation` tier
+# plays only these (docs/testing.md 2.9). Per platform: the box also has bench-remote-server; the Mac / Windows twins are <name>-macos / -windows.
+REPO_VALIDATION_SUFFIX = ["bench", "mutants", "mutants-warpui-core"]
+REPO_VALIDATION_BOX_ONLY = ["bench-remote-server"]
+TIER_ALIASES = {"repo": "repo-validation"}
 PLAT_SUFFIX = {MAC: "macos", WIN: "windows"}
 # #1502: the deterministic, cheap-enough suites that used to be manual in every pipeline and never played by any tier. Candidate and
 # release play them (the heavy ones stay in HEAVY_SUFFIX / release). GitLab names a parallel:matrix job "<name>: [<SHARD>]".
@@ -531,7 +539,7 @@ def app_tier_name(tier):
     """The APPCI_TIER value ci_seq plays the app tests with (recorded in results.json meta.tier). fix = smoke; candidate = full; release = release
     (#1495: script/ci/check_release_gate.py refuses a tag unless the app runs say `release`). Everything but smoke runs the full case set; a targeted
     run names its cases itself (APPCI_CASES) and records `targeted`."""
-    return {"fix": "smoke", "candidate": "full", "release": "release", "targeted": TARGETED_APP_TIER}[tier]
+    return {"fix": "smoke", "candidate": "full", "release": "release", "targeted": TARGETED_APP_TIER, "repo-validation": "repo-validation"}[tier]
 
 
 def release_gate_jobs():
@@ -544,6 +552,18 @@ def release_gate_jobs():
     out = {LINUX: [n for n in box if not skip(n)]}
     for p in PLAT_SUFFIX:
         out[p] = [n for n in plat_suites(p, True) if not skip(n)]
+    return out
+
+
+def repo_validation_plan(plats=(LINUX, MAC, WIN)):
+    """The `repo-validation` tier (owner 2026-11-12): {platform: [job names]} in play order, one job at a time per machine. Only bench, bench-remote-server
+    (box), mutants and mutants-warpui-core and their -macos / -windows twins: no build, no unit suite, no app or lab job."""
+    out = {}
+    for p in plats:
+        if p == LINUX:
+            out[p] = ["bench", "bench-remote-server", "mutants", "mutants-warpui-core"]
+        else:
+            out[p] = ["%s-%s" % (n, PLAT_SUFFIX[p]) for n in REPO_VALIDATION_SUFFIX]
     return out
 
 
@@ -922,8 +942,20 @@ def self_test_r15(yml, src):
          "box, fix / candidate / release: the unit (and, outside fix, integration / usage) suites come BEFORE the release build, the build before the app jobs"),
         (all(before(t[p], u, BUILD[p]) for t in (cand, rel) for p in (MAC, WIN) for u in plat_suites(p, False)) and all(before(t[p], BUILD[p], APP[p][0]) for t in (cand, rel) for p in (MAC, WIN)),
          "Mac and Windows, candidate / release: the platform's unit suites come BEFORE its build, the build before its app jobs"),
-        (before(rel[MAC], "app-test-macos", "mutants-macos") and before(rel[WIN], "app-test-windows", "mutants-windows") and before(rel[LINUX], "app-test-linux-wayland", "mutants"),
-         "release: the heavy, non-gating suites (mutants, loom, fuzz) stay AFTER the app jobs; they are not unit gates"),
+        (before(rel[MAC], "app-test-macos", "fuzz-smoke-macos") and before(rel[WIN], "app-test-windows", "test-shuttle-loom-windows") and before(rel[LINUX], "app-test-linux-wayland", "fuzz-smoke"),
+         "release: the heavy suites (input-timers-strict, loom, fuzz) stay AFTER the app jobs; they are not unit gates"),
+        (not any(n.startswith(("bench", "mutants")) for p in rel for n in rel[p]) and all(n in rel[LINUX] for n in HEAVY_SUFFIX)
+         and all(n + "-macos" in rel[MAC] and (n == "fuzz-smoke" or n + "-windows" in rel[WIN]) for n in HEAVY_SUFFIX),
+         "owner 2026-11-12: the release plan contains no bench / mutants job and still plays input-timers-strict, test-shuttle-loom, fuzz-smoke (and their twins)"),
+        (not any(n.startswith(("bench", "mutants")) for n in cand[LINUX] + cand[MAC] + cand[WIN]), "the candidate plan contains no bench / mutants job"),
+        (sorted(sum(repo_validation_plan().values(), [])) == sorted(["bench", "bench-remote-server", "mutants", "mutants-warpui-core", "bench-macos", "mutants-macos",
+              "mutants-warpui-core-macos", "bench-windows", "mutants-windows", "mutants-warpui-core-windows"])
+         and not any(n in BUILD.values() or n in sum(APP.values(), []) or n.startswith(("test-", "app-test", "integration", "usage", "lab", "sshlab")) for n in sum(repo_validation_plan().values(), []))
+         and repo_validation_plan((MAC,)) == {MAC: ["bench-macos", "mutants-macos", "mutants-warpui-core-macos"]},
+         "the repo-validation plan is exactly bench, bench-remote-server, mutants, mutants-warpui-core and their twins: no build, unit or app job"),
+        (TIER_ALIASES.get("repo") == "repo-validation" and app_tier_name("repo-validation") == "repo-validation"
+         and all(re.search(r"^%s:" % re.escape(n), yml, re.M) for n in sum(repo_validation_plan().values(), [])),
+         "--tier repo is the repo-validation tier"),
         (fix[MAC][0] == BUILD[MAC], "fix tier, Mac / Windows: no unit suites are played there, so the build stays first"),
         (fix[MAC] == [BUILD[MAC], "app-test-macos"] and fix[WIN] == [BUILD[WIN], "app-test-windows"] and LAB_HELPER_JOB not in fix[LINUX] and REPLAY_JOB not in fix[LINUX],
          "fix tier: no lab job off the box, no helper build, no replay"),
@@ -939,7 +971,7 @@ def self_test_r15(yml, src):
         (before(cand[MAC], "app-test-macos", LAB_APP[MAC]) and before(cand[MAC], "test-macos", "app-test-macos") and cand[MAC][-1] == LAB_APP[MAC],
          "candidate, Mac: unit suites, app tests, then the lab"),
         (before(cand[WIN], "app-test-windows", LAB_APP[WIN]) and cand[WIN][-1] == LAB_APP[WIN], "candidate, Windows: app tests, then the lab"),
-        (all(set(cand[p]) <= set(rel[p]) for p in cand) and before(rel[MAC], LAB_APP[MAC], "mutants-macos") and before(rel[LINUX], REPLAY_JOB, "mutants"),
+        (all(set(cand[p]) <= set(rel[p]) for p in cand) and before(rel[MAC], LAB_APP[MAC], "fuzz-smoke-macos") and before(rel[LINUX], REPLAY_JOB, "fuzz-smoke"),
          "release = candidate plus the heavy suites, which follow the lab"),
         (lab_tier_vars(LINUX) == {"APPCI_FAKE_MODEL": "1", "APPCI_LAB_MATRIX": LAB_CANDIDATE_MATRIX} and all('APPCI_CASES: "lab_*"' in job_block(j) for j in LAB_APP.values())
          and lab_tier_vars(MAC)["APPCI_LAB_MATRIX"] == "quick" == lab_tier_vars(WIN)["APPCI_LAB_MATRIX"], "candidate lab variables: every family on the box, the quick matrix on Mac and Windows, the scripted model"),
@@ -1315,7 +1347,8 @@ def main():
     ap = argparse.ArgumentParser(description="Drive a GitLab pipeline through a test tier; see the header of script/ci/ci_seq.py and docs/testing.md")
     ap.add_argument("ref", nargs="?", default="")
     ap.add_argument("skip_pos", nargs="*", help="legacy: job names to skip")
-    ap.add_argument("--tier", choices=["fix", "candidate", "release", "targeted"], default="fix")
+    ap.add_argument("--tier", choices=["fix", "candidate", "release", "targeted", "repo-validation", "repo"], default="fix",
+                    help="repo-validation (alias repo): only bench, bench-remote-server, mutants, mutants-warpui-core and their -macos/-windows twins (not a release gate)")
     ap.add_argument("--cases-file", default="", metavar="PATH",
                     help="--tier targeted: the JSON (or .toml) file that names, per platform, the app cases and the suites to play (script/ci/failed_cases.py writes one)")
     ap.add_argument("--platforms", default="")
@@ -1369,14 +1402,15 @@ def main():
             return 0
     if not a.ref:
         ap.error("ref is required")
-    ref, tier = a.ref, a.tier
+    ref, tier = a.ref, TIER_ALIASES.get(a.tier, a.tier)
     SKIP = set(a.skip_pos) | set(a.skip)
     PENDING_LIMIT[0] = a.pending_timeout * 60
     RUNNING_FACTOR[0] = a.running_factor
 
     sh("git", "fetch", "-q", "origin", check=True)
-    base = resolve_base(ref, a.base) if tier != "targeted" else ""
-    files = changed_files(base, ref) if tier != "targeted" and (tier == "fix" or a.dry_run) else []
+    rv = tier == "repo-validation"
+    base = resolve_base(ref, a.base) if tier != "targeted" and not rv else ""
+    files = changed_files(base, ref) if tier != "targeted" and not rv and (tier == "fix" or a.dry_run) else []
     filt, suites, plats = "", {"linux", "core", "rest"}, [LINUX, MAC, WIN]
     if tier == "fix":
         filt, suites, why = derive(files)
@@ -1397,7 +1431,9 @@ def main():
     elif a.platforms:
         plats = [p for p in a.platforms.split(",") if p]
     reuse = {}
-    if tier == "fix":
+    if rv:
+        print("reuse: none (the repo-validation tier plays no build)")
+    elif tier == "fix":
         if a.no_reuse:
             print("reuse: disabled (--no-reuse); building every platform")
         else:
@@ -1423,7 +1459,7 @@ def main():
     if a.dry_run:
         units = [n for n, k in (("test-linux", "linux"), ("test-warpui-core", "core"), ("test-workspace-rest", "rest")) if k in suites]
         print("plan (%s tier; per machine, in play order; a job in --skip is left out at run time):" % tier)
-        for p, names in tier_plan(tier, plats, reuse, units=units).items():
+        for p, names in (repo_validation_plan(plats) if rv else tier_plan(tier, plats, reuse, units=units)).items():
             print("  %-8s %s" % (p, " -> ".join(names)))
         return 0
     fvars = {"TEST_FILTER": filt} if (tier == "fix" and filt) else None
@@ -1586,6 +1622,24 @@ def main():
             return lab_image_state[0]
 
     print("pipeline", pid, "tier", tier, flush=True)
+    if rv:
+        # owner 2026-11-12: one job at a time per machine (machines in parallel); no build, no unit suite, no app job. wait() ends a job still running
+        # after --running-factor times its own timeout as RUNNING-DEADLINE and the run goes on. Not a release gate: bench / mutants stay INFO in verdict().
+        def rv_machine(p, names):
+            for n in names:
+                if n in SKIP:
+                    continue
+                if n in UNSUPPORTED:
+                    timeline[n] = (PLATFORM_UNSUPPORTED, None); continue
+                play_wait(n, None, "repo validation")
+        rv_threads = [threading.Thread(target=rv_machine, args=(p, names), daemon=True) for p, names in repo_validation_plan(plats).items()]
+        for t in rv_threads:
+            t.start()
+        for t in rv_threads:
+            t.join()
+        summary(timeline, t_start)
+        collect_hint(pid, a.collect, tier)
+        return 0 if all(verdict(k, v[0]) not in ("FAIL", "OFFLINE") for k, v in timeline.items()) else 1
     if tier == "targeted":
         import types
         print_targeted_plan(tplan, SKIP, tdoc)
@@ -1796,7 +1850,7 @@ def main():
                     mine = n in started
                 if mine:
                     print(n, wait(n), flush=True)
-        for n in ["input-timers-strict", "test-shuttle-loom", "fuzz-smoke", "bench", "mutants", "mutants-warpui-core"]:
+        for n in HEAVY_SUFFIX:
             if n not in SKIP: play(n)
     for t in watchers:
         t.join()
@@ -1832,7 +1886,7 @@ def main():
                 print("%s: %s succeeded late; started %s" % (time.strftime("%H:%M"), b, n), flush=True)
                 print(n, wait(n), flush=True)
     if tier == "release":
-        for n in ["input-timers-strict", "test-shuttle-loom", "fuzz-smoke", "bench", "mutants", "mutants-warpui-core"]:
+        for n in HEAVY_SUFFIX:
             if n not in SKIP and jobs().get(n, {}).get("status") not in (None, "manual"): print(n, wait(n), flush=True)
     network_jobs(jobs, wait, timeline)
     check_app_results(jobs, timeline)

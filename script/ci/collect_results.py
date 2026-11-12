@@ -2,7 +2,7 @@
 # script/ci/collect_results.py: archive one GitLab pipeline's test results under test-results/ (owner rule 2026-11-02: "every test
 # result is kept in the repo for regression review"). The coordinator commits the output; CI never pushes.
 #
-#   python3 script/ci/collect_results.py <pipeline_id | build/ref | ref> [--out test-results] [--tier fix|candidate|release|targeted] [--cases-file FILE]
+#   python3 script/ci/collect_results.py <pipeline_id | build/ref | ref> [--out test-results] [--tier fix|candidate|release|targeted|repo-validation] [--cases-file FILE]
 #   python3 script/ci/collect_results.py --self-test        (the pure parts: usage-suite parsing, tier inference; no network)
 #
 # Writes <out>/<YYYY-MM-DD>_<ref-sanitized>_<pipeline>/ with manifest.json, unit/<job>.json, app/<platform>/..., README.md, and
@@ -31,14 +31,16 @@ WARN_BYTES = 5 * 1024 * 1024
 PLATS = ("macos", "windows")
 UNIT_JOBS = ("test-linux", "test-warpui-core", "test-workspace-rest", "integration-linux", "test-shuttle-loom") + \
     tuple("%s-%s" % (n, p) for p in PLATS for n in ("test", "test-warpui-core", "test-workspace-rest", "test-shuttle-loom"))
-NUMBERS_JOBS = ("bench", "fuzz-smoke", "mutants", "mutants-warpui-core") + tuple("%s-%s" % (n, p) for p in PLATS for n in ("bench", "fuzz-smoke", "mutants", "mutants-warpui-core"))
+NUMBERS_JOBS = ("bench", "bench-remote-server", "fuzz-smoke", "mutants", "mutants-warpui-core") + tuple("%s-%s" % (n, p) for p in PLATS for n in ("bench", "fuzz-smoke", "mutants", "mutants-warpui-core"))
 GUARD_JOBS = ("guards", "advisories", "licenses")
 # round 15 (#2064): the usage / acceptance suite (script/usage-test). It prints one NDJSON object per scenario and a final {"summary": ...} on stdout
 # (crates/usage_suite/src/report.rs); the job had a row in the job table and no result. Archived as unit/<job>.json in the shape of a nextest suite.
 USAGE_JOBS = ("usage-test-linux", "usage-test-macos")
 # round 15 (#2063): the two lab set-up jobs keep their ERROR lines (a lab-helper that lacks its build tools says which, #2062)
 SETUP_JOBS = ("lab-helper", "sshlab-image")
-RELEASE_JOBS = ("test-shuttle-loom", "fuzz-smoke", "bench", "mutants", "mutants-warpui-core") + tuple("%s-%s" % (n, p) for p in PLATS for n in ("test-shuttle-loom", "fuzz-smoke", "bench", "mutants", "mutants-warpui-core"))
+RELEASE_JOBS = ("test-shuttle-loom", "fuzz-smoke") + tuple("%s-%s" % (n, p) for p in PLATS for n in ("test-shuttle-loom", "fuzz-smoke"))
+# owner 2026-11-12: bench and mutants are the `repo-validation` tier (ci_seq.py --tier repo-validation), no longer part of the release tier
+REPO_VALIDATION_JOBS = ("bench", "bench-remote-server", "mutants", "mutants-warpui-core") + tuple("%s-%s" % (n, p) for p in PLATS for n in ("bench", "mutants", "mutants-warpui-core"))
 ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 PREFIX = re.compile(r"^\d{4}-\d\d-\d\dT[\d:.]+Z \d\d[OE]\+? ?")
 FIN = ("success", "failed")
@@ -205,6 +207,8 @@ def infer_tier(status_of):
     ran = lambda n: status_of.get(n) not in (None, "manual", "created", "skipped", "waiting_for_resource", "pending")
     if any(ran(n) for n in RELEASE_JOBS):
         return "release"
+    if any(ran(n) for n in REPO_VALIDATION_JOBS) and not any(ran(n) for n in ("test-linux", "test-warpui-core", "test-workspace-rest", "check-linux")):
+        return "repo-validation"
     if all(ran(n) for n in ("test-linux", "test-warpui-core", "test-workspace-rest")) and any(ran(n) for n in status_of if n.startswith("integration-linux")):
         return "candidate"
     return "fix"
@@ -619,7 +623,7 @@ def main():
     ap = argparse.ArgumentParser(description="archive one GitLab pipeline's test results under test-results/")
     ap.add_argument("pipeline", nargs="?", help="pipeline id, or a build/<ref> (its newest pipeline)")
     ap.add_argument("--out", default="test-results")
-    ap.add_argument("--tier", choices=["fix", "candidate", "release", "targeted"], help="the tier that was played (ci_seq.py passes it); else the app runs' own meta.tier, else inferred")
+    ap.add_argument("--tier", choices=["fix", "candidate", "release", "targeted", "repo-validation"], help="the tier that was played (ci_seq.py passes it); else the app runs' own meta.tier, else inferred")
     ap.add_argument("--cases-file", default="", help="a targeted run's cases file (ci_seq.py --tier targeted passes it): kept in the manifest as `targeted`, so the record says what was asked for")
     ap.add_argument("--self-test", action="store_true", help="check the pure parts (usage-suite parsing, tier inference) and exit")
     a = ap.parse_args()
@@ -641,6 +645,9 @@ def main():
     os.makedirs(os.path.join(d, "unit"))
     man = {"pipeline": pid, "web_url": pl.get("web_url"), "ref": pl["ref"], "commit": pl["sha"], "created_at": pl["created_at"], "date": date, "tier": tier,
            "pipeline_status": pl["status"], "jobs": {}, "unit": {}, "app": {}, "notes": []}
+    if tier == "repo-validation":
+        man["notes"].append("REPO VALIDATION run (ci_seq.py --tier repo-validation): bench and mutants measure the code and its tests, not the app. Not a release gate; "
+                            "no unit or app tests were played.")
     if tier == "targeted":
         man["notes"].append(TARGETED_NOTE)
         if a.cases_file:
@@ -762,7 +769,13 @@ def self_test():
     units = {"test-linux": "success", "test-warpui-core": "success", "test-workspace-rest": "failed"}
     rows.append((infer_tier(dict(units, **{"app-test-linux-x11": "success"})) == "fix", "all three unit suites and a long x11 run is still the fix tier (#2058: the fix tier plays x11)"))
     rows.append((infer_tier(dict(units, **{"integration-linux: [2]": "failed"})) == "candidate" and infer_tier(dict(units, **{"integration-linux: [1]": "manual"})) == "fix", "the integration suite having run is what marks a candidate run"))
-    rows.append((infer_tier(dict(units, **{"mutants-macos": "success"})) == "release" and infer_tier({}) == "fix", "a release-only suite marks a release run; nothing ran = fix"))
+    rows.append((infer_tier(dict(units, **{"fuzz-smoke-macos": "success"})) == "release" and infer_tier({}) == "fix", "a release-only suite marks a release run; nothing ran = fix"))
+    rows.append((infer_tier({"mutants-macos": "success", "bench": "failed"}) == "repo-validation" and infer_tier(dict(units, **{"mutants": "success"})) == "fix"
+                 and infer_tier({"mutants-macos": "success", "fuzz-smoke-macos": "success"}) == "release",
+                 "bench / mutants alone mark a repo-validation run (no longer a release run); with the unit suites they are not a release marker"))
+    rows.append((all(n in NUMBERS_JOBS for n in REPO_VALIDATION_JOBS if n.rsplit("-", 1)[-1] not in PLATS or n[:n.rindex("-")] in NUMBERS_JOBS)
+                 and "bench-remote-server" in NUMBERS_JOBS and "mutants-windows" in [n for n in REPO_VALIDATION_JOBS],
+                 "every repo-validation job is archived as a numbers job (unit/<job>.json)"))
     rows.append(([tier_from_app_meta({"wayland": {"meta": {"tier": t}}}) for t in ("smoke", "full", "release", "")] == ["fix", "candidate", "release", None]
                  and tier_from_app_meta({"a": {"meta": {"tier": "smoke"}}, "b": {"meta": {"tier": "full"}}}) == "candidate" and tier_from_app_meta({}) is None,
                  "the app runs' own meta.tier names the tier"))
