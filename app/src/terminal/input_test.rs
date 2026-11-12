@@ -19415,6 +19415,18 @@ async fn recall_terminal(
     commands.push("cmd_older_x1".to_string());
     commands.push("cmd_t246_uu59vu93".to_string());
     let terminal = add_window_with_bootstrapped_terminal(app, Some(commands), None).await;
+    // The menu's data source reads the history of the ACTIVE session (`ActiveSession`, set from
+    // the model event dispatcher). The bootstrapped test terminal never sets it, so without this
+    // the source sees no session, answers inline with no rows, and the Up arrow recalls nothing.
+    let session_id = terminal.update(app, |terminal, _| {
+        let mut model = terminal.model.lock();
+        model
+            .block_list_mut()
+            .active_block_for_test()
+            .session_id()
+            .expect("the bootstrapped test terminal has a session")
+    });
+    simulate_directory_for_completion(session_id, &terminal, app, "/");
     let input = terminal.read(app, |terminal, _| terminal.input().clone());
     let editor = input.read(app, |input, _| input.editor().clone());
     let executed = Rc::new(RefCell::new(Vec::<String>::new()));
@@ -19471,6 +19483,10 @@ fn run_recall_scenario(keys: Vec<RecallKey>) -> RecallOutcome {
             gate_open_after_up: recall_gate_open(&app, &editor),
             ..RecallOutcome::default()
         };
+        assert!(
+            outcome.gate_open_after_up,
+            "the Up arrow must reach the pending recall (menu open, list pending, gate open) before any key is typed"
+        );
         for key in keys {
             editor.update(&mut app, |editor, ctx| match &key {
                 RecallKey::Action(action) => editor.handle_action(action, ctx),
