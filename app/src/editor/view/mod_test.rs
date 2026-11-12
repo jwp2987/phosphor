@@ -5448,6 +5448,38 @@ fn test_queue_keys_typed_during_a_pending_paste_apply_after_it_in_order() {
     })
 }
 
+// #2193: the keys held behind a paste land in typing order whatever the turn they apply in
+// (Windows saw 'abPASTExy': the Backspace had not applied when the buffer was read), and the hold
+// reports an unapplied key until the last one is in the buffer, though the paste read is over.
+#[test]
+fn test_keys_held_behind_a_paste_apply_in_typing_order_and_are_reported_until_applied() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let (_, view) = app.add_window(WindowStyle::NotStealFocus, |ctx| {
+            EditorView::new_with_base_text("ab", Default::default(), ctx)
+        });
+        view.update(&mut app, |view, ctx| {
+            view.move_to_buffer_end(ctx);
+            let id = start_queued_paste(view, ctx);
+            assert!(view.paste_hold().has_pending());
+            assert!(view.paste_hold().has_unapplied_keys());
+            view.apply_held_paste_key(HeldPasteKey::Text("xy".to_owned()), ctx);
+            view.apply_held_paste_key(HeldPasteKey::Action(EditorAction::Backspace), ctx);
+            assert_eq!(view.buffer_text(ctx), "ab");
+            view.user_initiated_insert("PASTE", PlainTextEditorViewAction::Paste, ctx);
+            finish_queued_paste(view, ctx, id, Ok(Vec::new()));
+            // The read is over; the Backspace behind 'xy' is not applied yet and must be reported.
+            assert!(!view.paste_hold().has_pending());
+            assert!(view.paste_hold().has_unapplied_keys());
+            assert_eq!(view.buffer_text(ctx), "abPASTExy");
+        });
+        view.read(&app, |view, ctx| {
+            assert_eq!(view.buffer_text(ctx), "abPASTEx");
+            assert!(!view.paste_hold().has_unapplied_keys());
+        });
+    })
+}
+
 // #1635: on the pane's shared queue (display gate on), a key the EDITOR's host delivers from a
 // non-flush drain waits for the display map exactly as on the input's host: a cursor key and a
 // typed closer open the display-map gate instead of applying against the pre-paste map.

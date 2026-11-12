@@ -15434,7 +15434,12 @@ fn test_slow_clipboard_read_does_not_block_and_keys_follow_the_paste() {
 
         release.send(()).unwrap();
         for _ in 0..1000 {
-            let pending = editor.read(&app, |editor, _| editor.paste_hold().has_pending());
+            // #2193: `has_pending` is the paste's READ; the Backspace behind it applies in a
+            // later turn (it waits for the display map), so wait until no held key is left.
+            let pending = editor.read(&app, |editor, _| {
+                let hold = editor.paste_hold();
+                hold.has_pending() || hold.has_unapplied_keys()
+            });
             if !pending {
                 break;
             }
