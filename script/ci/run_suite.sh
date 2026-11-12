@@ -39,10 +39,13 @@ done
 # the step never ended (Windows test job: 3 h until cancelled). run_bounded ends the process tree IT started (Job Object on Windows, own
 # process group elsewhere; never anything else) as soon as the command returns, and gives the command SUITE_TIMEOUT_MIN minutes (under the job
 # timeout in .gitlab-ci.yml), then exits 124. $BASH_EXE is a native path so python.exe can start it on Windows.
+# #2148 (r22c): tests must never leave a git fsmonitor daemon (a long-lived git.exe that inherits the job's pipe). Env config reaches every git
+# the tests start, whatever repo they build.
+export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.fsmonitor GIT_CONFIG_VALUE_0=false
 BASH_EXE="$(cygpath -w "$BASH" 2>/dev/null || echo "$BASH")"
 bounded() {   # bounded <minutes> <script> args...: run a repo bash script, end its tree on return
   local mins="$1"; shift
-  "$PY" script/ci/run_bounded.py --timeout-min "$mins" -- "$BASH_EXE" "$@"
+  "$PY" script/ci/run_bounded.py --timeout-min "$mins" --done-regex '\[agent-cargo\] RESULT ' --done-grace 90 -- "$BASH_EXE" "$@"
 }
 
 # Install a cargo tool into the CI user's own ~/.cargo/bin when missing (pinned cargo-binstall: script/install_cargo_binstall).

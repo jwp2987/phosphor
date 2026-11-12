@@ -8090,6 +8090,17 @@ is told, by two toasts. Off: `PHOSPHOR_SUBSHELL_RELAY_NOTE=0` (the old toast at 
   group. Every process ended is logged (`run_bounded: ...`). The command also has `SUITE_TIMEOUT_MIN` minutes (270 / 100 / 220 for the three
   Windows jobs, set in `.gitlab-ci.yml`, each under the job timeout); on expiry the tree is ended and the step exits 124. A leaky test (nextest
   `LEAK`) used to keep the job's output pipe open and the step sat until the job was cancelled. Only processes started by the command are touched.
+- **Why #2148 survived the first fix (r22c, root cause).** `run_bounded` only ended the tree when its command *returned*. The command
+  (`check_test_failures`) never returned: inside it `agent-cargo ... nextest | tee` waits for `tee`, `tee` waits for EOF, and a `git.exe`
+  started by a test (01:45Z, still alive) held the pipe's write end, so after nextest's Summary and agent-cargo's RESULT line nothing
+  returned and nothing was reaped. Fixes: (1) the command is started `CREATE_SUSPENDED` into the Job Object and resumed after assignment (no
+  descendant can predate the job; breakaway is not allowed); (2) `run_bounded` now copies the command's output through a pipe and, `--done-grace`
+  (90 s) after the `[agent-cargo] RESULT` line, ends every process in the job that is not CMD or one of the script's own tools (bash, tee, sed,
+  grep, ...; `KEEP` in `run_bounded.py`), by PID, logged, so the pipeline finishes with its own verdict and exit status; 60 s later, if it still
+  has not returned, the whole tree is ended (exit 125). After the command, the job is closed and any process whose command line names the build
+  dir is ended by PID (`_sweep_dir`). (3) `run_suite.sh` exports `GIT_CONFIG_COUNT=1 core.fsmonitor=false` so tests cannot start git fsmonitor
+  daemons. `SUITE_TIMEOUT_MIN` still bounds the step. Self-test adds the r22c shape (a leaker holding a `| cat` pipeline after the RESULT line:
+  the script's exit status 5 survives), the pure `pick_victims`, and a structure check of the Windows calls; the Windows path itself runs only in CI.
 - **app-test cleanup (#2150).** `script/realapp/reap_leftovers.sh` (`reap_leftovers OUT`) ends, by exact PID after logging it (`reap: leftover pid ...`),
   every process whose command line names the job's out dir, except the calling script and its ancestors. TERM, up to 4 s, then KILL. macOS
   `app_test.sh` calls it in `cleanup` (it only listed them before) and also starts a watchdog that TERMs the script at `CI_JOB_TIMEOUT` minus 900 s
