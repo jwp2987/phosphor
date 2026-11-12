@@ -6059,7 +6059,10 @@ impl Input {
         }
         let appearance = Appearance::as_ref(app);
         let editor = self.editor.as_ref(app);
-        let cell_width_px = editor.em_width(app.font_cache(), appearance);
+        let cell_width_px = suggestion_chip::chip_cell_width(
+            editor.em_width(app.font_cache(), appearance),
+            self.size_info(app).cell_width_px().as_f32(),
+        );
         // The editor's width is not known before layout. This is at or under it in every input
         // layout (terminal padding on both sides; the universal input's margins and border fit
         // in the 16 px), so the chip can only come out narrower than the room there is.
@@ -6084,6 +6087,33 @@ impl Input {
                 max_width,
                 shows_keystroke: suggestion_chip::chip_shows_keystroke(max_width, cell_width_px),
             },
+        )
+    }
+
+    /// Why the chip has the size it has (or none), for a test's failure message: the gating
+    /// flags and the numbers `suggestion_chip_size` works from.
+    pub fn suggestion_chip_explanation(&self, app: &AppContext) -> String {
+        let line = suggestion_chip::ChipLine::default();
+        let appearance = Appearance::as_ref(app);
+        let editor = self.editor.as_ref(app);
+        let em_width = editor.em_width(app.font_cache(), appearance);
+        let grid_cell = self.size_info(app).cell_width_px().as_f32();
+        let cell = suggestion_chip::chip_cell_width(em_width, grid_cell);
+        let editor_width =
+            self.size_info(app).pane_width_px().as_f32() - 2. * *TERMINAL_VIEW_PADDING_LEFT - 16.;
+        format!(
+            "visible={} enabled={} placement={:?} editor_em_width={em_width} grid_cell_width={grid_cell} \
+             cell_used={cell} editor_width_px={editor_width} min_chip_px={} buffer_cols={} \
+             size={:?}",
+            self.prompt_suggestion_is_visible(),
+            suggestion_chip::suggestion_chip_enabled(),
+            suggestion_chip::suggestion_placement(
+                suggestion_chip::suggestion_chip_enabled(),
+                line.first_line_known
+            ),
+            suggestion_chip::CHIP_MIN_CELLS * cell,
+            suggestion_chip::first_line_cols(&editor.buffer_text(app)),
+            self.suggestion_chip_size(line, app).map(|s| s.max_width),
         )
     }
 
