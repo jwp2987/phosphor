@@ -457,6 +457,12 @@ pub fn ignored_children_command(kind: ShellKind, path: &str) -> String {
 
 /// Section `files`: every non-ignored file of the repository at `root`, capped.
 pub fn repo_files_command(kind: ShellKind, root: &str) -> String {
+    repo_files_command_capped(kind, root, MAX_REPO_LIST_BYTES)
+}
+
+/// [`repo_files_command`] with the list cut at `cap` bytes (the batched refresh asks for less
+/// than the standalone call and falls back to the standalone one when the list reaches it).
+pub fn repo_files_command_capped(kind: ShellKind, root: &str, cap: usize) -> String {
     let q = quote(kind, root);
     if kind.is_powershell() {
         format!(
@@ -465,13 +471,18 @@ pub fn repo_files_command(kind: ShellKind, root: &str) -> String {
     } else {
         format!(
             "cd -- {q} 2>/dev/null || exit 2\n\
-             git ls-files -co --exclude-standard -z 2>/dev/null | head -c {MAX_REPO_LIST_BYTES}"
+             git ls-files -co --exclude-standard -z 2>/dev/null | head -c {cap}"
         )
     }
 }
 
 /// Section `ignoredpaths`: the repository's ignored paths, directories collapsed to `dir/`.
 pub fn repo_ignored_command(kind: ShellKind, root: &str) -> String {
+    repo_ignored_command_capped(kind, root, MAX_IGNORED_LIST_BYTES)
+}
+
+/// [`repo_ignored_command`] with the list cut at `cap` bytes.
+pub fn repo_ignored_command_capped(kind: ShellKind, root: &str, cap: usize) -> String {
     let q = quote(kind, root);
     if kind.is_powershell() {
         format!(
@@ -481,7 +492,7 @@ pub fn repo_ignored_command(kind: ShellKind, root: &str) -> String {
     } else {
         format!(
             "cd -- {q} 2>/dev/null || exit 2\n\
-             git ls-files -oi --exclude-standard --directory -z 2>/dev/null | head -c {MAX_IGNORED_LIST_BYTES}"
+             git ls-files -oi --exclude-standard --directory -z 2>/dev/null | head -c {cap}"
         )
     }
 }

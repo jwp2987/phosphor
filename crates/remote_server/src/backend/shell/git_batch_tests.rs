@@ -29,6 +29,8 @@ struct Sh {
     truncate_first: bool,
     /// Every answer loses the framed section with this name.
     drop_section: Option<&'static str>,
+    /// ... but only the first exec's (a fallback exec for that section then gets its answer).
+    drop_first_only: bool,
 }
 
 impl Sh {
@@ -87,7 +89,10 @@ impl OutOfBandExecutor for Sh {
                 .output()
                 .map_err(|e| ExecError::Failed(e.to_string()))?;
             let mut stdout = out.stdout;
-            if let Some(name) = self.drop_section {
+            if let Some(name) = self
+                .drop_section
+                .filter(|_| nth == 1 || !self.drop_first_only)
+            {
                 stdout = without_section(&String::from_utf8_lossy(&stdout), name).into_bytes();
             }
             Ok(ExecOutput {
@@ -445,6 +450,7 @@ fn gh_is_answered_not_found_without_an_exec_only_when_the_script_saw_no_gh() {
         Some(Arc::new(Prefetched {
             entries: HashMap::new(),
             gh_available,
+            ..Prefetched::default()
         }))
     };
 
@@ -521,4 +527,245 @@ fn an_upstream_range_is_filed_when_the_header_matches_and_the_log_is_the_section
     ];
     assert_eq!(prefetched.entries[&key].stdout, b"COMMIT:abc\tsubject\n");
     assert_eq!(prefetched.gh_available, None);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Lever B: the file tree rides in the same script (#2156).
+
+fn canonical(dir: &tempfile::TempDir) -> String {
+    std::fs::canonicalize(dir.path())
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_owned()
+}
+
+fn backend_with_caps(sh: &Arc<Sh>, caps: TreeCaps) -> ShellBackend {
+    ShellBackend::new(Some(sh.clone()))
+        .with_git_batch(Arc::new(
+            GitBatchStore::with_join_window(Duration::from_secs(3600)).with_tree_caps(caps),
+        ))
+        .with_git_batching(true)
+}
+
+/// The per-call answer of the tree: batching off, so it is the navigation probe and one list script.
+fn tree_per_call(path: &str) -> (ShellBackend, Arc<Sh>) {
+    let sh = Sh::new();
+    let be = ShellBackend::new(Some(sh.clone())).with_git_batching(false);
+    block_on(be.navigate_to_directory_shell(path.to_owned())).unwrap();
+    (be, sh)
+}
+
+fn pushes(be: &ShellBackend) -> String {
+    format!("{:?}", be.take_pushes())
+}
+
+#[test]
+fn the_tree_sections_are_valid_sh() {
+    let runner = ShellGitRunner::new(Sh::new());
+    let script = build_script(&runner, "/some/it's repo")
+        .and_then(|s| add_tree_sections(s, ShellKind::Posix, "/some/it's repo", TreeCaps::DEFAULT))
+        .unwrap();
+    for name in ["canon", "git", "files", "ignoredpaths"] {
+        assert!(script.section_names().contains(&name), "{name}");
+    }
+    let source = script.render_posix();
+    for shell in ["sh", "dash"] {
+        let Ok(mut child) = std::process::Command::new(shell)
+            .arg("-n")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+        else {
+            continue;
+        };
+        use std::io::Write as _;
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(source.as_bytes())
+            .unwrap();
+        let out = child.wait_with_output().unwrap();
+        assert!(
+            out.status.success(),
+            "{shell} -n: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+}
+
+#[test]
+fn a_cd_into_a_repository_costs_one_exec_for_tree_status_diff_and_pr_check() {
+    if !git_available() {
+        return;
+    }
+    let dir = repo_with(&[("a.txt", "one\n"), ("src/b.rs", "fn main() {}\n")]);
+    let path = canonical(&dir);
+    let branch = git(dir.path(), &["rev-parse", "--abbrev-ref", "HEAD"])
+        .trim()
+        .to_owned();
+    let sh = Sh::new();
+    let be = backend(&sh);
+
+    let nav = block_on(be.navigate_to_directory_shell(path.clone())).unwrap();
+    assert!(nav.is_git);
+    assert_eq!(nav.indexed_path, path);
+    let status = block_on(be.git_status_shell(&path, None)).unwrap();
+    assert!(status.is_some());
+    block_on(be.pr_info_shell(&path, Some(Some(branch)), false)).unwrap();
+    block_on(be.get_diff_state_shell(GetDiffState {
+        repo_path: path.clone(),
+        ..Default::default()
+    }))
+    .unwrap();
+    // The prompt's tree refresh joins the same generation.
+    block_on(be.refresh_repo_tree(&path)).unwrap();
+    assert_eq!(sh.count(), 1, "tree + status + diff + PR check");
+    assert!(
+        pushes(&be).contains("a.txt"),
+        "the snapshot carries the tree"
+    );
+}
+
+#[test]
+fn the_batched_tree_is_the_per_call_tree_for_a_navigation_and_a_refresh() {
+    if !git_available() {
+        return;
+    }
+    for f in fixtures() {
+        let path = canonical(&f.repo);
+        let sh = Sh::new();
+        let be = backend_no_join(&sh);
+        block_on(be.navigate_to_directory_shell(path.clone())).unwrap();
+        let (off, off_sh) = tree_per_call(&path);
+        assert_eq!(pushes(&be), pushes(&off), "{}: the snapshot", f.name);
+        assert_eq!(sh.count(), 1, "{}: the navigation is one exec", f.name);
+        assert_eq!(off_sh.count(), 2, "{}: probe + lists", f.name);
+
+        // The tree changes; the refresh pushes the same difference either way.
+        std::fs::write(f.repo.path().join("added.txt"), "x\n").unwrap();
+        std::fs::create_dir_all(f.repo.path().join("newdir/inner")).unwrap();
+        std::fs::write(f.repo.path().join("newdir/inner/c.txt"), "c\n").unwrap();
+        block_on(be.refresh_repo_tree(&path)).unwrap();
+        block_on(off.refresh_repo_tree(&path)).unwrap();
+        let (batched, plain) = (pushes(&be), pushes(&off));
+        assert!(batched.contains("added.txt"), "{}: {batched}", f.name);
+        assert_eq!(batched, plain, "{}: the refresh", f.name);
+        assert_eq!(sh.count(), 2, "{}: one exec per refresh", f.name);
+    }
+}
+
+#[test]
+fn a_capped_or_missing_tree_list_falls_back_to_its_own_exec_with_the_same_answer() {
+    if !git_available() {
+        return;
+    }
+    let dir = repo_with(&[
+        ("a.txt", "one\n"),
+        (".gitignore", "build_output_directory/\n"),
+    ]);
+    std::fs::create_dir(dir.path().join("build_output_directory")).unwrap();
+    std::fs::write(dir.path().join("build_output_directory/o.bin"), "o\n").unwrap();
+    let path = canonical(&dir);
+    let (off, _) = tree_per_call(&path);
+    let want = pushes(&off);
+    assert!(want.contains("build_output_directory"), "{want}");
+
+    // Control: the default caps take both lists from the batch.
+    let sh = Sh::new();
+    let be = backend(&sh);
+    block_on(be.navigate_to_directory_shell(path.clone())).unwrap();
+    assert_eq!((pushes(&be), sh.count()), (want.clone(), 1));
+
+    let big = 1024 * 1024;
+    for (what, caps) in [
+        (
+            "both lists capped",
+            TreeCaps {
+                files: 16,
+                ignored: 16,
+            },
+        ),
+        (
+            "only the files list capped",
+            TreeCaps {
+                files: 16,
+                ignored: big,
+            },
+        ),
+        (
+            "only the ignored list capped",
+            TreeCaps {
+                files: big,
+                ignored: 16,
+            },
+        ),
+    ] {
+        let sh = Sh::new();
+        let be = backend_with_caps(&sh, caps);
+        block_on(be.navigate_to_directory_shell(path.clone())).unwrap();
+        assert_eq!(pushes(&be), want, "{what}");
+        // The batch, and ONE exec for whichever lists were capped.
+        assert_eq!(sh.count(), 2, "{what}");
+    }
+
+    for section in ["files", "ignoredpaths"] {
+        let sh = Arc::new(Sh {
+            drop_section: Some(section),
+            drop_first_only: true,
+            ..Sh::default()
+        });
+        let be = backend(&sh);
+        block_on(be.navigate_to_directory_shell(path.clone())).unwrap();
+        assert_eq!(pushes(&be), want, "{section} missing");
+        assert_eq!(sh.count(), 2, "{section} missing costs only itself");
+    }
+}
+
+#[test]
+fn a_tree_list_at_its_cap_is_dropped_from_the_batch_and_the_others_stay() {
+    let frame = Frame {
+        sections: vec![
+            section("canon", 0, "/r\n"),
+            section("git", 0, "/r\n"),
+            section("files", 0, &"x".repeat(100)),
+            section("ignoredpaths", 0, "dir/\0"),
+        ],
+    };
+    let tree = tree_frame(
+        &frame,
+        TreeCaps {
+            files: 100,
+            ignored: 1000,
+        },
+    )
+    .unwrap();
+    assert!(tree.section("files").is_none());
+    for kept in ["canon", "git", "ignoredpaths"] {
+        assert!(tree.section(kept).is_some(), "{kept}");
+    }
+    let all = tree_frame(&frame, TreeCaps::DEFAULT).unwrap();
+    assert!(all.section("files").is_some());
+}
+
+#[test]
+fn the_kill_switch_keeps_the_tree_on_its_own_commands() {
+    if !git_available() {
+        return;
+    }
+    let dir = repo_with(&[("a.txt", "one\n")]);
+    let path = canonical(&dir);
+    let (_, sh) = tree_per_call(&path);
+    // The probe, then the two lists: no batched script.
+    assert_eq!(sh.count(), 2);
+    assert!(
+        sh.seen
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|c| !c.contains("verify0")),
+        "no git batch ran"
+    );
 }

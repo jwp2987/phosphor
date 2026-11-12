@@ -25,6 +25,11 @@
 //! * `gh` is not run here (it is the network round trip and runs only when a lookup is due). The
 //!   script only asks whether `gh` is on the host's `PATH`; when it is not, the `gh` calls are
 //!   answered "not found" without an exec.
+//! * The file tree of the same directory rides in the same script (#2156 lever B): the
+//!   navigation probe (`canon`, `git`) and the two `ls-files` lists (`files`, `ignoredpaths`) are
+//!   sections like the others, each capped well below the standalone call's cap. A list that
+//!   reaches its cap is dropped from the answer and the tree runs that one section as its own
+//!   exec, exactly as before; a section that is missing costs only itself.
 //! * `PHOSPHOR_SHELL_BATCH_GIT=0` turns all of it off (read once per process).
 //!
 //! The sections that depend on another answer (the unpushed commits and the fork point chain)
@@ -49,7 +54,10 @@ use crate::shellcmd::git::{
     GitOutput, GitRunner, MAIN_BRANCH_CANDIDATES, NUMSTAT_Z_HEAD_ARGS, STATUS_CHIP_ARGS,
     STATUS_FULL_ARGS, UNPUSHED_LOG_FORMAT,
 };
-use crate::shellcmd::{Frame, FrameError, Script, StderrMode, sh_quote, sh_quote_path};
+use crate::shellcmd::tree::{
+    canonical_dir_command, git_root_command, repo_files_command_capped, repo_ignored_command_capped,
+};
+use crate::shellcmd::{Frame, FrameError, Script, ShellKind, StderrMode, sh_quote, sh_quote_path};
 
 /// A request for a repo whose generation started less than this ago joins it. Short enough that
 /// a second prompt (a new command that may have changed the repo) never lands inside it, long
@@ -65,12 +73,37 @@ pub(super) fn batching_enabled() -> bool {
     *ON.get_or_init(|| std::env::var("PHOSPHOR_SHELL_BATCH_GIT").map_or(true, |v| v.trim() != "0"))
 }
 
+/// How much of each tree list the batched script takes. A list that reaches its cap is left out
+/// of the batch's answer and read by the tree's own (larger-capped) call.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct TreeCaps {
+    pub(super) files: usize,
+    pub(super) ignored: usize,
+}
+
+impl TreeCaps {
+    pub(super) const DEFAULT: Self = Self {
+        files: 1024 * 1024,
+        ignored: 256 * 1024,
+    };
+}
+
 /// What one batched script returned, ready to answer calls.
 #[derive(Debug, Default)]
 pub(in crate::backend) struct Prefetched {
     entries: HashMap<Vec<String>, GitOutput>,
     /// Whether `gh` is on the host's `PATH`; `None`: the script did not say.
     gh_available: Option<bool>,
+    /// The tree sections (`canon`, `git`, `files`, `ignoredpaths`) the script returned, minus any
+    /// list that reached its cap.
+    tree: Option<Frame>,
+}
+
+impl Prefetched {
+    /// The tree sections of the batch, for `shell/tree.rs`.
+    pub(in crate::backend) fn tree(&self) -> Option<&Frame> {
+        self.tree.as_ref()
+    }
 }
 
 type Fetched = Shared<BoxFuture<'static, Option<Arc<Prefetched>>>>;
@@ -85,6 +118,7 @@ struct Generation {
 pub struct GitBatchStore {
     repos: Mutex<HashMap<String, Generation>>,
     join_window: Duration,
+    tree_caps: TreeCaps,
 }
 
 impl Default for GitBatchStore {
@@ -98,7 +132,14 @@ impl GitBatchStore {
         Self {
             repos: Mutex::default(),
             join_window,
+            tree_caps: TreeCaps::DEFAULT,
         }
+    }
+
+    /// The same store with other caps on the tree lists (tests).
+    pub(super) fn with_tree_caps(mut self, tree_caps: TreeCaps) -> Self {
+        self.tree_caps = tree_caps;
+        self
     }
 
     /// Forgets every generation: a write just happened (or is about to), so no later request may
@@ -125,9 +166,14 @@ impl GitBatchStore {
             match joined {
                 Some(fut) => fut,
                 None => {
-                    let fut: Fetched = fetch(backend.clone(), runner.clone(), repo_path.to_owned())
-                        .boxed()
-                        .shared();
+                    let fut: Fetched = fetch(
+                        backend.clone(),
+                        runner.clone(),
+                        repo_path.to_owned(),
+                        self.tree_caps,
+                    )
+                    .boxed()
+                    .shared();
                     repos.insert(
                         repo_path.to_owned(),
                         Generation {
@@ -147,8 +193,11 @@ async fn fetch(
     backend: ShellBackend,
     runner: ShellGitRunner,
     repo: String,
+    caps: TreeCaps,
 ) -> Option<Arc<Prefetched>> {
-    let script = match build_script(&runner, &repo) {
+    let script = match build_script(&runner, &repo)
+        .and_then(|script| add_tree_sections(script, backend.shell_kind(), &repo, caps))
+    {
         Ok(script) => script,
         Err(e) => {
             log::debug!("git batch: cannot build the script, per-call fallback: {e}");
@@ -156,7 +205,11 @@ async fn fetch(
         }
     };
     match backend.run_script(&script).await {
-        Ok(frame) => Some(Arc::new(assemble(&frame))),
+        Ok(frame) => {
+            let mut prefetched = assemble(&frame);
+            prefetched.tree = tree_frame(&frame, caps);
+            Some(Arc::new(prefetched))
+        }
         Err(e) => {
             log::debug!("git batch: the script failed, per-call fallback: {e}");
             None
@@ -383,6 +436,55 @@ g log \"$range\" {log_format} --numstat"
     Ok(script)
 }
 
+/// The tree's sections, named as `shell/tree.rs` reads them: the navigation probe of the
+/// directory and the two `ls-files` lists (each capped at `caps`).
+fn add_tree_sections(
+    script: Script,
+    kind: ShellKind,
+    repo: &str,
+    caps: TreeCaps,
+) -> Result<Script, FrameError> {
+    script
+        .section(
+            "canon",
+            canonical_dir_command(kind, repo),
+            StderrMode::Discard,
+        )?
+        .section("git", git_root_command(kind, repo), StderrMode::Discard)?
+        .section(
+            "files",
+            repo_files_command_capped(kind, repo, caps.files),
+            StderrMode::Discard,
+        )?
+        .section(
+            "ignoredpaths",
+            repo_ignored_command_capped(kind, repo, caps.ignored),
+            StderrMode::Discard,
+        )
+}
+
+/// The tree sections of `frame`. A list that reached its cap (`head -c` cut it, or it is one
+/// byte short of the cap once the framing newline is gone) is left out so the tree reads it with
+/// its own call; the others stay.
+fn tree_frame(frame: &Frame, caps: TreeCaps) -> Option<Frame> {
+    let mut sections = Vec::new();
+    for (name, cap) in [
+        ("canon", None),
+        ("git", None),
+        ("files", Some(caps.files)),
+        ("ignoredpaths", Some(caps.ignored)),
+    ] {
+        let Some(section) = frame.section(name) else {
+            continue;
+        };
+        if cap.is_some_and(|cap| section.output.len() + 1 >= cap) {
+            continue;
+        }
+        sections.push(section.clone());
+    }
+    (!sections.is_empty()).then_some(Frame { sections })
+}
+
 // ---------------------------------------------------------------------------------------------
 // Reading the frame back.
 
@@ -448,6 +550,7 @@ fn assemble(frame: &Frame) -> Prefetched {
     Prefetched {
         entries,
         gh_available: frame.section("ghpath").map(|s| s.exit == 0),
+        tree: None,
     }
 }
 
