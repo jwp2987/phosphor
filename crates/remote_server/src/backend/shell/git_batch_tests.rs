@@ -769,3 +769,164 @@ fn the_kill_switch_keeps_the_tree_on_its_own_commands() {
         "no git batch ran"
     );
 }
+
+// ---------------------------------------------------------------------------------------------
+// One exec per PROMPT, however late its producers ask and however they spell the path (#2156).
+
+/// A backend over `sh` whose store keys generations on the prompt counter, with the old 100 ms
+/// window, so only the prompt keying can make a producer 150 or 400 ms late join.
+fn prompt_backend(sh: &Arc<Sh>) -> (ShellBackend, Arc<GitBatchStore>) {
+    let store = Arc::new(GitBatchStore::with_join_window(JOIN_WINDOW).with_prompt_keying(true));
+    let be = ShellBackend::new(Some(sh.clone()))
+        .with_git_batch(Arc::clone(&store))
+        .with_git_batching(true);
+    (be, store)
+}
+
+fn pause(ms: u64) {
+    std::thread::sleep(Duration::from_millis(ms));
+}
+
+#[test]
+fn join_key_collapses_spellings_of_one_directory() {
+    assert_eq!(join_key("/a/b"), "/a/b");
+    assert_eq!(join_key("/a/b/"), "/a/b");
+    assert_eq!(join_key("/a//b/./"), "/a/b");
+    assert_eq!(join_key("/"), "/");
+    assert_eq!(join_key("/a/../b"), "/a/../b");
+    assert_ne!(join_key("/a/b"), join_key("/a/c"));
+}
+
+#[test]
+fn producers_of_one_prompt_share_one_exec_whenever_they_ask_and_however_they_spell_the_path() {
+    if !git_available() {
+        return;
+    }
+    let dir = repo_with(&[("a.txt", "one\n")]);
+    let path = canonical(&dir);
+    let sh = Sh::new();
+    let (be, store) = prompt_backend(&sh);
+    store.begin_prompt();
+
+    // The first producer at 0 ms (the path as the tree spells it), the others 150 ms and 400 ms
+    // later, spelled with a trailing slash and a `.` component.
+    block_on(be.git_status_shell(&path, None)).unwrap();
+    assert_eq!(sh.count(), 1);
+    pause(150);
+    block_on(be.get_diff_state_shell(GetDiffState {
+        repo_path: format!("{path}/"),
+        ..Default::default()
+    }))
+    .unwrap();
+    pause(250);
+    block_on(be.get_diff_state_shell(GetDiffState {
+        repo_path: format!("{path}/./"),
+        ..Default::default()
+    }))
+    .unwrap();
+    block_on(be.refresh_repo_tree(&path)).unwrap();
+    assert_eq!(sh.count(), 1, "one prompt, one exec");
+}
+
+#[test]
+fn a_new_prompt_starts_a_new_exec() {
+    if !git_available() {
+        return;
+    }
+    let dir = repo_with(&[("a.txt", "one\n")]);
+    let path = canonical(&dir);
+    let sh = Sh::new();
+    let (be, store) = prompt_backend(&sh);
+    store.begin_prompt();
+    block_on(be.git_status_shell(&path, None)).unwrap();
+    block_on(be.git_status_shell(&path, None)).unwrap();
+    assert_eq!(sh.count(), 1);
+    store.begin_prompt();
+    block_on(be.git_status_shell(&path, None)).unwrap();
+    assert_eq!(sh.count(), 2, "the next prompt asks the host again");
+    // The window alone never joins across a prompt.
+    store.begin_prompt();
+    block_on(be.git_status_shell(&path, None)).unwrap();
+    assert_eq!(sh.count(), 3);
+}
+
+#[test]
+fn a_late_producer_of_an_unannounced_prompt_does_not_reuse_an_old_answer() {
+    if !git_available() {
+        return;
+    }
+    let dir = repo_with(&[("a.txt", "one\n")]);
+    let path = canonical(&dir);
+    let sh = Sh::new();
+    // No begin_prompt: the pure 100 ms window of before.
+    let store = Arc::new(GitBatchStore::with_join_window(JOIN_WINDOW).with_prompt_keying(true));
+    let be = ShellBackend::new(Some(sh.clone()))
+        .with_git_batch(store)
+        .with_git_batching(true);
+    block_on(be.git_status_shell(&path, None)).unwrap();
+    pause(150);
+    block_on(be.git_status_shell(&path, None)).unwrap();
+    assert_eq!(sh.count(), 2);
+}
+
+#[test]
+fn the_refresh_after_a_navigation_of_the_same_prompt_adds_no_tree_exec() {
+    if !git_available() {
+        return;
+    }
+    let dir = repo_with(&[("a.txt", "one\n"), ("src/b.rs", "fn main() {}\n")]);
+    let path = canonical(&dir);
+    let sh = Sh::new();
+    let (be, store) = prompt_backend(&sh);
+    store.begin_prompt();
+    block_on(be.navigate_to_directory_shell(path.clone())).unwrap();
+    pause(150);
+    block_on(be.refresh_repo_tree(&path)).unwrap();
+    assert_eq!(sh.count(), 1, "navigation + refresh of one prompt");
+    store.begin_prompt();
+    block_on(be.refresh_repo_tree(&path)).unwrap();
+    assert_eq!(
+        sh.count(),
+        2,
+        "the next prompt's refresh is its own single exec"
+    );
+}
+
+#[test]
+fn without_prompt_keying_the_old_window_applies() {
+    if !git_available() {
+        return;
+    }
+    let dir = repo_with(&[("a.txt", "one\n")]);
+    let path = canonical(&dir);
+    let sh = Sh::new();
+    let store = Arc::new(GitBatchStore::with_join_window(JOIN_WINDOW).with_prompt_keying(false));
+    let be = ShellBackend::new(Some(sh.clone()))
+        .with_git_batch(Arc::clone(&store))
+        .with_git_batching(true);
+    store.begin_prompt();
+    block_on(be.git_status_shell(&path, None)).unwrap();
+    pause(150);
+    block_on(be.git_status_shell(&path, None)).unwrap();
+    assert_eq!(sh.count(), 2, "150 ms later is a new generation");
+}
+
+#[test]
+fn the_kill_switch_runs_every_call_by_itself() {
+    if !git_available() {
+        return;
+    }
+    let dir = repo_with(&[("a.txt", "one\n")]);
+    let path = canonical(&dir);
+    let sh = Sh::new();
+    let store = Arc::new(GitBatchStore::with_join_window(JOIN_WINDOW).with_prompt_keying(true));
+    let be = ShellBackend::new(Some(sh.clone()))
+        .with_git_batch(Arc::clone(&store))
+        .with_git_batching(false);
+    store.begin_prompt();
+    block_on(be.git_status_shell(&path, None)).unwrap();
+    let first = sh.count();
+    assert!(first > 1, "per-call: several execs, got {first}");
+    block_on(be.git_status_shell(&path, None)).unwrap();
+    assert_eq!(sh.count(), first * 2, "nothing is shared");
+}

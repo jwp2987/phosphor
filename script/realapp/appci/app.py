@@ -7,7 +7,7 @@ if [ "$APPCI_APP_DISPLAY" = x11 ]; then unset WAYLAND_DISPLAY; fi
 if [ "$APPCI_APP_DISPLAY" = wayland ] && [ -z "$APPCI_KEEP_DISPLAY" ]; then unset DISPLAY; fi
 export HOME="%(home)s" XDG_CONFIG_HOME="%(home)s/.config" XDG_STATE_HOME="%(home)s/.local/state" XDG_DATA_HOME="%(home)s/.local/share"
 export SHELL=/bin/bash ZDOTDIR="%(home)s"
-export RUST_LOG=warp::input_order=debug,warp::terminal::model_lock_trace=debug,warpui::frame_cause=debug,warpui::appci_find=info,phosphor::routing=debug,editor_memory=debug,warp::terminal::cli_agent_sessions::event=info,editor_disk=debug
+export RUST_LOG=warp::input_order=debug,warp::terminal::model_lock_trace=debug,warpui::frame_cause=debug,warpui::appci_find=info,phosphor::routing=debug,editor_memory=debug,warp::terminal::cli_agent_sessions::event=info,editor_disk=debug,remote_server::backend=debug
 export WARP_INPUT_ORDER_LOG_TEXT=1
 # #2040: the bytes of user keys on their way to the pty (`hop=pty_write_bytes class=UserKey`, `hop=hand_route bytes=`) need this second opt-in; without it
 # the app logs their length. The harness types synthetic text only. Never set it where a person types: its name says why.

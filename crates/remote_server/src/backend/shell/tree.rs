@@ -147,7 +147,7 @@ async fn git_snapshot(
 ) -> Result<BTreeMap<String, Vec<TreeChild>>, BackendError> {
     let kind = shell.shell_kind();
     let fetched = if listed.is_none() {
-        shell.batched_tree(root).await
+        shell.batched_tree(root, "refresh_tree").await
     } else {
         None
     };
@@ -218,7 +218,7 @@ pub(super) async fn navigate_to_directory(
     let kind = shell.shell_kind();
     // The probe and, in a repository, its lists come from the refresh's batched script when there
     // is one (#2156): a `cd` into a repository is then one exec for all the side work.
-    let batch = shell.batched_tree(&path).await;
+    let batch = shell.batched_tree(&path, "navigate_tree").await;
     let pre = batch
         .as_ref()
         .and_then(|b| b.tree())

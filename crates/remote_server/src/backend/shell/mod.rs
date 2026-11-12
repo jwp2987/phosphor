@@ -348,7 +348,7 @@ impl ShellBackend {
         let data = if self.batch_git_off || self.shell_kind().is_powershell() {
             None
         } else {
-            self.git_batch.get(self, &inner, repo_path).await
+            self.git_batch.get(self, &inner, repo_path, what).await
         };
         Ok(BatchedGitRunner::new(inner, repo_path, data))
     }
@@ -357,12 +357,16 @@ impl ShellBackend {
     /// `ignoredpaths`, see [`git_batch::Prefetched::tree`]) the file tree reads instead of running
     /// its own script. `None`: no batch (kill switch, PowerShell host, the script failed), so the
     /// tree runs its own commands.
-    pub(super) async fn batched_tree(&self, path: &str) -> Option<Arc<git_batch::Prefetched>> {
+    pub(super) async fn batched_tree(
+        &self,
+        path: &str,
+        producer: &'static str,
+    ) -> Option<Arc<git_batch::Prefetched>> {
         if self.batch_git_off || self.shell_kind().is_powershell() {
             return None;
         }
         let inner = self.git_runner("file tree").ok()?;
-        self.git_batch.get(self, &inner, path).await
+        self.git_batch.get(self, &inner, path, producer).await
     }
 
     /// The out-of-band executor, or `Unavailable` naming `what`.

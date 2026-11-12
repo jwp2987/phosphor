@@ -215,3 +215,23 @@ def r22_chips_read_by_find_token_and_the_chip_value_line():
     assert not U.token_hits([("brabcdXX123456", 1, 1, 0, 1, 0, 1)], br), "two are not"
     assert CL.arm_tag({"shell": "zsh", "lat": "150", "helper": "helper"}) == "zsh.150.helper"
     assert "ocr_evidence(" in _body("cases_lab.py", "c_no_helper_chip")
+
+
+@check
+def r27_batch_exec_log_lines_are_counted_and_named_in_the_row_note():
+    """#2156: the lab case names the producers of each batched exec from the app's debug lines"""
+    import cases  # noqa: F401
+    import cases_lab as CL
+    log = ('git batch: exec started generation=3 prompt=5 producer=git_status path=/w\n'
+           'shell exec: producer=run_script sections=[canon, git] elapsed_ms=40 ok=true\n'
+           'git batch: exec done generation=3 ok=true producers=["git_status", "refresh_tree", "pr_info"] path=/w\n'
+           'shell exec: producer=git_runner family=git elapsed_ms=30 ok=true\n'
+           'shell exec: producer=run_script sections=[x] elapsed_ms=40 ok=true\n')
+    batches, execs = CL.batch_exec_report(log)
+    assert batches == [(3, True, ["git_status", "refresh_tree", "pr_info"])], batches
+    assert execs == {"run_script": 2, "git_runner": 1}, execs
+    note = CL.batch_exec_note(log)
+    assert "git_status+refresh_tree+pr_info" in note and "run_script=2" in note, note
+    assert CL.batch_exec_note("") .endswith("none")
+    assert "batch_exec_note(" in _body("cases_lab.py", "c_chips")
+    assert "remote_server::backend=debug" in _src("app.py")
