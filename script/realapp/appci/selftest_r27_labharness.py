@@ -57,6 +57,8 @@ class _Ctx:
     def ssh_diag(self): return ""
     def where_now(self): return "remote"
     def count(self, n): return n
+    def cmd_mark(self): return 0
+    def cmds_since(self, mark): return []
 
 
 @check
