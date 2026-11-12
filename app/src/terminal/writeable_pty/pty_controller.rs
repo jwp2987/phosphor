@@ -1926,12 +1926,15 @@ impl<T: EventLoopSender> PtyController<T> {
             return;
         };
         let command_id = command_id.clone();
-        self.pending_writes.pop_front();
-        if let Some(cancel_tx) = self
+        // Take the requester's sender BEFORE the command is dropped: the queued command holds
+        // the only strong copy, so popping first made the upgrade fail and the requester only
+        // saw its channel close (box test, r28).
+        let cancel_tx = self
             .in_band_cancels
             .remove(&command_id)
-            .and_then(|cancel| cancel.upgrade())
-        {
+            .and_then(|cancel| cancel.upgrade());
+        self.pending_writes.pop_front();
+        if let Some(cancel_tx) = cancel_tx {
             if let Err(err) = block_on(cancel_tx.send(InBandCommandCancelledEvent { command_id })) {
                 log::warn!("Pty Controller failed to cancel in band command: {err:?}");
             }
