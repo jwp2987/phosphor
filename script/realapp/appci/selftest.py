@@ -9439,3 +9439,5 @@ import selftest_r27_editormeasure  # noqa: E402  (#2185 editor_memory_7mb: heap 
 CHECKS.extend(selftest_r27_editormeasure.CHECKS)
 import selftest_r27_perfbands  # noqa: E402  (owner 2026-11-12 bands for all: bands.judge, lat.evaluate(banded=True), every converted verdict; own file)
 CHECKS.extend(selftest_r27_perfbands.CHECKS)
+import selftest_r27_labharness  # noqa: E402  (r27 lab harness: nu kill line, drop-not-ended handling, per-shell line audit; own file)
+CHECKS.extend(selftest_r27_labharness.CHECKS)

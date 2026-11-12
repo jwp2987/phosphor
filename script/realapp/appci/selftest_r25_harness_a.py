@@ -251,7 +251,7 @@ def r25_kill_and_append_lines_follow_the_lab_shell():
     """r24a lab-macos (nu, managed): `kill -9 $$` was a nu parse error and `echo X >> f` printed a table. The shared ssh_drop code (cases_coverage_a) now
     builds both through cases_lab for a lab arm."""
     import cases_lab as CL, os as _os
-    assert CL.kill_self_line({"shell": "nu"}) == "kill -9 $nu.pid"
+    assert CL.kill_self_line({"shell": "nu"}) == "kill -s 9 $nu.pid"
     assert CL.kill_self_line({"shell": "fish"}) == "kill -9 $fish_pid"
     assert CL.kill_self_line({"shell": "bash"}) == CL.kill_self_line("zsh") == "kill -9 $$"
     src = open(_os.path.join(HERE, "cases_coverage_a.py"), encoding="utf-8").read()
