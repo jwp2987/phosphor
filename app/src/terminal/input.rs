@@ -2514,6 +2514,10 @@ pub struct Input {
     /// newer (#934). `None` when the block that completes was not submitted from the editor
     /// (a typeahead line the shell ran itself): then nothing in the editor belongs to it.
     editor_submission: Option<String>,
+    /// The session the shell that took `editor_submission` belongs to (#2192): when that shell
+    /// exits (`exit` in a nested or remote shell) no block of it ever completes, so the shell's
+    /// exit is what ends the submission.
+    editor_submission_session: Option<SessionId>,
     /// `editor_submission` was set by a pending command that ran as requested while the user had
     /// typed into its text (#1451): the typed text is handed back whether or not the typeahead
     /// hand-off is enabled, because it is not typeahead but text the command would have eaten.
@@ -3120,6 +3124,9 @@ impl Input {
                     | ModelEvent::PreInteractiveSSHSession
             ) {
                 me.end_remote_listing_on_event();
+            }
+            if let ModelEvent::ExitShell { session_id } = event {
+                me.finish_submission_of_exited_shell(*session_id, ctx);
             }
         });
         ctx.subscribe_to_model(&TerminalSettings::handle(ctx), move |_, _, event, ctx| {
@@ -4419,6 +4426,7 @@ impl Input {
             ssh_handover_enter_guard: None,
             last_enter_submitted_shell_command: false,
             editor_submission: None,
+            editor_submission_session: None,
             editor_submission_from_pending: false,
             last_enter_submitted_ai_query: false,
             submitting_misroute_recovery: false,
@@ -7875,6 +7883,7 @@ impl Input {
             if matches!(source, CommandExecutionSource::User) {
                 self.editor_submission_from_pending = false;
                 self.editor_submission = Some(self.editor.as_ref(ctx).buffer_text(ctx));
+                self.editor_submission_session = self.active_block_session_id();
             }
             self.start_block_and_write_command_to_pty(command, source, ctx);
             did_execute = true;
@@ -18250,6 +18259,44 @@ impl Input {
         kept.map(str::to_owned)
     }
 
+    /// #2192: the shell that took the editor's submission exited (`exit` in a nested or remote
+    /// shell). The command that ends a shell never completes a block of that shell, so nothing
+    /// else would clear the submitted line, and the next typed text would be glued onto it. The
+    /// submitted text goes; what was typed after it stays.
+    fn finish_submission_of_exited_shell(
+        &mut self,
+        session_id: SessionId,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        if self.editor_submission.is_none() || self.editor_submission_session != Some(session_id) {
+            return;
+        }
+        if self.has_queued_command_in_flight(ctx) {
+            return;
+        }
+        warpui::input_order::log_hop("submission_cleared_by_shell_exit", String::new);
+        let newer_text = self.take_text_newer_than_completed_submission(ctx);
+        self.editor_submission_session = None;
+        self.editor
+            .update(ctx, |editor, ctx| editor.reinitialize_buffer(None, ctx));
+        self.latest_buffer_operations = Vec::new();
+        match newer_text {
+            Some(text) => {
+                self.editor
+                    .update(ctx, |editor, ctx| editor.set_buffer_text(&text, ctx));
+                self.is_editor_empty_on_last_edit = false;
+            }
+            None => {
+                self.is_editor_empty_on_last_edit = true;
+                ctx.emit(Event::InputEmptyStateChanged {
+                    is_empty: true,
+                    reason: InputEmptyStateChangeReason::UserCommandCompleted,
+                });
+            }
+        }
+        notify_cause!(ctx, "finish_submission_of_exited_shell");
+    }
+
     pub fn handle_block_completed_event(
         &mut self,
         block_completed_event: BlockCompletedEvent,
@@ -18276,11 +18323,21 @@ impl Input {
             let input_contents_before_prompt_chip_command =
                 self.input_contents_before_prompt_chip_command.take();
 
+            // #2192: a submission from this editor ends with its block, whatever id the shell
+            // numbered the next block with. A nested or remote shell restarts its block counter,
+            // so the id after the command can equal the one already recorded; "the id changed" is
+            // not proof that no command ran.
+            let had_submission = self.editor_submission.is_some();
             let newer_text = self.take_text_newer_than_completed_submission(ctx);
             if should_clear_buffer {
                 // We want to reinitialize the buffer whenever a command is completed so that
                 // state does not leak from buffer to buffer (e.g. edit history).
-                if self.deferred_remote_operations.latest_block_id != latest_block_id {
+                let block_id_changed =
+                    self.deferred_remote_operations.latest_block_id != latest_block_id;
+                if !block_id_changed && had_submission {
+                    warpui::input_order::log_hop("block_completed_same_id_cleared", String::new);
+                }
+                if block_id_changed || had_submission {
                     self.deferred_remote_operations.latest_block_id = latest_block_id;
                     self.editor
                         .update(ctx, |editor, ctx| editor.reinitialize_buffer(None, ctx));
