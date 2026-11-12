@@ -417,6 +417,7 @@ def run_targeted(plan, ops, skip=(), log=print):
 
     def machine(p):
         build, build_st = None, None
+        red_unit = None       # owner 2026-11-12: "Do not move into app testing with failed unit tests" -- a red unit suite stops this machine's app/lab jobs
         try:
             for n, v, k in machines[p]:
                 if k in ("image", "helper"):
@@ -434,8 +435,14 @@ def run_targeted(plan, ops, skip=(), log=print):
                         build_st = ops.wait(n)
                         log("%s %s" % (n, build_st))
                 elif k == "unit":
-                    ops.play_wait(n, v, "TEST_FILTER=%s" % v["TEST_FILTER"] if v else "")
+                    st = ops.play_wait(n, v, "TEST_FILTER=%s" % v["TEST_FILTER"] if v else "")
+                    if st != "success" and red_unit is None:
+                        red_unit = "%s %s" % (n, st)
                 else:
+                    if red_unit:
+                        tl[n] = ("not run (unit suite %s: no app tests on red unit tests)" % red_unit, None)
+                        log("%s: %s NOT played: unit suite %s (owner: no app tests on failed unit tests)" % (time.strftime("%H:%M"), n, red_unit))
+                        continue
                     if build and build_st is None:
                         build_st = ops.wait(build)
                         log("%s %s" % (build, build_st))
@@ -995,8 +1002,13 @@ def self_test_targeted(yml, src):
     oc = fake({"check-linux": "failed"})
     oi = fake(image_ok=False)
     run_targeted(lab, oi, log=silent)
+    ou = fake({"test-windows": "failed"})
+    run_targeted(plan, ou, log=silent)
     units_only = targeted_plan(targeted_spec({"suites": {"macos": ["test-macos"]}}))
     rows = [
+        ("app-test-windows" not in played(ou) and ou.timeline.get("app-test-windows", ("",))[0].startswith("not run (unit suite test-windows failed")
+         and "app-test-linux-wayland" in played(ou),
+         "a red unit suite stops that machine's app jobs (owner 2026-11-12: no app tests on failed unit tests); other machines go on"),
         (ok_run and sorted(set(played(o))) == sorted({BUILD[LINUX], BUILD[WIN], "test-linux", "integration-linux: [1]", "integration-linux: [2]", "integration-linux: [3]",
                                                        "test-windows", "test-warpui-core-windows", "test-workspace-rest-windows", "app-test-linux-wayland", "app-test-windows"}),
          "targeted plays only the jobs the cases file names (builds for the platforms with cases, the listed suites, the app jobs with cases)"),
