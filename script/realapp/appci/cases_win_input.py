@@ -208,7 +208,6 @@ def _sync_stages(hops):
 def _remote_line_once(ctx, r, what):
     """one fresh line typed at the remote prompt runs exactly once in the REMOTE shell and never locally"""
     tok = ctx.tok(6)
-    R.settle_remote_prompt(ctx)       # #2182: the remote precmd before the line is typed, not a race with the app's generator write
     rmark, lmark = len(ctx.prof.commands(remote=True)), ctx.cmd_mark()
     ctx.be.type("echo %s" % tok, 12, enter=True)
     ctx.until(lambda: R.remote_cmds_after(ctx, rmark), 10)

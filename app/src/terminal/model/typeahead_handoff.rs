@@ -848,13 +848,6 @@ pub struct TypeaheadHandoff {
     /// becoming interactive, a program owning the tty, a signal key, the user clicking the
     /// terminal, or the session ending.
     keys_follow_editor: bool,
-    /// #2182: the `enters_written` count right after the app wrote its OWN in-band command (a
-    /// generator, a prompt-chip probe) with no earlier line unanswered. While that count is
-    /// current and unanswered, the only line the shell is running is the app's, never the
-    /// user's, so keys typed meanwhile belong to the editor (as at any other prompt) and not to
-    /// the pty, where the next in-band command's kill prefix would destroy them unreported.
-    /// Event-ended: any further Enter, user byte or Precmd makes it stale.
-    in_band_only_enters: Option<u32>,
     /// #2012: a Preexec of a command the shell started itself (a typed-ahead line, on PowerShell
     /// an empty one too) took input from the editor ([`Self::on_preexec`]). The editor may hold
     /// text typed before it; keys typed from now on go to the pty and come back in the shell's
@@ -2657,24 +2650,6 @@ impl TypeaheadHandoff {
     /// #1658: keys follow the text the editor holds although the hand-off is pty-owned.
     pub fn keys_follow_editor_active(&self) -> bool {
         self.keys_follow_editor && matches!(self.state, HandoffState::PtyOwned { .. })
-            || self.in_band_line_only()
-    }
-
-    /// #2182: the pty is "owned" only because the app's own in-band command is running (no line
-    /// of the user's is unanswered and none of their bytes are in the shell's line), so keys
-    /// typed now go to the editor like at any prompt.
-    pub fn in_band_line_only(&self) -> bool {
-        match (&self.state, self.in_band_only_enters) {
-            (
-                HandoffState::PtyOwned {
-                    wrote_user_bytes: false,
-                    enters_written,
-                    precmds_seen,
-                },
-                Some(mark),
-            ) => *enters_written == mark && *precmds_seen < *enters_written,
-            _ => false,
-        }
     }
 
     /// #1658: the editor was left holding unsent text while the pty owns input: later keys follow
@@ -3399,24 +3374,6 @@ impl TypeaheadHandoff {
         }
     }
 
-    /// The app wrote one of its own in-band commands (see
-    /// [`Self::on_uncounted_command_written`]). Returns whether the pty is now owned only on its
-    /// behalf ([`Self::in_band_line_only`]), so the caller re-decides focus (#2182).
-    pub fn on_in_band_command_written(&mut self) -> bool {
-        let no_user_line_before = self.in_band_line_only()
-            || matches!(
-                &self.state,
-                HandoffState::PtyOwned { enters_written, precmds_seen, .. }
-                    if *precmds_seen >= *enters_written
-            );
-        self.on_uncounted_command_written();
-        self.in_band_only_enters = None;
-        if no_user_line_before && let HandoffState::PtyOwned { enters_written, .. } = &self.state {
-            self.in_band_only_enters = Some(*enters_written);
-        }
-        self.in_band_line_only()
-    }
-
     /// A prompt was applied to the model; the view has yet to handle its precmd event (model
     /// thread). See [`Self::precmds_pending_view`](TypeaheadHandoff).
     pub fn note_precmd_pending_view(&mut self) {
@@ -3445,8 +3402,6 @@ impl TypeaheadHandoff {
 
     /// The shell emitted a precmd hook (model thread).
     pub fn on_precmd(&mut self) {
-        // #2182: the app's own in-band line is answered.
-        self.in_band_only_enters = None;
         // #2038: a new prompt cycle: the reader of the last one is over.
         self.end_prompt_reader("precmd");
         self.shell_activity = ShellActivity::Prompt;

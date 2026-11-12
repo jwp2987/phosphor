@@ -85,34 +85,7 @@ def remote_cmds_after(ctx, mark):
     where_now() returns when the probe's effect file shows the token, which is before the shell's hook appends the line, so a mark taken right
     after the probe counts the probe as a command of the case (round 7 Linux and Windows: 'the remote shell received [echo wT.. >> ~/.appci_where]'
     while the completed `cd` ran 2 s later and the app log showed the in-band answer)."""
-    return [c for _, c in ctx.prof.commands(remote=True)[mark:] if ".appci_where" not in c and not is_app_generator_line(c)]
-
-
-GENERATOR_WRAPPER = "warp_run_generator_command"
-
-
-def is_app_generator_line(cmd):
-    """#2182: the app's OWN in-band generator call (`warp_run_generator_command <id> '<command>'`, written for prompt chips and completions) is logged by the
-    remote shell's rec.log like a typed line. It is not what the case typed: filter EXACTLY those lines (after strip, the wrapper name as the first word),
-    nothing else, so a line the case typed that merely mentions the name still counts."""
-    words = cmd.strip().split(None, 1)
-    return bool(words) and words[0] == GENERATOR_WRAPPER
-
-
-def settle_remote_prompt(ctx, quiet=0.8, timeout=15):
-    """#2182: wait until the remote shell has been back at a prompt for `quiet` seconds with no further prompt: every remote precmd the previous line (or
-    the connect, or the `where` probe) caused, including those of the app's own in-band generator commands, has been logged. Typing the next line before
-    that races the app's generator write on a managed Git Bash session (the keys went raw to the pty, the line was lost). Returns whether it settled."""
-    last, since = rprompts(ctx), time.time()
-    end = since + timeout
-    while time.time() < end:
-        time.sleep(0.1)
-        now = rprompts(ctx)
-        if now != last:
-            last, since = now, time.time()
-        elif last > 0 and time.time() - since >= quiet:
-            return True
-    return False
+    return [c for _, c in ctx.prof.commands(remote=True)[mark:] if ".appci_where" not in c]
 
 
 def rprompts(ctx):
@@ -1107,7 +1080,6 @@ def _remote_tab_no_helper(ctx, r):
         r.check(False, "precondition: the pane is not provably in the REMOTE shell after `ssh fake` (probe ran in: %s); Tab not judged" % where)
         ctx.reset()
         return
-    settle_remote_prompt(ctx)           # #2182: the remote precmd (and the app's generator calls behind it) before the next line is typed
     rmark, lmark = len(ctx.prof.commands(remote=True)), ctx.cmd_mark()
     prefix = "cd phxtab_" + tok_prefix(tok)
     ctx.be.type(prefix, 15)
@@ -1170,7 +1142,6 @@ def _remote_tab_enter_no_helper(ctx, r):
         return
     lmark = ctx.cmd_mark()
     for tok in trials:
-        settle_remote_prompt(ctx)       # #2182
         rmark = len(ctx.prof.commands(remote=True))
         prefix = "cd phxte_" + tok_prefix(tok)
         ctx.be.type(prefix, ctx.rng.randint(10, 25))

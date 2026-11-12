@@ -8179,40 +8179,6 @@ def msys_managed_ssh_default_off_2051():
 
 
 @check
-def remote_received_ignores_app_generator_lines_2182():
-    """#2182: the remote rec.log also logs the app's own `warp_run_generator_command` calls; the cases' "received" list drops exactly those lines (wrapper
-    name as the first word) and nothing else. settle_remote_prompt waits for a quiet stretch of the prompt count, not a fixed sleep."""
-    import cases_caseremote as rm
-    gen = "warp_run_generator_command 1794469766865667 'git diff --shortstat HEAD'"
-    rows = [(1.0, "echo a"), (2.0, gen), (3.0, "  " + gen + "  "), (4.0, "echo warp_run_generator_command"), (5.0, "echo b >> ~/.appci_where"),
-            (6.0, "warp_run_generator_commandX 1 'x'"), (7.0, "cd d/")]
-    ctx = types.SimpleNamespace(prof=types.SimpleNamespace(commands=lambda remote=False: rows))
-    assert rm.remote_cmds_after(ctx, 0) == ["echo a", "echo warp_run_generator_command", "warp_run_generator_commandX 1 'x'", "cd d/"], rm.remote_cmds_after(ctx, 0)
-    assert rm.remote_cmds_after(ctx, 2) == ["echo warp_run_generator_command", "warp_run_generator_commandX 1 'x'", "cd d/"]
-    assert rm.is_app_generator_line(gen) and not rm.is_app_generator_line("") and not rm.is_app_generator_line("ls warp_run_generator_command")
-    # settle: prompts 1, 2, 3 arrive over the first ticks, then none: it settles after the quiet stretch, never before the last prompt
-    clock, seq = [0.0], [1, 1, 2, 2, 3] + [3] * 50
-    real_time, real_sleep = rm.time.time, rm.time.sleep
-    rm.time.time = lambda: clock[0]
-    rm.time.sleep = lambda s: clock.__setitem__(0, clock[0] + s)
-    try:
-        it = iter(seq)
-        ctx2 = types.SimpleNamespace(prof=types.SimpleNamespace(prompts=lambda remote=False: next(it, 3)))
-        assert rm.settle_remote_prompt(ctx2, quiet=0.8, timeout=15) is True
-        assert clock[0] >= 0.5 + 0.8 - 0.01, clock[0]            # not before 0.8 s after the third prompt (seen on tick 5)
-        clock[0] = 0.0
-        ctx3 = types.SimpleNamespace(prof=types.SimpleNamespace(prompts=lambda remote=False: 0))
-        assert rm.settle_remote_prompt(ctx3, quiet=0.8, timeout=2) is False       # no prompt ever: never "settled"
-    finally:
-        rm.time.time, rm.time.sleep = real_time, real_sleep
-    import inspect
-    import cases_win_input as wi
-    assert "settle_remote_prompt" in inspect.getsource(wi._remote_line_once)
-    assert "settle_remote_prompt" in inspect.getsource(rm._remote_tab_no_helper)
-    assert "settle_remote_prompt" in inspect.getsource(rm._remote_tab_enter_no_helper)
-
-
-@check
 def gitbash_bootstrap_in_command_2051():
     """#2051: ssh_gitbash_bootstrap_in_command reads the delivery of the remote bootstrap from the app log: the in-command hop, the largest single
     pty write, the give-up line. The round 12 log (one write of 62000, then `Bootstrapping failed`) must read as the typed delivery"""

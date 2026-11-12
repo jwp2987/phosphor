@@ -1758,17 +1758,11 @@ impl<T: EventLoopSender> PtyController<T> {
             }
             // An in-band command's prompt is counted like any other, so its Enter must be too.
             if did_write && is_in_band_command && FeatureFlag::TypeaheadHandoff.is_enabled() {
-                // #2182: while only the app's own line is running, keys belong to the editor;
-                // focus follows now, not at the next prompt, so none go raw to the pty.
-                let editor_keeps_keys = self
-                    .terminal_model
+                self.terminal_model
                     .lock()
                     .typeahead_handoff_mut()
-                    .on_in_band_command_written();
+                    .on_uncounted_command_written();
                 self.announce_young_hold_end(ctx);
-                if editor_keeps_keys {
-                    ctx.emit(PtyControllerEvent::TypeaheadHandoffChanged);
-                }
             }
             if !is_command || !did_write {
                 self.execute_next_queued_write(ctx);
