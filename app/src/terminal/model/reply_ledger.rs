@@ -18,6 +18,8 @@ use std::sync::Arc;
 
 use parking_lot::Mutex;
 
+use super::typeahead_handoff::PtyWriteCount;
+
 /// The ledger as the terminal model and the pty event loop share it.
 pub type SharedReplyLedger = Arc<Mutex<ReplyLedger>>;
 
@@ -57,14 +59,27 @@ pub struct ReplyLedger {
     /// An Enter was written since the line was last emptied, so anything written after it
     /// belongs to a line the ledger no longer models.
     after_enter: bool,
+    /// #2186: the pane's pty write tail. A reply is a write to the pty the controller never sees
+    /// (the event loop queues it), and it can be the last thing ssh reads; it is noted here, where
+    /// it is generated.
+    pty_writes: Option<PtyWriteCount>,
 }
 
 impl ReplyLedger {
+    /// #2186: shares the pane's pty write tail, so a reply written after the last newline is seen
+    /// by the ssh escape path.
+    pub fn set_pty_writes(&mut self, pty_writes: PtyWriteCount) {
+        self.pty_writes = Some(pty_writes);
+    }
+
     /// Records bytes the app queued as a reply to a terminal query. A piece that does not start
     /// a new escape sequence continues the previous reply.
     pub fn note_replies(&mut self, bytes: &[u8]) {
         if bytes.is_empty() {
             return;
+        }
+        if let Some(pty_writes) = &self.pty_writes {
+            pty_writes.note_tail(bytes);
         }
         let text = String::from_utf8_lossy(bytes);
         let mut start = 0;

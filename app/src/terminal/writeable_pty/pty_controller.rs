@@ -3200,16 +3200,22 @@ impl<T: EventLoopSender> PtyController<T> {
     /// a `PtyDisconnected` event.
     fn send_message_to_event_loop(&self, message: Message, ctx: &mut ModelContext<Self>) {
         // #1793: every write to the pty is counted, so the ssh escape path can tell that nothing
-        // reached the shell's line since its last report.
-        if matches!(
-            message,
-            Message::Input(_)
-                | Message::CommandInput(_)
-                | Message::PasteInput(_)
-                | Message::AgentInput(_)
-                | Message::SetupChunked { .. }
-        ) {
-            self.pty_writes.note_write();
+        // reached the shell's line since its last report. #2186: and the last byte written is
+        // kept (whether it was a newline), which is whether ssh is at its line start. This is the
+        // one place every write the controller hands the pty passes through (user keys, commands,
+        // pastes, agent and viewer writes, the hand-off's `ESC i`, init and shim payloads).
+        match &message {
+            Message::Input(bytes)
+            | Message::CommandInput(bytes)
+            | Message::PasteInput(bytes)
+            | Message::AgentInput(bytes) => self.pty_writes.note_write_bytes(bytes),
+            Message::SetupChunked { chunks, .. } => {
+                self.pty_writes.note_write();
+                if let Some(last) = chunks.iter().rev().find(|chunk| !chunk.is_empty()) {
+                    self.pty_writes.note_tail(last);
+                }
+            }
+            _ => {}
         }
         match self.event_loop_tx.send(message) {
             Err(EventLoopSendError::Disconnected) => {

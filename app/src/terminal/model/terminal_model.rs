@@ -1301,6 +1301,7 @@ impl TerminalModel {
         handoff.set_prompt_seq_enabled(super::typeahead_handoff::prompt_seq_env_enabled());
         // #2052: the one kill switch of the reader marker, read once per pane.
         handoff.set_reader_marker_enabled(super::typeahead_handoff::reader_marker_env_enabled());
+        let pty_writes_for_ledger = handoff.pty_write_count();
         let tty_read_secret_marker = Arc::new(AtomicBool::new(false));
         // #2040: while a command announced a secret read or a prompt's reader has the keys, the
         // input-order log shows no text. Two atomic loads, no lock (the log asks on any thread).
@@ -1322,7 +1323,12 @@ impl TerminalModel {
             facts_gen: AtomicU64::new(0),
             sticky_output: Default::default(),
             inbox: ModelInbox::default(),
-            reply_ledger: SharedReplyLedger::default(),
+            reply_ledger: {
+                let ledger = SharedReplyLedger::default();
+                // #2186: replies count as pty writes for the ssh escape's line-start rule.
+                ledger.lock().set_pty_writes(pty_writes_for_ledger);
+                ledger
+            },
             pty_stream_barrier: Arc::default(),
             setup_echo_filter: SetupEchoFilter::default(),
             last_setup_line_marker: None,

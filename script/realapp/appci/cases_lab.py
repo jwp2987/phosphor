@@ -1202,7 +1202,7 @@ def c_raw_key_arrival(ctx, r, arm):
 
 
 # ------------------------------------------------------------------ 5. dropped / reset / stalled connections
-@lab_case("ssh_drop_reconnect", modes=("terminal",), shells=("bash", "zsh", "nu"), lat=("lan", "150"), helper=("nohelper", "helper"), faults=("rst", "stall10"))
+@lab_case("ssh_drop_reconnect", modes=("terminal",), shells=("bash", "zsh", "fish", "nu"), lat=("lan", "150"), helper=("nohelper", "helper"), faults=("rst", "stall10"))
 def c_lab_drop(ctx, r, arm):
     """The ssh_drop_reconnect body (the escape, escape-at-connect with and without Enter, kill -9 of the remote shell) against the lab, plus two network faults
     the same-machine sshd cannot make: the server RESETS the connection (rst: the pane must return to a local prompt, a reconnect must work) and the server STALLS
@@ -1221,7 +1221,7 @@ def c_lab_drop(ctx, r, arm):
             return
         finish_remote(ctx, r)
     if arm["fault"] is None:
-        CA.ssh_drop_body(ctx, r, host, ("escape", "escape_connect_enter", "escape_connect_bare", "kill"))
+        CA.ssh_drop_body(ctx, r, host, ("escape", "escape_connect_enter", "escape_connect_bare", "escape_after_cleared_line", "kill"))
     elif arm["fault"] == "rst":
         CA.ssh_drop_body(ctx, r, host, ("rst",))
     else:

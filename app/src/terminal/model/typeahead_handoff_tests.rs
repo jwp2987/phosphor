@@ -7039,7 +7039,7 @@ fn after_answered_empty_report() -> (TypeaheadHandoff, PtyWriteCount) {
     let mut handoff = TypeaheadHandoff::default();
     let pty = handoff.pty_write_count();
     handoff.on_command_written();
-    pty.note_write();
+    pty.note_write_bytes(b"echo hi\r");
     handoff.note_written_command_text("echo hi");
     handoff.note_preexec_command("echo hi");
     let _ = handoff.on_preexec(false);
@@ -7051,10 +7051,18 @@ fn after_answered_empty_report() -> (TypeaheadHandoff, PtyWriteCount) {
         ActiveDecision::Legacy
     );
     handoff.on_legacy_request_written();
-    pty.note_write();
+    pty.note_write_bytes(b"\x1bi");
     // Its report: parsed by the model, then handled by the view.
     handoff.on_report_parsed();
     assert_eq!(handoff.on_report(), ReportDisposition::InsertLegacy);
+    handoff.set_ssh_escape_cr_line_start_rule(true);
+    (handoff, pty)
+}
+
+/// The same hand-off under the old proof-based rule (`PHOSPHOR_SSH_ESCAPE_CR_RULE=0`).
+fn legacy_rule_after_answered_empty_report() -> (TypeaheadHandoff, PtyWriteCount) {
+    let (mut handoff, pty) = after_answered_empty_report();
+    handoff.set_ssh_escape_cr_line_start_rule(false);
     (handoff, pty)
 }
 
@@ -7072,7 +7080,7 @@ fn an_ssh_escape_on_a_proven_empty_line_gets_a_carriage_return_counted_as_a_bare
         type_and_flush(&mut handoff, b"\r~?"),
         UserBytesRoute::WriteCounted
     );
-    pty.note_write();
+    pty.note_write_bytes(b"\r~?");
     assert_eq!(
         handoff.state(),
         &HandoffState::PtyOwned {
@@ -7088,7 +7096,7 @@ fn an_ssh_escape_on_a_proven_empty_line_gets_a_carriage_return_counted_as_a_bare
         handoff.ssh_escape_line_start(),
         SshEscapeLineStart::AlreadyAtLineStart
     );
-    pty.note_write();
+    pty.note_write_bytes(b"~?");
 
     // The remote shell's Precmd for the empty line, then its line editor: a request (the line may
     // hold what was typed behind the `\r`), whose report hands input back to the editor.
@@ -7097,7 +7105,7 @@ fn an_ssh_escape_on_a_proven_empty_line_gets_a_carriage_return_counted_as_a_bare
         handoff.on_line_editor_active(true, true),
         ActiveDecision::SendRequest
     );
-    pty.note_write();
+    pty.note_write_bytes(b"\x1bi");
     handoff.on_report_parsed();
     assert_eq!(handoff.on_report(), ReportDisposition::Insert);
     assert_eq!(handoff.state(), &HandoffState::EditorOwned);
@@ -7107,11 +7115,12 @@ fn an_ssh_escape_on_a_proven_empty_line_gets_a_carriage_return_counted_as_a_bare
     assert_eq!(handoff.ssh_escape_line_start(), SshEscapeLineStart::AddCr);
 }
 
-/// #1793: the `\r` is never added where it could submit remote text or reach a running command.
+/// #1793 (the rule the #2186 kill switch restores): the `\r` is never added where it could
+/// submit remote text or reach a running command.
 #[test]
-fn an_ssh_escape_gets_no_carriage_return_unless_the_remote_line_is_proven_empty() {
+fn old_rule_ssh_escape_gets_no_carriage_return_unless_the_remote_line_is_proven_empty() {
     // Untracked user bytes in the shell's line.
-    let (mut handoff, _pty) = after_answered_empty_report();
+    let (mut handoff, _pty) = legacy_rule_after_answered_empty_report();
     handoff.note_untracked_line_bytes();
     assert_eq!(
         handoff.ssh_escape_line_start(),
@@ -7120,16 +7129,16 @@ fn an_ssh_escape_gets_no_carriage_return_unless_the_remote_line_is_proven_empty(
     assert_eq!(handoff.state(), &HandoffState::EditorOwned);
 
     // A request outstanding (written, no report yet).
-    let (mut handoff, pty) = after_answered_empty_report();
+    let (mut handoff, pty) = legacy_rule_after_answered_empty_report();
     handoff.on_legacy_request_written();
-    pty.note_write();
+    pty.note_write_bytes(b"\x1bi");
     assert_eq!(
         handoff.ssh_escape_line_start(),
         SshEscapeLineStart::Skipped("request_outstanding")
     );
 
     // A report parsed that the view has not handled yet.
-    let (mut handoff, _pty) = after_answered_empty_report();
+    let (mut handoff, _pty) = legacy_rule_after_answered_empty_report();
     handoff.on_report_parsed();
     assert_eq!(
         handoff.ssh_escape_line_start(),
@@ -7137,7 +7146,7 @@ fn an_ssh_escape_gets_no_carriage_return_unless_the_remote_line_is_proven_empty(
     );
 
     // Anything written to the pty since the report (a key, an agent's write, a command).
-    let (mut handoff, pty) = after_answered_empty_report();
+    let (mut handoff, pty) = legacy_rule_after_answered_empty_report();
     pty.note_write();
     assert_eq!(
         handoff.ssh_escape_line_start(),
@@ -7145,10 +7154,10 @@ fn an_ssh_escape_gets_no_carriage_return_unless_the_remote_line_is_proven_empty(
     );
 
     // A command started since (its Preexec), or a new prompt not yet reported.
-    let (mut handoff, _pty) = after_answered_empty_report();
+    let (mut handoff, _pty) = legacy_rule_after_answered_empty_report();
     let _ = handoff.on_preexec(true);
     assert_ne!(handoff.ssh_escape_line_start(), SshEscapeLineStart::AddCr);
-    let (mut handoff, _pty) = after_answered_empty_report();
+    let (mut handoff, _pty) = legacy_rule_after_answered_empty_report();
     handoff.on_precmd();
     assert_eq!(
         handoff.ssh_escape_line_start(),
@@ -7156,7 +7165,7 @@ fn an_ssh_escape_gets_no_carriage_return_unless_the_remote_line_is_proven_empty(
     );
 
     // The pty owns input (a command was written).
-    let (mut handoff, _pty) = after_answered_empty_report();
+    let (mut handoff, _pty) = legacy_rule_after_answered_empty_report();
     handoff.on_command_written();
     assert_eq!(
         handoff.ssh_escape_line_start(),
@@ -7165,11 +7174,139 @@ fn an_ssh_escape_gets_no_carriage_return_unless_the_remote_line_is_proven_empty(
 
     // Nothing ever reported: nothing proves the line empty.
     let mut fresh = TypeaheadHandoff::default();
+    fresh.set_ssh_escape_cr_line_start_rule(false);
     assert_eq!(
         fresh.ssh_escape_line_start(),
         SshEscapeLineStart::Skipped("no_report_since_prompt")
     );
     assert_eq!(fresh.state(), &HandoffState::EditorOwned);
+}
+
+/// #2186: ssh honours `~` only right after a `\r` or `\n` it read, and the app wrote every byte it
+/// read. After the last `ESC i` request with no report (nu), after a terminal-query reply written
+/// behind the last newline, the escape gets a `\r` whatever the report bookkeeping says.
+#[test]
+fn an_ssh_escape_after_a_request_or_reply_with_no_report_gets_a_carriage_return() {
+    // A request written, its report never comes (nu).
+    let (mut handoff, pty) = after_answered_empty_report();
+    handoff.on_legacy_request_written();
+    pty.note_write_bytes(b"\x1bi");
+    assert_eq!(handoff.requests_outstanding(), 1);
+    assert_eq!(handoff.ssh_escape_line_start(), SshEscapeLineStart::AddCr);
+
+    // A reply written behind the last newline.
+    let (mut handoff, pty) = after_answered_empty_report();
+    pty.note_write_bytes(b"\r");
+    assert!(pty.tail_is_newline());
+    pty.note_tail(b"\x1b[24;1R");
+    assert!(!pty.tail_is_newline());
+    assert_eq!(handoff.ssh_escape_line_start(), SshEscapeLineStart::AddCr);
+
+    // No report at all since the prompt.
+    let (mut handoff, _pty) = after_answered_empty_report();
+    handoff.on_precmd();
+    assert_eq!(handoff.ssh_escape_line_start(), SshEscapeLineStart::AddCr);
+}
+
+/// #2186: where the last byte written was a newline ssh is at its line start: the escape goes
+/// alone, no extra `\r`.
+#[test]
+fn an_ssh_escape_right_after_a_newline_is_sent_alone() {
+    let (mut handoff, pty) = after_answered_empty_report();
+    pty.note_write_bytes(b"\r");
+    assert_eq!(
+        handoff.ssh_escape_line_start(),
+        SshEscapeLineStart::TailIsNewline
+    );
+    assert_eq!(handoff.state(), &HandoffState::EditorOwned);
+    // The escape is the next write; ssh stays at its line start after it.
+    pty.note_write_bytes(b"~?");
+    assert_eq!(
+        handoff.ssh_escape_line_start(),
+        SshEscapeLineStart::AlreadyAtLineStart
+    );
+}
+
+/// #2186: `\n` ends a line like `\r`, and an empty write changes nothing.
+#[test]
+fn the_pty_write_tail_follows_the_last_byte_written() {
+    let pty = PtyWriteCount::default();
+    assert!(!pty.tail_is_newline());
+    pty.note_write_bytes(b"ls\n");
+    assert!(pty.tail_is_newline());
+    pty.note_write_bytes(b"");
+    assert!(pty.tail_is_newline());
+    pty.note_write_bytes(b"\x1bi");
+    assert!(!pty.tail_is_newline());
+    pty.note_write_bytes(b"\r");
+    assert!(pty.tail_is_newline());
+    assert_eq!(pty.get(), 4);
+}
+
+/// #2186: the `\r` is still withheld where the remote line may hold the user's bytes.
+#[test]
+fn an_ssh_escape_gets_no_carriage_return_where_the_remote_line_may_hold_user_bytes() {
+    // Untracked user bytes in the shell's line.
+    let (mut handoff, _pty) = after_answered_empty_report();
+    handoff.note_untracked_line_bytes();
+    assert_eq!(
+        handoff.ssh_escape_line_start(),
+        SshEscapeLineStart::Skipped("untracked_line_bytes")
+    );
+
+    // The pty owns input and the user's bytes were written.
+    let (mut handoff, _pty) = after_answered_empty_report();
+    handoff.on_command_written();
+    handoff.note_written_command_text("");
+    assert_eq!(
+        type_and_flush(&mut handoff, b"ab"),
+        UserBytesRoute::WriteCounted
+    );
+    assert_eq!(
+        handoff.ssh_escape_line_start(),
+        SshEscapeLineStart::Skipped("pty_owned_user_bytes")
+    );
+}
+
+/// #2186: keys held behind a young Enter keep the escape as typed.
+#[test]
+fn an_ssh_escape_gets_no_carriage_return_while_keys_are_held() {
+    let mut handoff = young_after_submit();
+    handoff.set_ssh_escape_cr_line_start_rule(true);
+    let _ = hold_young_enter(&mut handoff, b"\r");
+    assert_eq!(
+        handoff.ssh_escape_line_start(),
+        SshEscapeLineStart::Skipped("keys_held")
+    );
+}
+
+/// #2186: the kill switch restores the old rule exactly: no report since the prompt is a skip.
+#[test]
+fn the_ssh_escape_kill_switch_restores_the_proof_based_rule() {
+    let (mut handoff, pty) = legacy_rule_after_answered_empty_report();
+    pty.note_write_bytes(b"\r");
+    // Even right after a newline, the old rule wants a proof (and nothing written since): none.
+    assert_eq!(
+        handoff.ssh_escape_line_start(),
+        SshEscapeLineStart::Skipped("pty_written_since_report")
+    );
+    let (mut handoff, _pty) = legacy_rule_after_answered_empty_report();
+    handoff.on_precmd();
+    assert_eq!(
+        handoff.ssh_escape_line_start(),
+        SshEscapeLineStart::Skipped("no_report_since_prompt")
+    );
+}
+
+/// #2186: a new session knows nothing of what ssh last read.
+#[test]
+fn the_pty_write_tail_is_unknown_after_a_reset_on_exit() {
+    let mut handoff = TypeaheadHandoff::default();
+    let pty = handoff.pty_write_count();
+    pty.note_write_bytes(b"\r");
+    assert!(pty.tail_is_newline());
+    handoff.reset_on_exit();
+    assert!(!pty.tail_is_newline());
 }
 
 /// #1793: the write count is shared with the controller across a session's end (the controller

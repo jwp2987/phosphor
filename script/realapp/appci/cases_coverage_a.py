@@ -481,7 +481,7 @@ def c_ssh_drop(ctx, r):
     CR.need_ssh(ctx, r)
     if ctx.win:
         r.skip("not yet ported to the Windows panes: the `~.` escape and kill -9 $$ need the msys ssh client (unverified there)")
-    ssh_drop_body(ctx, r, "fake", ("escape", "escape_connect_enter", "escape_connect_bare", "kill"))
+    ssh_drop_body(ctx, r, "fake", ("escape", "escape_connect_enter", "escape_connect_bare", "escape_after_cleared_line", "kill"))
 
 
 def ssh_drop_body(ctx, r, host, variants):
@@ -506,7 +506,17 @@ def ssh_drop_body(ctx, r, host, variants):
         ctx.shot("ssh_drop_%s_connected" % variant)
         before = ctx.prompts()
         off = ctx.log_size()
-        if variant == "escape":
+        mark = ctx.cmd_mark()
+        if variant == "escape_after_cleared_line":
+            # #2186: `ls` typed and erased with Backspace, then `~.`. Nothing of it may reach (or run in) a shell, and the escape must end the session: the
+            # app puts the `\r` ssh needs in front of it (ssh took the last bytes it read -- the hand-off's `ESC i`, a terminal-query reply -- for text).
+            ctx.be.type("ls", 40)
+            time.sleep(0.2)
+            ctx.be.key("BackSpace")
+            ctx.be.key("BackSpace")
+            time.sleep(0.2)
+            ctx.be.type("~.", 40)
+        elif variant == "escape":
             ctx.be.key("Return")
             time.sleep(0.3)
             ctx.be.type("~.", 40)
@@ -547,6 +557,14 @@ def ssh_drop_body(ctx, r, host, variants):
                     variant, ctx.left_unproven))
                 return
             continue
+        if variant == "escape_after_cleared_line":
+            ran = ctx.cmds_since(mark)
+            r.check(not ran, "[%s] the erased line (or the escape) ran a command: %r" % (variant, ran[:5]))
+            hops = [l.strip()[-160:] for l in ctx.log_since(off).splitlines() if "hop=ssh_escape_cr" in l]
+            r.metric("%s_cr_hops" % variant, hops[:4])
+            if (getattr(ctx, "arm", None) or {}).get("shell") == "nu":
+                # nu never answers the last `ESC i`: the old proof-based rule skipped the `\r` there ("no_report_since_prompt") and `~.` did nothing
+                r.check(any("added" in h for h in hops), "[%s] nu: no `hop=ssh_escape_cr added` after the escape (hops: %r)" % (variant, hops[:4]))
         where = ctx.where_now()
         r.check(where == "local", "[%s] after the drop the pane is %r, expected local" % (variant, where))
         local_cmd_exact(ctx, r, "ssh_drop_%s" % variant)

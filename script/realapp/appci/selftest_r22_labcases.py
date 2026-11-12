@@ -215,3 +215,19 @@ def r22_chips_read_by_find_token_and_the_chip_value_line():
     assert not U.token_hits([("brabcdXX123456", 1, 1, 0, 1, 0, 1)], br), "two are not"
     assert CL.arm_tag({"shell": "zsh", "lat": "150", "helper": "helper"}) == "zsh.150.helper"
     assert "ocr_evidence(" in _body("cases_lab.py", "c_no_helper_chip")
+
+
+@check
+def r27_ssh_drop_has_the_cleared_line_escape_arm_on_every_lab_shell():
+    """#2186: `ssh_drop_reconnect` has the `escape_after_cleared_line` arm (type `ls`, erase it, `~.`: the session ends, nothing runs, nu logs
+    `hop=ssh_escape_cr added`) in both the same-machine case and the lab case, and the lab matrix has fish next to bash, zsh and nu"""
+    import cases  # noqa: F401
+    src_a, src_l = _src("cases_coverage_a.py"), _src("cases_lab.py")
+    assert src_a.count('"escape_after_cleared_line"') >= 3 and src_l.count('"escape_after_cleared_line"') == 1
+    body = _body("cases_coverage_a.py", "ssh_drop_body")
+    for need in ('ctx.be.type("ls", 40)', 'ctx.be.key("BackSpace")', 'ctx.be.type("~.", 40)', "hop=ssh_escape_cr", '"added" in h', "ctx.cmds_since(mark)"):
+        assert need in body, need
+    names = {c["name"] for c in cases.CASES}
+    for sh in ("bash", "zsh", "fish", "nu"):
+        for lat in ("lan", "150"):
+            assert "lab_ssh_drop_reconnect.%s.%s.nohelper" % (sh, lat) in names, (sh, lat)
