@@ -18831,6 +18831,93 @@ fn test_ssh_escape_stays_in_the_editor_outside_a_managed_ssh_shell_line() {
     }
 }
 
+/// #2181: keys the ssh gate held and released into the editor (`system_insert_held`) are judged
+/// like typed keys: a held `~.` released at the start of the line (in one insert or one key at a
+/// time) is the ssh escape and reaches the pty exactly as the typed one does.
+#[test]
+fn test_held_ssh_escape_released_at_line_start_behaves_like_typed() {
+    for chunks in [vec!["~."], vec!["~", "."]] {
+        App::test((), move |mut app| async move {
+            initialize_app(&mut app);
+            let (input, _editor, writes) =
+                pane_for_ssh_escape_test(&mut app, true, SHELL_INPUT_FOR_SSH_ESCAPE_TEST).await;
+            for chunk in &chunks {
+                input.update(&mut app, |input, ctx| {
+                    input.system_insert_held(chunk, ctx);
+                });
+            }
+            assert_eq!(
+                *writes.borrow(),
+                vec![b"~.".to_vec()],
+                "{chunks:?}: the held escape reached ssh once"
+            );
+            input.read(&app, |input, ctx| {
+                assert_eq!(
+                    input.buffer_text(ctx),
+                    "",
+                    "{chunks:?}: the editor is empty"
+                );
+            });
+        });
+    }
+}
+
+/// #2181: a held `~.` in the middle of a line is ordinary editor text, as a typed one is.
+#[test]
+fn test_held_ssh_escape_mid_line_is_editor_text() {
+    App::test((), move |mut app| async move {
+        initialize_app(&mut app);
+        let (input, _editor, writes) =
+            pane_for_ssh_escape_test(&mut app, true, SHELL_INPUT_FOR_SSH_ESCAPE_TEST).await;
+        for chunk in ["ls ", "~", "."] {
+            input.update(&mut app, |input, ctx| {
+                input.system_insert_held(chunk, ctx);
+            });
+        }
+        input.read(&app, |input, ctx| {
+            assert_eq!(input.buffer_text(ctx), "ls ~.");
+        });
+        assert!(writes.borrow().is_empty(), "nothing to the pty");
+    });
+}
+
+/// #2181: held text without an escape, and a held `~` followed by a non-escape key, stay editor
+/// text exactly as before; a later system insert of `~.` (a paste, a completion) is never an
+/// escape.
+#[test]
+fn test_held_text_without_an_escape_is_unchanged() {
+    App::test((), move |mut app| async move {
+        initialize_app(&mut app);
+        let (input, _editor, writes) =
+            pane_for_ssh_escape_test(&mut app, true, SHELL_INPUT_FOR_SSH_ESCAPE_TEST).await;
+        for chunk in ["ls -la", "~", "x"] {
+            input.update(&mut app, |input, ctx| {
+                input.system_insert_held(chunk, ctx);
+            });
+        }
+        input.read(&app, |input, ctx| {
+            assert_eq!(input.buffer_text(ctx), "ls -la~x");
+        });
+        assert!(writes.borrow().is_empty(), "nothing to the pty");
+
+        input.update(&mut app, |input, ctx| {
+            input.clear_buffer_and_reset_undo_stack(ctx);
+            input.system_insert("~.", ctx);
+        });
+        input.read(&app, |input, ctx| {
+            assert_eq!(
+                input.buffer_text(ctx),
+                "~.",
+                "a plain system insert is text"
+            );
+        });
+        assert!(
+            writes.borrow().is_empty(),
+            "a plain system insert is not an escape"
+        );
+    });
+}
+
 /// #1638: the pure rule: an insert at the end of an empty line that leaves exactly `~X`.
 #[test]
 fn test_ssh_escape_bytes_rule() {

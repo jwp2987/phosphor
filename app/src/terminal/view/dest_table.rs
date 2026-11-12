@@ -192,7 +192,12 @@ impl TerminalView {
             // `HeldInput::from_parts` reads every other class as a sequence.
             _ => Replayed::Seq(text),
         };
+        let held_typed = class == HELD_TYPED;
+        self.paste_queue.delivering_held_typed = held_typed;
         self.deliver_via_table(input, Origin::Held, stamp, ctx);
+        if held_typed {
+            self.paste_queue.delivering_held_typed = false;
+        }
     }
 
     /// Decides ONE delivered input with the table and executes the plan. `origin` is how the
@@ -416,8 +421,16 @@ impl TerminalView {
         if effects.contains(Effects::FOCUS_INPUT) {
             self.focus_input_box(ctx);
         }
-        self.input
-            .update(ctx, |input, ctx| input.system_insert(text, ctx));
+        // #2181: a typed key the ssh gate held is judged for the line-start ssh escape like a
+        // typed key; every other insert is the plain system insert.
+        let held_typed = self.paste_queue.delivering_held_typed;
+        self.input.update(ctx, |input, ctx| {
+            if held_typed {
+                input.system_insert_held(text, ctx)
+            } else {
+                input.system_insert(text, ctx)
+            }
+        });
         if self.focus_reclaim_active(ctx) {
             self.place_focus_after_card_resolved(ctx);
         }
