@@ -529,15 +529,20 @@ def ssh_drop_body(ctx, r, host, variants):
         up = ctx.until(lambda: ctx.prompts() > before, 20, step=0.1)
         r.check(bool(up), "[%s] no local prompt within 20 s after the connection was lost" % variant)
         ctx.shot("ssh_drop_%s_dropped" % variant)
-        if escape and not up:
+        if not up:
+            # r27: ANY arm whose drop did not end the session (the kill line was rejected by the shell, the reset did nothing) stops here: typing the
+            # next lines "locally" would type them into the live remote shell, and the later arms would read as that shell's failures.
             # r18u22 (Wayland): the escape left the session up and every later step of BOTH arms ran inside it (the reconnect nested a second
             # ssh, the kill arm's `kill -9 $$` returned to the first remote shell), so one failure read as nine. What the app did with `~.` is
             # quoted from its log (hop=ssh_escape_to_pty: written to ssh; hop=ssh_escape_refused why=...: kept in the editor and why), then the
             # line is cleared and the session left with `exit`, so the kill arm starts from the local shell and is judged on its own.
             # #1793: hop=ssh_escape_cr says whether the `\r` went in front of the escape (added) or why not (skipped=<reason>).
             esc = [l.strip()[-160:] for l in ctx.log_since(off).splitlines() if "ssh_escape" in l]
-            r.note("[%s] app log after the escape: %s" % (variant, esc[:6] or "no ssh_escape hop (a build without the r18u22 refusal log, the input_order log off, or the keys never reached the editor)"))
-            r.metric("%s_hops" % variant, esc[:6])
+            if escape:
+                r.note("[%s] app log after the escape: %s" % (variant, esc[:6] or "no ssh_escape hop (a build without the r18u22 refusal log, the input_order log off, or the keys never reached the editor)"))
+                r.metric("%s_hops" % variant, esc[:6])
+            else:
+                r.note("[%s] proven: no new local prompt in 20 s, so the remote session is still up (the drop line did not end it); nothing more is typed as a local command" % variant)
             ctx.reset()
             left = CR.leave(ctx)
             r.note("[%s] the rest of this arm is not run (it would nest inside the live session); `exit` back to the local shell: %s" % (
@@ -549,6 +554,14 @@ def ssh_drop_body(ctx, r, host, variants):
             continue
         where = ctx.where_now()
         r.check(where == "local", "[%s] after the drop the pane is %r, expected local" % (variant, where))
+        if where != "local":
+            # r27: a prompt came back but the pane is not local: never type the local-command lines blind; reset and leave the session
+            ctx.reset()
+            left = CR.leave(ctx)
+            r.note("[%s] pane proven %r, not local; the rest of this arm is not run; `exit` back to the local shell: %s" % (variant, where, "ok" if left else "FAILED (%s)" % ctx.left_unproven))
+            if not left:
+                return
+            continue
         local_cmd_exact(ctx, r, "ssh_drop_%s" % variant)
         if at_connect:
             # The arm itself began with a fresh connect: that was its reconnect.

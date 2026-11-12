@@ -309,9 +309,17 @@ def pwd_append_line(arm_or_shell, fname):
 
 def kill_self_line(arm_or_shell):
     """pure: the line that SIGKILLs the shell it is typed into (the connection then ends like a dropped link): `$$` in POSIX shells, `$fish_pid` in fish
-    (fish rejects `$$`), `$nu.pid` in nu (r24a lab-macos: `kill -9 $$` was a nu parse error, so the ssh_drop kill arm never dropped)"""
+    (fish rejects `$$`), `kill -s 9 $nu.pid` in nu (r24a: `kill -9 $$` was a parse error; r25a: nu 0.116 rejects the `-9` shorthand: "negative pid shorthand is not supported; use `kill -s 9 <pid>`")"""
     sh = arm_or_shell["shell"] if isinstance(arm_or_shell, dict) else arm_or_shell
-    return {"nu": "kill -9 $nu.pid", "fish": "kill -9 $fish_pid"}.get(sh, "kill -9 $$")
+    return {"nu": "kill -s 9 $nu.pid", "fish": "kill -9 $fish_pid"}.get(sh, "kill -9 $$")
+
+
+def ls_home_line(arm_or_shell, rel):
+    """pure: `ls` of `rel` under the login's home, in the arm's syntax: `$HOME/<rel>` in POSIX shells, fish and pwsh; nu has no `$HOME` (a parse error, the
+    command never runs): `($env.HOME | path join "<rel>")`. `rel` stays spelled out in the line (the app reads the path a command names)."""
+    if shell_syntax(arm_or_shell) == "nu":
+        return 'ls ($env.HOME | path join "%s")' % rel
+    return "ls $HOME/%s" % rel
 
 
 def then_line(arm_or_shell):
@@ -1364,7 +1372,7 @@ def c_helper_install(ctx, r, arm):
     r.check("remote helper install skipped" in log or mode != "never", "the app log never says the helper install was skipped for the denied host (label %s)" % host_label(arm))
     # the session is a working remote shell on every arm: the no-helper features do not depend on the helper
     tok = unique(ctx, 8)
-    ctx.be.type("echo %s > %s" % (tok, work(arm, "hi_%s.txt" % tok)), type_pace(ctx), enter=True)
+    ctx.be.type(append_line(arm, tok, work(arm, "hi_%s.txt" % tok)), type_pace(ctx), enter=True)       # r27: `echo x > f` writes nothing on nu (a comparison); the file is new, so append = write
     ctx.until(lambda: ctx.remote.lines("hi_%s.txt" % tok) == [tok], 10 + 4 * rt)
     CA.exact_lines(r, "the command typed into the remote shell", [tok], ctx.remote.lines("hi_%s.txt" % tok))
     ctx.shot("lab_helper_install_%s" % mode)

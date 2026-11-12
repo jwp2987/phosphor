@@ -79,7 +79,7 @@ def c_skills_remote(ctx, r, arm):
             # no prompt has come back and no command names a skill location: nothing is read (no timer, no polling)
             time.sleep(2.0 + 2 * rt)
             r.check(not saw_skill(ctx.log_since(mark), second), "the skill was reported before any command named a skill location: the shell backend must not poll")
-            ctx.be.type("ls $HOME/.agents/skills", CL.type_pace(ctx), enter=True)
+            ctx.be.type(CL.ls_home_line(arm, ".agents/skills"), CL.type_pace(ctx), enter=True)
             seen2 = ctx.until(lambda: saw_skill(ctx.log_since(mark), second), 15 + 6 * rt, step=0.1)
             r.check(bool(seen2), "the command naming the skills directory did not bring the new skill in (no hop=agent_context line naming it)")
         newer = [e for e in events(ctx.log_since(mark)) if CLR.fnv1a32(second) in e[4]]
