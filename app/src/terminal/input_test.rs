@@ -19556,7 +19556,10 @@ fn test_enter_after_edits_typed_during_the_history_list_build_submits_the_edited
         vec!["cmd_t246_uu59ve9z".to_string()],
         "{outcome:?}"
     );
-    assert_eq!(outcome.buffer_after, "", "{outcome:?}");
+    // The submitted line stays in the editor until its block completes (`input.rs`: the buffer is
+    // emptied "upon block completion in response to an executed command"), exactly as after a
+    // typed Enter; the test terminal runs no block, so it is still there, unmangled.
+    assert_eq!(outcome.buffer_after, "cmd_t246_uu59ve9z", "{outcome:?}");
 }
 
 /// A second Up typed during the build recalls the older entry once the list lands.
