@@ -105,13 +105,13 @@ def r25_tabs_streaming_and_two_windows_close_the_tabs_they_opened():
         ring = TabRing(); ring.new(streaming=True)
         fails = []
         assert cases.close_opened_tabs(ring.ctx(), _r(fails, []), "100", 5, "t") == 1 and len(ring.tabs) == 1 and not fails
-        # more tabs open than counted: the check fails, it does not close the pass's own tab
+        # more tabs open than counted (r28): each is still proven not to be the pass's own, so the extra one is closed too, never the own tab
         ring = TabRing()
         for _ in range(3):
             ring.new(streaming=True)
         fails = []
         cases.close_opened_tabs(ring.ctx(), _r(fails, []), "100", 2, "t")
-        assert len(ring.tabs) == 2 and len(fails) == 1 and "still open" in fails[0], (len(ring.tabs), fails)
+        assert len(ring.tabs) == 1 and ring.tabs[0]["pid"] == "100" and not fails, (len(ring.tabs), fails)
         # a pane with no PID probe: nothing is closed blind
         ring = TabRing(); ring.new()
         assert cases.close_opened_tabs(ring.ctx(), _r([], []), None, 1, "t") == 0 and ring.closed == []
