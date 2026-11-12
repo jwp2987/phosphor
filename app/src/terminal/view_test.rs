@@ -31532,15 +31532,18 @@ fn an_inline_editor_paste_then_an_immediate_enter_are_queued_in_order() {
 fn typing_in_agent_view_returns_to_bottom() {
     App::test((), |mut app| async move {
         initialize_app_for_terminal_view(&mut app);
+        let global_resource_handles = crate::GlobalResourceHandles::mock(&mut app);
+        app.add_singleton_model(|_| {
+            crate::GlobalResourceHandlesProvider::new(global_resource_handles)
+        });
+        let _agent_view = FeatureFlag::AgentView.override_enabled(true);
         let terminal = add_window_with_terminal(&mut app, None);
         terminal.update(&mut app, |view, ctx| {
-            {
-                let mut model = view.model.lock();
-                for _ in 0..100 {
-                    model.simulate_block("ls", "foo");
-                }
+            // Blocks of the conversation are what agent view draws.
+            let conversation_id = enter_agent_view_for_navigation(view, ctx);
+            for _ in 0..100 {
+                simulate_user_shell_block_in_conversation(view, conversation_id, "ls");
             }
-            enter_agent_view_for_navigation(view, ctx);
             assert!(view.is_vertically_scrollable(ctx));
             view.scroll(1.0.into_lines(), ctx);
             assert!(matches!(
