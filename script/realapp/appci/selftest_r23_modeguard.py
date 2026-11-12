@@ -351,3 +351,14 @@ def r24_mode_proof_ocr_hint_without_slash_is_not_agent():
     assert f("new agent conversation esc for terminal ci ollama / gpt-oss:20b")
     assert f("make a pr esc for terminal ctrl alt r to resume conversation")
     assert f("new agent conversation ... ctrl-shift-↵ new /agent conversation")
+
+
+@check
+def r27_mode_proof_disagreement_records_the_ocr_text():
+    """r26w Windows mode_proof FAILED with both the terminal hint and an agent marker read; the row now carries the OCR text around each marker"""
+    import cases, inspect
+    ctx = cases.ocr_marker_context("~/w git:(main) ctrl-shift-enter new /agent conversation tail")
+    assert "new /agent conversation" in ctx and "ctrl-shift-enter" in ctx, ctx
+    assert cases.ocr_marker_context("nothing here").startswith("'nothing here")
+    src = inspect.getsource(cases.c_mode_proof)
+    assert "ocr_marker_context(low)" in src and "mode_proof OCR text" in src

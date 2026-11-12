@@ -2273,6 +2273,18 @@ def c_mode_proof(ctx, r):
             r.check(chip, "model chip 'gpt-oss:20b' not visible before any key was typed (the CI Ollama model is not the active one)")
     else:
         r.check(not is_agent, "terminal mode expected but the screen shows agent markers ('New agent conversation' / 'ESC for terminal' / 'Ask anything')")
+    if (ctx.mode == "agent") != bool(is_agent):
+        # r26w Windows: the screen verdict disagreed with the mode; the OCR text that made it is the evidence for the matcher (ocr_agent_markers)
+        r.note("mode_proof OCR text (lower-cased, %d chars): %s" % (len(low), ocr_marker_context(low)))
+
+
+def ocr_marker_context(low, width=60):
+    """pure: the OCR text around every agent/hint marker the matcher looks at ('agent conversation', 'esc for terminal', 'ask anything'), so a
+    disagreeing mode_proof row shows exactly what the OCR read; the first 300 characters when no marker is found."""
+    spans = []
+    for m in re.finditer(r"agent\s+conversation|esc\s+for\s+terminal|ask\s+anything", low):
+        spans.append(low[max(0, m.start() - width):m.end() + 20])
+    return " | ".join(repr(s) for s in spans) if spans else repr(low[:300])
 
 
 # ---------------------------------------------------------------- cadence
