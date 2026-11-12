@@ -116,3 +116,38 @@ def r27_remote_tab_names_match_the_app_2188():
         assert CL.remote_tab_waits("remote_tab_wait: released why=%s waited_ms=1 held=0 enter_held=0" % why)[0]["why"] == why
     docs = _src("docs", "testing.md")
     assert "PHOSPHOR_REMOTE_TAB_ENTER_WAIT" in docs and "selftest_r27_remotetabenter.py" in docs and "#2188" in docs
+
+
+@check
+def r28_tab_hops_the_lab_reads_are_logged_by_the_app():
+    """r27b: several arms were NOREF because the app never logged the hops the case waits for. The app now logs hop=tab_insert where a completion reaches the
+    editor and hop=tab_menu ... items=[...] where an explicit Tab opens the menu; the case's regexes read both, names or (not opted in) no verdict"""
+    import cases  # noqa: F401
+    import cases_lab as CL
+    inp = _src("app", "src", "terminal", "input.rs")
+    assert 'log_hop("tab_insert", || format!("len={}", completion_result.len()))' in inp
+    assert 'log_hop("tab_menu", || {' in inp and 'format!("count={count} items=[{}]", shown.join(", "))' in inp
+    assert CL.HOOK_TAB_INSERT.search("input_order hop=tab_insert len=31 t=1.0")
+    m = CL.HOOK_TAB_MENU.search('input_order hop=tab_menu count=2 items=["ambx_a/", "ambx_b/"] t=1794516903254.716')
+    assert m and CL.tab_menu_names(m.group(1)) == {"ambx_a", "ambx_b"}, m
+    m = CL.HOOK_TAB_MENU.search("input_order hop=tab_menu count=2 items=[<7 chars>, <7 chars>] t=1.0")
+    assert m and CL.tab_menu_names(m.group(1)) is None, "lengths are not names: no verdict"
+    assert CL.tab_menu_names("[]") == set()
+    body = inspect.getsource(CL.c_tab_remote_dir)
+    assert "tab_menu_names(m.group(1))" in body and "r.check(shown == names," in body, "the comparison stays exact"
+
+
+@check
+def r28_in_band_empty_answer_hand_over_logs_the_same_wait_line_2188():
+    """r27b zsh.150.nohelper: the Enter held for an empty in-band answer now waits for the completer; its release and its net log the remote_tab_wait line
+    the case notes, and the net is in the timer allowlist"""
+    import cases  # noqa: F401
+    import cases_lab as CL
+    inp = _src("app", "src", "terminal", "input.rs")
+    assert "fn keep_held_enter_for_remote_completer" in inp and "if !no_answer && self.keep_held_enter_for_remote_completer(ctx) {" in inp
+    assert '"remote_tab_wait: released why={} waited_ms={} held=1 enter_held=1"' in inp
+    assert '"remote_tab_wait: gave_up why=net waited_ms={} held=1 enter_held=1 cap_ms={}; the \\' in inp
+    got = CL.remote_tab_waits("remote_tab_wait: released why=answered_applied waited_ms=612 held=1 enter_held=1\n")
+    assert got == [{"end": "released", "why": "answered_applied", "waited_ms": 612, "held": 1, "enter_held": True}]
+    allow = _src("script", "input_path_timers.allow")
+    assert "app/src/terminal/input.rs\tarm_remote_completer_enter_net\t" in allow

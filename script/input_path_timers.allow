@@ -22,6 +22,7 @@ app/src/terminal/input.rs	DEFERRED_ENTER_ACTIVITY_CAP	releases the macOS activit
 app/src/terminal/input.rs	HOLD_BACKSTOP_LIMIT	upper bound of an Enter hold's wall-clock backstop; the backstop hands the line back to the editor
 app/src/terminal/input.rs	SLOW_ENTER_HOLD_THRESHOLD	log threshold for a slow Enter hold; log only
 app/src/terminal/input.rs	TAB_COMPLETION_ENTER_BUDGET	Enter held for a local Tab completion: on expiry the uncompleted line goes back to the editor and nothing runs (#1666)
+app/src/terminal/input.rs	arm_remote_completer_enter_net	Enter held for the remote completer after an empty in-band Tab answer: on expiry the completion is cancelled and the held Enter runs the line as typed, in order (#2188)
 app/src/terminal/input.rs	VERDICT_HOLD_BACKSTOP	lost-job net of an Enter held for its verdict: hands the line back to the editor, never submits it (#1577)
 app/src/terminal/input.rs	arm_hold_timer	one-shot give-up timers of an Enter's verdict/Tab hold (backstop, compute cap): hand the line back, never submit
 app/src/terminal/input/enter_queue.rs	ENTER_GATE_LEAK_NET	leak net of the Enter gate: the held Enter is given up (line stays and what followed stays with it in the editor; behind an Enter that ran it is written to the pty in typed order, owner decision 2026-11-09 #1996)

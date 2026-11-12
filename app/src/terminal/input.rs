@@ -1500,6 +1500,27 @@ struct VerdictWait {
     cursor: usize,
 }
 
+/// The most menu items the `tab_menu` hop names (a listing can hold thousands).
+const TAB_MENU_HOP_MAX_ITEMS: usize = 50;
+
+/// The detail of the `tab_menu` hop: `count=N items=[a, b]`, each item through `describe` (the
+/// name when the tester opted in, else its length), at most [`TAB_MENU_HOP_MAX_ITEMS`] of them.
+/// `items=[...]` is last, so the bracket closes the list.
+fn tab_menu_hop_detail<'a>(
+    items: impl Iterator<Item = &'a str>,
+    describe: impl Fn(&str) -> String,
+) -> String {
+    let mut count = 0usize;
+    let mut shown = Vec::new();
+    for item in items {
+        if count < TAB_MENU_HOP_MAX_ITEMS {
+            shown.push(describe(item));
+        }
+        count += 1;
+    }
+    format!("count={count} items=[{}]", shown.join(", "))
+}
+
 /// The keys typed behind a waiting Enter, if `current` is the waiting line with them added
 /// (#1016): appended at its end, or inserted at the cursor the Enter was pressed at (#1207).
 /// `None` when the buffer still is the line, or the user edited the line itself.
@@ -2459,6 +2480,9 @@ pub struct Input {
     /// The id given to the next remote Tab completer job (and the key of the gate it opens), so
     /// the end of an earlier job cannot close a later job's gate.
     remote_tab_seq: u64,
+    /// The id of the waiting Enter that was handed from the remote shell's empty in-band Tab
+    /// answer to the completer (#2188, `keep_held_enter_for_remote_completer`).
+    enter_waits_for_remote_completer: Option<u64>,
     /// Where the view records the entries it routes after an Enter that waited, for tests.
     #[cfg(test)]
     replayed_sink_for_test: Option<Rc<std::cell::RefCell<Vec<AfterEnterInput>>>>,
@@ -4409,6 +4433,7 @@ impl Input {
             history_recall_seq: 0,
             remote_tab_gate: None,
             remote_tab_seq: 0,
+            enter_waits_for_remote_completer: None,
             #[cfg(test)]
             replayed_sink_for_test: None,
             #[cfg(test)]
@@ -13550,6 +13575,23 @@ impl Input {
         if no_answer && self.give_up_unanswered_remote_hold(ctx) {
             return;
         }
+        // #2188 (r27b lab, zsh without the helper at 150 ms): the remote shell ANSWERED, with
+        // nothing, while an Enter was held for it. The completer has the answer (it completed the
+        // same word a moment earlier in the same session), so the Enter keeps waiting, now for
+        // the completer, and runs the completed line; it used to run the line as typed here.
+        if !no_answer && self.keep_held_enter_for_remote_completer(ctx) {
+            self.run_completions_async(
+                before_cursor_text,
+                matcher,
+                completions_trigger,
+                editor_snapshot,
+                cursor_position,
+                completion_context,
+                false,
+                ctx,
+            );
+            return;
+        }
         if self.end_remote_native_tab_wait(
             generation,
             completions_trigger,
@@ -13588,6 +13630,84 @@ impl Input {
         }
         self.give_up_completion_hold("remote_no_answer", ctx);
         true
+    }
+
+    /// #2188: the remote shell answered a Tab in-band with nothing while an Enter is held for
+    /// that answer. Returns whether the Enter stays held for the completer, which the caller
+    /// starts next (its result ends the hold through [`Self::finish_completion_hold`], as any
+    /// Tab answer an Enter waits for). False with no Enter held, or with the kill switch
+    /// (`PHOSPHOR_REMOTE_TAB_ENTER_WAIT=0`): the Enter then runs the visible line at once, as
+    /// before. The hold keeps its kind (no compute cap: the answer comes over the link); the
+    /// one timer is the link-sized net armed here, which runs the line as typed.
+    fn keep_held_enter_for_remote_completer(&mut self, ctx: &mut ViewContext<Self>) -> bool {
+        if !crate::terminal::input_queue::switches::remote_tab_enter_wait() {
+            return false;
+        }
+        let Some(wait) = self
+            .verdict_wait
+            .as_ref()
+            .filter(|wait| wait.holds_for_tab_completion())
+        else {
+            return false;
+        };
+        let id = wait.id;
+        log::info!(
+            "The remote shell had no Tab answer; the Enter waiting for it now waits for the completer (#2188)"
+        );
+        self.enter_waits_for_remote_completer = Some(id);
+        self.arm_remote_completer_enter_net(id, ctx);
+        true
+    }
+
+    /// Arms the give-up net of an Enter that waits for the remote completer after the remote
+    /// shell's own answer was empty (#2188): the same link-sized net as the remote Tab gate
+    /// (`GateKind::RemoteTabCompletion`'s cap, 5 s), so it fires before the hold's backstop.
+    fn arm_remote_completer_enter_net(&mut self, id: u64, ctx: &mut ViewContext<Self>) {
+        let delay = crate::terminal::input_queue::GateKind::RemoteTabCompletion
+            .default_cap()
+            .unwrap_or(HOLD_BACKSTOP_LIMIT);
+        // give-up-net: Enter held for the remote completer after an empty in-band Tab answer: on expiry the completion is cancelled and the held Enter runs the line as typed, in order (#2188)
+        ctx.spawn(Timer::after(delay), move |me, _, ctx| {
+            me.remote_completer_enter_net_fired(id, ctx);
+        });
+    }
+
+    /// The net of [`Self::arm_remote_completer_enter_net`] fired for wait `id`: the completer
+    /// never answered. A no-op when that Enter has run or was voided since. Otherwise the
+    /// completion is cancelled and the Enter runs the line as typed (what plain ssh runs when the
+    /// remote shell completes nothing), after that line's own verdict; it is not dropped, and
+    /// the keys typed behind it follow it. Logged.
+    fn remote_completer_enter_net_fired(&mut self, id: u64, ctx: &mut ViewContext<Self>) {
+        if self.enter_waits_for_remote_completer != Some(id)
+            || !self
+                .verdict_wait
+                .as_ref()
+                .is_some_and(|wait| wait.id == id && wait.holds_for_tab_completion())
+        {
+            return;
+        }
+        let waited = self
+            .verdict_wait
+            .as_ref()
+            .and_then(VerdictWait::tab_completion_since)
+            .map(|since| since.elapsed())
+            .unwrap_or_default();
+        log::warn!(
+            "remote_tab_wait: gave_up why=net waited_ms={} held=1 enter_held=1 cap_ms={}; the \
+             remote completer did not answer the Tab an Enter waits for: the completion is \
+             cancelled and the Enter runs the line as typed (#2188)",
+            waited.as_millis(),
+            crate::terminal::input_queue::GateKind::RemoteTabCompletion
+                .default_cap()
+                .unwrap_or(HOLD_BACKSTOP_LIMIT)
+                .as_millis()
+        );
+        let snapshot = self
+            .editor
+            .read(ctx, |editor, ctx| editor.snapshot_model(ctx));
+        // An empty result: nothing is applied, the completion is cancelled (a late answer is
+        // stale) and the Enter runs the visible line.
+        self.finish_completion_hold(None, snapshot, ctx);
     }
 
     /// The first half of [`Self::native_completions_missed`]: the Tab request stops being
@@ -14182,6 +14302,19 @@ impl Input {
                     }
                     ExplicitTabCompletion::Open { suggestions, .. } => suggestions,
                 };
+                if completions_trigger == CompletionsTrigger::Keybinding {
+                    // The menu an explicit Tab opens, for the lab's comparison with the shell's
+                    // own candidates. The names are shown only when the tester opted in
+                    // (`describe_text`); otherwise their lengths.
+                    warpui::input_order::log_hop("tab_menu", || {
+                        tab_menu_hop_detail(
+                            prepared_suggestions
+                                .iter()
+                                .map(|item| item.suggestion.display.as_str()),
+                            warpui::input_order::describe_text,
+                        )
+                    });
+                }
 
                 // If not using completions as you type, then
                 // clear any autosuggestions when tab completions are open.
@@ -14294,6 +14427,9 @@ impl Input {
         ctx: &mut ViewContext<Input>,
     ) {
         self.disarm_glue_enter_guard();
+        // The completion text reaches the editor here (a Tab's single match, the Enter that
+        // waited for it, a menu accept): the lab times Tab -> insert on this hop. Length only.
+        warpui::input_order::log_hop("tab_insert", || format!("len={}", completion_result.len()));
         let is_completions_as_you_type_enabled = self.is_completions_while_typing_turned_on(ctx);
         self.editor.update(ctx, |input, ctx| {
             let cursor_end_offset = input.end_byte_index_of_last_selection(ctx);
@@ -16271,7 +16407,20 @@ impl Input {
                 );
             }
         }
-        if waited > TAB_COMPLETION_ENTER_WARN {
+        let wait_id = self.verdict_wait.as_ref().map(|wait| wait.id);
+        if wait_id.is_some() && self.enter_waits_for_remote_completer.take() == wait_id {
+            // #2188: the Enter waited for the remote completer after an empty in-band answer.
+            // Counts only, never the line.
+            log::info!(
+                "remote_tab_wait: released why={} waited_ms={} held=1 enter_held=1",
+                match outcome {
+                    "applied" => "answered_applied",
+                    "ambiguous" => "answered_ambiguous",
+                    _ => "answered_no_match",
+                },
+                waited.as_millis()
+            );
+        } else if waited > TAB_COMPLETION_ENTER_WARN {
             log::warn!(
                 "Enter held {} ms for a local Tab completion ({outcome}; completer compute {} ms, cap {} ms)",
                 waited.as_millis(),
