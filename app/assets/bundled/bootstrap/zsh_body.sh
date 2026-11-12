@@ -2587,8 +2587,17 @@ esac
     builtin printf '\e]9280;B\a'
   }
 
+  # Phosphor (#2174): true when compsys is loaded (compinit ran in the user's rc). Without it
+  # there is no _generic, and calling it prints "command not found" into the user's shell. We
+  # never run compinit for the user.
+  function warp_compsys_loaded () {
+    (( $+functions[_generic] && $+functions[_main_complete] ))
+  }
+
   # The main logic for generating completions.
   function warp_main_completer () {
+    # Phosphor (#2174): no compsys, nothing to ask (and nothing to print).
+    warp_compsys_loaded || return 1
     # We want all the results listed.
     compstate[list_max]=-1
 
@@ -2608,6 +2617,11 @@ esac
     # warp_read_completion_buffer) if the app's reply never arrives; bail out
     # rather than complete on a stale or empty buffer.
     zle warp_read_completion_buffer || return
+    # Phosphor (#2174): no compsys loaded (no compinit): print nothing, answer at once.
+    if ! warp_compsys_loaded; then
+      BUFFER=""
+      return 0
+    fi
 
     # Adding a post-hook here is not helpful because
     # it doesn't tell us when the completions have all been _listed_.
@@ -2630,6 +2644,14 @@ esac
     # warp_read_completion_buffer) if the app's reply never arrives; bail out
     # rather than complete on a stale or empty buffer.
     zle warp_read_completion_buffer || return
+    # Phosphor (#2174): no compsys loaded (no compinit): an empty, well-formed answer (start and
+    # end marks, no candidates) at once, so the app's own completer answers; nothing is printed.
+    if ! warp_compsys_loaded; then
+      warp_mark_start_of_completions_for_compadd_override
+      warp_mark_end_of_completions
+      BUFFER=""
+      return 0
+    fi
 
     compprefuncs=( warp_mark_start_of_completions_for_compadd_override )
     comppostfuncs=( warp_mark_end_of_completions )

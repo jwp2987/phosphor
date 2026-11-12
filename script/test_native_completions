@@ -464,12 +464,12 @@ def start_bash(base, lab, bash=None, image=None):
     return Pty([bash, "--noprofile", "--rcfile", rc, "-i"], env, lab)
 
 
-def start_zsh(base, lab):
+def start_zsh(base, lab, compinit=True):
     zsh = shutil.which("zsh")
     zd = os.path.join(base, "zdot")
     os.makedirs(zd, exist_ok=True)
     # The user's own completion system, as a zsh user has it (the bootstrap does not run compinit).
-    zshrc = f"autoload -Uz compinit && compinit -u -d {shlex.quote(os.path.join(zd, '.zcompdump'))}"
+    zshrc = f"autoload -Uz compinit && compinit -u -d {shlex.quote(os.path.join(zd, '.zcompdump'))}" if compinit else ""
     with open(os.path.join(zd, ".zshrc"), "w") as f:
         f.write(zshrc + "\n")
     with open(os.path.join(zd, ".zshenv"), "w") as f:
@@ -658,6 +658,34 @@ def run_zsh(base, lab):
         sh.close()
 
 
+def run_zsh_no_compsys(base, lab):
+    """#2174: zsh without compinit. Tab's exchange ends at once with an empty, well-formed answer
+    (start and end marks, no candidate) and NOTHING is printed to the terminal."""
+    if not shutil.which("zsh"):
+        return
+    sh = start_zsh(base, lab, compinit=False)
+    try:
+        if not wait_bootstrapped(sh, "zsh (no compinit)"):
+            return
+        sh.write(app_command("(( $+functions[_generic] )) && echo compsys-present-$((1+1))"))
+        out = sh.read_until(rb"compsys-present-2", 1.0)
+        check("zsh (no compinit)", "compsys really is not loaded", b"compsys-present-2" not in out.replace(b"$((1+1))", b""), f"(got {out[-200:]!r})")
+        start = len(sh.buf)
+        t0 = time.time()
+        got = complete(sh, "zsh (no compinit)", "cd pro")
+        took = time.time() - t0
+        check("zsh (no compinit)", "empty answer, no candidates", got == [], f"(got {got})")
+        check("zsh (no compinit)", "answers at once (well inside the 5 s deadline)", took < 2.0, f"(took {took:.2f}s)")
+        sh.drain(0.5)
+        seen = sh.buf[start:]
+        check("zsh (no compinit)", "nothing printed to the terminal", b"not found" not in seen and b"_generic" not in seen, f"(got {seen[-200:]!r})")
+        text, want = command()
+        sh.write(app_command(text))
+        expect_runs(sh, "zsh (no compinit)", "the next command runs, the line is clean", want)
+    finally:
+        sh.close()
+
+
 def main():
     import argparse
     ap = argparse.ArgumentParser(description="the in-band native-completions exchange in the real bash and zsh bootstraps")
@@ -678,6 +706,7 @@ def main():
             runners.append((lambda b, l, image=image: run_bash(b, l, image=image), "bash-image-%d" % n))
         if not a.only_bash:
             runners.append((run_zsh, "zsh"))
+            runners.append((run_zsh_no_compsys, "zsh-no-compinit"))
         for runner, name in runners:
             sub = os.path.join(base, name)
             os.makedirs(sub)
