@@ -4,7 +4,7 @@
 # persistent fixed-port slots mount the box's token file read-only so the token is on no command line and not in `podman inspect`). Exits after its TTL
 # ($SSHLAB_TTL_S, default 8 h). $SSHLAB_EXCLUSIVE=1 (the fixed slots): one lease owner at a time, a second /lease gets 409 until POST /release or the lease expires.
 # Import-safe: selftest loads this file by path for its pure helpers (session_pids, safe_path, count_matches...); nothing runs unless __main__.
-import base64, hashlib, http.server, json, os, pwd, re, secrets, shutil, signal, socket, socketserver, subprocess, sys, threading, time, urllib.parse
+import base64, hashlib, http.server, json, os, pwd, re, secrets, shutil, signal, socket, socketserver, subprocess, sys, tempfile, threading, time, urllib.parse
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 for _d in ("/usr/local/lib/sshlab", os.path.join(HERE, "..", "lib", "sshlab")):
@@ -525,13 +525,35 @@ def run_completer(key, line, cwd, user=None):
     """run the shell's own completion driver for `line` in `cwd` (as `user` when given); returns the CompletedProcess. The selftest calls it with
     user=None and a scratch directory, so the lab-side check and the offline check run the SAME driver."""
     argv = list(COMPLETERS[key]) + ([line] if key not in ("nu", "pwsh") else [])
+    # the image installs nu and pwsh under /opt (the users' login shells are /opt/nu/nu and /opt/pwsh/pwsh), not on PATH: a bare name was
+    # 'command not found' and /complete returned [] (round 22 sshlab-image selftest). Off the image (offline selftest) the PATH name is used.
+    argv[0] = shell_binary(argv[0])
+    tmp = None
     if key == "nu":
-        argv = ["nu", "--ide-complete", str(len(line)), "-c", line]
+        # `nu --ide-complete <pos> <file>` completes a FILE; `-c <line>` exits 1 with no output (nu 0.116, checked in the image)
+        fd, tmp = tempfile.mkstemp(prefix="labcomplete-", suffix=".nu")
+        with os.fdopen(fd, "w") as f:
+            f.write(line)
+        os.chmod(tmp, 0o644)
+        argv = [argv[0], "--ide-complete", str(len(line.encode("utf-8"))), tmp]
     env = dict(os.environ, LAB_LINE=line) if key == "pwsh" else None
-    if env and user:
-        argv = ["runuser", "-u", user, "--preserve-environment", "--"] + argv
-        return sh(argv, cwd=cwd, timeout=20, env=env)
-    return sh(argv, user=user, cwd=cwd, timeout=20, env=env)
+    try:
+        if env and user:
+            argv = ["runuser", "-u", user, "--preserve-environment", "--"] + argv
+            return sh(argv, cwd=cwd, timeout=20, env=env)
+        return sh(argv, user=user, cwd=cwd, timeout=20, env=env)
+    finally:
+        if tmp:
+            os.unlink(tmp)
+
+
+SHELL_PATHS = {"nu": "/opt/nu/nu", "pwsh": "/opt/pwsh/pwsh"}
+
+
+def shell_binary(name):
+    """the image's path for a shell that is not on PATH there; else the name itself (found on PATH)"""
+    p = SHELL_PATHS.get(name)
+    return p if p and os.path.exists(p) else name
 
 
 def complete(req):
