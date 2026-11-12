@@ -1,0 +1,232 @@
+Returns at the session tap: 4567; Phosphor app_send_event lines: 10819; Phosphor pids: [298, 1463, 2474, 3523, 19825, 20237, 32959, 40944, 42187, 42907, 43653, 44451, 45132, 45849, 46523, 47170, 47215, 70668, 76872, 96322, 97274, 98189, 99147]
+targeted at Phosphor but never reached its NSApplication: 1571 (of which UNCOVERED, no app_send_event within 3 s = app-log gap, cause not established: 1570; LOST with neighbours logged: 1)
+  app log logs/agent/phosphor.1.log: 2026-11-12T09:16:16Z .. 2026-11-12T09:24:38Z (11611718 bytes)
+  app log logs/agent/phosphor.10.log: 2026-11-12T10:05:18Z .. 2026-11-12T10:05:45Z (830174 bytes)
+  app log logs/agent/phosphor.10.old.0.in_session.0.log: 2026-11-12T09:55:52Z .. 2026-11-12T09:59:29Z (10485486 bytes)
+  app log logs/agent/phosphor.10.old.0.in_session.1.log: 2026-11-12T09:52:01Z .. 2026-11-12T09:55:52Z (10485491 bytes)
+  app log logs/agent/phosphor.10.old.0.log: 2026-11-12T09:59:29Z .. 2026-11-12T10:05:17Z (9639346 bytes)
+  app log logs/agent/phosphor.10.old.1.log: 2026-11-12T09:51:02Z .. 2026-11-12T09:52:00Z (2289418 bytes)
+  app log logs/agent/phosphor.10.old.2.log: 2026-11-12T09:50:13Z .. 2026-11-12T09:51:01Z (2280653 bytes)
+  app log logs/agent/phosphor.10.old.3.log: 2026-11-12T09:49:05Z .. 2026-11-12T09:50:12Z (2028295 bytes)
+  app log logs/agent/phosphor.10.old.4.log: 2026-11-12T09:48:09Z .. 2026-11-12T09:49:04Z (1990662 bytes)
+  app log logs/agent/phosphor.11.log: 2026-11-12T10:15:53Z .. 2026-11-12T10:48:27Z (60405011 bytes)
+  app log logs/agent/phosphor.11.old.0.log: 2026-11-12T10:05:18Z .. 2026-11-12T10:05:45Z (830935 bytes)
+  app log logs/agent/phosphor.11.old.1.in_session.0.log: 2026-11-12T09:55:52Z .. 2026-11-12T09:59:29Z (10485486 bytes)
+  app log logs/agent/phosphor.11.old.1.in_session.1.log: 2026-11-12T09:52:01Z .. 2026-11-12T09:55:52Z (10485491 bytes)
+  app log logs/agent/phosphor.11.old.1.log: 2026-11-12T09:59:29Z .. 2026-11-12T10:05:17Z (9639346 bytes)
+  app log logs/agent/phosphor.11.old.2.log: 2026-11-12T09:51:02Z .. 2026-11-12T09:52:00Z (2289418 bytes)
+  app log logs/agent/phosphor.11.old.3.log: 2026-11-12T09:50:13Z .. 2026-11-12T09:51:01Z (2280653 bytes)
+  app log logs/agent/phosphor.11.old.4.log: 2026-11-12T09:49:05Z .. 2026-11-12T09:50:12Z (2028295 bytes)
+  app log logs/agent/phosphor.12.log: 2026-11-12T10:48:28Z .. 2026-11-12T10:49:26Z (2108463 bytes)
+  app log logs/agent/phosphor.12.old.0.in_session.0.log: 2026-11-12T10:42:33Z .. 2026-11-12T10:44:53Z (10485646 bytes)
+  app log logs/agent/phosphor.12.old.0.in_session.1.log: 2026-11-12T10:40:05Z .. 2026-11-12T10:42:33Z (10485531 bytes)
+  app log logs/agent/phosphor.12.old.0.in_session.2.log: 2026-11-12T10:37:10Z .. 2026-11-12T10:40:05Z (10485661 bytes)
+  app log logs/agent/phosphor.12.old.0.in_session.3.log: 2026-11-12T10:27:38Z .. 2026-11-12T10:37:10Z (10485742 bytes)
+  app log logs/agent/phosphor.12.old.0.in_session.4.log: 2026-11-12T10:15:53Z .. 2026-11-12T10:27:37Z (10485725 bytes)
+  app log logs/agent/phosphor.12.old.0.log: 2026-11-12T10:44:53Z .. 2026-11-12T10:48:28Z (7977467 bytes)
+  app log logs/agent/phosphor.12.old.1.log: 2026-11-12T10:05:18Z .. 2026-11-12T10:05:45Z (830935 bytes)
+  app log logs/agent/phosphor.12.old.2.in_session.0.log: 2026-11-12T09:55:52Z .. 2026-11-12T09:59:29Z (10485486 bytes)
+  app log logs/agent/phosphor.12.old.2.in_session.1.log: 2026-11-12T09:52:01Z .. 2026-11-12T09:55:52Z (10485491 bytes)
+  app log logs/agent/phosphor.12.old.2.log: 2026-11-12T09:59:29Z .. 2026-11-12T10:05:17Z (9639346 bytes)
+  app log logs/agent/phosphor.12.old.3.log: 2026-11-12T09:51:02Z .. 2026-11-12T09:52:00Z (2289418 bytes)
+  app log logs/agent/phosphor.12.old.4.log: 2026-11-12T09:50:13Z .. 2026-11-12T09:51:01Z (2280653 bytes)
+  app log logs/agent/phosphor.13.log: 2026-11-12T10:49:27Z .. 2026-11-12T10:50:31Z (3290073 bytes)
+  app log logs/agent/phosphor.13.old.0.log: 2026-11-12T10:48:28Z .. 2026-11-12T10:49:27Z (2109224 bytes)
+  app log logs/agent/phosphor.13.old.1.in_session.0.log: 2026-11-12T10:42:33Z .. 2026-11-12T10:44:53Z (10485646 bytes)
+  app log logs/agent/phosphor.13.old.1.in_session.1.log: 2026-11-12T10:40:05Z .. 2026-11-12T10:42:33Z (10485531 bytes)
+  app log logs/agent/phosphor.13.old.1.in_session.2.log: 2026-11-12T10:37:10Z .. 2026-11-12T10:40:05Z (10485661 bytes)
+  app log logs/agent/phosphor.13.old.1.in_session.3.log: 2026-11-12T10:27:38Z .. 2026-11-12T10:37:10Z (10485742 bytes)
+  app log logs/agent/phosphor.13.old.1.in_session.4.log: 2026-11-12T10:15:53Z .. 2026-11-12T10:27:37Z (10485725 bytes)
+  app log logs/agent/phosphor.13.old.1.log: 2026-11-12T10:44:53Z .. 2026-11-12T10:48:28Z (7977467 bytes)
+  app log logs/agent/phosphor.13.old.2.log: 2026-11-12T10:05:18Z .. 2026-11-12T10:05:45Z (830935 bytes)
+  app log logs/agent/phosphor.13.old.3.in_session.0.log: 2026-11-12T09:55:52Z .. 2026-11-12T09:59:29Z (10485486 bytes)
+  app log logs/agent/phosphor.13.old.3.in_session.1.log: 2026-11-12T09:52:01Z .. 2026-11-12T09:55:52Z (10485491 bytes)
+  app log logs/agent/phosphor.13.old.3.log: 2026-11-12T09:59:29Z .. 2026-11-12T10:05:17Z (9639346 bytes)
+  app log logs/agent/phosphor.13.old.4.log: 2026-11-12T09:51:02Z .. 2026-11-12T09:52:00Z (2289418 bytes)
+  app log logs/agent/phosphor.14.log: 2026-11-12T10:50:32Z .. 2026-11-12T10:51:45Z (3315347 bytes)
+  app log logs/agent/phosphor.14.old.0.log: 2026-11-12T10:49:27Z .. 2026-11-12T10:50:31Z (3290834 bytes)
+  app log logs/agent/phosphor.14.old.1.log: 2026-11-12T10:48:28Z .. 2026-11-12T10:49:27Z (2109224 bytes)
+  app log logs/agent/phosphor.14.old.2.in_session.0.log: 2026-11-12T10:42:33Z .. 2026-11-12T10:44:53Z (10485646 bytes)
+  app log logs/agent/phosphor.14.old.2.in_session.1.log: 2026-11-12T10:40:05Z .. 2026-11-12T10:42:33Z (10485531 bytes)
+  app log logs/agent/phosphor.14.old.2.in_session.2.log: 2026-11-12T10:37:10Z .. 2026-11-12T10:40:05Z (10485661 bytes)
+  app log logs/agent/phosphor.14.old.2.in_session.3.log: 2026-11-12T10:27:38Z .. 2026-11-12T10:37:10Z (10485742 bytes)
+  app log logs/agent/phosphor.14.old.2.in_session.4.log: 2026-11-12T10:15:53Z .. 2026-11-12T10:27:37Z (10485725 bytes)
+  app log logs/agent/phosphor.14.old.2.log: 2026-11-12T10:44:53Z .. 2026-11-12T10:48:28Z (7977467 bytes)
+  app log logs/agent/phosphor.14.old.3.log: 2026-11-12T10:05:18Z .. 2026-11-12T10:05:45Z (830935 bytes)
+  app log logs/agent/phosphor.14.old.4.in_session.0.log: 2026-11-12T09:55:52Z .. 2026-11-12T09:59:29Z (10485486 bytes)
+  app log logs/agent/phosphor.14.old.4.in_session.1.log: 2026-11-12T09:52:01Z .. 2026-11-12T09:55:52Z (10485491 bytes)
+  app log logs/agent/phosphor.14.old.4.log: 2026-11-12T09:59:29Z .. 2026-11-12T10:05:17Z (9639346 bytes)
+  app log logs/agent/phosphor.15.log: 2026-11-12T10:51:46Z .. 2026-11-12T10:52:41Z (2024732 bytes)
+  app log logs/agent/phosphor.15.old.0.log: 2026-11-12T10:50:32Z .. 2026-11-12T10:51:46Z (3316107 bytes)
+  app log logs/agent/phosphor.15.old.1.log: 2026-11-12T10:49:27Z .. 2026-11-12T10:50:31Z (3290834 bytes)
+  app log logs/agent/phosphor.15.old.2.log: 2026-11-12T10:48:28Z .. 2026-11-12T10:49:27Z (2109224 bytes)
+  app log logs/agent/phosphor.15.old.3.in_session.0.log: 2026-11-12T10:42:33Z .. 2026-11-12T10:44:53Z (10485646 bytes)
+  app log logs/agent/phosphor.15.old.3.in_session.1.log: 2026-11-12T10:40:05Z .. 2026-11-12T10:42:33Z (10485531 bytes)
+  app log logs/agent/phosphor.15.old.3.in_session.2.log: 2026-11-12T10:37:10Z .. 2026-11-12T10:40:05Z (10485661 bytes)
+  app log logs/agent/phosphor.15.old.3.in_session.3.log: 2026-11-12T10:27:38Z .. 2026-11-12T10:37:10Z (10485742 bytes)
+  app log logs/agent/phosphor.15.old.3.in_session.4.log: 2026-11-12T10:15:53Z .. 2026-11-12T10:27:37Z (10485725 bytes)
+  app log logs/agent/phosphor.15.old.3.log: 2026-11-12T10:44:53Z .. 2026-11-12T10:48:28Z (7977467 bytes)
+  app log logs/agent/phosphor.15.old.4.log: 2026-11-12T10:05:18Z .. 2026-11-12T10:05:45Z (830935 bytes)
+  app log logs/agent/phosphor.16.log: 2026-11-12T10:52:42Z .. 2026-11-12T10:53:50Z (2060683 bytes)
+  app log logs/agent/phosphor.16.old.0.log: 2026-11-12T10:51:46Z .. 2026-11-12T10:52:42Z (2025493 bytes)
+  app log logs/agent/phosphor.16.old.1.log: 2026-11-12T10:50:32Z .. 2026-11-12T10:51:46Z (3316107 bytes)
+  app log logs/agent/phosphor.16.old.2.log: 2026-11-12T10:49:27Z .. 2026-11-12T10:50:31Z (3290834 bytes)
+  app log logs/agent/phosphor.16.old.3.log: 2026-11-12T10:48:28Z .. 2026-11-12T10:49:27Z (2109224 bytes)
+  app log logs/agent/phosphor.16.old.4.in_session.0.log: 2026-11-12T10:42:33Z .. 2026-11-12T10:44:53Z (10485646 bytes)
+  app log logs/agent/phosphor.16.old.4.in_session.1.log: 2026-11-12T10:40:05Z .. 2026-11-12T10:42:33Z (10485531 bytes)
+  app log logs/agent/phosphor.16.old.4.in_session.2.log: 2026-11-12T10:37:10Z .. 2026-11-12T10:40:05Z (10485661 bytes)
+  app log logs/agent/phosphor.16.old.4.in_session.3.log: 2026-11-12T10:27:38Z .. 2026-11-12T10:37:10Z (10485742 bytes)
+  app log logs/agent/phosphor.16.old.4.in_session.4.log: 2026-11-12T10:15:53Z .. 2026-11-12T10:27:37Z (10485725 bytes)
+  app log logs/agent/phosphor.16.old.4.log: 2026-11-12T10:44:53Z .. 2026-11-12T10:48:28Z (7977467 bytes)
+  app log logs/agent/phosphor.17.log: 2026-11-12T10:53:51Z .. 2026-11-12T10:54:40Z (2276553 bytes)
+  app log logs/agent/phosphor.17.old.0.log: 2026-11-12T10:52:42Z .. 2026-11-12T10:53:50Z (2061444 bytes)
+  app log logs/agent/phosphor.17.old.1.log: 2026-11-12T10:51:46Z .. 2026-11-12T10:52:42Z (2025493 bytes)
+  app log logs/agent/phosphor.17.old.2.log: 2026-11-12T10:50:32Z .. 2026-11-12T10:51:46Z (3316107 bytes)
+  app log logs/agent/phosphor.17.old.3.log: 2026-11-12T10:49:27Z .. 2026-11-12T10:50:31Z (3290834 bytes)
+  app log logs/agent/phosphor.17.old.4.log: 2026-11-12T10:48:28Z .. 2026-11-12T10:49:27Z (2109224 bytes)
+  app log logs/agent/phosphor.18.log: 2026-11-12T10:54:40Z .. 2026-11-12T10:55:39Z (2343603 bytes)
+  app log logs/agent/phosphor.18.old.0.log: 2026-11-12T10:53:51Z .. 2026-11-12T10:54:40Z (2277314 bytes)
+  app log logs/agent/phosphor.18.old.1.log: 2026-11-12T10:52:42Z .. 2026-11-12T10:53:50Z (2061444 bytes)
+  app log logs/agent/phosphor.18.old.2.log: 2026-11-12T10:51:46Z .. 2026-11-12T10:52:42Z (2025493 bytes)
+  app log logs/agent/phosphor.18.old.3.log: 2026-11-12T10:50:32Z .. 2026-11-12T10:51:46Z (3316107 bytes)
+  app log logs/agent/phosphor.18.old.4.log: 2026-11-12T10:49:27Z .. 2026-11-12T10:50:31Z (3290834 bytes)
+  app log logs/agent/phosphor.2.log: 2026-11-12T09:24:38Z .. 2026-11-12T09:45:25Z (60532369 bytes)
+  app log logs/agent/phosphor.2.old.0.in_session.0.log: 2026-11-12T09:16:16Z .. 2026-11-12T09:23:44Z (10485682 bytes)
+  app log logs/agent/phosphor.2.old.0.log: 2026-11-12T09:23:44Z .. 2026-11-12T09:24:38Z (1127945 bytes)
+  app log logs/agent/phosphor.3.log: 2026-11-12T09:45:26Z .. 2026-11-12T09:46:22Z (2046320 bytes)
+  app log logs/agent/phosphor.3.old.0.in_session.0.log: 2026-11-12T09:39:41Z .. 2026-11-12T09:42:05Z (10485708 bytes)
+  app log logs/agent/phosphor.3.old.0.in_session.1.log: 2026-11-12T09:37:08Z .. 2026-11-12T09:39:41Z (10485716 bytes)
+  app log logs/agent/phosphor.3.old.0.in_session.2.log: 2026-11-12T09:33:59Z .. 2026-11-12T09:37:08Z (10485750 bytes)
+  app log logs/agent/phosphor.3.old.0.in_session.3.log: 2026-11-12T09:29:43Z .. 2026-11-12T09:33:59Z (10485748 bytes)
+  app log logs/agent/phosphor.3.old.0.in_session.4.log: 2026-11-12T09:24:38Z .. 2026-11-12T09:29:43Z (10485574 bytes)
+  app log logs/agent/phosphor.3.old.0.log: 2026-11-12T09:42:05Z .. 2026-11-12T09:45:25Z (8104634 bytes)
+  app log logs/agent/phosphor.3.old.1.in_session.0.log: 2026-11-12T09:16:16Z .. 2026-11-12T09:23:44Z (10485682 bytes)
+  app log logs/agent/phosphor.3.old.1.log: 2026-11-12T09:23:44Z .. 2026-11-12T09:24:38Z (1127945 bytes)
+  app log logs/agent/phosphor.4.log: 2026-11-12T09:46:23Z .. 2026-11-12T09:47:11Z (1957254 bytes)
+  app log logs/agent/phosphor.4.old.0.log: 2026-11-12T09:45:26Z .. 2026-11-12T09:46:23Z (2047081 bytes)
+  app log logs/agent/phosphor.4.old.1.in_session.0.log: 2026-11-12T09:39:41Z .. 2026-11-12T09:42:05Z (10485708 bytes)
+  app log logs/agent/phosphor.4.old.1.in_session.1.log: 2026-11-12T09:37:08Z .. 2026-11-12T09:39:41Z (10485716 bytes)
+  app log logs/agent/phosphor.4.old.1.in_session.2.log: 2026-11-12T09:33:59Z .. 2026-11-12T09:37:08Z (10485750 bytes)
+  app log logs/agent/phosphor.4.old.1.in_session.3.log: 2026-11-12T09:29:43Z .. 2026-11-12T09:33:59Z (10485748 bytes)
+  app log logs/agent/phosphor.4.old.1.in_session.4.log: 2026-11-12T09:24:38Z .. 2026-11-12T09:29:43Z (10485574 bytes)
+  app log logs/agent/phosphor.4.old.1.log: 2026-11-12T09:42:05Z .. 2026-11-12T09:45:25Z (8104634 bytes)
+  app log logs/agent/phosphor.4.old.2.in_session.0.log: 2026-11-12T09:16:16Z .. 2026-11-12T09:23:44Z (10485682 bytes)
+  app log logs/agent/phosphor.4.old.2.log: 2026-11-12T09:23:44Z .. 2026-11-12T09:24:38Z (1127945 bytes)
+  app log logs/agent/phosphor.5.log: 2026-11-12T09:47:12Z .. 2026-11-12T09:48:08Z (1961779 bytes)
+  app log logs/agent/phosphor.5.old.0.log: 2026-11-12T09:46:23Z .. 2026-11-12T09:47:11Z (1958015 bytes)
+  app log logs/agent/phosphor.5.old.1.log: 2026-11-12T09:45:26Z .. 2026-11-12T09:46:23Z (2047081 bytes)
+  app log logs/agent/phosphor.5.old.2.in_session.0.log: 2026-11-12T09:39:41Z .. 2026-11-12T09:42:05Z (10485708 bytes)
+  app log logs/agent/phosphor.5.old.2.in_session.1.log: 2026-11-12T09:37:08Z .. 2026-11-12T09:39:41Z (10485716 bytes)
+  app log logs/agent/phosphor.5.old.2.in_session.2.log: 2026-11-12T09:33:59Z .. 2026-11-12T09:37:08Z (10485750 bytes)
+  app log logs/agent/phosphor.5.old.2.in_session.3.log: 2026-11-12T09:29:43Z .. 2026-11-12T09:33:59Z (10485748 bytes)
+  app log logs/agent/phosphor.5.old.2.in_session.4.log: 2026-11-12T09:24:38Z .. 2026-11-12T09:29:43Z (10485574 bytes)
+  app log logs/agent/phosphor.5.old.2.log: 2026-11-12T09:42:05Z .. 2026-11-12T09:45:25Z (8104634 bytes)
+  app log logs/agent/phosphor.5.old.3.in_session.0.log: 2026-11-12T09:16:16Z .. 2026-11-12T09:23:44Z (10485682 bytes)
+  app log logs/agent/phosphor.5.old.3.log: 2026-11-12T09:23:44Z .. 2026-11-12T09:24:38Z (1127945 bytes)
+  app log logs/agent/phosphor.6.log: 2026-11-12T09:48:09Z .. 2026-11-12T09:49:04Z (1989901 bytes)
+  app log logs/agent/phosphor.6.old.0.log: 2026-11-12T09:47:12Z .. 2026-11-12T09:48:09Z (1962538 bytes)
+  app log logs/agent/phosphor.6.old.1.log: 2026-11-12T09:46:23Z .. 2026-11-12T09:47:11Z (1958015 bytes)
+  app log logs/agent/phosphor.6.old.2.log: 2026-11-12T09:45:26Z .. 2026-11-12T09:46:23Z (2047081 bytes)
+  app log logs/agent/phosphor.6.old.3.in_session.0.log: 2026-11-12T09:39:41Z .. 2026-11-12T09:42:05Z (10485708 bytes)
+  app log logs/agent/phosphor.6.old.3.in_session.1.log: 2026-11-12T09:37:08Z .. 2026-11-12T09:39:41Z (10485716 bytes)
+  app log logs/agent/phosphor.6.old.3.in_session.2.log: 2026-11-12T09:33:59Z .. 2026-11-12T09:37:08Z (10485750 bytes)
+  app log logs/agent/phosphor.6.old.3.in_session.3.log: 2026-11-12T09:29:43Z .. 2026-11-12T09:33:59Z (10485748 bytes)
+  app log logs/agent/phosphor.6.old.3.in_session.4.log: 2026-11-12T09:24:38Z .. 2026-11-12T09:29:43Z (10485574 bytes)
+  app log logs/agent/phosphor.6.old.3.log: 2026-11-12T09:42:05Z .. 2026-11-12T09:45:25Z (8104634 bytes)
+  app log logs/agent/phosphor.6.old.4.in_session.0.log: 2026-11-12T09:16:16Z .. 2026-11-12T09:23:44Z (10485682 bytes)
+  app log logs/agent/phosphor.6.old.4.log: 2026-11-12T09:23:44Z .. 2026-11-12T09:24:38Z (1127945 bytes)
+  app log logs/agent/phosphor.7.log: 2026-11-12T09:49:05Z .. 2026-11-12T09:50:12Z (2027534 bytes)
+  app log logs/agent/phosphor.7.old.0.log: 2026-11-12T09:48:09Z .. 2026-11-12T09:49:04Z (1990662 bytes)
+  app log logs/agent/phosphor.7.old.1.log: 2026-11-12T09:47:12Z .. 2026-11-12T09:48:09Z (1962538 bytes)
+  app log logs/agent/phosphor.7.old.2.log: 2026-11-12T09:46:23Z .. 2026-11-12T09:47:11Z (1958015 bytes)
+  app log logs/agent/phosphor.7.old.3.log: 2026-11-12T09:45:26Z .. 2026-11-12T09:46:23Z (2047081 bytes)
+  app log logs/agent/phosphor.7.old.4.in_session.0.log: 2026-11-12T09:39:41Z .. 2026-11-12T09:42:05Z (10485708 bytes)
+  app log logs/agent/phosphor.7.old.4.in_session.1.log: 2026-11-12T09:37:08Z .. 2026-11-12T09:39:41Z (10485716 bytes)
+  app log logs/agent/phosphor.7.old.4.in_session.2.log: 2026-11-12T09:33:59Z .. 2026-11-12T09:37:08Z (10485750 bytes)
+  app log logs/agent/phosphor.7.old.4.in_session.3.log: 2026-11-12T09:29:43Z .. 2026-11-12T09:33:59Z (10485748 bytes)
+  app log logs/agent/phosphor.7.old.4.in_session.4.log: 2026-11-12T09:24:38Z .. 2026-11-12T09:29:43Z (10485574 bytes)
+  app log logs/agent/phosphor.7.old.4.log: 2026-11-12T09:42:05Z .. 2026-11-12T09:45:25Z (8104634 bytes)
+  app log logs/agent/phosphor.8.log: 2026-11-12T09:50:13Z .. 2026-11-12T09:51:01Z (2279892 bytes)
+  app log logs/agent/phosphor.8.old.0.log: 2026-11-12T09:49:05Z .. 2026-11-12T09:50:12Z (2028295 bytes)
+  app log logs/agent/phosphor.8.old.1.log: 2026-11-12T09:48:09Z .. 2026-11-12T09:49:04Z (1990662 bytes)
+  app log logs/agent/phosphor.8.old.2.log: 2026-11-12T09:47:12Z .. 2026-11-12T09:48:09Z (1962538 bytes)
+  app log logs/agent/phosphor.8.old.3.log: 2026-11-12T09:46:23Z .. 2026-11-12T09:47:11Z (1958015 bytes)
+  app log logs/agent/phosphor.8.old.4.log: 2026-11-12T09:45:26Z .. 2026-11-12T09:46:23Z (2047081 bytes)
+  app log logs/agent/phosphor.9.log: 2026-11-12T09:51:02Z .. 2026-11-12T09:52:00Z (2288657 bytes)
+  app log logs/agent/phosphor.9.old.0.log: 2026-11-12T09:50:13Z .. 2026-11-12T09:51:01Z (2280653 bytes)
+  app log logs/agent/phosphor.9.old.1.log: 2026-11-12T09:49:05Z .. 2026-11-12T09:50:12Z (2028295 bytes)
+  app log logs/agent/phosphor.9.old.2.log: 2026-11-12T09:48:09Z .. 2026-11-12T09:49:04Z (1990662 bytes)
+  app log logs/agent/phosphor.9.old.3.log: 2026-11-12T09:47:12Z .. 2026-11-12T09:48:09Z (1962538 bytes)
+  app log logs/agent/phosphor.9.old.4.log: 2026-11-12T09:46:23Z .. 2026-11-12T09:47:11Z (1958015 bytes)
+  app log logs/agent/phosphor.before_ext_never_install.log: 2026-11-12T09:59:29Z .. 2026-11-12T10:05:17Z (9638517 bytes)
+  app log logs/agent/phosphor.log: 2026-11-12T10:55:40Z .. 2026-11-12T10:55:43Z (205553 bytes)
+  app log logs/agent/phosphor.old.0.log: 2026-11-12T10:54:40Z .. 2026-11-12T10:55:39Z (2344363 bytes)
+  app log logs/agent/phosphor.old.1.log: 2026-11-12T10:53:51Z .. 2026-11-12T10:54:40Z (2277314 bytes)
+  app log logs/agent/phosphor.old.2.log: 2026-11-12T10:52:42Z .. 2026-11-12T10:53:50Z (2061444 bytes)
+  app log logs/agent/phosphor.old.3.log: 2026-11-12T10:51:46Z .. 2026-11-12T10:52:42Z (2025493 bytes)
+  app log logs/agent/phosphor.old.4.log: 2026-11-12T10:50:32Z .. 2026-11-12T10:51:46Z (3316107 bytes)
+  app log logs/terminal/phosphor.1.log: 2026-11-12T06:27:52Z .. 2026-11-12T06:36:13Z (11356792 bytes)
+  app log logs/terminal/phosphor.before_ext_never_install.log: 2026-11-12T07:50:03Z .. 2026-11-12T07:53:05Z (3577677 bytes)
+  app log logs/terminal/phosphor.log: 2026-11-12T08:36:52Z .. 2026-11-12T09:16:14Z (54253038 bytes)
+  app log logs/terminal/phosphor.old.0.in_session.0.log: 2026-11-12T07:40:57Z .. 2026-11-12T07:50:03Z (10485659 bytes)
+  app log logs/terminal/phosphor.old.0.in_session.1.log: 2026-11-12T07:32:11Z .. 2026-11-12T07:40:57Z (10485531 bytes)
+  app log logs/terminal/phosphor.old.0.in_session.2.log: 2026-11-12T07:23:22Z .. 2026-11-12T07:32:11Z (10485691 bytes)
+  app log logs/terminal/phosphor.old.0.in_session.3.log: 2026-11-12T07:17:34Z .. 2026-11-12T07:23:22Z (10485672 bytes)
+  app log logs/terminal/phosphor.old.0.in_session.4.log: 2026-11-12T07:11:59Z .. 2026-11-12T07:17:34Z (10485684 bytes)
+  app log logs/terminal/phosphor.old.0.log: 2026-11-12T07:50:03Z .. 2026-11-12T07:53:06Z (3578437 bytes)
+  app log logs/terminal/phosphor.old.1.in_session.0.log: 2026-11-12T06:27:52Z .. 2026-11-12T06:35:34Z (10485655 bytes)
+  app log logs/terminal/phosphor.old.1.log: 2026-11-12T06:35:34Z .. 2026-11-12T06:36:13Z (872692 bytes)
+  UNCOVERED ts=2367442.729075 wall=1794465376.506 target_pid=47170
+  UNCOVERED ts=2367446.192832 wall=1794465379.971 target_pid=47170
+  UNCOVERED ts=2367449.457078 wall=1794465383.234 target_pid=47170
+  UNCOVERED ts=2367453.150967 wall=1794465386.928 target_pid=47170
+  UNCOVERED ts=2367453.532047 wall=1794465387.309 target_pid=47170
+  UNCOVERED ts=2367456.029685 wall=1794465389.810 target_pid=47170
+  UNCOVERED ts=2367460.491912 wall=1794465394.271 target_pid=47170
+  UNCOVERED ts=2367463.334802 wall=1794465397.114 target_pid=47170
+  UNCOVERED ts=2367468.197906 wall=1794465401.974 target_pid=47170
+  UNCOVERED ts=2367468.559337 wall=1794465402.336 target_pid=47170
+  UNCOVERED ts=2367470.943084 wall=1794465404.720 target_pid=47170
+  UNCOVERED ts=2367472.704825 wall=1794465406.482 target_pid=47170
+  UNCOVERED ts=2367479.852288 wall=1794465413.631 target_pid=47170
+  UNCOVERED ts=2367484.553110 wall=1794465418.332 target_pid=47170
+  UNCOVERED ts=2367489.217742 wall=1794465422.994 target_pid=47170
+  UNCOVERED ts=2367489.625000 wall=1794465423.402 target_pid=47170
+  UNCOVERED ts=2367492.321838 wall=1794465426.109 target_pid=47170
+  UNCOVERED ts=2367494.119190 wall=1794465427.896 target_pid=47170
+  UNCOVERED ts=2367498.663630 wall=1794465432.440 target_pid=47170
+  UNCOVERED ts=2367501.381966 wall=1794465435.159 target_pid=47170
+  UNCOVERED ts=2367505.586349 wall=1794465439.363 target_pid=47170
+  UNCOVERED ts=2367505.986848 wall=1794465439.764 target_pid=47170
+  UNCOVERED ts=2367508.450763 wall=1794465442.227 target_pid=47170
+  UNCOVERED ts=2367510.188616 wall=1794465443.966 target_pid=47170
+  UNCOVERED ts=2367517.372343 wall=1794465451.149 target_pid=47170
+  UNCOVERED ts=2367522.331047 wall=1794465456.108 target_pid=47170
+  UNCOVERED ts=2367526.959318 wall=1794465460.737 target_pid=47170
+  UNCOVERED ts=2367527.410279 wall=1794465461.187 target_pid=47170
+  UNCOVERED ts=2367530.076039 wall=1794465463.853 target_pid=47170
+  UNCOVERED ts=2367531.831939 wall=1794465465.609 target_pid=47170
+  UNCOVERED ts=2367536.195167 wall=1794465469.981 target_pid=47170
+  UNCOVERED ts=2367538.801134 wall=1794465472.579 target_pid=47170
+  UNCOVERED ts=2367543.204623 wall=1794465476.981 target_pid=47170
+  UNCOVERED ts=2367543.605496 wall=1794465477.382 target_pid=47170
+  UNCOVERED ts=2367546.135908 wall=1794465479.913 target_pid=47170
+  UNCOVERED ts=2367547.961536 wall=1794465481.740 target_pid=47170
+  UNCOVERED ts=2367555.518125 wall=1794465489.296 target_pid=47170
+  UNCOVERED ts=2367560.658317 wall=1794465494.435 target_pid=47170
+  UNCOVERED ts=2367565.401955 wall=1794465499.178 target_pid=47170
+  UNCOVERED ts=2367565.820595 wall=1794465499.597 target_pid=47170
+  UNCOVERED ts=2367568.544298 wall=1794465502.324 target_pid=47170
+  UNCOVERED ts=2367570.312564 wall=1794465504.089 target_pid=47170
+  UNCOVERED ts=2367574.747231 wall=1794465508.523 target_pid=47170
+  UNCOVERED ts=2367577.476486 wall=1794465511.254 target_pid=47170
+  UNCOVERED ts=2367582.101839 wall=1794465515.880 target_pid=47170
+  UNCOVERED ts=2367582.474100 wall=1794465516.250 target_pid=47170
+  UNCOVERED ts=2367584.843274 wall=1794465518.621 target_pid=47170
+  UNCOVERED ts=2367586.607612 wall=1794465520.384 target_pid=47170
+  UNCOVERED ts=2367593.826379 wall=1794465527.603 target_pid=47170
+  UNCOVERED ts=2367598.639703 wall=1794465532.418 target_pid=47170
+targeted at another process: 0
+seen by Phosphor but not by the tap (join check, expect 0): 0
+injector posted 3961 Returns; never seen by macOS (no tap event within 200 ms): 0
+ALL KEYS: injector sent 185224; macOS delivered 188249 to Phosphor, 0 to other processes; never in macOS (sent - delivered) 0

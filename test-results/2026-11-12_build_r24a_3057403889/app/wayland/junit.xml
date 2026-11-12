@@ -1,0 +1,355 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="appci-linux-wayland" tests="155" failures="4" skipped="34">
+<testcase classname="terminal" name="mode_proof" time="1.50">
+</testcase>
+<testcase classname="terminal" name="cadence" time="6.20">
+</testcase>
+<testcase classname="terminal" name="mac_pointer_chord_proof" time="0.50">
+<skipped message="macOS only: this case proves the macOS harness's own pointer tool (mac/tools/mptr) and app-only chords (mac/tools/appkey); Linux and Windows inject through other tools that have their own proofs"/>
+</testcase>
+<testcase classname="terminal" name="key_loss_control" time="90.40">
+</testcase>
+<testcase classname="terminal" name="enter_loss_control" time="64.50">
+</testcase>
+<testcase classname="terminal" name="fast_typing" time="57.70">
+</testcase>
+<testcase classname="terminal" name="rollover" time="18.60">
+</testcase>
+<testcase classname="terminal" name="expert_fuzz" time="22.00">
+</testcase>
+<testcase classname="terminal" name="paste_instant_enter" time="6.50">
+</testcase>
+<testcase classname="terminal" name="arrows_behind_paste" time="8.80">
+</testcase>
+<testcase classname="terminal" name="keydown_count" time="24.20">
+</testcase>
+<testcase classname="terminal" name="big_paste" time="5.90">
+</testcase>
+<testcase classname="terminal" name="tab_enter" time="20.90">
+</testcase>
+<testcase classname="terminal" name="ctrl_c_d" time="437.20">
+</testcase>
+<testcase classname="terminal" name="read_x" time="3.70">
+</testcase>
+<testcase classname="terminal" name="subshells" time="28.10">
+</testcase>
+<testcase classname="terminal" name="subshell_sh_probe" time="26.80">
+</testcase>
+<testcase classname="terminal" name="alt_screen" time="7.00">
+</testcase>
+<testcase classname="terminal" name="gitbash_subshell" time="0.70">
+<skipped message="Windows only: Git for Windows' bash.exe as a subshell of the pane's PowerShell (POSIX hosts: the subshells case)"/>
+</testcase>
+<testcase classname="terminal" name="subshell_ready_rc_questions" time="14.90">
+</testcase>
+<testcase classname="terminal" name="subshell_ready_vim_typeahead" time="18.60">
+</testcase>
+<testcase classname="terminal" name="subshell_ready_unsupported_tcsh" time="1.80">
+<skipped message="tcsh is not installed"/>
+</testcase>
+<testcase classname="terminal" name="subshell_ready_secret_after_prompt" time="15.70">
+</testcase>
+<testcase classname="terminal" name="subshell_ready_secret_after_probe" time="15.90">
+</testcase>
+<testcase classname="terminal" name="subshell_sh_probe_empty_ps1" time="31.80">
+</testcase>
+<testcase classname="terminal" name="subshell_ready_relay_shape" time="52.50">
+</testcase>
+<testcase classname="terminal" name="subshell_ready_exec_fish_rc" time="16.40">
+</testcase>
+<testcase classname="terminal" name="subshell_ready_docker_t_without_i" time="2.20">
+<skipped message="docker with a local alpine image is not available: the docker daemon is not usable by the CI user (`docker info` failed, rc 125: Emulate Docker CLI using podman. Create /etc/containers/nodocker to qui"/>
+</testcase>
+<testcase classname="terminal" name="subshell_ready_zsh_newuser_install" time="16.20">
+</testcase>
+<testcase classname="terminal" name="subshell_ready_rc_clear" time="13.90">
+</testcase>
+<testcase classname="terminal" name="subshell_line_editor_proof" time="14.00">
+</testcase>
+<testcase classname="terminal" name="ssh_connect_typing" time="43.50">
+</testcase>
+<testcase classname="terminal" name="ssh_enter_then_immediate_command" time="11.40">
+</testcase>
+<testcase classname="terminal" name="ssh_nested_typeahead" time="6.00">
+</testcase>
+<testcase classname="terminal" name="ssh_failing_not_local" time="15.90">
+</testcase>
+<testcase classname="terminal" name="idle_cpu" time="24.40">
+</testcase>
+<testcase classname="terminal" name="latency_enter" time="164.30">
+<skipped message="NO-REFERENCE (not a pass): measurement mode: interleaved, blocks of 5 kept samples (+1 discarded lead per block), 24 blocks"/>
+</testcase>
+<testcase classname="terminal" name="latency_key_log" time="15.20">
+</testcase>
+<testcase classname="terminal" name="latency_paint" time="0.80">
+<skipped message="kl3 (ScreenCaptureKit) is macOS only; no key-&gt;paint read-back exists on this platform, so there is nothing to compare"/>
+</testcase>
+<testcase classname="terminal" name="latency_first_key_after_idle" time="311.30">
+</testcase>
+<testcase classname="terminal" name="intl_wide_type" time="7.00">
+</testcase>
+<testcase classname="terminal" name="intl_wide_paste" time="7.90">
+</testcase>
+<testcase classname="terminal" name="flood_scrollback_find" time="14.00">
+</testcase>
+<testcase classname="terminal" name="intl_wide_edit" time="6.60">
+</testcase>
+<testcase classname="terminal" name="ui_palette" time="24.50">
+</testcase>
+<testcase classname="terminal" name="ui_readline_keys" time="10.30">
+</testcase>
+<testcase classname="terminal" name="intl_wide_program" time="21.20">
+</testcase>
+<testcase classname="terminal" name="intl_compose_linux" time="26.80">
+<skipped message="NO-REFERENCE (not a pass): injector accounting: injector sent 703; app saw 695; lost-before-app 8 (Enter: sent 6, app saw 6); of the app's: 682 unbound keydown/typed, 7 taken by a key binding, 6 Enter by a b"/>
+</testcase>
+<testcase classname="terminal" name="intl_ime_japanese" time="0.90">
+<skipped message="macOS input methods: needs the mac backend (this is wayland). NEEDS: on Linux an input-method daemon (ibus or fcitx5 with the Japanese / Pinyin engines) in the job session plus a harness arm that sele"/>
+</testcase>
+<testcase classname="terminal" name="intl_ime_pinyin" time="0.90">
+<skipped message="macOS input methods: needs the mac backend (this is wayland). NEEDS: on Linux an input-method daemon (ibus or fcitx5 with the Japanese / Pinyin engines) in the job session plus a harness arm that sele"/>
+</testcase>
+<testcase classname="terminal" name="scroll_keys_position" time="23.90">
+</testcase>
+<testcase classname="terminal" name="ime_compose" time="53.40">
+<skipped message="NO-REFERENCE (not a pass): injector accounting: injector sent 337; app saw 319; lost-before-app 18 (Enter: sent 6, app saw 6); of the app's: 306 unbound keydown/typed, 7 taken by a key binding, 6 Enter by a "/>
+</testcase>
+<testcase classname="terminal" name="intl_deadkey_option" time="1.50">
+<skipped message="macOS input methods: needs the mac backend (this is wayland). NEEDS: on Linux an input-method daemon (ibus or fcitx5 with the Japanese / Pinyin engines) in the job session plus a harness arm that sele"/>
+</testcase>
+<testcase classname="terminal" name="ui_mouse_select_copy" time="9.80">
+</testcase>
+<testcase classname="terminal" name="ui_right_click_paste" time="5.00">
+</testcase>
+<testcase classname="terminal" name="primary_and_middle_click" time="27.70">
+</testcase>
+<testcase classname="terminal" name="ui_drag_drop_file" time="0.60">
+<skipped message="wayland: the harness has no drag source for this display system. NEEDS: a harness capability that is not built (a client that owns the drag: wl_data_device on Wayland, a pasteboard drag on macOS, OLE "/>
+</testcase>
+<testcase classname="terminal" name="link_and_path_click" time="54.20">
+</testcase>
+<testcase classname="terminal" name="wheel_scroll" time="27.30">
+</testcase>
+<testcase classname="terminal" name="resize_reflow_output" time="58.60">
+</testcase>
+<testcase classname="terminal" name="editor_daily" time="53.90">
+</testcase>
+<testcase classname="terminal" name="suggestion_chip_keeps_output" time="25.10">
+</testcase>
+<testcase classname="terminal" name="pane_resize_maximize" time="52.90">
+</testcase>
+<testcase classname="terminal" name="minimize_fullscreen" time="85.10">
+</testcase>
+<testcase classname="terminal" name="drag_drop_file" time="10.40">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: the drag source reported no drag at all (events []): the pointer press and motion did not start a drag on it. The app was never offered the file; nothin"/>
+</testcase>
+<testcase classname="terminal" name="md_viewer" time="5.60">
+</testcase>
+<testcase classname="terminal" name="md_viewer_big" time="7.50">
+</testcase>
+<testcase classname="terminal" name="editor_memory_7mb" time="357.10">
+</testcase>
+<testcase classname="terminal" name="ui_vertical_tabs_panel_click" time="42.20">
+</testcase>
+<testcase classname="terminal" name="tab_pointer_use" time="91.40">
+<skipped message="NO-REFERENCE (not a pass): vertical panel: tab 2 at (125, 155), tab 3 at (125, 218), tab 4 at (125, 280)"/>
+</testcase>
+<testcase classname="terminal" name="network_gate_switch" time="71.20">
+<skipped message="NO-REFERENCE (not a pass): Escape left the settings page open (the shell did not take the probe line); closed it with key ctrl+shift+w"/>
+</testcase>
+<testcase classname="terminal" name="tab_lifecycle_keys" time="58.80">
+</testcase>
+<testcase classname="terminal" name="gpu_real_render" time="74.40">
+<skipped message="NO-REFERENCE (not a pass): 'a lost device recovers' (the third oracle of r14-test-gaps T48; #2091) is judged by its own case, gpu_lost_device_recovers (a renderer test hook reports the loss; the kernel's res"/>
+</testcase>
+<testcase classname="terminal" name="gpu_lost_device_recovers" time="45.70">
+<skipped message="NO-REFERENCE (not a pass): the app log says terminal but the screen reads as agent (OCR); the log decides"/>
+</testcase>
+<testcase classname="terminal" name="tabs_two_windows" time="66.90">
+</testcase>
+<testcase classname="terminal" name="upgrade_over_previous" time="46.00">
+<skipped message="NO-REFERENCE (not a pass): the previous build's state is packed in /home/<user>/builds/r_hQtIdMf/0/winters-phosphor/phosphor/appci-out/wayland/run/fixtures/prev-state.tar.gz (keep it as a CI artifact "/>
+</testcase>
+<testcase classname="terminal" name="tabs_streaming" time="47.10">
+</testcase>
+<testcase classname="terminal" name="cb_ui_action_latency" time="30.10">
+<failure message="after the close key on the throw-away tab the shell in front has pid None, expected the pass's own shell 1176311 (the tab did not close, or another tab came to the front)">after the close key on the throw-away tab the shell in front has pid None, expected the pass's own shell 1176311 (the tab did not close, or another tab came to the front)
+injector accounting: injector sent 571; app saw 571; lost-before-app 0 (Enter: sent 10, app saw 10); of the app's: 550 unbound keydown/typed, 12 taken by a key binding, 9 Enter by a binding
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 9 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="terminal" name="meta_and_word_keys" time="33.40">
+</testcase>
+<testcase classname="terminal" name="pane_not_local_after_meta_and_word_keys" time="0.00">
+<failure message="after meta_and_word_keys the pane's shell was not the root shell (other tab or pane: the shell in front (pid 1170937) was not started from the pane's root shell (pid 1170628, still running): it is another tab's or pane's shell, so an earlier case closed the pass's own tab or left another tab in front; `exit` was NOT typed. The cause is an EARLIER case, not necessarily meta_and_word_keys); the app is relaunched so later cases start clean">after meta_and_word_keys the pane's shell was not the root shell (other tab or pane: the shell in front (pid 1170937) was not started from the pane's root shell (pid 1170628, still running): it is another tab's or pane's shell, so an earlier case closed the pass's own tab or left another tab in front; `exit` was NOT typed. The cause is an EARLIER case, not necessarily meta_and_word_keys); the app is relaunched so later cases start clean</failure>
+</testcase>
+<testcase classname="agent" name="mode_proof" time="0.60">
+</testcase>
+<testcase classname="agent" name="cadence" time="6.30">
+</testcase>
+<testcase classname="agent" name="mac_pointer_chord_proof" time="0.50">
+<skipped message="macOS only: this case proves the macOS harness's own pointer tool (mac/tools/mptr) and app-only chords (mac/tools/appkey); Linux and Windows inject through other tools that have their own proofs"/>
+</testcase>
+<testcase classname="agent" name="fast_typing" time="57.20">
+</testcase>
+<testcase classname="agent" name="rollover" time="16.00">
+</testcase>
+<testcase classname="agent" name="expert_fuzz" time="22.80">
+</testcase>
+<testcase classname="agent" name="paste_instant_enter" time="6.40">
+</testcase>
+<testcase classname="agent" name="arrows_behind_paste" time="8.70">
+</testcase>
+<testcase classname="agent" name="keydown_count" time="26.40">
+</testcase>
+<testcase classname="agent" name="big_paste" time="5.90">
+</testcase>
+<testcase classname="agent" name="tab_enter" time="20.10">
+</testcase>
+<testcase classname="agent" name="ctrl_c_d" time="436.60">
+</testcase>
+<testcase classname="agent" name="read_x" time="3.60">
+</testcase>
+<testcase classname="agent" name="subshells" time="28.30">
+</testcase>
+<testcase classname="agent" name="subshell_sh_probe" time="26.70">
+</testcase>
+<testcase classname="agent" name="alt_screen" time="6.90">
+</testcase>
+<testcase classname="agent" name="gitbash_subshell" time="0.80">
+<skipped message="Windows only: Git for Windows' bash.exe as a subshell of the pane's PowerShell (POSIX hosts: the subshells case)"/>
+</testcase>
+<testcase classname="agent" name="subshell_ready_rc_questions" time="14.80">
+</testcase>
+<testcase classname="agent" name="subshell_ready_vim_typeahead" time="18.40">
+</testcase>
+<testcase classname="agent" name="subshell_ready_unsupported_tcsh" time="1.70">
+<skipped message="tcsh is not installed"/>
+</testcase>
+<testcase classname="agent" name="subshell_ready_secret_after_prompt" time="15.80">
+</testcase>
+<testcase classname="agent" name="subshell_ready_secret_after_probe" time="15.90">
+</testcase>
+<testcase classname="agent" name="subshell_sh_probe_empty_ps1" time="31.80">
+</testcase>
+<testcase classname="agent" name="subshell_ready_relay_shape" time="52.30">
+</testcase>
+<testcase classname="agent" name="subshell_ready_exec_fish_rc" time="16.40">
+</testcase>
+<testcase classname="agent" name="subshell_ready_docker_t_without_i" time="2.10">
+<skipped message="docker with a local alpine image is not available: the docker daemon is not usable by the CI user (`docker info` failed, rc 125: Emulate Docker CLI using podman. Create /etc/containers/nodocker to qui"/>
+</testcase>
+<testcase classname="agent" name="subshell_ready_zsh_newuser_install" time="16.20">
+</testcase>
+<testcase classname="agent" name="subshell_ready_rc_clear" time="14.00">
+</testcase>
+<testcase classname="agent" name="subshell_line_editor_proof" time="13.90">
+</testcase>
+<testcase classname="agent" name="ssh_connect_typing" time="42.20">
+</testcase>
+<testcase classname="agent" name="ssh_enter_then_immediate_command" time="11.00">
+</testcase>
+<testcase classname="agent" name="ssh_nested_typeahead" time="5.90">
+</testcase>
+<testcase classname="agent" name="ssh_failing_not_local" time="15.80">
+</testcase>
+<testcase classname="agent" name="idle_cpu" time="24.20">
+</testcase>
+<testcase classname="agent" name="latency_enter" time="164.50">
+</testcase>
+<testcase classname="agent" name="latency_key_log" time="15.40">
+</testcase>
+<testcase classname="agent" name="latency_paint" time="0.80">
+<skipped message="kl3 (ScreenCaptureKit) is macOS only; no key-&gt;paint read-back exists on this platform, so there is nothing to compare"/>
+</testcase>
+<testcase classname="agent" name="latency_first_key_after_idle" time="311.40">
+</testcase>
+<testcase classname="agent" name="approval_card_pause" time="125.30">
+<skipped message="no approval card appeared within 120 s (model did not propose the command)"/>
+</testcase>
+<testcase classname="agent" name="intl_wide_type" time="6.70">
+</testcase>
+<testcase classname="agent" name="intl_wide_paste" time="7.90">
+</testcase>
+<testcase classname="agent" name="flood_scrollback_find" time="13.40">
+</testcase>
+<testcase classname="agent" name="intl_wide_edit" time="6.50">
+</testcase>
+<testcase classname="agent" name="ui_palette" time="25.20">
+</testcase>
+<testcase classname="agent" name="ui_readline_keys" time="10.20">
+</testcase>
+<testcase classname="agent" name="intl_wide_program" time="21.20">
+</testcase>
+<testcase classname="agent" name="intl_compose_linux" time="26.80">
+<skipped message="NO-REFERENCE (not a pass): injector accounting: injector sent 703; app saw 695; lost-before-app 8 (Enter: sent 6, app saw 6); of the app's: 682 unbound keydown/typed, 7 taken by a key binding, 6 Enter by a b"/>
+</testcase>
+<testcase classname="agent" name="intl_ime_japanese" time="0.90">
+<skipped message="macOS input methods: needs the mac backend (this is wayland). NEEDS: on Linux an input-method daemon (ibus or fcitx5 with the Japanese / Pinyin engines) in the job session plus a harness arm that sele"/>
+</testcase>
+<testcase classname="agent" name="intl_ime_pinyin" time="0.90">
+<skipped message="macOS input methods: needs the mac backend (this is wayland). NEEDS: on Linux an input-method daemon (ibus or fcitx5 with the Japanese / Pinyin engines) in the job session plus a harness arm that sele"/>
+</testcase>
+<testcase classname="agent" name="scroll_keys_position" time="24.30">
+<failure message="after one typed key none of the job's last lines is on screen: the key did not bring the view back to the bottom (the job's last 8 lines were looked for; shots/*skp_5_after_key.png)">after one typed key none of the job's last lines is on screen: the key did not bring the view back to the bottom (the job's last 8 lines were looked for; shots/*skp_5_after_key.png)
+injector accounting: injector sent 192; app saw 192; lost-before-app 0 (Enter: sent 3, app saw 3); of the app's: 179 unbound keydown/typed, 10 taken by a key binding, 3 Enter by a binding
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 3 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="agent" name="ime_compose" time="52.20">
+<skipped message="NO-REFERENCE (not a pass): injector accounting: injector sent 335; app saw 317; lost-before-app 18 (Enter: sent 6, app saw 6); of the app's: 306 unbound keydown/typed, 5 taken by a key binding, 6 Enter by a "/>
+</testcase>
+<testcase classname="agent" name="intl_deadkey_option" time="1.50">
+<skipped message="macOS input methods: needs the mac backend (this is wayland). NEEDS: on Linux an input-method daemon (ibus or fcitx5 with the Japanese / Pinyin engines) in the job session plus a harness arm that sele"/>
+</testcase>
+<testcase classname="agent" name="ui_mouse_select_copy" time="9.60">
+</testcase>
+<testcase classname="agent" name="primary_and_middle_click" time="26.50">
+</testcase>
+<testcase classname="agent" name="link_and_path_click" time="54.90">
+</testcase>
+<testcase classname="agent" name="wheel_scroll" time="27.70">
+</testcase>
+<testcase classname="agent" name="resize_reflow_output" time="56.60">
+</testcase>
+<testcase classname="agent" name="editor_daily" time="54.20">
+</testcase>
+<testcase classname="agent" name="suggestion_chip_keeps_output" time="39.70">
+</testcase>
+<testcase classname="agent" name="pane_resize_maximize" time="51.40">
+</testcase>
+<testcase classname="agent" name="minimize_fullscreen" time="83.50">
+</testcase>
+<testcase classname="agent" name="drag_drop_file" time="10.40">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: the drag source reported no drag at all (events []): the pointer press and motion did not start a drag on it. The app was never offered the file; nothin"/>
+</testcase>
+<testcase classname="agent" name="md_viewer" time="5.70">
+</testcase>
+<testcase classname="agent" name="md_viewer_ai_answer" time="5.40">
+</testcase>
+<testcase classname="agent" name="ui_vertical_tabs_panel_click" time="27.70">
+<skipped message="NO-REFERENCE (not a pass): the app log says agent but the screen reads as terminal (OCR); the log decides"/>
+</testcase>
+<testcase classname="agent" name="tab_pointer_use" time="45.50">
+<skipped message="NO-REFERENCE (not a pass): the app log says agent but the screen reads as terminal (OCR); the log decides"/>
+</testcase>
+<testcase classname="agent" name="tab_lifecycle_keys" time="55.80">
+</testcase>
+<testcase classname="agent" name="gpu_real_render" time="74.60">
+<skipped message="NO-REFERENCE (not a pass): 'a lost device recovers' (the third oracle of r14-test-gaps T48; #2091) is judged by its own case, gpu_lost_device_recovers (a renderer test hook reports the loss; the kernel's res"/>
+</testcase>
+<testcase classname="agent" name="gpu_lost_device_recovers" time="45.70">
+<skipped message="NO-REFERENCE (not a pass): device reported lost once; renderer rebuilt on Intel(R) UHD Graphics 630 (CFL GT2) (Vulkan); 17 frame(s) drawn after the rebuild"/>
+</testcase>
+<testcase classname="agent" name="tabs_two_windows" time="67.10">
+</testcase>
+<testcase classname="agent" name="tabs_streaming" time="50.70">
+</testcase>
+<testcase classname="agent" name="meta_and_word_keys" time="30.60">
+</testcase>
+<testcase classname="agent" name="pane_not_local_after_meta_and_word_keys" time="0.00">
+<failure message="after meta_and_word_keys the pane's shell was not the root shell (other tab or pane: the shell in front (pid 1304115) was not started from the pane's root shell (pid 1260866, still running): it is another tab's or pane's shell, so an earlier case closed the pass's own tab or left another tab in front; `exit` was NOT typed. The cause is an EARLIER case, not necessarily meta_and_word_keys); the app is relaunched so later cases start clean">after meta_and_word_keys the pane's shell was not the root shell (other tab or pane: the shell in front (pid 1304115) was not started from the pane's root shell (pid 1260866, still running): it is another tab's or pane's shell, so an earlier case closed the pass's own tab or left another tab in front; `exit` was NOT typed. The cause is an EARLIER case, not necessarily meta_and_word_keys); the app is relaunched so later cases start clean</failure>
+</testcase>
+<testcase classname="agent@fake" name="agent_suggestion_chip_keeps_output" time="13.00">
+</testcase>
+<testcase classname="agent@fake" name="desktop_notification_agent_question" time="60.60">
+</testcase>
+</testsuite>

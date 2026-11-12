@@ -1,0 +1,84 @@
+Returns at the session tap: 1917; Phosphor app_send_event lines: 1388; Phosphor pids: [3466, 3750, 4031, 4305, 5566, 5725, 5873, 6264, 18032, 39944, 55968, 58020, 98375]
+targeted at Phosphor but never reached its NSApplication: 546 (of which UNCOVERED, no app_send_event within 3 s = app-log gap, cause not established: 545; LOST with neighbours logged: 1)
+  app log logs/agent/phosphor.1.log: 2026-11-12T05:36:00Z .. 2026-11-12T06:16:50Z (58081550 bytes)
+  app log logs/agent/phosphor.log: 2026-11-12T06:16:51Z .. 2026-11-12T06:24:52Z (29821465 bytes)
+  app log logs/agent/phosphor.old.0.in_session.0.log: 2026-11-12T05:49:51Z .. 2026-11-12T06:12:23Z (10485725 bytes)
+  app log logs/agent/phosphor.old.0.in_session.1.log: 2026-11-12T05:45:13Z .. 2026-11-12T05:49:51Z (10485720 bytes)
+  app log logs/agent/phosphor.old.0.in_session.2.log: 2026-11-12T05:42:21Z .. 2026-11-12T05:45:13Z (10485734 bytes)
+  app log logs/agent/phosphor.old.0.in_session.3.log: 2026-11-12T05:39:51Z .. 2026-11-12T05:42:21Z (10485700 bytes)
+  app log logs/agent/phosphor.old.0.in_session.4.log: 2026-11-12T05:36:00Z .. 2026-11-12T05:39:51Z (10485746 bytes)
+  app log logs/agent/phosphor.old.0.log: 2026-11-12T06:12:23Z .. 2026-11-12T06:16:51Z (5653685 bytes)
+  app log logs/agent@fake/phosphor.log: 2026-11-12T06:24:54Z .. 2026-11-12T06:25:19Z (612025 bytes)
+  app log logs/terminal/phosphor.1.log: 2026-11-12T04:32:13Z .. 2026-11-12T05:08:50Z (55289990 bytes)
+  app log logs/terminal/phosphor.log: 2026-11-12T05:22:14Z .. 2026-11-12T05:25:13Z (24402638 bytes)
+  app log logs/terminal/phosphor.old.0.log: 2026-11-12T05:21:36Z .. 2026-11-12T05:22:14Z (410575 bytes)
+  app log logs/terminal/phosphor.old.1.log: 2026-11-12T05:21:28Z .. 2026-11-12T05:21:35Z (84614 bytes)
+  app log logs/terminal/phosphor.old.2.log: 2026-11-12T05:21:20Z .. 2026-11-12T05:21:27Z (80649 bytes)
+  app log logs/terminal/phosphor.old.3.log: 2026-11-12T05:19:27Z .. 2026-11-12T05:21:19Z (4790161 bytes)
+  app log logs/terminal/phosphor.old.4.log: 2026-11-12T05:18:56Z .. 2026-11-12T05:19:26Z (550006 bytes)
+  UNCOVERED ts=2359005.446174 wall=1794456939.178 target_pid=55968
+  UNCOVERED ts=2359014.751313 wall=1794456948.487 target_pid=55968
+  UNCOVERED ts=2359026.390023 wall=1794456960.122 target_pid=55968
+  UNCOVERED ts=2359035.747914 wall=1794456969.485 target_pid=55968
+  UNCOVERED ts=2359039.928280 wall=1794456973.661 target_pid=55968
+  UNCOVERED ts=2359041.812524 wall=1794456975.546 target_pid=55968
+  UNCOVERED ts=2359046.726961 wall=1794456980.459 target_pid=55968
+  UNCOVERED ts=2359049.201976 wall=1794456982.934 target_pid=55968
+  UNCOVERED ts=2359050.437904 wall=1794456984.172 target_pid=55968
+  UNCOVERED ts=2359051.652767 wall=1794456985.385 target_pid=55968
+  UNCOVERED ts=2359052.877735 wall=1794456986.610 target_pid=55968
+  UNCOVERED ts=2359054.872533 wall=1794456988.606 target_pid=55968
+  UNCOVERED ts=2359058.990486 wall=1794456992.724 target_pid=55968
+  UNCOVERED ts=2359060.189800 wall=1794456993.923 target_pid=55968
+  UNCOVERED ts=2359061.400578 wall=1794456995.133 target_pid=55968
+  UNCOVERED ts=2359062.577706 wall=1794456996.310 target_pid=55968
+  UNCOVERED ts=2359063.815001 wall=1794456997.547 target_pid=55968
+  UNCOVERED ts=2359065.003268 wall=1794456998.737 target_pid=55968
+  UNCOVERED ts=2359066.233694 wall=1794456999.966 target_pid=55968
+  UNCOVERED ts=2359067.462433 wall=1794457001.196 target_pid=55968
+  UNCOVERED ts=2359068.657459 wall=1794457002.389 target_pid=55968
+  UNCOVERED ts=2359069.846760 wall=1794457003.579 target_pid=55968
+  UNCOVERED ts=2359071.036730 wall=1794457004.771 target_pid=55968
+  UNCOVERED ts=2359072.233169 wall=1794457005.965 target_pid=55968
+  UNCOVERED ts=2359074.911108 wall=1794457008.643 target_pid=55968
+  UNCOVERED ts=2359184.464875 wall=1794457118.196 target_pid=55968
+  UNCOVERED ts=2359185.588017 wall=1794457119.322 target_pid=55968
+  UNCOVERED ts=2359186.209787 wall=1794457119.941 target_pid=55968
+  UNCOVERED ts=2359187.293793 wall=1794457121.025 target_pid=55968
+  UNCOVERED ts=2359188.315192 wall=1794457122.047 target_pid=55968
+  UNCOVERED ts=2359189.264679 wall=1794457122.996 target_pid=55968
+  UNCOVERED ts=2359190.364930 wall=1794457124.096 target_pid=55968
+  UNCOVERED ts=2359191.559022 wall=1794457125.290 target_pid=55968
+  UNCOVERED ts=2359192.655682 wall=1794457126.387 target_pid=55968
+  UNCOVERED ts=2359193.367116 wall=1794457127.098 target_pid=55968
+  UNCOVERED ts=2359194.500343 wall=1794457128.232 target_pid=55968
+  UNCOVERED ts=2359195.709986 wall=1794457129.443 target_pid=55968
+  UNCOVERED ts=2359196.899875 wall=1794457130.634 target_pid=55968
+  UNCOVERED ts=2359197.862348 wall=1794457131.594 target_pid=55968
+  UNCOVERED ts=2359199.079231 wall=1794457132.812 target_pid=55968
+  UNCOVERED ts=2359199.956631 wall=1794457133.689 target_pid=55968
+  UNCOVERED ts=2359201.113640 wall=1794457134.845 target_pid=55968
+  UNCOVERED ts=2359201.945632 wall=1794457135.677 target_pid=55968
+  UNCOVERED ts=2359202.857376 wall=1794457136.591 target_pid=55968
+  UNCOVERED ts=2359203.940421 wall=1794457137.673 target_pid=55968
+  UNCOVERED ts=2359204.923208 wall=1794457138.656 target_pid=55968
+  UNCOVERED ts=2359205.858744 wall=1794457139.590 target_pid=55968
+  UNCOVERED ts=2359206.965541 wall=1794457140.697 target_pid=55968
+  UNCOVERED ts=2359207.783650 wall=1794457141.517 target_pid=55968
+  UNCOVERED ts=2359208.709399 wall=1794457142.441 target_pid=55968
+targeted at another process: 378
+  pid 86484 (?): 76, first wall=1794458393.032
+  pid 47132 (?): 76, first wall=1794462430.665
+  pid 57188 (?): 61, first wall=1794457041.777
+  pid 62511 (?): 40, first wall=1794457627.326
+  pid 23335 (?): 40, first wall=1794461677.841
+  pid 61763 (?): 34, first wall=1794457467.154
+  pid 22605 (?): 34, first wall=1794461517.299
+  pid 56977 (?): 13, first wall=1794457014.068
+  pid 91518 (?): 1, first wall=1794459023.668
+  pid 92555 (?): 1, first wall=1794459786.615
+  pid 51130 (?): 1, first wall=1794462974.579
+  pid 52133 (?): 1, first wall=1794463737.713
+seen by Phosphor but not by the tap (join check, expect 0): 0
+injector posted 1491 Returns; never seen by macOS (no tap event within 200 ms): 0
+ALL KEYS: injector sent 115635; macOS delivered 83962 to Phosphor, 34448 to other processes; never in macOS (sent - delivered) 0

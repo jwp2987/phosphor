@@ -1,0 +1,344 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="appci-macos" tests="135" failures="9" skipped="28">
+<testcase classname="terminal" name="mode_proof" time="3.70">
+</testcase>
+<testcase classname="terminal" name="cadence" time="7.50">
+</testcase>
+<testcase classname="terminal" name="mac_pointer_chord_proof" time="32.80">
+</testcase>
+<testcase classname="terminal" name="key_loss_control" time="42.20">
+</testcase>
+<testcase classname="terminal" name="enter_loss_control" time="78.90">
+</testcase>
+<testcase classname="terminal" name="fast_typing" time="69.40">
+</testcase>
+<testcase classname="terminal" name="rollover" time="17.80">
+</testcase>
+<testcase classname="terminal" name="expert_fuzz" time="38.80">
+</testcase>
+<testcase classname="terminal" name="paste_instant_enter" time="8.00">
+</testcase>
+<testcase classname="terminal" name="arrows_behind_paste" time="12.80">
+</testcase>
+<testcase classname="terminal" name="keydown_count" time="25.90">
+</testcase>
+<testcase classname="terminal" name="big_paste" time="7.40">
+</testcase>
+<testcase classname="terminal" name="tab_enter" time="28.70">
+</testcase>
+<testcase classname="terminal" name="ctrl_c_d" time="558.90">
+</testcase>
+<testcase classname="terminal" name="read_x" time="5.10">
+</testcase>
+<testcase classname="terminal" name="subshells" time="45.70">
+</testcase>
+<testcase classname="terminal" name="subshell_sh_probe" time="17.60">
+</testcase>
+<testcase classname="terminal" name="alt_screen" time="9.30">
+</testcase>
+<testcase classname="terminal" name="gitbash_subshell" time="1.50">
+<skipped message="Windows only: Git for Windows' bash.exe as a subshell of the pane's PowerShell (POSIX hosts: the subshells case)"/>
+</testcase>
+<testcase classname="terminal" name="subshell_ready_rc_questions" time="18.00">
+</testcase>
+<testcase classname="terminal" name="subshell_ready_vim_typeahead" time="21.80">
+</testcase>
+<testcase classname="terminal" name="subshell_ready_unsupported_tcsh" time="15.60">
+</testcase>
+<testcase classname="terminal" name="subshell_ready_secret_after_prompt" time="18.00">
+</testcase>
+<testcase classname="terminal" name="subshell_ready_secret_after_probe" time="18.20">
+</testcase>
+<testcase classname="terminal" name="subshell_sh_probe_empty_ps1" time="17.80">
+</testcase>
+<testcase classname="terminal" name="subshell_ready_relay_shape" time="2.70">
+<skipped message="no passwordless sudo on this runner (`sudo -n true` failed (rc 1: sudo: a password is required) and APPCI_SUDO_USER is not set). NEEDS: a sudoers entry on this test machine (owner: machine change; the"/>
+</testcase>
+<testcase classname="terminal" name="subshell_ready_exec_fish_rc" time="18.30">
+</testcase>
+<testcase classname="terminal" name="subshell_ready_docker_t_without_i" time="2.70">
+<skipped message="docker with a local alpine image is not available: docker is not installed. NEEDS: the docker engine on this test machine (Debian/Ubuntu package docker.io; macOS: Docker Desktop or colima) (owner: mac"/>
+</testcase>
+<testcase classname="terminal" name="subshell_ready_zsh_newuser_install" time="6.90">
+<skipped message="this zsh runs no zsh-newuser-install with an empty startup directory (proved on a pty before the case types anything)"/>
+</testcase>
+<testcase classname="terminal" name="subshell_ready_rc_clear" time="16.40">
+</testcase>
+<testcase classname="terminal" name="subshell_line_editor_proof" time="16.70">
+</testcase>
+<testcase classname="terminal" name="ssh_connect_typing" time="48.40">
+</testcase>
+<testcase classname="terminal" name="ssh_enter_then_immediate_command" time="12.90">
+</testcase>
+<testcase classname="terminal" name="ssh_nested_typeahead" time="7.90">
+</testcase>
+<testcase classname="terminal" name="ssh_failing_not_local" time="16.90">
+</testcase>
+<testcase classname="terminal" name="idle_cpu" time="25.50">
+</testcase>
+<testcase classname="terminal" name="latency_enter" time="494.20">
+</testcase>
+<testcase classname="terminal" name="latency_key_log" time="29.90">
+</testcase>
+<testcase classname="terminal" name="latency_paint" time="126.70">
+</testcase>
+<testcase classname="terminal" name="latency_first_key_after_idle" time="754.40">
+<skipped message="NO-REFERENCE (not a pass): First key after 1 s idle: first key after 1 s idle, kl3 post-to-first-changed-pixel at 240 Hz (4.17 ms quantum, not applied as a resolution veto: the SE of the median difference is"/>
+</testcase>
+<testcase classname="terminal" name="intl_wide_type" time="8.80">
+</testcase>
+<testcase classname="terminal" name="intl_wide_paste" time="11.50">
+</testcase>
+<testcase classname="terminal" name="intl_wide_edit" time="12.30">
+</testcase>
+<testcase classname="terminal" name="ui_palette" time="31.80">
+</testcase>
+<testcase classname="terminal" name="intl_wide_program" time="25.70">
+</testcase>
+<testcase classname="terminal" name="intl_compose_linux" time="1.60">
+<skipped message="Linux compose/dead keys need the wayland (wtype) or x11 (xdotool) backend, this is mac"/>
+</testcase>
+<testcase classname="terminal" name="intl_ime_japanese" time="2.00">
+<skipped message="NEEDS_OWNER: the input method under test is not enabled for this user (enabled: com.apple.keylayout.US, com.apple.CharacterPaletteIM). In the GUI session of user gitrunner (Screen Sharing / console): "/>
+</testcase>
+<testcase classname="terminal" name="intl_ime_pinyin" time="1.70">
+<skipped message="NEEDS_OWNER: the input method under test is not enabled for this user (enabled: com.apple.keylayout.US, com.apple.CharacterPaletteIM). In the GUI session of user gitrunner (Screen Sharing / console): "/>
+</testcase>
+<testcase classname="terminal" name="scroll_keys_position" time="36.50">
+</testcase>
+<testcase classname="terminal" name="ime_compose" time="1.70">
+<skipped message="macOS: NEEDS: the owner enables the Pinyin - Simplified input source for the runner user (System Settings &gt; Keyboard &gt; Text Input &gt; Input Sources). The macOS arm of this test is intl_ime_pinyin / intl"/>
+</testcase>
+<testcase classname="terminal" name="intl_deadkey_option" time="56.90">
+</testcase>
+<testcase classname="terminal" name="ui_mouse_select_copy" time="13.50">
+</testcase>
+<testcase classname="terminal" name="ui_right_click_paste" time="1.60">
+<skipped message="macOS: this case's macOS arm is not enabled. The pointer tool exists since round 15 (mac/tools/mptr.swift, #2061), and the cases that pass mac=True run with it; this one still drives the pointer or re"/>
+</testcase>
+<testcase classname="terminal" name="primary_and_middle_click" time="1.70">
+<skipped message="primary_and_middle_click: macOS has no PRIMARY selection and no middle-click paste (X11 / Wayland concepts): nothing to test there, by design"/>
+</testcase>
+<testcase classname="terminal" name="ui_drag_drop_file" time="1.70">
+<skipped message="mac: the harness has no drag source for this display system. NEEDS: a harness capability that is not built (a client that owns the drag: wl_data_device on Wayland, a pasteboard drag on macOS, OLE drag"/>
+</testcase>
+<testcase classname="terminal" name="link_and_path_click" time="61.70">
+<failure message="Cmd+click on `paedtch4x.rs:140`: the file opened in the app at its first line; the text of the clicked line is not on screen (the :line part was not followed)">Cmd+click on `paedtch4x.rs:140`: the file opened in the app at its first line; the text of the clicked line is not on screen (the :line part was not followed)
+after_links: file has 0/4 lines, exact match False first diff: exp='t337_web05d3ho3' got=None [first bad line 0: injector call #2080 posted its ENTER at 23:07:58.740]
+macOS: this case has no trace of the app's own connections (strace is Linux; the per-platform network trace is r14-test-gaps T41): 'no other outbound connection' is NOT judged here
+after_links: rec.log empty (PROMPT_COMMAND hook not run), effect file checked only
+injector accounting: injector sent 193; app saw 193; lost-before-app 0 (Enter: sent 5, app saw 5); of the app's: 186 unbound keydown/typed, 1 taken by a key binding, 5 Enter by a binding; macOS: 193 key-down(s) reached NSApplication, 193 dispatched as key events (1 of them a menu key equivalent), 0 not (0 Cmd chord(s) injected)
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 1 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="terminal" name="pane_not_local_after_link_and_path_click" time="0.00">
+<failure message="after link_and_path_click the pane's shell was not the root shell (none; root pid 55980); the app is relaunched so later cases start clean">after link_and_path_click the pane's shell was not the root shell (none; root pid 55980); the app is relaunched so later cases start clean</failure>
+</testcase>
+<testcase classname="terminal" name="wheel_scroll" time="6.20">
+<failure message="harness exception: PtrError('pointer injector failed: mptr exit 4 (refused a wheel step at (409.5, 441.0): the topmost window there belongs to Window Server (pid 547, layer 2147483630), not to pid 98375; windows at the point, front to back: Window Server (pid 547, layer 2147483630, 404,436,28,40) &gt; Dock (pid 90039, layer 20, 0,0,1512,982) &gt; Phosphor (pid 98375, layer 0, 116,52,1280,800); area clear of the Dock bar and the menu bar: 0,33,1512,874)')">harness exception: PtrError('pointer injector failed: mptr exit 4 (refused a wheel step at (409.5, 441.0): the topmost window there belongs to Window Server (pid 547, layer 2147483630), not to pid 98375; windows at the point, front to back: Window Server (pid 547, layer 2147483630, 404,436,28,40) &gt; Dock (pid 90039, layer 20, 0,0,1512,982) &gt; Phosphor (pid 98375, layer 0, 116,52,1280,800); area clear of the Dock bar and the menu bar: 0,33,1512,874)')
+injector accounting: injector sent 24; app saw 24; lost-before-app 0 (Enter: sent 1, app saw 1); of the app's: 21 unbound keydown/typed, 1 taken by a key binding, 1 Enter by a binding; macOS: 24 key-down(s) reached NSApplication, 24 dispatched as key events (1 of them a menu key equivalent), 0 not (0 Cmd chord(s) injected)
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 1 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="terminal" name="resize_reflow_output" time="82.50">
+</testcase>
+<testcase classname="terminal" name="editor_daily" time="47.40">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: macOS: the close question was not played. NEEDS (harness, not built): a usable close key (Phosphor's is cmd-shift-W, which the frontmost-app guard refuses) and a way "/>
+</testcase>
+<testcase classname="terminal" name="suggestion_chip_keeps_output" time="20.60">
+</testcase>
+<testcase classname="terminal" name="minimize_fullscreen" time="94.50">
+</testcase>
+<testcase classname="terminal" name="md_viewer" time="9.40">
+</testcase>
+<testcase classname="terminal" name="md_viewer_big" time="8.90">
+</testcase>
+<testcase classname="terminal" name="editor_memory_7mb" time="344.90">
+<failure message="txt: 3 open/close cycles grew the post-close rss by 36 MB (&gt; 30 MB): 1369, 1414, 1406">txt: 3 open/close cycles grew the post-close rss by 36 MB (&gt; 30 MB): 1369, 1414, 1406
+judged memory figures: phys_footprint, rss (owner: each one is checked; macOS ps RSS also counts freed-but-reusable malloc pages)
+txt: opening the 7.0 MB file added 46 MB of phys_footprint (6.5x the file), 152 MB of rss (21.7x the file)
+KNOWN: txt: opening a 7 MB file cost 152 MB of rss (&gt; 100 MB target) [ACCEPTED_FOR_RELEASE #1607 v0.1.17: owner 2026-11-04: open cost accepted, release after close required]
+txt: the app's own 'editor_memory open' breakdown walk took 0.51 ms on the main thread right after the load's layout (instrumentation: it runs only with editor_memory=debug, so a user's open does not pay it)
+txt: at the close trim the app was 1397 MB resident, 612 MB of it freed-but-reusable malloc pages (MADV_FREE_REUSABLE: out of phys_footprint, still in RSS until the kernel reclaims them; no trim returns them)
+txt_c2: at the close trim the app was 1414 MB resident, 937 MB of it freed-but-reusable malloc pages (MADV_FREE_REUSABLE: out of phys_footprint, still in RSS until the kernel reclaims them; no trim returns them)
+txt_c3: memory grew only -7.9 MB but the app logged 'editor_memory open': the file opened into reused heap
+txt_c3: at the close trim the app was 1406 MB resident, 989 MB of it freed-but-reusable malloc pages (MADV_FREE_REUSABLE: out of phys_footprint, still in RSS until the kernel reclaims them; no trim returns them)
+rss: +113 MB over the pre-open baseline after close (reported, not judged on macOS: freed pages marked reusable stay in RSS; phys_footprint is the judged figure)
+rs: opening the 7.0 MB file added 49 MB of phys_footprint (7.0x the file), 51 MB of rss (7.3x the file)
+rs: the app's own 'editor_memory open' breakdown walk took 0.21 ms on the main thread right after the load's layout (instrumentation: it runs only with editor_memory=debug, so a user's open does not pay it)
+rs: at the close trim the app was 1410 MB resident, 999 MB of it freed-but-reusable malloc pages (MADV_FREE_REUSABLE: out of phys_footprint, still in RSS until the kernel reclaims them; no trim returns them)
+rss: +27 MB over the pre-open baseline after close (reported, not judged on macOS: freed pages marked reusable stay in RSS; phys_footprint is the judged figure)
+EXPERIMENT (the opt-in open trim, PHOSPHOR_EDITOR_TRIM_AFTER_OPEN=1; owner 2026-11-10, #1340: reported, never a FAIL): OUTSIDE the budget: trim A/B: the open trim put a 4.7 ms UI item on screen while it ran (budget 4 ms; control default: 0.0 ms)
+EXPERIMENT (the opt-in open trim, PHOSPHOR_EDITOR_TRIM_AFTER_OPEN=1; owner 2026-11-10, #1340: reported, never a FAIL): inside the budget: trim A/B: the load's layout frame took 5.1 ms with the open trim (4 ms budget; control default: 4.3 ms)
+injector accounting: injector sent 798; app saw 798; lost-before-app 0 (Enter: sent 7, app saw 7); of the app's: 747 unbound keydown/typed, 15 taken by a key binding, 7 Enter by a binding; macOS: 798 key-down(s) reached NSApplication, 798 dispatched as key events (29 of them a menu key equivalent), 0 not (14 Cmd chord(s) injected)</failure>
+</testcase>
+<testcase classname="terminal" name="tab_pointer_use" time="98.40">
+<skipped message="NO-REFERENCE (not a pass): vertical panel: tab 2 at (468, 413), tab 3 at (468, 538), tab 4 at (468, 662)"/>
+</testcase>
+<testcase classname="terminal" name="network_gate_switch" time="63.90">
+<skipped message="NO-REFERENCE (not a pass): Escape left the settings page open (the shell did not take the probe line); closed it with key cmd+w"/>
+</testcase>
+<testcase classname="terminal" name="tabs_two_windows" time="69.70">
+</testcase>
+<testcase classname="terminal" name="tabs_streaming" time="55.00">
+</testcase>
+<testcase classname="terminal" name="cb_ui_action_latency" time="35.20">
+<failure message="after the close key on the throw-away tab the shell in front has pid None, expected the pass's own shell 52247 (the tab did not close, or another tab came to the front)">after the close key on the throw-away tab the shell in front has pid None, expected the pass's own shell 52247 (the tab did not close, or another tab came to the front)
+injector accounting: injector sent 571; app saw 571; lost-before-app 0 (Enter: sent 10, app saw 10); of the app's: 550 unbound keydown/typed, 7 taken by a key binding, 9 Enter by a binding; macOS: 571 key-down(s) reached NSApplication, 571 dispatched as key events (5 of them a menu key equivalent), 0 not (3 Cmd chord(s) injected)
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 9 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="agent" name="mode_proof" time="2.70">
+</testcase>
+<testcase classname="agent" name="cadence" time="7.60">
+</testcase>
+<testcase classname="agent" name="mac_pointer_chord_proof" time="31.50">
+</testcase>
+<testcase classname="agent" name="fast_typing" time="68.30">
+</testcase>
+<testcase classname="agent" name="rollover" time="17.40">
+</testcase>
+<testcase classname="agent" name="expert_fuzz" time="37.40">
+</testcase>
+<testcase classname="agent" name="paste_instant_enter" time="7.80">
+</testcase>
+<testcase classname="agent" name="arrows_behind_paste" time="12.90">
+</testcase>
+<testcase classname="agent" name="keydown_count" time="24.30">
+</testcase>
+<testcase classname="agent" name="big_paste" time="7.50">
+</testcase>
+<testcase classname="agent" name="tab_enter" time="28.70">
+</testcase>
+<testcase classname="agent" name="ctrl_c_d" time="558.00">
+</testcase>
+<testcase classname="agent" name="read_x" time="5.10">
+</testcase>
+<testcase classname="agent" name="subshells" time="46.10">
+</testcase>
+<testcase classname="agent" name="subshell_sh_probe" time="17.70">
+</testcase>
+<testcase classname="agent" name="alt_screen" time="9.40">
+</testcase>
+<testcase classname="agent" name="gitbash_subshell" time="1.60">
+<skipped message="Windows only: Git for Windows' bash.exe as a subshell of the pane's PowerShell (POSIX hosts: the subshells case)"/>
+</testcase>
+<testcase classname="agent" name="subshell_ready_rc_questions" time="18.00">
+</testcase>
+<testcase classname="agent" name="subshell_ready_vim_typeahead" time="21.80">
+</testcase>
+<testcase classname="agent" name="subshell_ready_unsupported_tcsh" time="15.50">
+</testcase>
+<testcase classname="agent" name="subshell_ready_secret_after_prompt" time="18.30">
+</testcase>
+<testcase classname="agent" name="subshell_ready_secret_after_probe" time="18.30">
+</testcase>
+<testcase classname="agent" name="subshell_sh_probe_empty_ps1" time="17.90">
+</testcase>
+<testcase classname="agent" name="subshell_ready_relay_shape" time="2.70">
+<skipped message="no passwordless sudo on this runner (`sudo -n true` failed (rc 1: sudo: a password is required) and APPCI_SUDO_USER is not set). NEEDS: a sudoers entry on this test machine (owner: machine change; the"/>
+</testcase>
+<testcase classname="agent" name="subshell_ready_exec_fish_rc" time="18.30">
+</testcase>
+<testcase classname="agent" name="subshell_ready_docker_t_without_i" time="2.70">
+<skipped message="docker with a local alpine image is not available: docker is not installed. NEEDS: the docker engine on this test machine (Debian/Ubuntu package docker.io; macOS: Docker Desktop or colima) (owner: mac"/>
+</testcase>
+<testcase classname="agent" name="subshell_ready_zsh_newuser_install" time="6.90">
+<skipped message="this zsh runs no zsh-newuser-install with an empty startup directory (proved on a pty before the case types anything)"/>
+</testcase>
+<testcase classname="agent" name="subshell_ready_rc_clear" time="16.40">
+</testcase>
+<testcase classname="agent" name="subshell_line_editor_proof" time="16.80">
+</testcase>
+<testcase classname="agent" name="ssh_connect_typing" time="48.20">
+</testcase>
+<testcase classname="agent" name="ssh_enter_then_immediate_command" time="13.00">
+</testcase>
+<testcase classname="agent" name="ssh_nested_typeahead" time="7.90">
+</testcase>
+<testcase classname="agent" name="ssh_failing_not_local" time="16.90">
+</testcase>
+<testcase classname="agent" name="idle_cpu" time="25.50">
+</testcase>
+<testcase classname="agent" name="latency_enter" time="413.30">
+</testcase>
+<testcase classname="agent" name="latency_key_log" time="30.10">
+</testcase>
+<testcase classname="agent" name="latency_paint" time="126.30">
+</testcase>
+<testcase classname="agent" name="latency_first_key_after_idle" time="754.20">
+<skipped message="NO-REFERENCE (not a pass): First key after 1 s idle: first key after 1 s idle, kl3 post-to-first-changed-pixel at 240 Hz (4.17 ms quantum, not applied as a resolution veto: the SE of the median difference is"/>
+</testcase>
+<testcase classname="agent" name="approval_card_pause" time="126.60">
+<skipped message="no approval card appeared within 120 s (model did not propose the command)"/>
+</testcase>
+<testcase classname="agent" name="intl_wide_type" time="8.70">
+</testcase>
+<testcase classname="agent" name="intl_wide_paste" time="11.60">
+</testcase>
+<testcase classname="agent" name="intl_wide_edit" time="12.10">
+</testcase>
+<testcase classname="agent" name="ui_palette" time="31.50">
+</testcase>
+<testcase classname="agent" name="intl_wide_program" time="25.90">
+</testcase>
+<testcase classname="agent" name="intl_compose_linux" time="1.60">
+<skipped message="Linux compose/dead keys need the wayland (wtype) or x11 (xdotool) backend, this is mac"/>
+</testcase>
+<testcase classname="agent" name="intl_ime_japanese" time="1.80">
+<skipped message="NEEDS_OWNER: the input method under test is not enabled for this user (enabled: com.apple.keylayout.US, com.apple.CharacterPaletteIM). In the GUI session of user gitrunner (Screen Sharing / console): "/>
+</testcase>
+<testcase classname="agent" name="intl_ime_pinyin" time="1.80">
+<skipped message="NEEDS_OWNER: the input method under test is not enabled for this user (enabled: com.apple.keylayout.US, com.apple.CharacterPaletteIM). In the GUI session of user gitrunner (Screen Sharing / console): "/>
+</testcase>
+<testcase classname="agent" name="scroll_keys_position" time="37.40">
+<failure message="after one typed key none of the job's last lines is on screen: the key did not bring the view back to the bottom (the job's last 8 lines were looked for; shots/*skp_5_after_key.png)">after one typed key none of the job's last lines is on screen: the key did not bring the view back to the bottom (the job's last 8 lines were looked for; shots/*skp_5_after_key.png)
+injector accounting: injector sent 193; app saw 193; lost-before-app 0 (Enter: sent 3, app saw 3); of the app's: 179 unbound keydown/typed, 7 taken by a key binding, 3 Enter by a binding; macOS: 193 key-down(s) reached NSApplication, 193 dispatched as key events (4 of them a menu key equivalent), 0 not (1 Cmd chord(s) injected)
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 3 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="agent" name="ime_compose" time="1.60">
+<skipped message="macOS: NEEDS: the owner enables the Pinyin - Simplified input source for the runner user (System Settings &gt; Keyboard &gt; Text Input &gt; Input Sources). The macOS arm of this test is intl_ime_pinyin / intl"/>
+</testcase>
+<testcase classname="agent" name="intl_deadkey_option" time="57.30">
+</testcase>
+<testcase classname="agent" name="ui_mouse_select_copy" time="13.90">
+</testcase>
+<testcase classname="agent" name="primary_and_middle_click" time="1.70">
+<skipped message="primary_and_middle_click: macOS has no PRIMARY selection and no middle-click paste (X11 / Wayland concepts): nothing to test there, by design"/>
+</testcase>
+<testcase classname="agent" name="link_and_path_click" time="62.10">
+<failure message="Cmd+click on `paxa4fnc7.rs:140`: the file opened in the app at its first line; the text of the clicked line is not on screen (the :line part was not followed)">Cmd+click on `paxa4fnc7.rs:140`: the file opened in the app at its first line; the text of the clicked line is not on screen (the :line part was not followed)
+after_links: file has 0/4 lines, exact match False first diff: exp='t254_iox6rjkoet' got=None [first bad line 0: injector call #4358 posted its ENTER at 00:15:59.272]
+macOS: this case has no trace of the app's own connections (strace is Linux; the per-platform network trace is r14-test-gaps T41): 'no other outbound connection' is NOT judged here
+after_links: rec.log empty (PROMPT_COMMAND hook not run), effect file checked only
+injector accounting: injector sent 193; app saw 193; lost-before-app 0 (Enter: sent 5, app saw 5); of the app's: 186 unbound keydown/typed, 1 taken by a key binding, 5 Enter by a binding; macOS: 193 key-down(s) reached NSApplication, 193 dispatched as key events (1 of them a menu key equivalent), 0 not (0 Cmd chord(s) injected)
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 1 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="agent" name="pane_not_local_after_link_and_path_click" time="0.00">
+<failure message="after link_and_path_click the pane's shell was not the root shell (none; root pid 18040); the app is relaunched so later cases start clean">after link_and_path_click the pane's shell was not the root shell (none; root pid 18040); the app is relaunched so later cases start clean</failure>
+</testcase>
+<testcase classname="agent" name="wheel_scroll" time="6.00">
+<failure message="harness exception: PtrError('pointer injector failed: mptr exit 4 (refused a wheel step at (409.5, 448.0): the topmost window there belongs to Window Server (pid 547, layer 2147483630), not to pid 58020; windows at the point, front to back: Window Server (pid 547, layer 2147483630, 404,443,28,40) &gt; Dock (pid 90039, layer 20, 0,0,1512,982) &gt; Phosphor (pid 58020, layer 0, 116,52,1280,800); area clear of the Dock bar and the menu bar: 0,33,1512,874)')">harness exception: PtrError('pointer injector failed: mptr exit 4 (refused a wheel step at (409.5, 448.0): the topmost window there belongs to Window Server (pid 547, layer 2147483630), not to pid 58020; windows at the point, front to back: Window Server (pid 547, layer 2147483630, 404,443,28,40) &gt; Dock (pid 90039, layer 20, 0,0,1512,982) &gt; Phosphor (pid 58020, layer 0, 116,52,1280,800); area clear of the Dock bar and the menu bar: 0,33,1512,874)')
+injector accounting: injector sent 24; app saw 24; lost-before-app 0 (Enter: sent 1, app saw 1); of the app's: 21 unbound keydown/typed, 1 taken by a key binding, 1 Enter by a binding; macOS: 24 key-down(s) reached NSApplication, 24 dispatched as key events (1 of them a menu key equivalent), 0 not (0 Cmd chord(s) injected)
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 1 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="agent" name="resize_reflow_output" time="74.10">
+</testcase>
+<testcase classname="agent" name="editor_daily" time="47.50">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: macOS: the close question was not played. NEEDS (harness, not built): a usable close key (Phosphor's is cmd-shift-W, which the frontmost-app guard refuses) and a way "/>
+</testcase>
+<testcase classname="agent" name="suggestion_chip_keeps_output" time="25.90">
+</testcase>
+<testcase classname="agent" name="minimize_fullscreen" time="96.40">
+</testcase>
+<testcase classname="agent" name="md_viewer" time="9.70">
+</testcase>
+<testcase classname="agent" name="md_viewer_ai_answer" time="9.50">
+</testcase>
+<testcase classname="agent" name="tab_pointer_use" time="49.50">
+<skipped message="NO-REFERENCE (not a pass): the app log says agent but the screen reads as terminal (OCR); the log decides"/>
+</testcase>
+<testcase classname="agent" name="tabs_two_windows" time="68.70">
+</testcase>
+<testcase classname="agent" name="tabs_streaming" time="57.80">
+</testcase>
+<testcase classname="agent@fake" name="agent_suggestion_chip_keeps_output" time="16.30">
+</testcase>
+</testsuite>
