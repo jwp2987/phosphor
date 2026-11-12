@@ -5,8 +5,9 @@ WARP_SSH_KEEPALIVE is not "0". #1243: it adds ObscureKeystrokeTiming=no ONLY
 when WARP_SSH_OBSCURE_KEYSTROKE_TIMING is "0" AND `ssh -G` reports
 `obscurekeystroketiming yes`. #985: it adds `IPQoS=af21 af21` ONLY when `ssh -G`
 reports `ipqos af21 cs1` (the default of OpenSSH 7.8 to 10.0, whose second
-class Wi-Fi delays); the default of OpenSSH 10.1 and later (`ipqos ef cs0`) and
-anything a user set are passed through untouched.
+class Wi-Fi delays); for OpenSSH 10.1 and later (`ipqos ef cs0`) it adds
+`IPQoS=ef ef` (the class plain ssh uses for an interactive session) unless
+WARP_SSH_IPQOS_EF=0; anything a user set is passed through untouched.
 
 It extracts the real `ssh -G` capture and the probe block (from the
 `warp_ipqos_args` declaration up to the obscure-timing `fi`) out of bash_body.sh,
@@ -35,6 +36,7 @@ printf '%s\\n' "$FAKE_G"
 
 KEEPALIVE = ["-o", "ServerAliveInterval=30", "-o", "ServerAliveCountMax=6"]
 IPQOS = ["-o", "IPQoS=af21 af21"]
+IPQOS_EF = ["-o", "IPQoS=ef ef"]
 NO_OBSCURE = ["-o", "ObscureKeystrokeTiming=no"]
 OBSCURE_OFF = {"WARP_SSH_OBSCURE_KEYSTROKE_TIMING": "0"}
 
@@ -63,6 +65,7 @@ def run(shell, snippet_kind, snippet, g, env_extra):
             prog = "t() {\n%s\nprintf '%%s\\n' \"${warp_ipqos_args[@]}\"\n}\nt dest\n" % snippet
         env = dict(os.environ)
         env.pop("WARP_SSH_KEEPALIVE", None)
+        env.pop("WARP_SSH_IPQOS_EF", None)
         env.pop("WARP_SSH_OBSCURE_KEYSTROKE_TIMING", None)
         env.update(env_extra)
         env["PATH"] = d + ":" + env["PATH"]
@@ -88,8 +91,11 @@ CASES = [
     ("explicit on", "serveraliveinterval 0\nipqos lowdelay", {"WARP_SSH_KEEPALIVE": "1"}, KEEPALIVE),
     ("ssh -G printed nothing", "", {}, []),
     # #985: only the default whose bulk class is cs1 is pinned
-    ("OpenSSH 10.1+ default is not pinned", "serveraliveinterval 60\nipqos ef cs0", {}, []),
-    ("OpenSSH 10.1+ default with keepalive", "serveraliveinterval 0\nipqos ef cs0", {}, KEEPALIVE),
+    # #985 (owner 2026-11-12): OpenSSH 10.1+ (`ef cs0`) is pinned to the interactive class `ef ef`
+    ("OpenSSH 10.1+ default is pinned to ef", "serveraliveinterval 60\nipqos ef cs0", {}, IPQOS_EF),
+    ("OpenSSH 10.1+ default with keepalive", "serveraliveinterval 0\nipqos ef cs0", {}, IPQOS_EF + KEEPALIVE),
+    ("OpenSSH 10.1+ pin opt-out", "serveraliveinterval 60\nipqos ef cs0", {"WARP_SSH_IPQOS_EF": "0"}, []),
+    ("OpenSSH <= 10.0 unaffected by the ef opt-out", "serveraliveinterval 60\nipqos af21 cs1", {"WARP_SSH_IPQOS_EF": "0"}, IPQOS),
     ("a bulk class spelled none is not pinned", "serveraliveinterval 60\nipqos ef none", {}, []),
     ("a user's own two classes win", "serveraliveinterval 60\nipqos af21 af21", {}, []),
     ("a user's cs1 for both is not ours to change", "serveraliveinterval 60\nipqos cs1 cs1", {}, []),

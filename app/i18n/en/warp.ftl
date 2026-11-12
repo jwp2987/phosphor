@@ -251,6 +251,7 @@ terminal-banner-shell-config-incompatible = Your shell configuration is incompat
 terminal-banner-did-you-intend = Did you intend {" "}
 terminal-banner-move-cursor = {" "}to move the cursor?
 terminal-toast-powershell-subshells-not-supported = PowerShell subshells not supported
+terminal-ssh-no-helper-notice = Connected without the Phosphor helper: some remote features use the shell instead.
 terminal-toast-link-invalid = Blocked link: not a valid URL
 terminal-toast-link-blocked-scheme = Blocked link: { $scheme }: links aren't opened from terminal output
 terminal-dont-ask-again = Don't ask me again for this host

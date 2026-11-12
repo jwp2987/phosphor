@@ -2543,6 +2543,12 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
             warp_ssh_g_value warp_ssh_ipqos ipqos "$warp_ssh_g"
             if [[ "$warp_ssh_ipqos" == "af21 cs1" ]]; then
                 warp_ipqos_args=(-o "IPQoS=af21 af21")
+            # #985 (owner 2026-11-12): OpenSSH >= 10.1 reports `ef cs0` (EF for an interactive
+            # session, best effort for one without a tty). With the helper's tty-less channel on
+            # the connection the managed session would stay best effort while plain ssh is EF, so
+            # pin the class plain ssh uses for an interactive session. WARP_SSH_IPQOS_EF=0 opts out.
+            elif [[ "$warp_ssh_ipqos" == "ef cs0" && "${WARP_SSH_IPQOS_EF:-1}" != "0" ]]; then
+                warp_ipqos_args=(-o "IPQoS=ef ef")
             fi
             # #1171: ssh's default ServerAliveInterval is 0, so a silently dead link (laptop sleep, wifi
             # handover) is never noticed while idle and takes ~15 min to notice with unacked data. Add
@@ -3138,6 +3144,10 @@ fi
                 *SSH-2.0-OpenSSH_for_Windows* | *SSH-1.99-OpenSSH_for_Windows*) warp_ssh_probe_verdict="nonposix" ;;
                 *SSH-2.0-OpenSSH_[0-9]* | *SSH-1.99-OpenSSH_[0-9]*) warp_ssh_probe_verdict="posix" ;;
                 *SSH-2.0-* | *SSH-1.99-*) warp_ssh_probe_verdict="nonposix" ;;
+                # #1960 (owner 2026-11-12): keyscan ran and nothing answered (unreachable host, 5 s
+                # give-up). Cached for 60 s ("noanswer", WARP_SSH_PROBE_NEG_TTL) so repeated ssh to
+                # it does not wait 5 s each time; the caller runs plain ssh, as for no verdict.
+                *) warp_ssh_probe_verdict="noanswer" ;;
             esac
             return 0
         }
@@ -3320,12 +3330,17 @@ fi
             # #1172: WARP_SSH_PROBE_TTL (seconds) overrides the 10-minute lifetime; 0 turns the cache off.
             local ttl=600
             [[ "${WARP_SSH_PROBE_TTL-}" =~ ^[0-9]+$ ]] && ttl=$WARP_SSH_PROBE_TTL
+            # #1960: "no answer" lives 60 s; WARP_SSH_PROBE_NEG_TTL (seconds) overrides, 0 turns it off.
+            local neg_ttl=60 l_ttl
+            [[ "${WARP_SSH_PROBE_NEG_TTL-}" =~ ^[0-9]+$ ]] && neg_ttl=$WARP_SSH_PROBE_NEG_TTL
             while IFS= read -r line; do
                 [[ -z "$line" ]] && continue
                 l_ts="${line##*|}"
                 rest="${line%|*}"
                 l_key="${rest%|*}"
-                if [[ "$l_ts" =~ ^[0-9]+$ ]] && (( now >= l_ts && now - l_ts < ttl )); then
+                l_ttl=$ttl
+                [[ "${rest##*|}" == "noanswer" ]] && l_ttl=$neg_ttl
+                if [[ "$l_ts" =~ ^[0-9]+$ ]] && (( now >= l_ts && now - l_ts < l_ttl )); then
                     kept+="$line"$'\n'
                     if [[ "$l_key" == "$key" ]]; then
                         verdict="${rest##*|}"
@@ -3336,10 +3351,11 @@ fi
             case "$verdict" in
                 nonposix) return 0 ;;
                 posix) return 1 ;;
+                noanswer) [[ -z "$control_path" ]] && return 0 ;;
             esac
             local probe_rc=0
             warp_ssh_remote_is_non_posix "$control_path" "$@" || probe_rc=$?
-            if [[ -n "$warp_ssh_probe_verdict" ]]; then
+            if [[ -n "$warp_ssh_probe_verdict" && ( "$warp_ssh_probe_verdict" != "noanswer" || "$neg_ttl" != "0" ) ]]; then
                 WARP_SSH_PROBE_CACHE="$kept$key|$warp_ssh_probe_verdict|$now"$'\n'
                 if [[ -n "$probe_file" ]]; then
                     # Best effort and private (the file names hosts); a failed write only costs a probe.

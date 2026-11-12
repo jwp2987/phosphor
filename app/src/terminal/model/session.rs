@@ -193,6 +193,19 @@ pub enum SessionsEvent {
         session_id: SessionId,
         reason: LegacySshFallbackReason,
     },
+    /// A managed ssh session settled into running without the remote helper (#1960): the view
+    /// shows a one-line notice, once per session.
+    SshNoHelper { session_id: SessionId },
+}
+
+/// Whether a session's executor construction should announce "no remote helper" (#1960): an ssh
+/// session (ControlMaster or one-connection) that has no connected helper client. Never for a
+/// local shell or for a session whose helper is connected.
+pub fn ssh_no_helper_notice_due(
+    is_legacy_ssh: &IsLegacySSHSession,
+    has_helper_client: bool,
+) -> bool {
+    matches!(is_legacy_ssh, IsLegacySSHSession::Yes { .. }) && !has_helper_client
 }
 
 impl Entity for Sessions {

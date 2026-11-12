@@ -5241,6 +5241,96 @@ printf '%s\n' "$BANNER" >&2
     }
 }
 
+/// #1960 (owner 2026-11-12): the #1136 probe cache remembers a definite banner for 10 minutes and
+/// "no answer" (keyscan ran, nothing answered) for 60 s, so repeated ssh to an unreachable host
+/// does not wait up to 5 s each time. `WARP_SSH_PROBE_NEG_TTL=0` is the kill switch. Time is a
+/// plain `EPOCHSECONDS` the script sets; ssh-keyscan is a stub that counts its calls.
+#[test]
+#[cfg(unix)]
+fn msys_probe_cache_keeps_no_answer_for_60_seconds_and_a_banner_for_10_minutes() {
+    use std::os::unix::fs::PermissionsExt as _;
+    use std::process::Command;
+
+    if Command::new("bash").arg("--version").output().is_err() {
+        eprintln!("skipping: bash not installed");
+        return;
+    }
+    let source = include_str!("../../assets/bundled/bootstrap/bash_body.sh");
+    let from = source
+        .find("        function warp_ssh_msys_banner_probe() {")
+        .unwrap();
+    let to = source
+        .find("        # Ends the Phosphor-owned master at")
+        .unwrap();
+    let functions = &source[from..to];
+    let g_from = source
+        .find("        function warp_ssh_g_value() {")
+        .unwrap();
+    let g_function = &source[g_from..g_from + source[g_from..].find("\n        }\n").unwrap() + 11];
+
+    let dir = std::env::temp_dir().join(format!("p1960-{}", std::process::id()));
+    std::fs::remove_dir_all(&dir).ok();
+    std::fs::create_dir_all(&dir).unwrap();
+    let keyscan = dir.join("ssh-keyscan");
+    std::fs::write(
+        &keyscan,
+        "#!/bin/sh\nprintf 'x\\n' >> \"$LOG\"\ncat \"$BANNER\" >&2\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&keyscan, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let banner = dir.join("banner");
+    let log = dir.join("log");
+
+    // Each step: set the clock, optionally the banner, run the cached probe, print the keyscan
+    // call count and the return status.
+    let script = format!(
+        "{g_function}\n{functions}\n\
+         warp_ssh_g=$'user u\\nhostname h\\nport 22\\n'\n\
+         unset EPOCHSECONDS\n\
+         step(){{ EPOCHSECONDS=$1; : > \"$BANNER\"; [ -n \"$2\" ] && printf '%s\\n' \"$2\" > \"$BANNER\"; \
+           warp_ssh_remote_is_non_posix_cached '' -p 22 u@h; rc=$?; \
+           printf '%s rc=%s\\n' \"$(wc -l < \"$LOG\" 2>/dev/null || echo 0)\" $rc; }}\n\
+         : > \"$LOG\"\n\
+         step 1000 ''\nstep 1030 ''\nstep 1059 ''\nstep 1061 ''\n\
+         WARP_SSH_PROBE_CACHE=\n\
+         step 2000 '# h:22 SSH-2.0-OpenSSH_9.6'\nstep 2599 '# h:22 SSH-2.0-OpenSSH_9.6'\nstep 2601 '# h:22 SSH-2.0-OpenSSH_9.6'\n\
+         WARP_SSH_PROBE_CACHE=; WARP_SSH_PROBE_NEG_TTL=0\n\
+         step 3000 ''\nstep 3001 ''\n"
+    );
+    let output = Command::new("bash")
+        .args(["-c", &script])
+        .env(
+            "PATH",
+            format!(
+                "{}:{}",
+                dir.display(),
+                std::env::var("PATH").unwrap_or_default()
+            ),
+        )
+        .env("LOG", &log)
+        .env("BANNER", &banner)
+        .env_remove("WARP_SSH_PROBE_TTL")
+        .env_remove("WARP_SSH_PROBE_NEG_TTL")
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().map(str::trim).collect();
+    // "no answer": probed (1), cached at +30 s (1), cached at +59 s (1), probed again at +61 s (2)
+    // and the status is "not POSIX" (0) each time.
+    // A POSIX banner: probed (3), cached at +599 s (3, rc 1), probed again at +601 s (4).
+    // Kill switch 0: no caching, so each step probes (5, 6).
+    let expected = [
+        "1 rc=0", "1 rc=0", "1 rc=0", "2 rc=0", "3 rc=1", "3 rc=1", "4 rc=1", "5 rc=0", "6 rc=0",
+    ];
+    assert_eq!(
+        lines,
+        expected,
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 /// #2051: the one-connection managed ssh of Git Bash sends the remote bash its bootstrap INSIDE
 /// the remote command (one argument of ssh, never typed: typed, 62 KB take 45 to 60 s through msys
 /// `ssh.exe`'s console). The wrapper is run in a real bash with stub `ssh` / `ssh-keyscan`, then

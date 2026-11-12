@@ -198,6 +198,12 @@ fn new_command_executor_for_local_tty_session(
     // `Failed`/`Unsupported`, and does so at most once per session because
     // this is the single call site that ever constructs this session's
     // command executor.
+    // #1960: the helper client case returned above, so any ssh session here runs without it.
+    if super::ssh_no_helper_notice_due(&session_info.is_legacy_ssh_session, false) {
+        ctx.emit(SessionsEvent::SshNoHelper {
+            session_id: session_info.session_id,
+        });
+    }
     if let Some(reason) = legacy_ssh_fallback_reason(
         is_legacy_ssh_session_for_remote_server,
         FeatureFlag::SshRemoteServer.is_enabled(),
