@@ -737,6 +737,19 @@ impl AssistantBuffer {
     }
 }
 
+/// The line (and its level) logged when a stream fails and the full request body is not logged
+/// because content diagnostics are off. It is a note about a diagnostic, never an error: the
+/// stream error itself is the ERROR (#1821).
+fn suppressed_request_dump_note(request_bytes: usize) -> (log::Level, String) {
+    (
+        log::Level::Warn,
+        format!(
+            "[byop-diag] full_request_json_on_error suppressed: bytes~={request_bytes} \
+             (set {BYOP_DIAG_CONTENT_ENV}=1 to log the whole request body)"
+        ),
+    )
+}
+
 /// The environment variable of the #2054 kill switch.
 const REPEAT_ID_EMITTED_ORDER_ENV: &str = "PHOSPHOR_AGENT_REPEAT_ID_EMITTED_ORDER";
 
@@ -8010,12 +8023,10 @@ pub async fn generate_byop_output(
                         log::warn!("[byop-diag] full_request_json_on_error={diag_body_json}");
                     } else {
                         // A note about a diagnostic, not an error: the stream error itself is
-                        // logged at ERROR where it is handled.
-                        log::warn!(
-                            "[byop-diag] full_request_json_on_error suppressed: bytes~={} \
-                             (set {BYOP_DIAG_CONTENT_ENV}=1 to log the whole request body)",
-                            diag_body_approx_len
-                        );
+                        // logged at ERROR where it is handled (#1821).
+                        let (note_level, note) =
+                            suppressed_request_dump_note(diag_body_approx_len);
+                        log::log!(note_level, "{note}");
                     }
                     // There is deliberately no ±200-character context window here any more.
                     //
@@ -19428,5 +19439,160 @@ mod grep_uncapped_tests {
         assert!(out.contains("tool output truncated"));
         assert!(out.len() < big.len());
         assert!(cap_tool_result_for(None, big.clone()).contains("tool output truncated"));
+    }
+}
+
+/// #1819: the results that follow an assistant message with tool calls go out in the order of
+/// those calls, not in the order the actions finished.
+#[cfg(test)]
+mod tool_response_order_tests {
+    use super::*;
+    use genai::chat::{ChatRole, ToolCall};
+
+    fn call(call_id: &str) -> ToolCall {
+        ToolCall {
+            call_id: call_id.to_owned(),
+            fn_name: "dummy".to_owned(),
+            fn_arguments: serde_json::json!({}),
+            thought_signatures: None,
+        }
+    }
+
+    fn assistant(call_ids: &[&str]) -> ChatMessage {
+        ChatMessage::from(call_ids.iter().map(|id| call(id)).collect::<Vec<_>>())
+    }
+
+    fn result(call_id: &str) -> ChatMessage {
+        ChatMessage::from(ToolResponse::new(call_id.to_owned(), "{}".to_owned()))
+    }
+
+    fn bundle(call_ids: &[&str]) -> ChatMessage {
+        ChatMessage::from(
+            call_ids
+                .iter()
+                .map(|id| ToolResponse::new((*id).to_owned(), "{}".to_owned()))
+                .collect::<Vec<_>>(),
+        )
+    }
+
+    /// The call ids of every tool response in `messages`, in message order.
+    fn response_ids(messages: &[ChatMessage]) -> Vec<String> {
+        messages
+            .iter()
+            .flat_map(|m| m.content.tool_responses())
+            .map(|r| r.call_id.clone())
+            .collect()
+    }
+
+    #[test]
+    fn results_finishing_out_of_order_are_listed_in_call_order() {
+        // A hung command plus a read: the read finishes first, the cancelled command last.
+        let mut messages = vec![
+            ChatMessage::user("go"),
+            assistant(&["cmd", "read", "grep"]),
+            result("read"),
+            result("grep"),
+            result("cmd"),
+        ];
+        order_tool_responses_like_their_calls(&mut messages);
+        assert_eq!(response_ids(&messages), ["cmd", "read", "grep"]);
+        assert_eq!(messages.len(), 5, "no message is added or dropped");
+        assert_eq!(messages[0].role, ChatRole::User);
+        assert_eq!(messages[1].role, ChatRole::Assistant);
+        for m in &messages[2..] {
+            assert_eq!(m.role, ChatRole::Tool);
+            assert_eq!(
+                m.content.tool_responses().len(),
+                1,
+                "one response per message"
+            );
+        }
+    }
+
+    #[test]
+    fn bundled_results_keep_their_message_shape() {
+        let mut messages = vec![
+            assistant(&["a", "b", "c"]),
+            bundle(&["c", "a"]),
+            result("b"),
+        ];
+        order_tool_responses_like_their_calls(&mut messages);
+        assert_eq!(response_ids(&messages), ["a", "b", "c"]);
+        assert_eq!(messages[1].content.tool_responses().len(), 2);
+        assert_eq!(messages[2].content.tool_responses().len(), 1);
+    }
+
+    #[test]
+    fn results_already_in_call_order_are_left_alone() {
+        let mut messages = vec![assistant(&["a", "b"]), result("a"), result("b")];
+        order_tool_responses_like_their_calls(&mut messages);
+        assert_eq!(response_ids(&messages), ["a", "b"]);
+    }
+
+    #[test]
+    fn a_result_matching_no_call_keeps_its_place_after_the_matched_ones() {
+        let mut messages = vec![
+            assistant(&["a", "b"]),
+            result("zzz"),
+            result("b"),
+            result("a"),
+        ];
+        order_tool_responses_like_their_calls(&mut messages);
+        assert_eq!(response_ids(&messages), ["a", "b", "zzz"]);
+    }
+
+    #[test]
+    fn each_assistant_group_is_ordered_on_its_own() {
+        let mut messages = vec![
+            assistant(&["a", "b"]),
+            result("b"),
+            result("a"),
+            ChatMessage::user("next"),
+            assistant(&["c", "d"]),
+            result("d"),
+            result("c"),
+        ];
+        order_tool_responses_like_their_calls(&mut messages);
+        assert_eq!(response_ids(&messages), ["a", "b", "c", "d"]);
+        assert_eq!(messages[3].role, ChatRole::User);
+    }
+}
+
+/// #1821: the note about a suppressed request dump is a WARN, not an ERROR.
+#[cfg(test)]
+mod suppressed_request_dump_note_tests {
+    use super::*;
+
+    #[test]
+    fn the_suppressed_dump_note_is_a_warning_and_names_the_switch() {
+        let (level, note) = suppressed_request_dump_note(1234);
+        assert_eq!(
+            level,
+            log::Level::Warn,
+            "a note about a diagnostic is not an error"
+        );
+        assert!(
+            note.contains("full_request_json_on_error suppressed"),
+            "{note}"
+        );
+        assert!(note.contains("bytes~=1234"), "{note}");
+        assert!(note.contains(BYOP_DIAG_CONTENT_ENV), "{note}");
+    }
+
+    /// The call site must log the note at the level the function returns, not re-hard-code one.
+    #[test]
+    fn the_stream_error_path_logs_the_note_at_the_returned_level() {
+        let source = include_str!("chat_stream.rs");
+        assert!(
+            source.contains("log::log!(note_level, \"{note}\");"),
+            "the stream error path no longer logs suppressed_request_dump_note at its level"
+        );
+        assert!(
+            !source.contains(concat!(
+                "log::error!(\"[byop-diag] full_request_json_on_error",
+                " suppressed"
+            )),
+            "the suppressed-dump note is back at ERROR"
+        );
     }
 }

@@ -4796,3 +4796,144 @@ mod stop_while_preprocessing_2104 {
         });
     }
 }
+
+/// #1952: a stream that ended with tool calls queued and a resume scheduled keeps the calls and
+/// drops the resume; a resume alone is still scheduled, and no resume stays none.
+#[test]
+fn a_stream_end_never_arms_both_queued_calls_and_a_resume() {
+    use super::{ResumeAtStreamEnd, resume_at_stream_end};
+    assert_eq!(
+        resume_at_stream_end(
+            /*has_pending_resume*/ true, /*actions_were_queued*/ true
+        ),
+        ResumeAtStreamEnd::Drop
+    );
+    assert_eq!(
+        resume_at_stream_end(true, false),
+        ResumeAtStreamEnd::Schedule
+    );
+    assert_eq!(
+        resume_at_stream_end(false, true),
+        ResumeAtStreamEnd::NoResume
+    );
+    assert_eq!(
+        resume_at_stream_end(false, false),
+        ResumeAtStreamEnd::NoResume
+    );
+}
+
+/// #1949: a BYOP request blocked before it opens a stream (persistence expected but unavailable)
+/// ends its turn visibly: its local stream id is forgotten, so the conversation no longer reads
+/// as processing it, and `FinishedReceivingOutput` is announced so the view drains or unlocks
+/// the conversation's queued prompts.
+#[test]
+fn a_blocked_byop_request_ends_its_turn_with_a_stream_end() {
+    App::test((), |mut app| async move {
+        let (controller, conversation_id, request_input) =
+            byop_conversation_awaiting_tool_result(&mut app, true);
+
+        let finished = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let finished_sub = finished.clone();
+        app.update(|ctx| {
+            ctx.subscribe_to_model(&controller, move |_, event, _| {
+                if let BlocklistAIControllerEvent::FinishedReceivingOutput {
+                    stream_id,
+                    conversation_id,
+                } = event
+                {
+                    finished_sub
+                        .borrow_mut()
+                        .push((stream_id.clone(), *conversation_id));
+                }
+            });
+        });
+
+        let (sent_conversation_id, stream_id) = controller.update(&mut app, |controller, ctx| {
+            controller
+                .send_request_input(
+                    request_input,
+                    None,
+                    /*default_to_follow_up_on_success*/ false,
+                    RecoveryBudget::fresh(),
+                    /*is_queued_prompt*/ false,
+                    ctx,
+                )
+                .expect("a blocked request renders as an ended turn, not an error")
+        });
+        assert_eq!(sent_conversation_id, conversation_id);
+
+        let still_processing = BlocklistAIHistoryModel::handle(&app).read(&app, |history, _| {
+            history
+                .conversation(&conversation_id)
+                .expect("conversation should exist")
+                .is_processing_response_stream(&stream_id)
+        });
+        assert!(
+            !still_processing,
+            "the blocked request's local stream id must not stay in the conversation's map"
+        );
+        let finished = finished.borrow();
+        assert_eq!(
+            finished.len(),
+            1,
+            "exactly one turn end must be announced, got {finished:?}"
+        );
+        assert_eq!(finished[0].0, stream_id);
+        assert_eq!(finished[0].1, conversation_id);
+    });
+}
+
+/// #1947: a submit parked for its attachment read supersedes a request that opened during the
+/// read (a monitored command finishing resumes the conversation). The typed prompt is sent; it is
+/// not refused by the in-flight guard and dropped.
+#[test]
+fn a_parked_submit_supersedes_a_request_opened_during_its_read() {
+    App::test((), |mut app| async move {
+        let (controller, conversation_id, request_input) =
+            byop_conversation_awaiting_tool_result(&mut app, false);
+        // A landing read toasts only on a failed file; production registers this.
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+
+        controller.update(&mut app, |controller, ctx| {
+            controller
+                .send_request_input(
+                    request_input,
+                    None,
+                    /*default_to_follow_up_on_success*/ false,
+                    RecoveryBudget::fresh(),
+                    /*is_queued_prompt*/ false,
+                    ctx,
+                )
+                .expect("the request that opens during the read should be sent");
+            assert!(
+                controller.has_active_stream_for_conversation(conversation_id, ctx),
+                "precondition: a request is in flight when the read lands"
+            );
+            let seq = controller.park_query_send_for_test(
+                conversation_id,
+                TaskId::new("root-task".to_owned()),
+                "typed during the read",
+            );
+            controller.land_attachment_read_for_test(seq, ctx);
+            assert_eq!(controller.pending_query_send_count_for_test(), 0);
+        });
+
+        let prompt_sent = BlocklistAIHistoryModel::handle(&app).read(&app, |history, _| {
+            history
+                .conversation(&conversation_id)
+                .expect("conversation should exist")
+                .all_exchanges()
+                .iter()
+                .any(|exchange| {
+                    exchange
+                        .input
+                        .iter()
+                        .any(|input| input.user_query().as_deref() == Some("typed during the read"))
+                })
+        });
+        assert!(
+            prompt_sent,
+            "the parked prompt must reach the conversation, not be lost to the in-flight guard"
+        );
+    });
+}
