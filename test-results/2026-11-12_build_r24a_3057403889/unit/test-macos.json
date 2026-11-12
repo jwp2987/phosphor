@@ -1,0 +1,19 @@
+{
+ "summary_line": "Summary [1242.262s] 12138 tests run: 12138 passed (10 slow), 34 skipped",
+ "duration_s": 1242.262,
+ "run": 12138,
+ "passed": 12138,
+ "failed": 0,
+ "timed_out": 0,
+ "skipped": 34,
+ "slow": 10,
+ "flaky": 0,
+ "failures": [],
+ "regressions": [],
+ "notes": [
+  "tests: ok (0 known failure(s), no regressions)"
+ ],
+ "job": "test-macos",
+ "status": "success",
+ "duration": 1728.780872
+}
