@@ -418,3 +418,13 @@ def r15_keychain_startup_parts():
     k = W.Keychain("/nonexistent-home")
     if not shutil.which("security"):
         assert k.default() is None and k.search_list() == [] and k.view() == (None, ()), "no tool: nothing is claimed"
+
+
+@check
+def r2183_search_probe_waits_for_the_prompt():
+    """#2183: on Windows Git Bash the chord after the effect-line probe reached the pty (focus=Terminal, Input context inactive) because the probe
+    returned when the file had its line, before the prompt was back; the probe now waits for the app to see the prompt"""
+    assert W.prompt_returned("x\n[DEBUG] input_order hop=precmd_seen consumed=false seq_mode=true enters=1 precmds=0\n")
+    assert not W.prompt_returned("input_order hop=kh_pane_key seq=216 class=Control target=Terminal") and not W.prompt_returned("") and not W.prompt_returned(None)
+    src = inspect.getsource(W.search_closed_probe)
+    assert "prompt_returned(" in src and src.index("prompt_returned(") > src.index("ctx.lines(f)"), "the probe must wait for the prompt after the effect line"
