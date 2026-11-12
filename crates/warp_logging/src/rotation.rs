@@ -18,6 +18,24 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
+
+static ON_LOG_REOPENED: OnceLock<fn()> = OnceLock::new();
+
+/// Registers the function to run each time the active log file is replaced by a fresh empty one (in-session size rotation, #2173). The state a
+/// harness reads from the log (the `hop=view_mode` line) is logged on a change only, so a new file has no line until something repeats it.
+/// Returns false when a hook was already set. The hook runs on its own short-lived thread, never inside the logger's write path, so it may log.
+pub fn set_on_log_reopened(hook: fn()) -> bool {
+    ON_LOG_REOPENED.set(hook).is_ok()
+}
+
+fn notify_log_reopened() {
+    if let Some(hook) = ON_LOG_REOPENED.get().copied() {
+        let _ = std::thread::Builder::new()
+            .name("log-reopened".to_string())
+            .spawn(hook);
+    }
+}
 
 /// `Write` implementation that rotates its backing file once `max_bytes` of
 /// writes have accumulated. On rotation, the active path is renamed to
@@ -83,6 +101,7 @@ impl RotatingFileWriter {
                 .truncate(true)
                 .open(self.active_path())?;
             self.bytes_written = 0;
+            notify_log_reopened();
             return Ok(());
         }
 
@@ -110,6 +129,7 @@ impl RotatingFileWriter {
             .truncate(true)
             .open(self.active_path())?;
         self.bytes_written = 0;
+        notify_log_reopened();
         Ok(())
     }
 }

@@ -1164,9 +1164,51 @@ fn view_mode_detail(agent: bool, pane: EntityId) -> String {
     )
 }
 
-/// Logs the view mode once when a pane's controller is created and again on every enter/exit (only on change; free when debug logging is off).
+/// The view mode of every live pane, so the `hop=view_mode` lines can be written again into a log file that was just replaced (#2173).
+static PANE_VIEW_MODES: std::sync::Mutex<Vec<(EntityId, bool)>> = std::sync::Mutex::new(Vec::new());
+
+fn record_pane_view_mode(pane: EntityId, agent: bool) {
+    if let Ok(mut modes) = PANE_VIEW_MODES.lock() {
+        match modes.iter_mut().find(|(id, _)| *id == pane) {
+            Some(entry) => entry.1 = agent,
+            None => modes.push((pane, agent)),
+        }
+    }
+}
+
+fn forget_pane_view_mode(pane: EntityId) {
+    if let Ok(mut modes) = PANE_VIEW_MODES.lock() {
+        modes.retain(|(id, _)| *id != pane);
+    }
+}
+
+fn pane_view_modes() -> Vec<(EntityId, bool)> {
+    PANE_VIEW_MODES
+        .lock()
+        .map(|modes| modes.clone())
+        .unwrap_or_default()
+}
+
+/// Logs the view mode when a pane's controller is created and again on every enter/exit, and remembers it for [`relog_view_modes`]
+/// (free of logging cost when debug logging is off).
 fn log_view_mode(agent: bool, pane: EntityId) {
+    record_pane_view_mode(pane, agent);
     warpui::input_order::log_hop("view_mode", || view_mode_detail(agent, pane));
+}
+
+/// Writes `hop=view_mode` again for every live pane (#2173). The line is otherwise logged on a change only, so a log file that is replaced
+/// mid-session (in-session size rotation) or opened after the panes exist has no line and the real-app harness cannot know the mode.
+/// Registered with `warp_logging::set_on_log_reopened`; also run once at startup.
+pub fn relog_view_modes() {
+    for (pane, agent) in pane_view_modes() {
+        warpui::input_order::log_hop("view_mode", || view_mode_detail(agent, pane));
+    }
+}
+
+impl Drop for AgentViewController {
+    fn drop(&mut self) {
+        forget_pane_view_mode(self.terminal_view_id);
+    }
 }
 
 #[cfg(test)]
@@ -1179,5 +1221,20 @@ mod view_mode_log_tests {
         assert!(d.starts_with("mode=agent pane="), "{d}");
         let d = view_mode_detail(false, EntityId::new());
         assert!(d.starts_with("mode=terminal pane="), "{d}");
+    }
+
+    #[test]
+    fn every_live_pane_is_remembered_for_the_relog_and_a_change_replaces_its_entry() {
+        let (a, b) = (EntityId::new(), EntityId::new());
+        record_pane_view_mode(a, false);
+        record_pane_view_mode(b, true);
+        record_pane_view_mode(a, true);
+        let modes = pane_view_modes();
+        assert_eq!(modes.iter().filter(|(id, _)| *id == a).count(), 1);
+        assert!(modes.contains(&(a, true)) && modes.contains(&(b, true)));
+        forget_pane_view_mode(a);
+        forget_pane_view_mode(b);
+        let modes = pane_view_modes();
+        assert!(!modes.iter().any(|(id, _)| *id == a || *id == b));
     }
 }

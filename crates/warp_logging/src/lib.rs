@@ -59,6 +59,7 @@ mod imp;
 mod fatal_signal;
 
 mod rotation;
+pub use rotation::set_on_log_reopened;
 
 pub mod report_bundle;
 

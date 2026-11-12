@@ -120,9 +120,73 @@ def r23_modeguard_mode_proof_is_observed_and_recorded_not_recovered():
 
 
 @check
-def r23_modeguard_unreadable_mode_is_recorded_unknown_with_a_note():
+def r23_modeguard_unreadable_mode_is_a_fail_mode_unproven_not_a_pass():
+    """#2173: nothing could say (no log line, OCR gave None) -> ran_mode unknown AND the row fails; mode_proof (exempt) records it instead"""
     g, _ = _ensure(FakeApp("agent", log=False), "terminal")
-    assert g["ok"] and g["ran_mode"] == "unknown" and any("could not be established" in n for n in g["notes"]), g
+    assert not g["ok"] and g["ran_mode"] == "unknown" and g["fail"].startswith("mode unproven"), g
+    assert any("no OCR engine" in n for n in g["notes"]), g["notes"]
+    g, _ = _ensure(FakeApp("agent", log=False), "terminal", exempt=True)
+    assert g["ok"] and g["ran_mode"] == "unknown" and g["fail"] is None, g
+
+
+class OcrCtx(FakeCtx):
+    """a relaunched app: the new log has no view_mode line (mode_now finds nothing), the screen text is `text` (None = no engine)"""
+    def __init__(self, app, text):
+        super().__init__(app)
+        self.text = text
+
+    def mode_now(self, tag):
+        return None
+
+    def ocr(self, tag):
+        return self.text
+
+
+@check
+def r25_modeguard_silent_log_falls_back_to_the_ocr_of_ctx_ocr_with_the_shared_markers():
+    import modeguard
+    # the screen text the Mac backend's Vision read gives, through ctx.ocr(): agent header + ESC bar -> agent; terminal hint -> terminal
+    agent = "new agent conversation esc for terminal ci ollama / gpt-oss:20b"
+    term = "run commands, or ask the agent a question ctrl-shift-enter new /agent conversation"
+    assert modeguard.observe(OcrCtx(FakeApp("agent"), agent), "t")[0] == "agent"
+    m, note = modeguard.observe(OcrCtx(FakeApp("terminal"), term), "t")
+    assert m == "terminal" and "read from the screen" in note, (m, note)
+    # the slash-less read of the terminal hint (Windows OCR) is a terminal screen, never an agent one
+    assert modeguard.observe(OcrCtx(FakeApp("terminal"), "ctrl shift enter new agent conversation"), "t")[0] == "terminal"
+    # no engine, and text with no marker, are told apart in the note
+    m, note = modeguard.observe(OcrCtx(FakeApp("terminal"), None), "t")
+    assert m is None and "no OCR engine" in note, (m, note)
+    m, note = modeguard.observe(OcrCtx(FakeApp("terminal"), "hello world"), "t")
+    assert m is None and "no marker" in note, (m, note)
+
+
+@check
+def r25_modeguard_ensure_uses_the_screen_when_the_log_is_silent_and_fails_unproven_when_that_is_blank():
+    import modeguard
+    g = modeguard.ensure(OcrCtx(FakeApp("terminal"), "new terminal session"), "terminal", "c")
+    assert g["ok"] and g["ran_mode"] == "terminal", g
+    g = modeguard.ensure(OcrCtx(FakeApp("terminal"), "hello world"), "terminal", "c")
+    assert not g["ok"] and g["ran_mode"] == "unknown" and g["fail"].startswith("mode unproven") and "no marker" in g["fail"], g
+    g = modeguard.ensure(OcrCtx(FakeApp("terminal"), None), "agent", "c")
+    assert not g["ok"] and "mode unproven" in g["fail"] and "no OCR engine" in g["fail"], g
+
+
+@check
+def r25_ctx_ocr_is_the_one_ocr_path_and_modeguard_reads_through_it():
+    src = open(os.path.join(HERE, "modeguard.py"), encoding="utf-8").read()
+    assert "ctx.ocr(tag)" in src and "cases.ocr_agent_markers" in src
+    assert "subprocess" not in src and "tesseract" not in src.replace("tesseract elsewhere", "")
+
+
+@check
+def r25_the_app_logs_view_mode_for_every_pane_whenever_its_log_is_opened():
+    root = os.path.abspath(os.path.join(HERE, "..", "..", ".."))
+    ctrl = open(os.path.join(root, "app/src/ai/blocklist/agent_view/controller.rs"), encoding="utf-8").read()
+    assert "pub fn relog_view_modes" in ctrl and "impl Drop for AgentViewController" in ctrl
+    lib = open(os.path.join(root, "app/src/lib.rs"), encoding="utf-8").read()
+    assert "set_on_log_reopened(crate::ai::blocklist::agent_view::relog_view_modes)" in lib
+    rot = open(os.path.join(root, "crates/warp_logging/src/rotation.rs"), encoding="utf-8").read()
+    assert rot.count("notify_log_reopened();") == 2, "both rotate paths tell the app the file is fresh"
 
 
 @check
