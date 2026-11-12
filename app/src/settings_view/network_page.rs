@@ -12,8 +12,8 @@ use settings::Setting;
 use warpui::{
     AppContext, Entity, SingletonEntity, TypedActionView, View, ViewContext, ViewHandle,
     elements::{
-        Align, ConstrainedBox, Container, CrossAxisAlignment, Element, Flex, MainAxisAlignment,
-        MainAxisSize, MouseStateHandle, ParentElement, Text,
+        Align, Clipped, ConstrainedBox, Container, CrossAxisAlignment, Element, Flex,
+        MainAxisAlignment, MainAxisSize, MouseStateHandle, ParentElement, Text,
     },
     fonts::{Properties, Weight},
     ui_components::{
@@ -871,6 +871,13 @@ fn parse_host_port(raw: &str) -> Option<(String, u16)> {
     Some((host, port))
 }
 
+/// A settings editor bounded to its cell: the paint is clipped to the field, so a line longer
+/// than the field is not drawn over the label beside it (#2147). Not an ellipsis: the editor
+/// scrolls to follow the caret, so the whole value stays reachable by editing it.
+fn clipped_editor(editor: &ViewHandle<EditorView>) -> Box<dyn Element> {
+    Clipped::new(warpui::elements::ChildView::new(editor).finish()).finish()
+}
+
 /// Constructs a single-line EditorView, with an optional password mask.
 fn build_text_editor(
     ctx: &mut ViewContext<NetworkPageView>,
@@ -990,7 +997,7 @@ impl SettingsWidget for NetworkPageWidget {
                             save_action: NetworkPageAction,
                             clear_action: NetworkPageAction|
          -> Box<dyn Element> {
-            let editor_element = warpui::elements::ChildView::new(editor).finish();
+            let editor_element = clipped_editor(editor);
             // Note: don't put `margin` into the button's `UiComponentStyles`.
             // Inside `WrappableText::build()` (`Span::new(text, styles).build()`),
             // the same `styles.margin` gets applied to the label container too, causing the
@@ -1361,11 +1368,9 @@ fn render_gate_section(
                     .with_main_axis_size(MainAxisSize::Min)
                     .with_cross_axis_alignment(CrossAxisAlignment::Center)
                     .with_child(
-                        ConstrainedBox::new(
-                            warpui::elements::ChildView::new(&view.origin_editor).finish(),
-                        )
-                        .with_max_width(INPUT_AREA_MAX_WIDTH - 80.0)
-                        .finish(),
+                        ConstrainedBox::new(clipped_editor(&view.origin_editor))
+                            .with_max_width(INPUT_AREA_MAX_WIDTH - 80.0)
+                            .finish(),
                     )
                     .with_child(text_button(
                         crate::t!("settings-network-origins-add"),

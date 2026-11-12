@@ -68,14 +68,12 @@ impl DrawRetryState {
                     self.consecutive_reconfigure_failures > MAX_CONSECUTIVE_RECONFIGURE_FAILURES;
                 self.skip(counts, matches!(error, GetSurfaceTextureError::Lost))
             }
-            // Fatal for this renderer: rebuild it and count, as before.
+            // Fatal for this renderer: rebuild it and count, as before. The rebuilt renderer
+            // has drawn nothing yet, so also re-arm one redraw (with the usual backoff if it
+            // keeps failing); without it the frame that hit the loss stays undrawn until some
+            // other event arrives (#2101). The count toward the exit still bounds the retries.
             Error::SurfaceConfigureError { .. } | Error::DeviceLost | Error::Unknown(_) => {
-                self.consecutive_skips = 0;
-                FrameErrorDecision {
-                    counts_toward_exit: true,
-                    recreate_renderer: true,
-                    retry_after: None,
-                }
+                self.skip(true, true)
             }
             // Validation / configuration errors: counted, nothing to retry blindly.
             Error::SurfaceError(_) => {
