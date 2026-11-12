@@ -1011,6 +1011,13 @@ pub struct BlocklistAIController {
     /// arguments, unknown tool, intercepted tool), capped at
     /// [`MAX_SYNTHETIC_RESULT_RESUMES_PER_TURN`]; reset with the skill counter.
     synthetic_result_resumes_this_turn: HashMap<AIConversationId, u8>,
+    /// #2172: per conversation, the fingerprint of the request most recently sent
+    /// (`repeated_failure::request_fingerprint`), so a failure can be charged to the request
+    /// that failed.
+    request_fingerprints: HashMap<AIConversationId, u64>,
+    /// #2172: per conversation, the run of failures of one identical request with one error.
+    /// At `repeated_failure::MAX_IDENTICAL_FAILURES` the automatic resend is refused.
+    failure_streaks: HashMap<AIConversationId, super::repeated_failure::FailureStreak>,
     /// Passive suggestion results that should be included with the next request
     /// for a given conversation (e.g. accepted/iterated code diffs that weren't
     /// auto-resumed).
@@ -1653,6 +1660,8 @@ impl BlocklistAIController {
             window_too_small_notified: HashSet::new(),
             skill_resolution_resumes_this_turn: HashMap::new(),
             synthetic_result_resumes_this_turn: HashMap::new(),
+            request_fingerprints: HashMap::new(),
+            failure_streaks: HashMap::new(),
             pending_passive_suggestion_results: HashMap::new(),
             pending_byop_requests: HashMap::new(),
             pending_query_sends: Default::default(),
@@ -5291,6 +5300,31 @@ impl BlocklistAIController {
         let mut conversation_data = request_snapshot.conversation_data;
         let conversation_id = conversation_data.id;
 
+        // #2172: an automatic resend of a request the provider already failed the same way
+        // twice is refused; anything else (a user's message, a tool-result follow-up) is a
+        // different request and starts the count again.
+        let fingerprint = super::repeated_failure::request_fingerprint(
+            conversation_data
+                .tasks
+                .iter()
+                .flat_map(|task| task.messages.iter())
+                .map(|message| message.id.as_str()),
+        );
+        if query_metadata
+            .as_ref()
+            .is_some_and(|metadata| metadata.is_auto_resume_after_error)
+        {
+            if self.refuse_repeated_failure(conversation_id, Some(fingerprint), ctx) {
+                return Err(anyhow!(
+                    "not resending a request the provider failed the same way repeatedly"
+                ));
+            }
+        } else {
+            self.failure_streaks.remove(&conversation_id);
+        }
+        self.request_fingerprints
+            .insert(conversation_id, fingerprint);
+
         // Cancel any pending auto-resume for this conversation, since the user is sending a new
         // request.
         if let Some(handle) = self
@@ -6315,6 +6349,7 @@ impl BlocklistAIController {
                                     ) | None
                                 );
                                 if completed_successfully {
+                                    self.failure_streaks.remove(&conversation_id);
                                     if let Some(pending_title_generation) =
                                         response_stream.update(ctx, |response_stream, ctx| {
                                             response_stream.take_pending_title_generation(ctx)
@@ -6367,6 +6402,15 @@ impl BlocklistAIController {
                         }
                     }
                     Err(e) => {
+                        // #2172: charge the failure to the request that failed.
+                        if let Some(fingerprint) =
+                            self.request_fingerprints.get(&conversation_id).copied()
+                        {
+                            self.failure_streaks
+                                .entry(conversation_id)
+                                .or_default()
+                                .record(fingerprint, &e.to_string());
+                        }
                         if matches!(e.as_ref(), AIApiError::QuotaLimit) {
                             // Zap (Phase 3c A1): removed the
                             // `AIRequestUsageModel::enable_buy_credits_banner` call.
@@ -6726,6 +6770,10 @@ impl BlocklistAIController {
                         );
                         // The resume's countdown was showing; nothing is waiting any more.
                         self::response_stream::clear_retry_wait(conversation_id);
+                    } else if self.refuse_repeated_failure(conversation_id, None, ctx) {
+                        // #2172: the same request failed the same way twice; the turn ended
+                        // with the provider's message instead of a third identical send.
+                        self::response_stream::clear_retry_wait(conversation_id);
                     } else {
                         self.schedule_auto_resume_after_error(conversation_id, resume, ctx);
                     }
@@ -6784,6 +6832,47 @@ impl BlocklistAIController {
                 // metering sync RPCs, which have no effect after localization.
             }
         }
+    }
+
+    /// #2172: ends the turn when the request about to be resent already failed
+    /// `MAX_IDENTICAL_FAILURES` times in a row with the same error. `fingerprint` is the request
+    /// about to be sent; `None` means the request that just failed (a resume of it is what is
+    /// being scheduled). Returns whether the resend is refused. The turn is stopped with the
+    /// provider's message (the user's next message is a different request and goes out).
+    fn refuse_repeated_failure(
+        &mut self,
+        conversation_id: AIConversationId,
+        fingerprint: Option<u64>,
+        ctx: &mut ModelContext<Self>,
+    ) -> bool {
+        let Some(fingerprint) =
+            fingerprint.or_else(|| self.request_fingerprints.get(&conversation_id).copied())
+        else {
+            return false;
+        };
+        let Some(streak) = self.failure_streaks.get(&conversation_id) else {
+            return false;
+        };
+        let Some(error) = streak.refusal(fingerprint) else {
+            return false;
+        };
+        let reason = super::repeated_failure::refusal_reason(error, streak.count());
+        log::warn!("not resending conversation {conversation_id:?}: {reason}");
+        let history_model = BlocklistAIHistoryModel::handle(ctx);
+        let terminal_view_id = self.terminal_view_id;
+        history_model.update(ctx, |history_model, ctx| {
+            history_model.update_conversation_status(
+                terminal_view_id,
+                conversation_id,
+                ConversationStatus::Cancelled,
+                ctx,
+            );
+        });
+        ctx.emit(BlocklistAIControllerEvent::AgentStopped {
+            conversation_id,
+            reason,
+        });
+        true
     }
 
     /// `AfterStreamFinished` found no conversation or no exchanges for the stream (pruned or
