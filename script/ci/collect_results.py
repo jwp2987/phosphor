@@ -203,7 +203,7 @@ def tier_from_app_meta(app):
 
 def infer_tier(status_of):
     """Tier from which jobs ran, when neither --tier nor an app run says. status_of: {job name: status}. Round 15: a long x11 run no longer means
-    "candidate" (the fix tier plays x11 too, #2058); the integration suite does (candidate and release only, #1502)."""
+    "candidate" (a hand-run x11 job can still be collected; no tier plays it, owner 2026-11-12); the integration suite does (candidate and release only, #1502)."""
     ran = lambda n: status_of.get(n) not in (None, "manual", "created", "skipped", "waiting_for_resource", "pending")
     if any(ran(n) for n in RELEASE_JOBS):
         return "release"
@@ -767,7 +767,7 @@ def self_test():
     rows.append(("## usage-test-linux failures" in md and "`usage-gui ssh_login` FAIL" in md and "## usage-test-linux skipped scenarios (1; not coverage)" in md
                  and "`tui usage_tui_open`: needs --include-byop" in md and "## lab-helper (failed)" in md and "zig is missing" in md, "the README shows the failure, the skip with its reason, and a red lab-helper's own words"))
     units = {"test-linux": "success", "test-warpui-core": "success", "test-workspace-rest": "failed"}
-    rows.append((infer_tier(dict(units, **{"app-test-linux-x11": "success"})) == "fix", "all three unit suites and a long x11 run is still the fix tier (#2058: the fix tier plays x11)"))
+    rows.append((infer_tier(dict(units, **{"app-test-linux-x11": "success"})) == "fix", "all three unit suites and a long x11 run (hand-run) is still the fix tier (no tier plays x11, owner 2026-11-12)"))
     rows.append((infer_tier(dict(units, **{"integration-linux: [2]": "failed"})) == "candidate" and infer_tier(dict(units, **{"integration-linux: [1]": "manual"})) == "fix", "the integration suite having run is what marks a candidate run"))
     rows.append((infer_tier(dict(units, **{"fuzz-smoke-macos": "success"})) == "release" and infer_tier({}) == "fix", "a release-only suite marks a release run; nothing ran = fix"))
     rows.append((infer_tier({"mutants-macos": "success", "bench": "failed"}) == "repo-validation" and infer_tier(dict(units, **{"mutants": "success"})) == "fix"

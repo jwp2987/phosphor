@@ -1309,7 +1309,7 @@ usage-test-macos:
 
 # APPCI_TIER (play-time variable from ci_seq.py): smoke = the fix-tier list (appci/cases.py SMOKE + PROVING, ONE list for Linux, macOS and Windows; a case a
 # platform / Windows pane shell cannot run is reported as a SKIP with its reason); full or empty = every case, as before. On Linux the smoke tier is the
-# Wayland job (without its xwayland pass) and, since round 15 (#2058), the X11 job below in both session modes, played after it by ci_seq.py.
+# Wayland job (without its xwayland pass) (the X11 job below is not played by ci_seq.py in any tier, owner 2026-11-12).
 # Headless sway on the box GPU (Intel UHD 630, /dev/dri/renderD128; pixman fallback), native Wayland client; then the
 # same build once more under XWayland for X11 parity (reduced case set).
 app-test-linux-wayland:
@@ -1334,9 +1334,7 @@ app-test-linux-wayland:
     - script/realapp/teardown.sh "$CI_PROJECT_DIR/appci-out/wayland" "$CI_PROJECT_DIR/appci-out/xwayland"
     - python3 script/ci/appci_artifacts.py --fallback --root appci-out   # #2123: the net; the job script already made run_slim (#1516 scrub, r18u8 slim)
 
-# Private Xvfb (software GL), xdotool: the original X11 path. Round 15 (#2058): played in EVERY tier, the fix tier included (it used to leave with exit 77
-# when APPCI_TIER=smoke, and no X11 run existed after r18u28). Both session modes: wayland_session.sh's default, and ci_seq.py also passes
-# APPCI_MODES=terminal,agent. ci_seq.py plays it after the Wayland job has ended (one app test at a time on the box, in a fixed order).
+# Private Xvfb (software GL), xdotool: the original X11 path. Not in any tier, owner 2026-11-12; run by hand only. (Linux app coverage is Wayland plus the lab.)
 app-test-linux-x11:
   extends: .appci_linux
   needs:

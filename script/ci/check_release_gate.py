@@ -33,7 +33,6 @@ BASE_JOBS = ["guards", "check-linux", "licenses", "advisories"]
 # app job -> results.json paths that must all be green (the Linux Wayland job also runs an XWayland pass).
 APP_RESULT_PATHS = {
     "app-test-linux-wayland": ["appci-out/wayland/run/results.json", "appci-out/xwayland/run/results.json"],
-    "app-test-linux-x11": ["appci-out/x11/run/results.json"],
     "app-test-macos": ["appci-out/macos/run/results.json"],
     "app-test-windows": ["appci-out/windows/run/results.json"],
 }
