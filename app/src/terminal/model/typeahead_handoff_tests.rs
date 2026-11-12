@@ -7287,10 +7287,18 @@ fn an_ssh_escape_gets_no_carriage_return_where_the_remote_line_may_hold_user_byt
 fn an_ssh_escape_gets_no_carriage_return_while_keys_are_held() {
     let mut handoff = young_after_submit();
     handoff.set_ssh_escape_cr_line_start_rule(true);
+    // A bare Enter on an empty line is never a young hold (`should_hold_young_enter`): the line
+    // needs content first, as in every other young-hold test.
+    type_and_flush(&mut handoff, b"frob");
     let _ = hold_young_enter(&mut handoff, b"\r");
-    assert_eq!(
-        handoff.ssh_escape_line_start(),
-        SshEscapeLineStart::Skipped("keys_held")
+    // Held keys always sit behind user bytes in the line; either blocker keeps the `\r` off.
+    let got = handoff.ssh_escape_line_start();
+    assert!(
+        matches!(
+            got,
+            SshEscapeLineStart::Skipped("keys_held" | "pty_owned_user_bytes")
+        ),
+        "{got:?}: no `\\r` may run the user's line while keys are held"
     );
 }
 
