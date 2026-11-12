@@ -5208,6 +5208,12 @@ impl TerminalView {
                 model.model_inbox(),
             )
         };
+        // #2182: the pane's queue publishes whether it holds user keys, so the pty controller
+        // writes the app's own in-band command only when no key is held behind it. The keys are
+        // never moved.
+        paste_queue
+            .queue
+            .set_keys_held_sink(Some(handoff.read().view_keys_cell()));
         // #1424: every stamp of this pane reads the gen the two published cells agree on.
         paste_queue
             .queue

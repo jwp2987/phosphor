@@ -30,6 +30,8 @@ use std::collections::VecDeque;
 use std::ops::{Deref, DerefMut};
 use std::rc::Rc;
 
+use crate::terminal::model::typeahead_handoff::ViewKeysHeld;
+
 use super::{
     EntryId, EntryKind, GateKind, GateSpec, GateToken, InputQueue, Origin, PaneRouteState,
     QueueFacts, Stamp,
@@ -201,6 +203,8 @@ struct Inner {
     defer_waker: RefCell<Option<async_channel::Sender<()>>>,
     /// The view is applying the deferred operations (no nested flush).
     flushing_deferred: Cell<bool>,
+    /// #2182: where "the view holds user keys" is published (the hand-off's cell), if wired.
+    keys_held: RefCell<Option<ViewKeysHeld>>,
 }
 
 /// A cheap, clonable handle on the pane's queue (clones share the queue).
@@ -227,6 +231,7 @@ impl PaneQueue {
                 deferred: RefCell::new(VecDeque::new()),
                 defer_waker: RefCell::new(None),
                 flushing_deferred: Cell::new(false),
+                keys_held: RefCell::new(None),
             }),
         }
     }
@@ -234,6 +239,25 @@ impl PaneQueue {
     /// Whether `other` is the same queue (two handles of one pane).
     pub fn ptr_eq(&self, other: &PaneQueue) -> bool {
         Rc::ptr_eq(&self.inner, &other.inner)
+    }
+
+    /// #2182: where this queue publishes whether it holds user keys (entries queued, or an
+    /// operation waiting for the queue), every time an operation on it ends. The keys stay in the
+    /// queue; the cell only tells the pty controller to wait with the app's own in-band command.
+    pub fn set_keys_held_sink(&self, sink: Option<ViewKeysHeld>) {
+        *self.inner.keys_held.borrow_mut() = sink;
+    }
+
+    /// Publishes the held fact when no operation holds the queue (a guard publishes its own on
+    /// drop); a no-op while one does.
+    fn refresh_keys_held(&self) {
+        let Some(sink) = self.inner.keys_held.borrow().clone() else {
+            return;
+        };
+        let Ok(queue) = self.inner.queue.try_borrow() else {
+            return;
+        };
+        sink.publish(queue.queued_len() > 0 || !self.inner.deferred.borrow().is_empty());
     }
 
     /// The view holds (or stops holding) the keys typed during an ssh connect.
@@ -278,6 +302,10 @@ impl PaneQueue {
     /// available (it never touches the queue itself), so a busy branch can call it.
     pub fn defer(&self, op: Deferred) {
         self.inner.deferred.borrow_mut().push_back(op);
+        // #2182: an operation waits for the queue: keys may be behind it.
+        if let Some(sink) = self.inner.keys_held.borrow().as_ref() {
+            sink.publish(true);
+        }
         self.poke_defer_waker();
     }
 
@@ -305,12 +333,17 @@ impl PaneQueue {
 
     /// The oldest deferred operation.
     pub fn pop_deferred(&self) -> Option<Deferred> {
-        self.inner.deferred.borrow_mut().pop_front()
+        let op = self.inner.deferred.borrow_mut().pop_front();
+        self.refresh_keys_held();
+        op
     }
 
     /// Puts an operation back at the FRONT (it could not run yet; order is kept).
     pub fn unpop_deferred(&self, op: Deferred) {
         self.inner.deferred.borrow_mut().push_front(op);
+        if let Some(sink) = self.inner.keys_held.borrow().as_ref() {
+            sink.publish(true);
+        }
     }
 
     /// Claims the right to apply the deferred operations; false if that is already going on.
@@ -365,6 +398,8 @@ impl PaneQueue {
             guard,
             draining: &self.inner.draining,
             route_state: &self.inner.route_state,
+            keys_held: &self.inner.keys_held,
+            deferred: &self.inner.deferred,
         })
     }
 
@@ -411,6 +446,8 @@ pub struct QueueGuard<'a> {
     guard: RefMut<'a, InputQueue>,
     draining: &'a Cell<bool>,
     route_state: &'a PaneRouteState,
+    keys_held: &'a RefCell<Option<ViewKeysHeld>>,
+    deferred: &'a RefCell<VecDeque<Deferred>>,
 }
 
 impl Deref for QueueGuard<'_> {
@@ -432,6 +469,10 @@ impl Drop for QueueGuard<'_> {
         // The epoch only changes under a guard; mirror it so a stamp taken while the queue is busy
         // (the editor's deferred offers) carries the current one.
         self.route_state.note_epoch(self.guard.focus_epoch());
+        // #2182: whether the view holds user keys now, for the pty controller's in-band wait.
+        if let Some(sink) = self.keys_held.borrow().as_ref() {
+            sink.publish(self.guard.queued_len() > 0 || !self.deferred.borrow().is_empty());
+        }
         self.draining.set(false);
     }
 }
