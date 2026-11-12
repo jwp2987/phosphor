@@ -475,6 +475,11 @@ pub struct PtyController<T: EventLoopSender> {
     /// Typeahead hand-off: the last request decision had to wait. Queued writes stay queued while
     /// the shell's line may hold user bytes, which a queued command's kill prefix would destroy.
     handoff_request_waiting: bool,
+    /// #2187: the last request decision was parked because the shell's line editor was not yet
+    /// proven to be reading while keys typed at this prompt sit in the shell's line (the keys went
+    /// to the pty before the prompt was seen, e.g. right after a Ctrl-C). The shell's ready signal
+    /// decides again ([`Self::activate_line_editor_on_ready_signal`]).
+    handoff_parked_for_proof: bool,
     /// Typeahead hand-off: a command the hand-off does not own is queued behind the user's
     /// unreported line (`hold_command_behind_unreported_user_line`). At most one is held.
     handoff_held_command_pending: bool,
@@ -877,6 +882,7 @@ impl<T: EventLoopSender> PtyController<T> {
             pty_writes,
             model_inbox,
             handoff_request_waiting: false,
+            handoff_parked_for_proof: false,
             handoff_held_command_pending: false,
             in_band_cancels: Default::default(),
             in_band_wait_armed: false,
@@ -914,19 +920,38 @@ impl<T: EventLoopSender> PtyController<T> {
         // without the signal (a shell still recovering from a ^C, a nested shell, a PS2) proves
         // nothing: a shell not reading echoes the request as `^[i`. Without the proof the
         // hand-off decides as for a shell with no request binding, and the keys go as typed.
+        self.handoff_parked_for_proof = false;
         let editor_proven = self.line_editor_status.as_ref(ctx).is_proven_reading();
         if !editor_proven {
             warpui::input_order::log_hop("handoff_request_skipped", || {
                 "reason=line_editor_not_proven".to_owned()
             });
         }
-        let input_reporting_seq = self
+        let reporting_binding = self
             .model_event_dispatcher
             .as_ref(ctx)
             .active_session_id()
             .and_then(|id| self.sessions.as_ref(ctx).get(id))
-            .and_then(|session| session.shell().input_reporting_sequence())
-            .filter(|_| editor_proven);
+            .and_then(|session| session.shell().input_reporting_sequence());
+        let has_reporting_binding = reporting_binding.is_some();
+        let input_reporting_seq = reporting_binding.filter(|_| editor_proven);
+        // #2187: keys typed after a Ctrl-C, before the app saw the prompt, are in the shell's
+        // line. Handing input to the editor now (nothing can be requested yet) strands them: the
+        // editor's command write kills the line, and the first letters of the next command are
+        // lost. The shell can report its line, so the decision waits for its ready signal (an
+        // event, no timer) and the keys stay in the pty, in typed order, meanwhile.
+        if !editor_proven
+            && has_reporting_binding
+            && self.handoff.read().typed_line_awaits_proven_editor()
+        {
+            warpui::input_order::log_hop("handoff_decision_parked", || {
+                "reason=typed_line_awaits_proof".to_owned()
+            });
+            self.handoff_parked_for_proof = true;
+            self.handoff_request_waiting = true;
+            self.execute_next_queued_write(ctx);
+            return;
+        }
         // The one model read is the exact "at a prompt" fact (the decision depends on it, so it is
         // not a published copy); the hand-off is mutated through its own handle, after the model's
         // lock is released, so the decision never holds the model while it takes the hand-off.
@@ -1091,6 +1116,15 @@ impl<T: EventLoopSender> PtyController<T> {
     ) {
         let was_active = self.line_editor_status.as_ref(ctx).is_line_editor_active();
         self.activate_line_editor_on_ready_signal_inner(released_queued_hold, ctx);
+        // #2187: a decision parked for want of this proof (keys typed ahead sit in the shell's
+        // line) is made now that the shell has signalled that its line editor reads.
+        if self.handoff_parked_for_proof
+            && FeatureFlag::TypeaheadHandoff.is_enabled()
+            && self.line_editor_status.as_ref(ctx).is_proven_reading()
+        {
+            warpui::input_order::log_hop("handoff_parked_decision_retry", String::new);
+            self.retry_typeahead_handoff_request(ctx);
+        }
         // A Ctrl-C at a prompt on a non-seq session left the line editor active (no Precmd, so no
         // `Active` event): its ready signal, restarting the line, is the event that hands input
         // back -- the decision runs now, instead of the old 250 ms settle timer committing on a

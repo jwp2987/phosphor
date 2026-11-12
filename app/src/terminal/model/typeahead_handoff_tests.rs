@@ -204,6 +204,23 @@ fn shell_without_input_reporting_commits_instead_of_requesting() {
     assert_eq!(handoff.state(), &HandoffState::EditorOwned);
 }
 
+/// #2187: keys in the shell's line wait for a proven line editor; an empty line, or input the
+/// editor owns, do not.
+#[test]
+fn a_typed_line_awaits_a_proven_editor_only_while_it_sits_in_the_shells_line() {
+    let mut handoff = after_submit();
+    assert!(!handoff.typed_line_awaits_proven_editor(), "nothing typed");
+    type_and_flush(&mut handoff, b"x");
+    handoff.on_precmd();
+    assert!(handoff.typed_line_awaits_proven_editor());
+    // Once the editor owns input the line is not in the shell.
+    assert_eq!(
+        handoff.on_line_editor_active(true, false),
+        ActiveDecision::Committed
+    );
+    assert!(!handoff.typed_line_awaits_proven_editor());
+}
+
 #[test]
 fn the_request_is_the_atomic_switch_to_the_editor() {
     let mut handoff = awaiting_report();

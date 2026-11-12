@@ -3720,6 +3720,26 @@ impl TypeaheadHandoff {
         }
     }
 
+    /// #2187: whether keys the user typed sit in the shell's line (written to the pty, no Enter
+    /// among them or after them) while nothing else is queued or reading ahead of the line editor.
+    /// A request decision for a line editor not yet proven to be reading cannot collect them, and
+    /// committing input to the editor then would strand them; the caller parks the decision for
+    /// the shell's ready signal instead.
+    pub fn typed_line_awaits_proven_editor(&self) -> bool {
+        matches!(
+            self.state,
+            HandoffState::PtyOwned {
+                wrote_user_bytes: true,
+                enters_written,
+                precmds_seen,
+            } if precmds_seen >= enters_written
+        ) && !self.young_hold_queued
+            && !self.prompt_hold_queued
+            && self.young_hold_follow_pending.is_none()
+            && !self.prompt_reader_asks
+            && !self.committed_delivery
+    }
+
     /// The shell's line editor became active. This is the one place a request is decided, on
     /// the main thread and under the model lock, so it is serialized with every routing
     /// decision. `at_prompt` is whether the lifecycle phase is still at the prompt;
