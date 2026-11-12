@@ -142,6 +142,18 @@ pub(super) fn chip_max_width(room: ChipRoom) -> Option<f32> {
     (room.cell_width_px > 0. && width >= CHIP_MIN_CELLS * room.cell_width_px).then_some(width)
 }
 
+/// The cell width the chip is sized in: the editor font's `m` width, or, when that font reports
+/// none (zero or not a number: a font whose `m` has no outline box, or the test platform, which
+/// has no font metrics at all), the terminal grid's cell width. Without the fallback such a font
+/// would silently turn the chip off for good (#2138).
+pub(super) fn chip_cell_width(editor_em_width_px: f32, grid_cell_width_px: f32) -> f32 {
+    if editor_em_width_px.is_finite() && editor_em_width_px > 0. {
+        editor_em_width_px
+    } else {
+        grid_cell_width_px
+    }
+}
+
 /// Whether a chip of this width also shows the accept keystroke.
 pub(super) fn chip_shows_keystroke(width_px: f32, cell_width_px: f32) -> bool {
     width_px >= CHIP_KEYSTROKE_MIN_CELLS * cell_width_px

@@ -176,3 +176,11 @@ fn used_columns_are_prefix_buffer_and_ghost_text() {
     assert_eq!(used_cols(0, "one\ntwo", Some("ghost")), 3);
     assert_eq!(used_cols(usize::MAX, "x", None), usize::MAX);
 }
+
+#[test]
+fn a_font_with_no_usable_m_width_sizes_the_chip_in_the_grid_cell() {
+    assert_eq!(chip_cell_width(8., 7.), 8.);
+    assert_eq!(chip_cell_width(0., 7.), 7.);
+    assert_eq!(chip_cell_width(f32::NAN, 7.), 7.);
+    assert_eq!(chip_cell_width(-1., 7.), 7.);
+}

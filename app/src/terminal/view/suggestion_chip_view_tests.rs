@@ -17,12 +17,14 @@ struct Frame {
     editor: RectF,
     /// The prompt-suggestion chip, when one was drawn.
     chip: Option<RectF>,
+    /// Why the input sized the chip as it did (for failure messages).
+    why: String,
 }
 
 /// Builds one frame of the window from scratch (every view rendered again, a new presenter, so
 /// no rectangle is left over from an earlier frame).
 fn frame(app: &mut App, window_id: WindowId, terminal: &ViewHandle<TerminalView>) -> Frame {
-    let (size_info, block_list_id, input_id, editor_id, chip_id) =
+    let (size_info, block_list_id, input_id, editor_id, chip_id, why) =
         terminal.read(app, |view, ctx| {
             let input = view.input().as_ref(ctx);
             (
@@ -31,6 +33,7 @@ fn frame(app: &mut App, window_id: WindowId, terminal: &ViewHandle<TerminalView>
                 input.save_position_id(),
                 input.editor_save_position_id(),
                 input.suggestion_chip_save_position_id(),
+                input.suggestion_chip_explanation(ctx),
             )
         });
     app.update(move |ctx| {
@@ -58,6 +61,7 @@ fn frame(app: &mut App, window_id: WindowId, terminal: &ViewHandle<TerminalView>
                 .get_position(&editor_id)
                 .expect("the editor row was laid out"),
             chip: positions.get_position(&chip_id),
+            why,
         }
     })
 }
@@ -78,7 +82,8 @@ fn assert_chip_is_inside_the_editor_row(frame: &Frame, pane_width_px: f32, when:
     let chip = frame.chip.unwrap_or_else(|| {
         panic!(
             "{when}: no chip was drawn for the suggestion (pane width {pane_width_px} px: with an \
-             empty buffer the chip gets half the editor's width and needs 16 cells)"
+             empty buffer the chip gets half the editor's width and needs 16 cells): {}",
+            frame.why
         )
     });
     assert!(
