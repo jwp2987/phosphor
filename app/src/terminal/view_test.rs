@@ -33732,7 +33732,10 @@ fn table_mode_a_ceiling_after_the_keys_were_delivered_is_not_a_give_up() {
                     Instant::now() - SSH_CONNECT_NO_PROBE_GIVE_UP - Duration::from_secs(1);
             }
             view.ssh_give_up_fired(ctx);
-            assert_eq!(view.ssh_give_ups, 0, "nothing was held: no give-up to report");
+            assert_eq!(
+                view.ssh_give_ups, 0,
+                "nothing was held: no give-up to report"
+            );
         });
     });
 }
