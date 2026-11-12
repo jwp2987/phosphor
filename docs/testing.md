@@ -8122,3 +8122,10 @@ verdicts, and `late_build_outcome` against a fake status sequence (pending, pend
   `r22_chips_read_by_find_token_and_the_chip_value_line`.
 ### Lab zsh recorder (#2162)
 The zsh rc the lab and the scratch homes source (`profile.py` `ZSHRC`) logs each executed line from `preexec` itself (`__pa_pxh`, `$1`), so a session whose precmd/history path misses a line still records it; the history lookup in `__pa_rec` stays only as a guard (`__pa_pre` stops a double C line). `__pa_pxdef` (precmd) puts `__pa_pxh` back into `preexec_functions` when the app's bootstrap rebuilt the array, and names the loss in `hook.log` in the ctl dir. Selftest `zsh_recorder_logs_from_preexec_and_survives_a_dropped_hook_2162` runs a real interactive zsh (skipped only without a zsh binary): each typed line once, also after the hook was dropped. When a lab case's check on what the remote shell RECEIVED fails with nothing recorded (`lab_ctrl_c_no_esc_i`, `lab_nohelper_tab_hands_back`, `lab_enter_start`), `cases_lab.recorder_evidence` adds notes with the lab user's rec.log / prompt.log / hook.log tails and, in a zsh pane, `print -l $preexec_functions`: no `__pa_pxh` in it is APP evidence (the bootstrap dropped the user's preexec hook), present with an empty rec.log is a TEST (recorder) finding. The failing check stays failing; no case is accepted on the effect file alone.
+
+## Round 23: #2125, the typed-ahead Enter of a managed Windows ssh session
+
+- New Rust unit test `ssh_single_typeahead_enter_is_cr_like_a_plain_session` (`app/src/terminal/view_test.rs`): the keys the one-connection LocalCommand reads
+  back (`ssh_single_decode_typeahead`) turn a lone LF into CR (the console's `icrnl` ran before the LocalCommand's raw read), keep CR LF, escape sequences and
+  non-hex input as before. Not run on the laptop; no harness or case changed. The Windows run is the proof: the typed-ahead Enter of
+  `ssh_gitbash_managed` should show CR, as a plain session does.

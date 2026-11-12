@@ -42043,7 +42043,9 @@ fn ssh_single_sync_token(nonce: &str) -> Vec<u8> {
 /// console in front of the token. Hex that does not decode cannot be turned back into the keys
 /// (the LocalCommand consumed them); that is logged and nothing is returned.
 fn ssh_single_decode_typeahead(typeahead: &str) -> Vec<u8> {
-    hex::decode(typeahead).unwrap_or_else(|_| {
+    hex::decode(typeahead)
+        .map(ssh_single_console_enter_as_cr)
+        .unwrap_or_else(|_| {
         log::error!(
             "ssh wrapper sync: a stage's typeahead is not hex ({} chars); the keys it stood for \
              cannot be written back",
@@ -42051,6 +42053,24 @@ fn ssh_single_decode_typeahead(typeahead: &str) -> Vec<u8> {
         );
         Vec::new()
     })
+}
+
+/// #2125: the keys the LocalCommand read back were typed while ssh's login ran, with the msys
+/// console in its cooked mode (`icrnl`): the line discipline had already turned the Enter key's
+/// CR into LF before the LocalCommand's raw read saw it. A plain session never sees that: ssh
+/// forwards the CR the key sent. A lone LF in those bytes is therefore the Enter key; it goes
+/// back to CR so the managed session sends the remote exactly what the plain one does. A CR
+/// LF pair stays as it is (one Enter, as the hold splits it), and a Ctrl-J typed on purpose
+/// cannot be told from an Enter once the console has translated it (a cooked tty treats the
+/// two alike).
+fn ssh_single_console_enter_as_cr(bytes: Vec<u8>) -> Vec<u8> {
+    let mut out = bytes;
+    for i in 0..out.len() {
+        if out[i] == b'\n' && (i == 0 || out[i - 1] != b'\r') {
+            out[i] = b'\r';
+        }
+    }
+    out
 }
 
 /// #1641: a `PreInteractiveSSHSession` seen for a block, remembered so a connect window that arms
