@@ -36,7 +36,7 @@ at all.
 Block grouping depends on **shell integration** (Phosphor's shell hooks, which
 tell it where a prompt begins and a command ends). Phosphor installs these into
 your shell automatically for local sessions. Over SSH, the same integration is
-injected by the tmux wrapper — see **Settings → Phosphorize**. When integration
+set up by the managed session that Phosphor's `ssh` wrapper starts — see **Settings → Phosphorize**. When integration
 is not present, output cannot be split into blocks reliably and the terminal
 behaves closer to a conventional emulator.
 
@@ -965,9 +965,6 @@ are coming from Warp, these terminal features are gone on purpose. See
 | **Telemetry** | The channel is physically removed; the toggle never renders. |
 | **The "Oz updates" zero-state feed and Warp-branded feature-intro popovers** | Branded content this fork does not carry. |
 
-One thing that *is* still here despite looking cloudy: the SSH tmux wrapper,
-which Phosphor keeps permanently even though upstream deprecated it.
-
 Crash reporting is the case people get wrong in both directions, so be precise
 about it. Nothing is uploaded — but the toggle is also not doing what it looks
 like it is doing:
@@ -1259,7 +1256,7 @@ DECLINED.md:118-123      voice input: capture works, transcription is cloud and 
 DECLINED.md:206          screen recording declined (#367)
 DECLINED.md:208          warp.dev/drive link resolution kept as dead code
 DECLINED.md:211          "Oz updates" zero-state section declined
-DECLINED.md:218          SSH tmux wrapper deliberately kept
+DECLINED.md:312          SSH tmux phosphorization option removed 2026-11-08
 SCOPE-TERMINAL.md:163    share_block_modal_tests.rs verdict C (cloud: uploads a block to Warp cloud)
 app/src/settings_view/settings_page.rs:104-110  removed settings pages (cloud API keys, Shared Blocks, Referrals,
                                                 Cloud Environments)

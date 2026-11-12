@@ -1095,6 +1095,6 @@ Inertness claims:
   DECLINED.md "The master AI switch scopes Zap's own AI, not third-party CLI agents" row (:168)
   DECLINED.md "BYOP last-used-model carry-over (byop_last_used_model_id)" row (:160)
   DECLINED.md "Codebase index 'Index Codebase?' speedbump banner" row
-  DECLINED.md "SSH tmux wrapper — kept, deprecation not ported" row
+  DECLINED.md "SSH tmux wrapper option — REMOVED 2026-11-08" row
   DECLINED.md "Three gated-but-not-default feature flags" row (WindowsHighPerformanceGpuDefault reachable only via UNSTABLE_FEATURES)
 -->

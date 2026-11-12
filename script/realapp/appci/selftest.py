@@ -9253,6 +9253,8 @@ import selftest_r22_labcases  # noqa: E402  (round 22, #2160 #2163 #2164 #2165: 
 CHECKS.extend(selftest_r22_labcases.CHECKS)
 import selftest_r25_harness_a  # noqa: E402  (round 25 harness A: #2146 leaked tabs, #2118 mptr cursor sprite, #2170 nested POSIX probe order, lab append lines for nu/fish; own file)
 CHECKS.extend(selftest_r25_harness_a.CHECKS)
+import selftest_r25_manual  # noqa: E402  (#2178: no docs/manual page names a removed setting, starting with warpify.ssh.use_ssh_tmux_wrapper; own file)
+CHECKS.extend(selftest_r25_manual.CHECKS)
 
 
 def missing_required(required, passed):

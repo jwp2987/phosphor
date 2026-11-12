@@ -88,8 +88,9 @@ The built-in patterns (`app/src/terminal/warpify/settings.rs`) are:
 - `flox activate`
 - on Windows only, `wsl` / `wsl.exe` when it is opening an interactive shell
 
-`ssh`-like commands are also treated as subshell-compatible **when the tmux
-wrapper is off** — see the SSH section.
+`ssh`-like commands (`ssh`, `gcloud compute ssh`, `eb ssh`, `doctl compute ssh`)
+also match the subshell detector. A typed `ssh` is normally taken by the ssh
+wrapper first, which gives you a managed session — see the SSH section.
 
 **Adding your own.** Settings → Phosphorize → Subshells → *Added commands*
 accepts a regex per line, stored at
@@ -115,20 +116,28 @@ and this for fish:
 echo -e '\n# Auto-Warpify\nstatus --is-interactive; and printf '\''\eP$f{"hook": "SourcedRcFileForWarp", "value": { "shell": "fish", "uname": "'$(uname)'" }}\x9c'\'' ' >> ~/.config/fish/config.fish
 ```
 
-The hook payload accepts an optional `"tmux": false` field, which tells Phosphor
-not to try the tmux route for that session. Phosphor emits that variant for you
-when the session it is describing had tmux disabled.
+The hook payload still accepts an optional `"tmux": false` field, and Phosphor
+still echoes it in the snippet it prints for a session that carried it. It is a
+leftover of the removed tmux option and selects nothing: there is no tmux route
+for it to turn off.
 
 There is no Auto-Warpify snippet for PowerShell — `get_subshell_bootstrap_success_block_path`
 returns nothing for `ShellType::PowerShell`, so the success block is empty there.
 
 ### SSH
 
-There are three different mechanisms, and which one you get depends on settings
-that are read **when the session's PTY is created**. This is the single most
-common source of confusion.
+Two things shape an SSH session: the **managed session** that the `ssh` wrapper
+starts, and the optional **helper** on the remote host. Both are read when the
+session's PTY is created, which is the single most common source of confusion:
+changing a setting does not touch a tab that is already open.
 
-#### 1. The SSH extension (remote server)
+There used to be a third, opt-in route that drove tmux on the remote host. It
+was removed because the no-helper managed session is the primary path; a leftover
+key for it in `settings.toml` is an unknown key and is ignored. tmux itself is
+unaffected: if you run tmux yourself, Phosphor still understands its control
+mode.
+
+#### 1. The SSH extension (the Phosphor helper)
 
 Phosphor's own small daemon, installed on the remote host, giving the fullest
 experience (including agent file tools on the remote). Behaviour when the host
@@ -157,19 +166,43 @@ entirely for a host that has it.
 This is entirely local machinery — `app/src/remote_server` is Phosphor's own SSH
 remote-host daemon, not a Warp cloud service, despite the name.
 
-#### 2. The legacy ControlMaster wrapper (default)
+**The "no helper" notice.** When a managed session (below) settles into running
+without a connected helper, Phosphor shows one dim line in the pane, once per
+session: *"Connected without the Phosphor helper: some remote features use the
+shell instead."* It is drawn beside the blocks. Nothing is written to the
+terminal, it never takes focus and it never blocks a key. It is information, not
+an error: the session is fully usable, and remote features that would have gone
+through the helper go through the shell instead.
 
-With `warpify.ssh.enable_ssh_warpification = true` (default) and
-`warpify.ssh.use_ssh_tmux_wrapper = false` (default), the bootstrap installs a
-shell function named `ssh` that intercepts interactive invocations, opens an SSH
-`ControlMaster` socket under `~/.ssh/`, and passes a remote command that
-re-bootstraps the far-side shell.
+#### 2. The managed session (the `ssh` wrapper)
 
-Its limits are structural, and it falls back to plain `ssh` (no integration, no
-error) in each of these cases:
+With `warpify.ssh.enable_ssh_warpification = true` (default), the bootstrap of a
+local bash, zsh or fish shell installs a shell function named `ssh` that
+intercepts interactive invocations, opens an SSH `ControlMaster` socket under
+`~/.ssh/`, and passes a remote command that bootstraps the far-side shell. That
+is a **managed session**: blocks, prompt detection, completions and the rest work
+on the remote host. It does not depend on the helper (section 1) or on anything
+being installed on the remote host: with the helper it is faster and does more;
+without it the session is the same managed session, and the notice above says
+so. There is no tmux involved and no setting that picks a mechanism; whether the
+wrapper is on is decided once, when the tab's PTY is created, from
+`enable_ssh_warpification`, so toggling it affects new tabs only.
 
-- the remote login shell is **not** bash or zsh — anything else gets MoTD +
-  `/etc/profile` + `exec $SHELL` and no Phosphor hooks;
+The remote login shell decides what the session is:
+
+- **bash and zsh** are bootstrapped by the remote command itself.
+- **fish and nushell** are managed too: the wrapper sends a one-line `sh -c`
+  shim as the remote command, which prints the hooks, takes the bootstrap the
+  app sends over the connection into a temporary file on the remote and starts
+  the shell with that file sourced. Setting `PHOSPHOR_SSH_FISH_NU_MANAGED=0` in
+  the environment of the local shell restores the plain session for those two.
+- **any other login shell** (`sh`, `dash`, `ksh`, `csh`, `tcsh` and so on) gets
+  a plain login: MoTD, then `exec "$SHELL" -l`, with no Phosphor hooks.
+
+It falls back to plain `ssh` (no integration, no error) in each of these cases:
+
+- the remote is a Windows OpenSSH server (cmd.exe or PowerShell answers the
+  wrapper's probe);
 - your `~/.ssh/config` sets a `RemoteCommand` for that destination — OpenSSH
   refuses to run both a config `RemoteCommand` and a command-line one;
 - `/dev/urandom` could not produce a session token.
@@ -220,50 +253,6 @@ are in a local shell. The split stays local when any of these holds:
 - that local directory is gone, and the command depends on it (a glob, a
   relative `-i`/`-F`/`-E` path, or a relative file or command in `-o`).
 
-#### 3. The tmux wrapper (`ssh_tmux_wrapper`)
-
-`ssh_tmux_wrapper` is in this fork's `default` Cargo feature list, so
-`FeatureFlag::SSHTmuxWrapper` is on. It is still **opt-in per user**:
-`warpify.ssh.use_ssh_tmux_wrapper` defaults to `false`. Turn it on at
-Settings → Phosphorize → SSH → *Use Tmux Phosphorization*.
-
-What it does: rather than wrapping `ssh` locally, Phosphor detects that you have
-run an interactive SSH command, shows a "Phosphorizing SSH Session…" block, and
-drives a tmux **control-mode** session on the remote host as the transport for
-block boundaries. Because it does not depend on rewriting the remote shell's
-startup, it works in many situations the ControlMaster wrapper does not.
-
-Phosphor keeps this wrapper deliberately — upstream Warp deprecated it in favour
-of the extension; this fork did not, because it should Phosphorize whatever host
-you SSH into (`DECLINED.md`, "SSH tmux wrapper — kept, deprecation not ported").
-
-**Its limits, honestly:**
-
-- **It needs tmux ≥ 3.0 on the remote.** If tmux is missing or too old you get
-  an error block; Phosphor no longer offers to install tmux for you.
-- **It is mutually exclusive with the legacy wrapper.** Turning it on disables
-  the ControlMaster wrapper for the session, and vice versa; the choice is
-  computed once, in `TerminalManager`, at PTY creation.
-- **It only takes effect in new tabs.** The setting's own description says so.
-  If a session is already running — including one in which you have started a
-  CLI agent — toggling the setting will not Phosphorize it. You must exit that
-  session and open a new tab. There is no way to retrofit the wrapper onto a
-  live PTY.
-- **It never engages on Windows.** tmux control mode needs DCS, and ConPTY does
-  not support DCS. On Windows the SSH extension is the only route to an
-  integrated SSH session. This is a documented, accepted platform asymmetry
-  (`DECLINED.md`), not a bug to file.
-- **The banner is suppressed** if the command also matches a subshell pattern,
-  if the host is denylisted, or if SSH Phosphorization is off entirely.
-
-Beyond literal `ssh`, the tmux route also recognises `gcloud compute ssh`,
-`eb ssh` and `doctl compute ssh`. `ssh -T` and `ssh -W` are correctly treated as
-non-interactive and ignored.
-
-**Denylisting a host** (the banner's "don't ask again", or Settings →
-Phosphorize → SSH → *Denylisted hosts*) writes a regex to
-`warpify.ssh.ssh_hosts_denylist`.
-
 #### The `enable_legacy_ssh_wrapper` trap
 
 `warpify.ssh.enable_legacy_ssh_wrapper` is **deprecated and overloaded**. Until
@@ -276,16 +265,16 @@ Phosphor runs a one-time migration that sets `warpify.ssh.enable_ssh_warpificati
 then resets itself to `true` so the migration cannot re-fire.
 
 Do not use it. Use `warpify.ssh.enable_ssh_warpification` to turn SSH
-integration off and `warpify.ssh.use_ssh_tmux_wrapper` to pick the mechanism.
+integration off.
 
 ### Per-shell notes
 
-| shell | local | subshell | SSH (legacy wrapper) | notes |
+| shell | local | subshell | `ssh` wrapper (managed session) | notes |
 |---|---|---|---|---|
 | **bash** | yes | yes | yes | Uses a vendored copy of `bash-preexec`. Not a login shell; MoTD printed by the bootstrap. Bootstrap commands are hidden from history via `HISTCONTROL=ignorespace`. |
 | **zsh** | yes | yes | yes | Started `--no-rcs -g`; `/etc/zshenv` still runs. `PS2` is blanked during bootstrap and restored as `ORIGINAL_PS2`. On the remote side the wrapper writes a temporary `ZDOTDIR`. |
-| **fish** | yes | yes | no | Started with `-f no-mark-prompt` to suppress fish's OSC 133, whose partial implementation breaks block detection. The SSH helper's remote branch handles only bash and zsh, so an SSH into a fish login shell falls through to plain `ssh`. |
-| **nushell** | yes | yes | no | Written and tested against nushell 0.116.1. Started `--login --execute`; hooks are `$env.config.hooks.pre_prompt` / `pre_execution` and key bindings (Ctrl-P clears the line, Alt-i reports the line, Alt-p / Alt-w switch prompts), so Ctrl-P is not "history up" in a Phosphorized nushell. The bootstrap lines are typed with a leading space and the bootstrap sets `history.ignore_space_prefixed` until it is done, so only one short line can reach the history of a user who turned that option off (and none otherwise). nushell cannot evaluate a string, so a subshell is set up by short typed lines that write a file to `$nu.cache-dir` and `source` it. Commands Phosphor runs for itself (completion generators, probes) are POSIX and are run with `bash -c` — never in nushell. Completion quotes paths (`"my dir/"`, or a backtick string for `~/…`), it never backslash-escapes. Not done: the SSH helper and the update/dist-upgrade helpers `fish.sh` carries; the agent's pager suppression (no wrapper, since nushell scopes `cd` and `$env` to blocks). |
+| **fish** | yes | yes | yes | Started with `-f no-mark-prompt` to suppress fish's OSC 133, whose partial implementation breaks block detection. Its `ssh` function is the same wrapper as bash's and zsh's, and a fish login shell on the remote host is managed too (section 2 above). |
+| **nushell** | yes | yes | remote only | Written and tested against nushell 0.116.1. Started `--login --execute`; hooks are `$env.config.hooks.pre_prompt` / `pre_execution` and key bindings (Ctrl-P clears the line, Alt-i reports the line, Alt-p / Alt-w switch prompts), so Ctrl-P is not "history up" in a Phosphorized nushell. The bootstrap lines are typed with a leading space and the bootstrap sets `history.ignore_space_prefixed` until it is done, so only one short line can reach the history of a user who turned that option off (and none otherwise). nushell cannot evaluate a string, so a subshell is set up by short typed lines that write a file to `$nu.cache-dir` and `source` it. Commands Phosphor runs for itself (completion generators, probes) are POSIX and are run with `bash -c` — never in nushell. Completion quotes paths (`"my dir/"`, or a backtick string for `~/…`), it never backslash-escapes. Not done: a local `ssh` wrapper (a typed `ssh` in nushell is plain ssh; a nushell login shell on the *remote* host of an `ssh` typed in bash, zsh or fish is managed) and the update/dist-upgrade helpers `fish.sh` carries; the agent's pager suppression (no wrapper, since nushell scopes `cd` and `$env` to blocks). |
 | **PowerShell** | yes | banner only | in-band only | `-NoProfile` plus an `-EncodedCommand` init script (UTF-16LE base64 — `-Command` quoting is broken on PS 7.6). If `ExecutionPolicy` is `Restricted` at machine or user scope, integration cannot start and PowerShell says so. No subshell success block, no Auto-Warpify snippet. The subshell banner is hard-coded to appear for interactive `ssh` commands from pwsh because in-band generators are the only workable route there. |
 
 WSL is supported for bash/zsh/fish only; PowerShell under WSL is not
@@ -336,10 +325,9 @@ dead — until issue #632.
 |---|---|---|---|
 | `warpify.subshells.added_subshell_commands` | Extra regexes treated as subshell-spawning commands | `[]` | Settings → Phosphorize → Subshells → Added commands |
 | `warpify.subshells.subshell_commands_denylist` | Regexes that never raise the subshell banner | `[]` | same page → Denylisted commands |
-| `warpify.ssh.ssh_hosts_denylist` | Host regexes that never raise the SSH banner | `[]` | Settings → Phosphorize → SSH → Denylisted hosts |
+| `warpify.ssh.ssh_hosts_denylist` | Retained key with no effect: the per-host SSH prompt it guarded no longer exists | `[]` | settings file only |
 | `warpify.ssh.enable_ssh_warpification` | Master switch for Phosphorizing SSH sessions | `true` | Settings → Phosphorize → SSH → *Phosphorize SSH Sessions* |
-| `warpify.ssh.use_ssh_tmux_wrapper` | Use the tmux control-mode wrapper instead of the ControlMaster wrapper. macOS/Linux only. New tabs only | `false` | same page → *Use Tmux Phosphorization* |
-| `warpify.ssh.reuse_existing_control_master` | Attach to your own live ControlMaster instead of creating one. Legacy wrapper only; new tabs only | `false` | same page → *Reuse existing SSH ControlMaster* |
+| `warpify.ssh.reuse_existing_control_master` | Attach to your own live ControlMaster instead of creating one. New tabs only | `false` | same page → *Reuse existing SSH ControlMaster* |
 | `warpify.ssh.keepalive` | Add ssh keepalives (30 s x 6) when your ssh config sets none. New tabs only | `true` | settings file only |
 | `warpify.ssh.obscure_keystroke_timing` | Keep OpenSSH's 20 ms keystroke tick (`ObscureKeystrokeTiming`); `false` turns it off when your ssh config does not set it. New tabs only | `true` | settings file only |
 | `warpify.ssh.split_inherits_ssh` | Opt-in: splitting an SSH pane opens the new pane on the same host and remote directory | `false` | same page → *Splits from SSH sessions open on the same host* |
@@ -758,8 +746,8 @@ app/assets/bundled/bootstrap/fish.sh:742 (TERM_PROGRAM='WarpTerminal'), :849 (WA
 app/assets/bundled/bootstrap/pwsh_init_shell.ps1:1-33 (PSReadline removal, ExecutionPolicy Restricted error)
 app/assets/bundled/bootstrap/bash_init_shell.sh, zsh_init_subshell.sh, fish_init_subshell.sh, unknown_init_subshell.sh (InitShell/is_subshell hooks, WARP_IS_SUBSHELL)
 app/assets/bundled/bootstrap/bash_zsh_subshell_bootstrap_block_output.txt, fish_subshell_bootstrap_block_output.txt (Auto-Warpify rc snippets)
-app/src/terminal/warpify/mod.rs:24-32 (PowerShell has no subshell success block), :39-91 (tmux:false template arg)
-app/src/terminal/model/ansi/dcs_hooks.rs:901-905 (SourcedRcFileForWarpValue: shell/uname/tmux)
+app/src/terminal/warpify/mod.rs:24-32 (PowerShell has no subshell success block), :137-141, :178, :218 (disable_tmux appends the leftover `"tmux": false` to the snippet)
+app/src/terminal/model/ansi/dcs_hooks.rs:1203-1207 (SourcedRcFileForWarpValue: shell/uname/tmux)
 
 Shell launch:
 app/src/terminal/local_tty/shell.rs:625-742 (per-shell spawn args: zsh --no-rcs -g, bash --rcfile <(...), fish --no-config/-f no-mark-prompt, pwsh -NoLogo -NoProfile -NoExit -EncodedCommand)
@@ -771,24 +759,24 @@ Warpify settings and detection:
 app/src/terminal/warpify/settings.rs:18-46 (added_subshell_commands, subshell_commands_denylist, ssh_hosts_denylist TOML paths + defaults)
 app/src/terminal/warpify/settings.rs:48-56 (enable_ssh_warpification default true)
 app/src/terminal/warpify/settings.rs:58-108 (EnableSshWrapper deprecated, the sole declaration of warpify.ssh.enable_legacy_ssh_wrapper / EnableSSHWrapper, SyncToCloud::Never)
-app/src/terminal/warpify/settings.rs:85-94 (use_ssh_tmux_wrapper default false, MAC|LINUX only)
 app/src/terminal/warpify/settings.rs:96-130 (SshExtensionInstallMode: AlwaysAsk default)
 app/src/terminal/warpify/settings.rs:300-330 (one-time migration disabling enable_ssh_warpification)
 app/src/terminal/warpify/settings.rs:390-420 (SUBSHELL_COMMAND_REGEXES: shells, docker run/exec, poetry, pipenv, aws-vault, flox; WSL_SUBSHELL_REGEX windows-only)
-app/src/terminal/warpify/settings.rs:~470-500 (is_compatible_subshell_command: ssh-like when !use_ssh_tmux_wrapper; PowerShell hard-coded ssh banner)
+app/src/terminal/warpify/settings.rs:588-612 (is_compatible_subshell_command: ssh-like commands always match; PowerShell hard-coded ssh banner)
 app/src/settings/ssh.rs:28-44 (SshSettings::reuse_existing_control_master default false)
-app/src/terminal/ssh/ssh_detection.rs:24-51 (evaluate_warpify_ssh_host gating)
+app/src/terminal/ssh/ssh_detection.rs:21-49 (the tmux prompt is gone: evaluate_warpify_ssh_host always answers FeatureDisabled)
 app/src/terminal/ssh/util.rs:155-215 (SshWarpifyCommand: ssh, gcloud compute ssh, eb ssh, doctl compute ssh; -T/-W non-interactive)
-app/src/terminal/local_tty/terminal_manager.rs:688-716 (tmux wrapper supersedes ControlMaster; computed at PTY creation)
-app/assets/bundled/ssh/bash_zsh/warpify_ssh_session.sh:45-60 (~/.warp/tmux/execute_tmux.sh, tmux version check)
+app/src/terminal/local_tty/terminal_manager.rs:755-765 (whether the ssh wrapper is on follows enable_ssh_warpification; computed at PTY creation)
 app/src/terminal/view/init.rs:344-371 (ctrl-i for terminal:warpify_subshell and terminal:warpify_ssh_session, context predicates)
-app/src/terminal/ssh/warpify.rs:38-45 (ctrl-c interrupts SshWarpifyBlock)
+app/src/terminal/input_queue/ssh_phase.rs:55-65 (ssh_remote_command_bootstraps: bash, zsh, fish and nu are managed; every other login shell is a plain login)
+app/src/terminal/bootstrap.rs:405-407 (staged_ssh_bootstrap_applies: the fish/nu shim path); app/assets/bundled/bootstrap/fish.sh:1120-1121 (PHOSPHOR_SSH_FISH_NU_MANAGED=0 kill switch); docs/design/ssh-fish-nu-managed.md
+app/src/terminal/model/session.rs:204-210 (ssh_no_helper_notice_due); app/src/terminal/view/ssh_no_helper_notice.rs:18-21 (notice_text); app/i18n/en/warp.ftl:254
 app/src/terminal/warpify/render.rs:35-36 (SSH_DOCS_URL and SUBSHELL_DOCS_URL are empty)
 app/src/settings_view/warpify_page.rs:559-566 (empty "Learn more" hyperlink)
 app/i18n/en/warp.ftl:847-866 (page title "Phosphorize", section labels, "Takes effect in new tabs")
-app/Cargo.toml:641 ("ssh_tmux_wrapper" in default), :674 (feature decl)
-app/src/lib.rs:2973 (FeatureFlag::SSHTmuxWrapper gated on the cargo feature)
-DECLINED.md:218 (tmux wrapper kept deliberately; Windows/ConPTY cannot do DCS; tmux still required on remote)
+app/Cargo.toml:733 ("ssh_tmux_wrapper" in default), :777 (feature decl; the flag now only gates tmux control mode for people who run tmux themselves)
+app/src/lib.rs:3274-3275 (FeatureFlag::SSHTmuxWrapper gated on the cargo feature)
+DECLINED.md:312 (the tmux phosphorization option was removed 2026-11-08; the no-helper managed session is the primary path)
 DECLINED.md:236-255 (SSH connection management declined; nothing writes ~/.ssh/config)
 
 Troubleshooting:

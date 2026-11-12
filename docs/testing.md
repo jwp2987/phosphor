@@ -8240,3 +8240,4 @@ Self-tests: `selftest_r25_harness_a.py` (registered by two lines at the end of `
   `codebase_index_remote`'s one-shot ssh edit goes through `sh -c` (that ssh command runs in the arm's login shell). A self-test scans every string constant of the
   `cases_lab*.py` files and `lab.py` for `>>` and fails on any not in the helper, run by `sh`, zsh-only, or a bash/zsh stamp. The nu forms are not run against a
   real nu here: the first lab run with a nu arm is their proof.
+Self-tests (`selftest_r25_manual.py`, run by `run.py --self-test`, #2178): `manual_names_no_removed_setting` fails when any `docs/manual` page names a setting listed in `REMOVED_SETTINGS` (start: `warpify.ssh.use_ssh_tmux_wrapper`; add a key when a setting is deleted), `manual_removed_settings_check_catches_a_mention` keeps the list from being emptied silently. Worked, unproven on a build: offline Python only.
