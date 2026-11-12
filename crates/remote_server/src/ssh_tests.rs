@@ -163,3 +163,23 @@ fn every_ssh_spawn_is_guarded() {
         "scp unguarded"
     );
 }
+
+/// #2180: the exec-channel string is a login-shell-neutral `sh -s` (two plain words: no quotes,
+/// `&&`, `$(..)` or `;` for fish or nushell to reject), and the script rides on stdin.
+#[test]
+fn neutral_exec_command_is_two_plain_words() {
+    assert_eq!(NEUTRAL_EXEC_COMMAND, "sh -s");
+    assert!(
+        NEUTRAL_EXEC_COMMAND
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == ' ' || c == '-')
+    );
+}
+
+#[test]
+fn neutral_exec_script_keeps_the_script_intact_and_closes_stdin_for_it() {
+    let script = "cd '/a b' && printf '%s' \"$HOME\"; exit 3";
+    let wrapped = neutral_exec_script(script);
+    assert_eq!(wrapped, format!("{{ {script}\n}} </dev/null\n"));
+    assert!(wrapped.ends_with("</dev/null\n"));
+}

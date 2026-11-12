@@ -227,6 +227,20 @@ async fn stop_control_master_inner(socket_path: &Path) {
     }
 }
 
+/// The only string the app ever puts on an ssh exec channel for its own scripts (#2180). sshd
+/// runs it through the remote login shell, and `sh -s` is a plain word pair that bash, zsh, fish
+/// and nushell all pass to `sh` unchanged, so no login shell's syntax ever sees the script. The
+/// script travels on stdin ([`neutral_exec_script`]); `sh -s` also exits 127 for a missing
+/// binary, as the install check expects, whatever the login shell would have said.
+pub const NEUTRAL_EXEC_COMMAND: &str = "sh -s";
+
+/// The stdin for [`NEUTRAL_EXEC_COMMAND`]: `script` run in a brace group whose stdin is
+/// `/dev/null`, so a command that reads stdin cannot eat the rest of the script (sh reads the
+/// script from the same pipe), and a script gets the null stdin it had when it was an argument.
+pub fn neutral_exec_script(script: &str) -> String {
+    format!("{{ {script}\n}} </dev/null\n")
+}
+
 /// Run a single SSH command through the ControlMaster socket and return a result where:
 /// - `Err` for transport-level failures (e.g. couldn't spawn `ssh`, or timeout).
 /// - `Ok(output)` callers should check `output.status` to distinguish a successful remote command from a non-zero remote exit.
@@ -235,15 +249,32 @@ pub async fn run_ssh_command(
     remote_command: &str,
     timeout: Duration,
 ) -> Result<Output> {
-    async {
-        Command::new("ssh")
-            .args(ssh_args(socket_path))
-            .arg(remote_command)
-            .env("SHELL", "/bin/sh")
-            .stdin(std::process::Stdio::null())
-            .kill_on_drop(true)
-            .output()
-            .await
+    use std::process::Stdio;
+
+    // #2180: sshd hands an exec-channel string to the remote LOGIN shell, so a nu or fish login
+    // shell rejects POSIX text (`&&`, `$(..)`, `for .. done`). The channel only carries the
+    // login-shell-neutral `sh -s`; the script itself goes to its stdin.
+    let mut child = Command::new("ssh")
+        .args(ssh_args(socket_path))
+        .arg(NEUTRAL_EXEC_COMMAND)
+        .env("SHELL", "/bin/sh")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|e| anyhow!("SSH command failed to execute: {e}"))?;
+    let stdin = child.stdin.take();
+    let script = neutral_exec_script(remote_command);
+    async move {
+        if let Some(mut stdin) = stdin {
+            use futures_lite::io::AsyncWriteExt;
+            // A command that exits without reading its script (ssh failed) closes the pipe; the
+            // exit status is the report then, not the broken pipe.
+            let _ = stdin.write_all(script.as_bytes()).await;
+            drop(stdin);
+        }
+        child.output().await
     }
     .with_timeout(timeout)
     .await

@@ -1,9 +1,11 @@
+use std::collections::HashMap;
 use std::time::Duration;
 
 use futures::FutureExt as _;
 
 use super::{
-    InflightLimit, command_timeout_from_env, max_inflight_from_env, shell_mode_timeout_from_env,
+    InflightLimit, ShellType, build_exec_script, command_timeout_from_env, max_inflight_from_env,
+    shell_mode_timeout_from_env,
 };
 
 /// #1240: the in-flight limit is a counting semaphore whose waiters leave the queue with their
@@ -124,4 +126,27 @@ fn shell_mode_timeout_matches_the_helper_budget() {
         Some(Duration::from_secs(15))
     );
     assert_eq!(shell_mode_timeout_from_env(Some("0")), None);
+}
+
+/// #2180: for a nushell session the script is POSIX (`&&`, `export`), because it is run by `sh`,
+/// not by nu; no nu syntax (`$env.`) appears.
+#[test]
+fn nu_session_script_is_posix() {
+    let mut env = HashMap::new();
+    env.insert("A".to_string(), "it's".to_string());
+    let script = build_exec_script("git ls-files", ShellType::Nu, Some("/w/it's"), Some(env));
+    assert!(script.starts_with("export "), "{script}");
+    assert!(!script.contains("$env."), "{script}");
+    assert!(
+        script.contains("cd '/w/it'\"'\"'s' && git ls-files"),
+        "{script}"
+    );
+}
+
+#[test]
+fn other_shells_keep_their_own_script_text() {
+    let script = build_exec_script("ls", ShellType::Bash, Some("/w"), None);
+    assert_eq!(script, "cd '/w' && ls");
+    let script = build_exec_script("ls", ShellType::Fish, None, None);
+    assert_eq!(script, "ls");
 }

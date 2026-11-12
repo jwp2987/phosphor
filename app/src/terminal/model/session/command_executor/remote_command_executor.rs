@@ -14,7 +14,7 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use warpui::r#async::FutureExt as _;
 
 use crate::env_vars::{EnvVarValue, serialize_variables_for_shell};
-use crate::terminal::shell::Shell;
+use crate::terminal::shell::{Shell, ShellType};
 
 use super::shared::shell_escape_single_quotes;
 use super::{CommandExecutor, CommandOutput, ExecuteCommandOptions};
@@ -152,39 +152,33 @@ impl CommandExecutor for RemoteCommandExecutor {
         // We can't use `.env` and `.current_dir` here to set the PATH and current dir respectively
         // since this is run locally. We just need the subprocess to send the bytes over the
         // ssh connection. That's why we explicitly set the path and cwd as part of command_str.
-        let mut command_str = String::new();
-        if let Some(environment_variables) = environment_variables {
-            let env_vars = environment_variables
-                .into_iter()
-                .map(|(key, value)| (key, EnvVarValue::Constant(value)))
-                .collect_vec();
-            let env_vars_str = serialize_variables_for_shell(
-                env_vars.iter().map(|(key, value)| (key.as_str(), value)),
-                shell.shell_type(),
-            );
-            command_str.push_str(&env_vars_str);
-            command_str.push(';');
-        }
-        if let Some(current_directory_path) = current_directory_path {
-            // Ensure the path escapes embedded single quotes from the remote host's serialized
-            // block. Without this a directory whose name contains `'` closes the quoting and the
-            // remainder is interpreted as shell syntax -- injected into a command that runs on the
-            // REMOTE host. Upstream `88c344e2` ("[Security] Fix command injection in remote ssh
-            // sessions") fixed two sites; this fork ported the `history_file` one
-            // (`session.rs`) and missed this one.
-            let escaped_path =
-                shell_escape_single_quotes(current_directory_path, shell.shell_type());
-            command_str.push_str(&format!("cd '{escaped_path}' && "));
-        }
-        command_str.push_str(command);
+        let shell_type = shell.shell_type();
+        let command_str = build_exec_script(
+            command,
+            shell_type,
+            current_directory_path,
+            environment_variables,
+        );
+        // #2180: a nushell login shell cannot parse the `cd '..' && ..` text (and sshd hands the
+        // channel string to the login shell), so for nu the script is POSIX text run by a
+        // login-shell-neutral `sh -s` with the script on stdin. Other shells keep the text they
+        // always got: it is written in their own syntax (fish, PowerShell).
+        let (channel_command, channel_stdin) = if shell_type == ShellType::Nu {
+            (
+                remote_server::ssh::NEUTRAL_EXEC_COMMAND.to_string(),
+                remote_server::ssh::neutral_exec_script(&command_str).into_bytes(),
+            )
+        } else {
+            (command_str, Vec::new())
+        };
 
         let result = run_over_master(
             &self.control_socket_path,
             self.wsl_distro.as_deref(),
             &self.inflight,
             self.command_timeout,
-            command_str,
-            &[],
+            channel_command,
+            &channel_stdin,
         )
         .await
         .map(|output| output.into());
@@ -209,6 +203,47 @@ impl CommandExecutor for RemoteCommandExecutor {
     fn supports_parallel_command_execution(&self) -> bool {
         false
     }
+}
+
+/// The text for one command: env, `cd`, then the command. For nushell the executor's commands
+/// are POSIX (`ShellType::executor_syntax`), so env and `cd` are POSIX too (`export`, `&&`);
+/// the caller runs that through `sh` ([`remote_server::ssh::NEUTRAL_EXEC_COMMAND`]).
+fn build_exec_script(
+    command: &str,
+    shell_type: ShellType,
+    current_directory_path: Option<&str>,
+    environment_variables: Option<HashMap<String, String>>,
+) -> String {
+    let syntax = shell_type.executor_syntax();
+    let mut command_str = String::new();
+    if let Some(environment_variables) = environment_variables {
+        let env_vars = environment_variables
+            .into_iter()
+            .map(|(key, value)| (key, EnvVarValue::Constant(value)))
+            .collect_vec();
+        let env_vars_str = serialize_variables_for_shell(
+            env_vars.iter().map(|(key, value)| (key.as_str(), value)),
+            syntax,
+        );
+        if shell_type == ShellType::Nu && !env_vars.is_empty() {
+            // Under sh a bare `A=1 B=2;` would set shell variables the command never sees.
+            command_str.push_str("export ");
+        }
+        command_str.push_str(&env_vars_str);
+        command_str.push(';');
+    }
+    if let Some(current_directory_path) = current_directory_path {
+        // Ensure the path escapes embedded single quotes from the remote host's serialized
+        // block. Without this a directory whose name contains `'` closes the quoting and the
+        // remainder is interpreted as shell syntax -- injected into a command that runs on the
+        // REMOTE host. Upstream `88c344e2` ("[Security] Fix command injection in remote ssh
+        // sessions") fixed two sites; this fork ported the `history_file` one
+        // (`session.rs`) and missed this one.
+        let escaped_path = shell_escape_single_quotes(current_directory_path, syntax);
+        command_str.push_str(&format!("cd '{escaped_path}' && "));
+    }
+    command_str.push_str(command);
+    command_str
 }
 
 /// Runs `command_str` as a fresh mux client on the ControlMaster at `socket` and returns what it
