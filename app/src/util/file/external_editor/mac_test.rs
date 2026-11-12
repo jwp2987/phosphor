@@ -27,3 +27,25 @@ fn is_zap_bundle_rejects_other_apps() {
     assert!(!is_zap_bundle("invalid"));
     assert!(!is_zap_bundle(""));
 }
+
+#[test]
+fn system_default_with_line_and_default_app_this_app_opens_in_app() {
+    use super::should_open_in_app_to_keep_line;
+    // #2176: the default app is this app family, so macOS would drop the line.
+    assert!(should_open_in_app_to_keep_line(
+        true,
+        Some("dev.phosphor.Phosphor")
+    ));
+    assert!(should_open_in_app_to_keep_line(true, Some("dev.zap.Zap")));
+    // No line requested: nothing to lose, keep the existing route.
+    assert!(!should_open_in_app_to_keep_line(
+        false,
+        Some("dev.phosphor.Phosphor")
+    ));
+    // Another default app keeps the external hand-off.
+    assert!(!should_open_in_app_to_keep_line(
+        true,
+        Some("com.apple.TextEdit")
+    ));
+    assert!(!should_open_in_app_to_keep_line(true, None));
+}

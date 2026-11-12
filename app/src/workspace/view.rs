@@ -5825,6 +5825,17 @@ impl Workspace {
                 {
                     ctx.open_file_path_from_file_tree(&path);
                 } else {
+                    // #2176: on macOS a default app that is this app would get the bare path
+                    // back as a line-less file:// URL; open in-app so the line survives.
+                    #[cfg(target_os = "macos")]
+                    if crate::util::file::external_editor::system_default_would_lose_line(
+                        line_col, &path,
+                    ) {
+                        let layout = *EditorSettings::as_ref(ctx).open_file_layout;
+                        let open_as_preview = false;
+                        self.open_code(code_source, layout, line_col, open_as_preview, &[], ctx);
+                        return;
+                    }
                     self.open_with_system_default_editor(line_col, path.clone(), ctx);
                 }
             }
