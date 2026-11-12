@@ -6826,21 +6826,32 @@ def streaming_exact_lines(ctx, r, got, exp, what, log_off):
     if acc and not discarded and any(plat().startswith(p_) for p_ in acc.get("platforms", ("",))):
         r.known("%s, no key discarded in the app log [ACCEPTED_FOR_RELEASE #%d v%s: %s]" % (msg, acc["issue"], acc["release"], acc["why"]))
     else:
-        r.check(False, msg + (" (a discard is logged or the log is unreadable)" if discarded else ""))
+        shape = ""
+        if not discarded and plat().startswith("win"):
+            # r28: the Git Bash 1/16 and 2/10 rows of r26w: every key arrived (nothing discarded in the app log), the lines are out of order or missing
+            shape = " (the shape of #1658, the Windows streaming-tab young-hold reorder: no key discarded in the app log; judged against the budget now, no acceptance)"
+        r.check(False, msg + (" (a discard is logged or the log is unreadable)" if discarded else shape))
 
 
-def close_opened_tabs(ctx, r, own_pid, opened, what="tabs"):
-    """#2146 (round 24/25): close the `opened` tabs (or windows' last tab) a case opened and left streaming, newest first, each one PROVEN: Ctrl-C ends
-    the stream, the PID probe names the shell in front, and the close key is sent only when that shell is NOT the pass's own (`own_pid`, read before
-    the case opened anything). Stops as soon as the pass's own shell is in front. A tab that cannot be told apart from the own shell, or no shell
-    answering, is a FAIL naming the count left open (the close key is never sent blind). -> number of close keys sent. Never raises: it runs in a
-    `finally`, and a dead app has nothing to close."""
+def close_opened_tabs(ctx, r, own_pid, opened, what="tabs", windows_before=None):
+    """#2146 (round 24/25, r28): close the `opened` tabs (or a window's last tab) a case opened and left streaming, newest first, each one PROVEN: Ctrl-C
+    ends the stream, the PID probe (a line the SHELL in front runs and appends to a file: an identity answered by the shell, not read from the
+    process table) names the shell in front, and the close key is sent only when that shell is NOT the pass's own (`own_pid`, read before the case opened
+    anything). Stops as soon as the pass's own shell is in front.
+    r28 (r26w Windows: 13 close keys sent, 5 streaming tabs still open, the front one still streaming): a close key can be lost (the app is busy
+    with a dozen streams), so the loop is bounded by `4 * opened + 4` rounds, not by `opened`. A close key is re-sent only after the SAME shell is
+    probed in front a second time, after a longer wait: a shell that is not the pass's own is never mistaken for it and no blind key is sent. The last
+    word is a fresh Ctrl-C and probe (a stream still running in the front tab answers nothing, and that is a tab still open), then `windows_before`
+    (the app's window count when the case started, None = unknown) is compared with the windows now: a second window left open is a FAIL.
+    A tab that never closes still FAILS after the bound, naming what was found. -> number of close keys sent. Never raises: it runs in a `finally`,
+    and a dead app has nothing to close."""
     import cases_robust as R_
     if own_pid is None:
         return 0                      # no PID probe in this pane (cmd.exe, WSL): nothing can be proven; run.py's depth check stays the net
     sent = 0
     try:
-        for _ in range(int(opened)):
+        last_closed, retried = None, False
+        for _ in range(4 * int(opened) + 4):
             ctx.be.key("ctrl+c")
             time.sleep(0.4)
             pid = ctx.shell_pid()
@@ -6851,13 +6862,31 @@ def close_opened_tabs(ctx, r, own_pid, opened, what="tabs"):
                 r.check(False, "cleanup of %s: no shell answered the PID probe after Ctrl-C; %d close key(s) sent, the rest left open" % (what, sent))
                 return sent
             if pid == own_pid:
-                return sent
+                break
+            if pid == last_closed and not retried:
+                retried = True            # the tab just asked to close is still in front: give the app time, ask again before a second key
+                time.sleep(2.0)
+                continue
             R_.close_tab_best_effort(ctx, r)
             sent += 1
+            last_closed, retried = pid, False
             time.sleep(0.8)
+        ctx.be.key("ctrl+c")
+        time.sleep(0.4)
         last = ctx.shell_pid()
+        if last is None:
+            ctx.reset()
+            last = ctx.shell_pid()
         r.check(last == own_pid, "cleanup of %s: after %d close key(s) the shell in front has pid %s, expected the pass's own shell %s (a tab is still "
                                  "open: later cases would type into it)" % (what, sent, last, own_pid))
+        if windows_before is not None:
+            try:
+                now = len(ctx.be.windows())
+            except Exception:                              # noqa: BLE001
+                now = None
+            if now:
+                r.check(now <= windows_before, "cleanup of %s: %d windows of the app are open, %d when the case started (a second window was not closed)"
+                                               % (what, now, windows_before))
     except Skip:
         raise
     except Exception as e:                                 # noqa: BLE001
@@ -6908,12 +6937,16 @@ def _tabs_streaming(ctx, r, st):
 @case("tabs_two_windows", order=90, gui=True)
 def c_tabs(ctx, r):
     own_pid = ctx.shell_pid()              # #2146: the pass's own shell, before any tab or window is opened
+    try:
+        wins0 = len(ctx.be.windows()) or None      # r28: the app's windows before the case; [] = unknown on this backend
+    except Exception:                              # noqa: BLE001
+        wins0 = None
     st = {"opened": 0}
     try:
         _tabs_two_windows(ctx, r, st)
     finally:
         # the second window's tab goes first (it is in front), then the streaming tabs of the first window, newest first
-        close_opened_tabs(ctx, r, own_pid, st["opened"], "tabs_two_windows")
+        close_opened_tabs(ctx, r, own_pid, st["opened"], "tabs_two_windows", windows_before=wins0)
 
 
 def _tabs_two_windows(ctx, r, st):
