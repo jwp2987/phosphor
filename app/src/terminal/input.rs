@@ -9715,6 +9715,26 @@ impl Input {
         self.input_generation = self.input_generation.wrapping_add(1);
     }
 
+    /// Whether the inline history menu is open with a settled list whose selected row the buffer
+    /// no longer shows (an edit since the preview).
+    fn inline_history_preview_is_stale(&self, ctx: &ViewContext<Self>) -> bool {
+        if !self
+            .suggestions_mode_model
+            .as_ref(ctx)
+            .is_inline_history_menu()
+            || self.inline_history_menu_view.as_ref(ctx).is_pending(ctx)
+        {
+            return false;
+        }
+        self.inline_history_menu_view
+            .as_ref(ctx)
+            .model()
+            .as_ref(ctx)
+            .selected_item()
+            .and_then(|item| item.buffer_replacement_text())
+            .is_some_and(|text| *text != self.editor.as_ref(ctx).buffer_text(ctx))
+    }
+
     fn editor_escape(&mut self, ctx: &mut ViewContext<Self>) {
         // Esc cancels a pending completion: abort it and drop a result already queued.
         self.bump_input_generation();
@@ -15149,6 +15169,19 @@ impl Input {
             return;
         }
         ctx.emit(Event::Enter);
+
+        // #2107: a key typed just before this Enter (applied in the same update, as when the keys
+        // held behind the history-recall gate replay) has edited the line the menu previewed, but
+        // the edit's own event, which closes the menu, is delivered after this Enter's. The menu
+        // is stale: Enter must submit the edited line, not accept the row the buffer no longer
+        // shows (which would replace the edit with the row's text).
+        if crate::terminal::input_queue::switches::hold_keys_behind_recall()
+            && self.inline_history_preview_is_stale(ctx)
+        {
+            self.suggestions_mode_model.update(ctx, |model, ctx| {
+                model.set_mode(InputSuggestionsMode::Closed, ctx);
+            });
+        }
 
         if self
             .suggestions_mode_model
