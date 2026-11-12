@@ -79,6 +79,7 @@ app/src/terminal/view/ssh_typeahead.rs	SSH_TYPEAHEAD_PRECMD_WAIT_CAP	first-Precm
 app/src/terminal/view/subshell_ready.rs	PRE_READY_CEILING	60 s ceiling for a setup waiting for the reader-ready proof: gives the setup up, keys return to the editor, a 'try again' toast follows
 app/src/terminal/writeable_pty/pty_controller.rs	track_pty_write_gate_stall	one-shot timer that only logs a stuck write gate
 app/src/terminal/writeable_pty/pty_controller.rs	TYPEAHEAD_HANDOFF_STALE_COUNT_GIVE_UP	5 s give-up of a stale-count wait: logs handoff_stale_counts_kept only; no reset, no retry, no write
+app/src/terminal/writeable_pty/pty_controller.rs	INBAND_WAIT_FOR_KEYS_GIVE_UP	15 s net of the app's own in-band command waiting for held user keys: cancels that command (its requester is told) and writes nothing; no key is touched, moved or written (#2182)
 app/assets/bundled/bootstrap/bash_body.sh	__warp_nc_deadline_set	starts the overall deadline of a native-completions read, the only clock; expiry hands the read bytes back to the line or drops a reply, writes nothing
 app/assets/bundled/bootstrap/bash_body.sh	__warp_nc_read_byte	read -t bounded by the overall deadline only (no inter-byte gap): expiry hands the bytes read back to the line, writes nothing
 app/assets/bundled/bootstrap/bash_body.sh	__warp_nc_time_left	time left on the overall deadline; the only give-up clock of the exchange

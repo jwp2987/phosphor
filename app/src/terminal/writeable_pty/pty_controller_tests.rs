@@ -3119,6 +3119,167 @@ mod typeahead_handoff {
             });
         });
     }
+
+    /// Queues the app's own in-band command, as an executor request would.
+    fn queue_in_band(
+        app: &mut App,
+        harness: &Harness,
+        command: &str,
+        id: &str,
+    ) -> async_channel::Receiver<InBandCommandCancelledEvent> {
+        let (cancel_tx, cancel_rx) = async_channel::unbounded();
+        harness.controller.update(app, |controller, ctx| {
+            controller.is_user_command_executing = false;
+            controller.queue_in_band_command(command, SHELL, id.to_owned(), cancel_tx, ctx);
+        });
+        cancel_rx
+    }
+
+    /// #2182 (e): nothing held, nothing in the line: the in-band command goes out at once.
+    #[test]
+    fn an_inband_command_with_no_keys_held_is_written_at_once() {
+        App::test((), |mut app| async move {
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            let harness = harness(&mut app);
+            let cancel_rx = queue_in_band(&mut app, &harness, "echo in-band", "id-e");
+            assert_eq!(
+                written(&harness),
+                vec![bytes_to_execute_command("echo in-band", SHELL, false)]
+            );
+            assert!(cancel_rx.try_recv().is_err());
+        });
+    }
+
+    /// #2182 (a): the original loss. Raw user keys are in the shell's line after a command's
+    /// precmd; the app's in-band command is queued. It is NOT written while the keys are in the
+    /// line (its kill prefix would wipe them); the request that covers them goes out first, and
+    /// the command is written once, behind it.
+    #[test]
+    fn an_inband_command_waits_for_raw_keys_in_the_line_and_goes_out_behind_the_request() {
+        App::test((), |mut app| async move {
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            let harness = harness(&mut app);
+            submit(&mut app, &harness, "sleep 1");
+            user_types(&mut app, &harness, b"ex");
+            shell_runs_a_command(&harness.model, "sleep 1");
+            let cancel_rx = queue_in_band(&mut app, &harness, "echo in-band", "id-a");
+            assert_eq!(
+                written(&harness),
+                vec![
+                    bytes_to_execute_command("sleep 1", SHELL, false),
+                    b"ex".to_vec()
+                ],
+                "the in-band command must not be written while the user's keys are in the line"
+            );
+            harness.controller.read(&app, |controller, _| {
+                assert_eq!(controller.pending_writes.len(), 1);
+                assert!(controller.handoff_request_waiting);
+            });
+
+            // The line editor's activation decides the request that covers the keys.
+            line_editor_becomes_active(&mut app, &harness);
+            let written = written(&harness);
+            let in_band = bytes_to_execute_command("echo in-band", SHELL, false);
+            assert_eq!(
+                written.iter().filter(|bytes| **bytes == in_band).count(),
+                1,
+                "the command is written exactly once: {written:?}"
+            );
+            let keys_at = written.iter().position(|bytes| bytes == b"ex").unwrap();
+            let request_at = written.iter().position(|bytes| *bytes == REQUEST.to_vec());
+            let command_at = written.iter().position(|bytes| *bytes == in_band).unwrap();
+            assert!(
+                request_at.is_some_and(|at| keys_at < at && at < command_at),
+                "the request covering the keys precedes the command: {written:?}"
+            );
+            assert!(cancel_rx.try_recv().is_err());
+        });
+    }
+
+    /// #2182 (b, c): keys the view holds keep the in-band command unwritten and the hand-off
+    /// untouched (no flip, no counted Enter); when the view releases them the command is
+    /// written once.
+    #[test]
+    fn an_inband_command_waits_for_the_views_held_keys_and_goes_out_on_release() {
+        App::test((), |mut app| async move {
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            let harness = harness(&mut app);
+            let cell = harness.model.lock().typeahead_handoff().view_keys_cell();
+            cell.publish(true);
+            let owner_before = harness.model.lock().typeahead_handoff().editor_owns_input();
+            let cancel_rx = queue_in_band(&mut app, &harness, "echo in-band", "id-b");
+            assert!(
+                written(&harness).is_empty(),
+                "held keys: nothing is written"
+            );
+            assert_eq!(
+                harness.model.lock().typeahead_handoff().editor_owns_input(),
+                owner_before,
+                "the in-band command never flips the owner under held keys"
+            );
+
+            // The view's queue released its keys: the wake writes the command, once.
+            cell.publish(false);
+            Timer::after(Duration::from_millis(50)).await;
+            assert_eq!(
+                written(&harness),
+                vec![bytes_to_execute_command("echo in-band", SHELL, false)]
+            );
+            assert!(cancel_rx.try_recv().is_err());
+        });
+    }
+
+    /// #2182 (kill switch): with the wait off, the in-band command goes out as before.
+    #[test]
+    fn the_kill_switch_writes_the_inband_command_despite_held_keys() {
+        App::test((), |mut app| async move {
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            let harness = harness(&mut app);
+            harness
+                .model
+                .lock()
+                .typeahead_handoff_mut()
+                .set_inband_wait_for_keys_enabled(false);
+            harness
+                .model
+                .lock()
+                .typeahead_handoff()
+                .view_keys_cell()
+                .publish(true);
+            queue_in_band(&mut app, &harness, "echo in-band", "id-k");
+            assert_eq!(
+                written(&harness),
+                vec![bytes_to_execute_command("echo in-band", SHELL, false)]
+            );
+        });
+    }
+
+    /// #2182 (d): held keys that never drain: the wait's give-up cancels the in-band command
+    /// (its requester is told, nothing is written) and leaves the keys alone.
+    #[test]
+    fn the_give_up_of_the_wait_cancels_the_inband_command_and_leaves_the_keys() {
+        App::test((), |mut app| async move {
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            let harness = harness(&mut app);
+            let cell = harness.model.lock().typeahead_handoff().view_keys_cell();
+            cell.publish(true);
+            let cancel_rx = queue_in_band(&mut app, &harness, "echo in-band", "id-d");
+            let generation = harness.controller.read(&app, |controller, _| {
+                assert!(controller.in_band_wait_armed);
+                controller.in_band_wait_generation
+            });
+            harness.controller.update(&mut app, |controller, ctx| {
+                controller.give_up_in_band_wait(generation, ctx)
+            });
+            let event = cancel_rx.try_recv().expect("the requester is told");
+            assert_eq!(event.command_id, "id-d");
+            assert!(written(&harness).is_empty());
+            assert!(cell.is_held(), "the keys are untouched");
+            harness.controller.read(&app, |controller, _| {
+                assert!(controller.pending_writes.is_empty());
+            });
+        });
+    }
 }
 
 /// `PHOSPHOR_LINE_EDITOR_READING_ACTIVATES=0` keeps the 50 ms activation timer (#1401).

@@ -332,6 +332,17 @@ pub fn keys_follow_editor_env_enabled() -> bool {
     std::env::var(KEYS_FOLLOW_EDITOR_ENV).map_or(true, |value| value.trim() != "0")
 }
 
+/// Environment variable that turns [`TypeaheadHandoff::view_holds_keys`] off when set to `0`
+/// (#2182): the app's own in-band commands (generators, prompt-chip probes) then go out while the
+/// view still holds user keys or the shell's line holds typed text, as before (their kill prefix
+/// can destroy that text).
+pub const INBAND_WAIT_FOR_KEYS_ENV: &str = "PHOSPHOR_INBAND_WAIT_FOR_KEYS";
+
+/// Whether an in-band command waits for held user keys: it does, unless the kill switch says `0`.
+pub fn inband_wait_for_keys_env_enabled() -> bool {
+    std::env::var(INBAND_WAIT_FOR_KEYS_ENV).map_or(true, |value| value.trim() != "0")
+}
+
 /// Environment variable that turns the secret-reader look off when set to `0` (#2050): the tty is
 /// then never asked at a prompt whether something reads a secret, and the keys typed at a precmd
 /// function's `read -s` go to the input editor, as before.
@@ -507,6 +518,44 @@ pub const SSH_ESCAPE_CR_RULE_ENV: &str = "PHOSPHOR_SSH_ESCAPE_CR_RULE";
 /// Whether the line-start rule (not the old proof rule) is on, from the env.
 fn ssh_escape_cr_rule_env_enabled() -> bool {
     std::env::var(SSH_ESCAPE_CR_RULE_ENV).map_or(true, |value| value.trim() != "0")
+}
+
+/// #2182: whether the view holds user keys (a hold in the pane's one input queue, or an operation
+/// waiting for the queue), published by the pane's queue every time an operation on it ends and
+/// shared without a lock with `PtyController`, which waits to write the app's own in-band command
+/// while it is set and is woken when it clears. The keys themselves never move: they stay in the
+/// queue, in typed order, until their own release.
+#[derive(Clone, Debug, Default)]
+pub struct ViewKeysHeld {
+    held: Arc<AtomicBool>,
+    waker: Arc<std::sync::Mutex<Option<async_channel::Sender<()>>>>,
+}
+
+impl ViewKeysHeld {
+    /// Whether the view holds keys right now.
+    pub fn is_held(&self) -> bool {
+        self.held.load(Ordering::Acquire)
+    }
+
+    /// The view's queue holds keys (`true`) or holds none (`false`). A change from held to not
+    /// held wakes the controller so a command that waited for the keys goes out.
+    pub fn publish(&self, held: bool) {
+        let was = self.held.swap(held, Ordering::AcqRel);
+        if was && !held {
+            if let Ok(waker) = self.waker.lock() {
+                if let Some(waker) = waker.as_ref() {
+                    let _ = waker.try_send(());
+                }
+            }
+        }
+    }
+
+    /// Where the release of the held keys is signalled (the controller's receiver).
+    pub fn set_waker(&self, waker: Option<async_channel::Sender<()>>) {
+        if let Ok(mut slot) = self.waker.lock() {
+            *slot = waker;
+        }
+    }
 }
 
 /// #1793: how many writes `PtyController` has handed the pty's event loop (every input message:
@@ -1146,6 +1195,11 @@ pub struct TypeaheadHandoff {
     unsampled_enter_delivery: Option<UnsampledEnterDelivery>,
     /// #1793: the pane's pty write count, shared with `PtyController` (which counts).
     pty_writes: PtyWriteCount,
+    /// #2182: whether the view holds user keys, published by the pane's queue.
+    view_keys: ViewKeysHeld,
+    /// #2182: the kill switch ([`INBAND_WAIT_FOR_KEYS_ENV`]) is `0`: in-band commands do not
+    /// wait for held keys.
+    inband_wait_off: bool,
     /// #1793: the write count when the last request was decided; the request itself is the next
     /// write.
     writes_at_last_request: Option<u64>,
@@ -1409,6 +1463,30 @@ impl TypeaheadHandoff {
     pub fn check_queued_young_hold(&mut self) -> bool {
         self.drop_stale_hold();
         self.young_hold_end_pending()
+    }
+
+    /// #2182: the cell the pane's queue publishes "the view holds keys" to.
+    pub fn view_keys_cell(&self) -> ViewKeysHeld {
+        self.view_keys.clone()
+    }
+
+    /// #2182: sets the kill switch ([`INBAND_WAIT_FOR_KEYS_ENV`]).
+    pub fn set_inband_wait_for_keys_enabled(&mut self, enabled: bool) {
+        self.inband_wait_off = !enabled;
+    }
+
+    /// #2182: whether the app's own in-band command waits for held keys at all (the kill switch
+    /// [`INBAND_WAIT_FOR_KEYS_ENV`] is not `0`).
+    pub fn inband_waits_for_keys(&self) -> bool {
+        !self.inband_wait_off
+    }
+
+    /// #2182: the view holds user keys (a prompt hold, a young hold, keys behind a deferred
+    /// Enter, or anything else in the pane's input queue) and the app's own in-band command must
+    /// not be written: its kill prefix would wipe the line the keys are about to be typed into,
+    /// and a write ahead of them would reorder them. The keys are never moved to make room.
+    pub fn view_holds_keys(&self) -> bool {
+        !self.inband_wait_off && self.view_keys.is_held()
     }
 
     /// #1793: the pty write count `PtyController` increments for every write it hands the pty.
@@ -2960,6 +3038,9 @@ impl TypeaheadHandoff {
                 ..
             }
         ) || self.untracked_bytes_uncovered()
+            // #2182: keys the view holds are not in the line yet, but a write ahead of them
+            // would destroy the line they are typed into or run before them.
+            || self.view_holds_keys()
     }
 
     /// Whether the shell's line may hold typed text right now (#1562): keys were delivered to
@@ -4984,6 +5065,9 @@ impl TypeaheadHandoff {
             young_hold_id: self.young_hold_id,
             deferred_gate_seq: self.deferred_gate_seq,
             young_hold_ends: mem::take(&mut self.young_hold_ends),
+            // #2182: the pane's queue keeps publishing into the same cell; the switch is the pane's.
+            view_keys: self.view_keys.clone(),
+            inband_wait_off: self.inband_wait_off,
             // #1793: the controller keeps counting into the same cell.
             pty_writes: {
                 // #2186: a new session knows nothing of what ssh last read.

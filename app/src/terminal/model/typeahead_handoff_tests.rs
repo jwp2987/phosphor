@@ -7686,3 +7686,96 @@ fn an_unproven_session_gets_its_enter_at_once_not_a_hold_for_a_preexec_that_cann
         assert!(!proven.session_emits_preexec);
     }
 }
+
+/// #2182: keys the view holds (a prompt hold in its queue) make the pty controller wait with the
+/// app's own in-band command; the flag is the view's publication, a switch turns it off.
+#[test]
+fn the_view_holding_keys_holds_queued_writes_until_it_publishes_none() {
+    let mut handoff = conpty_awaiting_line_editor();
+    let cell = handoff.view_keys_cell();
+    assert!(!handoff.holds_queued_writes());
+    assert_eq!(handoff.on_user_bytes(b"e"), UserBytesRoute::Held);
+    cell.publish(true);
+    assert!(handoff.view_holds_keys());
+    assert!(handoff.holds_queued_writes());
+    cell.publish(false);
+    assert!(!handoff.view_holds_keys());
+    assert!(!handoff.holds_queued_writes());
+}
+
+/// #2182: the kill switch restores the old behaviour: held keys do not hold queued writes.
+#[test]
+fn the_inband_wait_kill_switch_ignores_the_views_held_keys() {
+    let mut handoff = conpty_awaiting_line_editor();
+    handoff.view_keys_cell().publish(true);
+    assert!(handoff.inband_waits_for_keys());
+    assert!(handoff.holds_queued_writes());
+    handoff.set_inband_wait_for_keys_enabled(false);
+    assert!(!handoff.inband_waits_for_keys());
+    assert!(!handoff.view_holds_keys());
+    assert!(!handoff.holds_queued_writes());
+}
+
+/// #2182: the regression of the reverted first fix. 'e' and 'x' are held (a precmd seen, the line
+/// editor's signal awaited); the app's in-band command waits (no write, so nothing ends or flips
+/// the hold); 'i', 't' and Enter queue behind the same gate. `exit\r` reaches ONE destination,
+/// intact and in typed order, with the switch on and off.
+#[test]
+fn keys_held_before_an_inband_command_stay_one_ordered_run() {
+    for switch_on in [true, false] {
+        let mut handoff = conpty_awaiting_line_editor();
+        handoff.set_inband_wait_for_keys_enabled(switch_on);
+        let keys: [&[u8]; 5] = [b"e", b"x", b"i", b"t", b"\r"];
+        assert_eq!(handoff.on_user_bytes(keys[0]), UserBytesRoute::Held);
+        let id = handoff.take_prompt_hold_started().expect("a hold started");
+        handoff.view_keys_cell().publish(true);
+        assert_eq!(handoff.on_user_bytes(keys[1]), UserBytesRoute::Held);
+        // The in-band command waits for the hold: it is never written, so the hand-off is never
+        // told of it and nothing flips the owner under the held keys.
+        assert_eq!(handoff.holds_queued_writes(), switch_on);
+        for key in &keys[2..] {
+            assert_eq!(
+                handoff.on_user_bytes(key),
+                UserBytesRoute::Held,
+                "switch_on={switch_on}: a later key never overtakes the held ones"
+            );
+        }
+        assert!(
+            !handoff.editor_owns_input(),
+            "switch_on={switch_on}: the owner did not flip under the held keys"
+        );
+        assert!(handoff.is_pty_owned(), "switch_on={switch_on}");
+        assert_eq!(handoff.release_queued_prompt_hold_on_signal(), Some(id));
+        let mut written = Vec::new();
+        for key in keys {
+            if handoff.route_released_chunk(key) {
+                written.push(key.to_vec());
+            }
+        }
+        handoff.finish_queued_prompt_hold(id);
+        assert_eq!(
+            written,
+            keys.map(|key| key.to_vec()).to_vec(),
+            "switch_on={switch_on}"
+        );
+    }
+}
+
+/// #2182: after the held keys are written to the pty the line holds them; the in-band command
+/// still waits (their request is due), and goes out once a request covered them.
+#[test]
+fn released_held_keys_keep_queued_writes_held_until_a_request_covers_them() {
+    let mut handoff = conpty_awaiting_line_editor();
+    assert_eq!(handoff.on_user_bytes(b"e"), UserBytesRoute::Held);
+    let id = handoff.take_prompt_hold_started().expect("a hold started");
+    handoff.view_keys_cell().publish(true);
+    assert_eq!(handoff.release_queued_prompt_hold_on_signal(), Some(id));
+    assert!(handoff.route_released_chunk(b"e"));
+    handoff.finish_queued_prompt_hold(id);
+    // The view's queue drained: nothing is held there; the byte sits in the shell's line.
+    handoff.view_keys_cell().publish(false);
+    assert!(
+        handoff.holds_queued_writes(),
+        "the shell's line holds the released byte"
+    );
+}

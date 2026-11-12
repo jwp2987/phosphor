@@ -186,6 +186,13 @@ const PTY_WRITE_GATE_STALL_LOG_THRESHOLD: Duration = Duration::from_secs(3);
 // give-up-net: logs a stale-count wait only; no reset, no retry, no write, no routing
 const TYPEAHEAD_HANDOFF_STALE_COUNT_GIVE_UP: Duration = Duration::from_secs(5);
 
+/// #2182: how long the app's own in-band command (a generator, a prompt-chip probe) waits for the
+/// user's held keys, or for the shell's line that holds typed text, before it is cancelled. The
+/// holds end by their own events and caps; this only stops a missing event from stranding the
+/// command's requester.
+// give-up-net: cancels the app's own in-band command (its requester is told); no key is touched
+const INBAND_WAIT_FOR_KEYS_GIVE_UP: Duration = Duration::from_secs(15);
+
 /// Represents a single call to write bytes to the PTY asynchronously.
 enum PtyWrite {
     Command {
@@ -471,6 +478,15 @@ pub struct PtyController<T: EventLoopSender> {
     /// Typeahead hand-off: a command the hand-off does not own is queued behind the user's
     /// unreported line (`hold_command_behind_unreported_user_line`). At most one is held.
     handoff_held_command_pending: bool,
+    /// #2182: the cancel channels of the in-band commands in `pending_writes`, by command id, so
+    /// the give-up of their wait for the user's keys can tell the requester. Weak: they never
+    /// keep a requester's channel open.
+    in_band_cancels:
+        std::collections::HashMap<String, async_channel::WeakSender<InBandCommandCancelledEvent>>,
+    /// #2182: the front in-band command is waiting for the user's keys, and its give-up timer is
+    /// armed for `in_band_wait_generation`.
+    in_band_wait_armed: bool,
+    in_band_wait_generation: u64,
     /// Typeahead hand-off: a command from the editor was written or queued while one was held,
     /// so `is_user_command_executing` belongs to it and dropping the held one must leave it.
     handoff_command_written_since_hold: bool,
@@ -799,6 +815,22 @@ impl<T: EventLoopSender> PtyController<T> {
             |_, _| (),
         );
 
+        // #2182: the pane's queue wakes this controller when the user's held keys are released,
+        // so an in-band command that waited for them goes out (event driven, nothing polls).
+        {
+            let (keys_released_tx, keys_released_rx) = async_channel::bounded::<()>(1);
+            terminal_model
+                .lock()
+                .typeahead_handoff()
+                .view_keys_cell()
+                .set_waker(Some(keys_released_tx));
+            let _ = ctx.spawn_stream_local(
+                keys_released_rx,
+                |me, _, ctx| me.execute_next_queued_write(ctx),
+                |_, _| (),
+            );
+        }
+
         let write_queue = event_loop_tx.supports_write_queue() && write_queue_enabled();
         let (handoff, model_inbox, pty_writes) = {
             let model = terminal_model.lock();
@@ -846,6 +878,9 @@ impl<T: EventLoopSender> PtyController<T> {
             model_inbox,
             handoff_request_waiting: false,
             handoff_held_command_pending: false,
+            in_band_cancels: Default::default(),
+            in_band_wait_armed: false,
+            in_band_wait_generation: 0,
             handoff_command_written_since_hold: false,
             paced_write_queue: VecDeque::new(),
             paced_write_generation: 0,
@@ -1348,6 +1383,12 @@ impl<T: EventLoopSender> PtyController<T> {
     }
 
     fn cancel_in_band_command(&mut self, command_id: &str) {
+        self.in_band_cancels.remove(command_id);
+        // A timer armed for a wait of the command just cancelled is void.
+        if self.in_band_wait_armed {
+            self.in_band_wait_armed = false;
+            self.in_band_wait_generation = self.in_band_wait_generation.wrapping_add(1);
+        }
         self.pending_writes.retain(|pty_write| {
             !matches!(pty_write, PtyWrite::Command {
                  in_band_command_id, ..
@@ -1379,6 +1420,10 @@ impl<T: EventLoopSender> PtyController<T> {
 
         let terminal_model = self.terminal_model.clone();
         let callback_command_id = command_id.clone();
+        self.in_band_cancels
+            .retain(|_, cancel| cancel.upgrade().is_some());
+        self.in_band_cancels
+            .insert(command_id.clone(), cancel_tx.downgrade());
         self.pending_writes.push_back(PtyWrite::Command {
             command: command.to_owned(),
             shell_type,
@@ -1719,6 +1764,9 @@ impl<T: EventLoopSender> PtyController<T> {
         if self.handoff_holds_front_command() {
             return;
         }
+        if self.in_band_front_waits_for_keys(ctx) {
+            return;
+        }
         if !self.can_write_to_pty(ctx) {
             self.track_pty_write_gate_stall(PTY_WRITE_GATE_STALL_LOG_THRESHOLD, ctx);
             return;
@@ -1737,6 +1785,13 @@ impl<T: EventLoopSender> PtyController<T> {
             );
             let is_in_band_command = is_command && !is_shell_command;
             let is_held_handoff_command = is_held_handoff_command(&write);
+            if let PtyWrite::Command {
+                in_band_command_id: Some(id),
+                ..
+            } = &write
+            {
+                self.in_band_cancels.remove(id);
+            }
             let did_write = self.send_write_to_event_loop(write, ctx);
             if is_held_handoff_command {
                 if did_write {
@@ -1768,6 +1823,93 @@ impl<T: EventLoopSender> PtyController<T> {
                 self.execute_next_queued_write(ctx);
             }
         }
+    }
+
+    /// #2182: whether the next queued write is the app's own in-band command and must wait,
+    /// because the user's keys are held in the view's queue, or the shell's line holds typed text
+    /// or unreported bytes. Its kill prefix would wipe that line, and a write ahead of held keys
+    /// would reorder them; the keys never move. It goes out after the request or drain that
+    /// covers the bytes (`handoff_request_waiting` is set so the request is retried behind them),
+    /// or when the view releases its keys (the pane's queue wakes this controller). A wait that
+    /// outlasts [`INBAND_WAIT_FOR_KEYS_GIVE_UP`] cancels the command and writes nothing.
+    fn in_band_front_waits_for_keys(&mut self, ctx: &mut ModelContext<Self>) -> bool {
+        let front_is_in_band = FeatureFlag::TypeaheadHandoff.is_enabled()
+            && matches!(
+                self.pending_writes.front(),
+                Some(PtyWrite::Command {
+                    in_band_command_id: Some(_),
+                    ..
+                })
+            );
+        let waits = front_is_in_band && {
+            let model = self.terminal_model.lock();
+            let handoff = model.typeahead_handoff();
+            handoff.inband_waits_for_keys()
+                && (handoff.holds_queued_writes()
+                    || handoff.view_holds_keys()
+                    || handoff.shell_line_may_hold_typed_text())
+        };
+        if !waits {
+            // Whatever ended the wait, a timer armed for it is void.
+            if self.in_band_wait_armed {
+                self.in_band_wait_armed = false;
+                self.in_band_wait_generation = self.in_band_wait_generation.wrapping_add(1);
+            }
+            return false;
+        }
+        self.handoff_request_waiting = true;
+        if !self.in_band_wait_armed {
+            self.in_band_wait_armed = true;
+            self.in_band_wait_generation = self.in_band_wait_generation.wrapping_add(1);
+            let generation = self.in_band_wait_generation;
+            warpui::input_order::log_hop("inband_waits_for_keys", || {
+                format!("generation={generation}")
+            });
+            // give-up-net: cancels the app's own in-band command (its requester is told); no key is touched
+            ctx.spawn(
+                async move {
+                    Timer::after(INBAND_WAIT_FOR_KEYS_GIVE_UP).await;
+                },
+                move |me, _, ctx| me.give_up_in_band_wait(generation, ctx),
+            );
+        }
+        true
+    }
+
+    /// The give-up of [`Self::in_band_front_waits_for_keys`]: the front in-band command is
+    /// cancelled (its requester is told) and not written; the user's keys are untouched.
+    fn give_up_in_band_wait(&mut self, generation: u64, ctx: &mut ModelContext<Self>) {
+        if !self.in_band_wait_armed || self.in_band_wait_generation != generation {
+            return;
+        }
+        self.in_band_wait_armed = false;
+        self.in_band_wait_generation = self.in_band_wait_generation.wrapping_add(1);
+        let Some(PtyWrite::Command {
+            in_band_command_id: Some(command_id),
+            ..
+        }) = self.pending_writes.front()
+        else {
+            return;
+        };
+        let command_id = command_id.clone();
+        self.pending_writes.pop_front();
+        if let Some(cancel_tx) = self
+            .in_band_cancels
+            .remove(&command_id)
+            .and_then(|cancel| cancel.upgrade())
+        {
+            if let Err(err) = block_on(cancel_tx.send(InBandCommandCancelledEvent { command_id })) {
+                log::warn!("Pty Controller failed to cancel in band command: {err:?}");
+            }
+        }
+        warpui::input_order::log_hop("inband_wait_given_up", || {
+            format!("generation={generation}")
+        });
+        log::warn!(
+            "An in-band command waited too long for the user's held keys; cancelled it, the keys \
+             are untouched."
+        );
+        self.execute_next_queued_write(ctx);
     }
 
     /// Diagnostics for the still-unexplained field lockup in TODO.md ("The shell lockup"): the

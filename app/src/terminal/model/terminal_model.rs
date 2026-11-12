@@ -1301,6 +1301,10 @@ impl TerminalModel {
         handoff.set_prompt_seq_enabled(super::typeahead_handoff::prompt_seq_env_enabled());
         // #2052: the one kill switch of the reader marker, read once per pane.
         handoff.set_reader_marker_enabled(super::typeahead_handoff::reader_marker_env_enabled());
+        // #2182: the kill switch of the in-band command's wait for held user keys.
+        handoff.set_inband_wait_for_keys_enabled(
+            super::typeahead_handoff::inband_wait_for_keys_env_enabled(),
+        );
         let pty_writes_for_ledger = handoff.pty_write_count();
         let tty_read_secret_marker = Arc::new(AtomicBool::new(false));
         // #2040: while a command announced a secret read or a prompt's reader has the keys, the
