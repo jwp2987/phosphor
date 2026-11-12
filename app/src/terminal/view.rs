@@ -3853,6 +3853,9 @@ pub struct TerminalView {
     /// event that ends it, each logged where it happens. The tests assert the event path leaves
     /// this at zero.
     ssh_give_ups: u64,
+    /// #1849: a hold of the current connect window ended (its keys were delivered or dropped). A
+    /// ceiling that then merely ends the window held nothing and is not a give-up.
+    ssh_window_hold_ended: bool,
     /// #1596: the block the last ssh typeahead hold was opened for (its connect gate's block),
     /// recorded when the hold opens. The kept-text banner is shown only over that block, so a late
     /// hand-back can never attach it to another (local) command.
@@ -5795,6 +5798,7 @@ impl TerminalView {
             ),
             ssh_phase: input_queue::SshPhaseMachine::default(),
             ssh_give_ups: 0,
+            ssh_window_hold_ended: false,
             ssh_hold_block_id: None,
             ssh_release_held_locally: false,
             view_id: ctx.view_id(),
@@ -12519,6 +12523,9 @@ impl TerminalView {
                     .and_then(|gate| gate.block_id.clone());
             }
         }
+        if self.ssh_typeahead_holding && !holding {
+            self.ssh_window_hold_ended = true;
+        }
         self.ssh_typeahead_holding = holding;
         self.paste_queue.queue.set_ssh_hold_active(holding);
         self.ssh_edge(if holding {
@@ -13144,6 +13151,7 @@ impl TerminalView {
                 // not show): the hold owns the editor's keys as for an ssh armed at the submit.
                 gate.user_submitted = self.running_block_user_submitted;
                 self.ssh_connect_gate = Some(gate);
+                self.ssh_window_hold_ended = false;
                 self.ssh_edge(input_queue::SshEdge::ConnectStart);
                 // #1641: the wrapper may have announced itself before this window armed.
                 self.ssh_apply_wrapper_announcement(false);
