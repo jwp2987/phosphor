@@ -1,0 +1,112 @@
+#!/usr/bin/env bash
+# #2179: warpify.ssh.ssh_hosts_denylist reaches the shell as WARP_SSH_HOSTS_DENYLIST (one regex per
+# line) and the bash, zsh and fish ssh wrappers give a matching host a plain ssh session.
+# Cuts is_interactive_ssh_session, warp_ssh_host_denylisted and the ssh entry point out of the real
+# bootstrap files and drives them against a fake ssh. A shell whose binary is missing is skipped.
+#   - a plain host, user@host, ssh://user@host and an `ssh -G` HostName alias all match: the
+#     PlainSSHFallback hook is sent and `command ssh` runs with the original arguments, unmanaged
+#   - a host not on the list is managed as before
+#   - with the variable unset the wrapper does not run `ssh -G` (no extra forks)
+#   - no bootstrap line is 1024 bytes or longer
+set -u
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+boot="$root/app/assets/bundled/bootstrap"
+tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
+fail=0
+bad() { echo "FAIL: $*"; fail=1; }
+
+long="$(awk 'length($0)>=1024 {print FILENAME ":" FNR}' "$boot"/*.sh)"
+[ -z "$long" ] || bad "bootstrap lines of 1024 bytes or more: $long"
+
+mkdir "$tmp/bin"
+cat >"$tmp/bin/ssh" <<'EOS'
+#!/bin/sh
+# Fake ssh: `-G` answers with a HostName for the alias; anything else is the plain session.
+for a in "$@"; do
+  if [ "$a" = -G ]; then
+    echo x >>"$FAKE_SSH_DIR/g.count"
+    for last; do :; done
+    case "$last" in
+      alias-box) echo "hostname real.internal" ;;
+      *) echo "hostname $last" ;;
+    esac
+    exit 0
+  fi
+done
+echo "PLAIN $*"
+EOS
+chmod +x "$tmp/bin/ssh"
+
+# cut <file> <regex for the opening line>: print from the opening line to the first closing brace
+# (or `end` for fish) at the same indentation.
+cut_fn() {
+  awk -v re="$2" -v endl="$3" '
+    !on && $0 ~ re { match($0, /^ */); ind = substr($0, 1, RLENGTH); on = 1 }
+    on { print; if ($0 == ind endl) exit }
+  ' "$1"
+}
+
+run_case() { # shell script-file args...
+  local sh="$1" file="$2"; shift 2
+  rm -f "$tmp/g.count"
+  case "$sh" in
+    fish) fish "$file" "$@" 2>&1 ;;
+    *) "$sh" "$file" "$@" 2>&1 ;;
+  esac
+}
+
+check_shell() {
+  local sh="$1" boot_file="$2" f="$tmp/$1.script"
+  command -v "$sh" >/dev/null 2>&1 || { echo "skip $sh (not installed)"; return; }
+  {
+    case "$sh" in
+      bash)
+        echo 'function __warp_run_relaxed { "$@"; }'
+        cut_fn "$boot_file" '^ *function is_interactive_ssh_session[(][)] [{]' '}'
+        cut_fn "$boot_file" '^ *function warp_ssh_host_denylisted[(][)] [{]' '}'
+        cut_fn "$boot_file" '^ *function __warp_ssh_impl[(][)] [{]' '}'
+        echo 'function warp_send_json_message { case "$1" in *PlainSSHFallback*) echo HOOK-plain;; esac; }'
+        echo 'function warp_ssh_helper { echo "MANAGED $*"; }'
+        echo 'WARP_SESSION_ID=1 WARP_USE_SSH_WRAPPER=1'
+        echo '__warp_ssh_impl "$@"' ;;
+      zsh)
+        cut_fn "$boot_file" '^ *function is_interactive_ssh_session[(][)] [{]' '}'
+        cut_fn "$boot_file" '^ *function warp_ssh_host_denylisted[(][)] [{]' '}'
+        cut_fn "$boot_file" '^ *function ssh[(][)] [{]' '}'
+        echo 'function warp_send_json_message { case "$1" in *PlainSSHFallback*) echo HOOK-plain;; esac; }'
+        echo 'function warp_ssh_helper { echo "MANAGED $*"; }'
+        echo 'WARP_SESSION_ID=1 WARP_USE_SSH_WRAPPER=1'
+        echo 'ssh "$@"' ;;
+      fish)
+        cut_fn "$boot_file" '^ *function is_interactive_ssh_session$' 'end'
+        cut_fn "$boot_file" '^ *function warp_ssh_host_denylisted$' 'end'
+        cut_fn "$boot_file" '^ *function ssh$' 'end'
+        echo 'function warp_send_json_message; if string match -q "*PlainSSHFallback*" -- $argv[1]; echo HOOK-plain; end; end'
+        echo 'function warp_ssh_helper; echo "MANAGED $argv"; end'
+        echo 'set -g WARP_SESSION_ID 1; set -g WARP_USE_SSH_WRAPPER 1; set -g WARP_SHELL_DEBUG_MODE'
+        echo 'ssh $argv' ;;
+    esac
+  } >"$f"
+  export PATH="$tmp/bin:$PATH" FAKE_SSH_DIR="$tmp"
+  local deny=$'^bastion$\n^real\\.internal$' out
+  for dest in bastion me@bastion ssh://me@bastion alias-box; do
+    out="$(WARP_SSH_HOSTS_DENYLIST="$deny" run_case "$sh" "$f" -p 2222 "$dest")"
+    case "$out" in
+      *HOOK-plain*"PLAIN -p 2222 $dest"*) ;;
+      *) bad "$sh: $dest should be a plain session with its original args, got: $out" ;;
+    esac
+    case "$out" in *MANAGED*) bad "$sh: $dest was managed: $out" ;; esac
+  done
+  out="$(WARP_SSH_HOSTS_DENYLIST="$deny" run_case "$sh" "$f" -p 2222 other.host)"
+  [ "$out" = "MANAGED -p 2222 other.host" ] || bad "$sh: a host not on the list must be managed, got: $out"
+  out="$(run_case "$sh" "$f" -p 2222 bastion)"
+  [ "$out" = "MANAGED -p 2222 bastion" ] || bad "$sh: with no denylist the host must be managed, got: $out"
+  [ ! -e "$tmp/g.count" ] || bad "$sh: no denylist, yet the wrapper ran ssh -G"
+  echo "checked $sh"
+}
+
+check_shell bash "$boot/bash_body.sh"
+check_shell zsh "$boot/zsh_body.sh"
+check_shell fish "$boot/fish.sh"
+[ $fail = 0 ] && echo "test_ssh_hosts_denylist: ok"
+exit $fail

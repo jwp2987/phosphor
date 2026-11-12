@@ -3445,12 +3445,37 @@ fi
             ' warp-ssh-mux "$1" "$2" </dev/null >/dev/null 2>&1
         }
 
+        # #2179: a host on the user's ssh denylist (WARP_SSH_HOSTS_DENYLIST, one ERE per line, exported by
+        # the app when the shell starts) gets a plain ssh session, never a managed one. Called after
+        # is_interactive_ssh_session, so ARGS[0] is the destination. The typed destination and, only when
+        # the list is non-empty, the name `ssh -G` resolves it to are both matched. Returns 0 when denylisted.
+        function warp_ssh_host_denylisted() {
+            [[ -n "${WARP_SSH_HOSTS_DENYLIST:-}" ]] || return 1
+            local warp_dl_dest="${ARGS[0]:-}"
+            warp_dl_dest="${warp_dl_dest#ssh://}"
+            warp_dl_dest="${warp_dl_dest%%/*}"
+            warp_dl_dest="${warp_dl_dest#*@}"
+            local warp_dl_resolved=""
+            warp_dl_resolved="$(command ssh -G "$@" 2>/dev/null | command sed -n 's/^hostname //p' | command head -n 1)"
+            local warp_dl_pattern warp_dl_candidate
+            while IFS= read -r warp_dl_pattern; do
+                [[ -n "$warp_dl_pattern" ]] || continue
+                for warp_dl_candidate in "$warp_dl_dest" "$warp_dl_resolved"; do
+                    [[ -n "$warp_dl_candidate" ]] || continue
+                    if [[ "$warp_dl_candidate" =~ $warp_dl_pattern ]]; then
+                        return 0
+                    fi
+                done
+            done <<< "$WARP_SSH_HOSTS_DENYLIST"
+            return 1
+        }
+
         function __warp_ssh_impl() {
             if is_interactive_ssh_session "$@"; then
                 warp_send_json_message "{\"hook\": \"PreInteractiveSSHSession\", \"value\": {\"session_id\": ${WARP_SESSION_ID:-}}}"
 
                 # If the SSH wrapper is not enabled for this session, don't use it.
-                if [ "${WARP_USE_SSH_WRAPPER:-}" = "1" ]; then
+                if [ "${WARP_USE_SSH_WRAPPER:-}" = "1" ] && ! warp_ssh_host_denylisted "$@"; then
                     local TRACE_FLAG_IF_WARP_SHELL_DEBUG_MODE=""
                     if [[ "${WARP_SHELL_DEBUG_MODE:-}" == "1" ]]; then
                         TRACE_FLAG_IF_WARP_SHELL_DEBUG_MODE="-x"

@@ -927,6 +927,32 @@ if test "$WARP_IS_LOCAL_SHELL_SESSION" = "1"
         if [ (count $argv) -ne 1 ]
             return 1
         end
+        # #2179: the destination, for warp_ssh_host_denylisted.
+        set -g __warp_ssh_dest $argv[1]
+    end
+
+    # #2179: a host on the user's ssh denylist (WARP_SSH_HOSTS_DENYLIST, one regex per line, exported by
+    # the app when the shell starts) gets a plain ssh session, never a managed one. Called after
+    # is_interactive_ssh_session succeeded. The typed destination and, only when the list is non-empty,
+    # the name `ssh -G` resolves it to are both matched. Returns 0 when denylisted.
+    function warp_ssh_host_denylisted
+        if test -z "$WARP_SSH_HOSTS_DENYLIST"
+            return 1
+        end
+        set -l dest (string replace -r '^ssh://' '' -- $__warp_ssh_dest)
+        set dest (string replace -r '/.*$' '' -- $dest)
+        set dest (string replace -r '^.*@' '' -- $dest)
+        set -l resolved (command ssh -G $argv 2>/dev/null | string replace -rf '^hostname ' '' | head -n 1)
+        for pattern in (string split \n -- $WARP_SSH_HOSTS_DENYLIST)
+            test -n "$pattern"; or continue
+            for candidate in $dest $resolved
+                test -n "$candidate"; or continue
+                if string match -rq -- $pattern $candidate
+                    return 0
+                end
+            end
+        end
+        return 1
     end
 
     function warp_ssh_helper
@@ -1519,7 +1545,7 @@ esac
         if is_interactive_ssh_session $argv
             warp_send_json_message "{\"hook\": \"PreInteractiveSSHSession\", \"value\": {\"session_id\": $WARP_SESSION_ID}}"
 
-            if [ "$WARP_USE_SSH_WRAPPER" = "1" ]
+            if [ "$WARP_USE_SSH_WRAPPER" = "1" ]; and not warp_ssh_host_denylisted $argv
                 if test $WARP_SHELL_DEBUG_MODE
                     set -g TRACE_FLAG_IF_WARP_SHELL_DEBUG_MODE "-x"
                 else

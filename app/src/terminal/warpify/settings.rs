@@ -622,6 +622,29 @@ impl WarpifySettings {
             .any(|regex| regex.is_match(ssh_host.trim()))
     }
 
+    /// The denylist as handed to a local shell's ssh wrapper (`WARP_SSH_HOSTS_DENYLIST`): the
+    /// patterns that compile, one per line. The wrapper runs in the shell, so a host that matches
+    /// is given a plain ssh session, never a managed one. `None` when there is nothing to
+    /// enforce, so the variable is not exported and the wrapper does no extra work.
+    pub fn ssh_hosts_denylist_env_value(&self) -> Option<String> {
+        Self::denylist_env_value(&self.ssh_hosts_denylist)
+    }
+
+    fn denylist_env_value(patterns: &[String]) -> Option<String> {
+        let valid: Vec<&str> = patterns
+            .iter()
+            .map(|pattern| pattern.trim())
+            .filter(|pattern| {
+                !pattern.is_empty() && !pattern.contains('\n') && Regex::new(pattern).is_ok()
+            })
+            .collect();
+        if valid.is_empty() {
+            None
+        } else {
+            Some(valid.join("\n"))
+        }
+    }
+
     fn parse_added_subshell_commands(
         added_subshell_commands: &AddedSubshellCommands,
     ) -> Vec<Result<Regex, regex::Error>> {
