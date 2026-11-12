@@ -1,5 +1,7 @@
 # appci/lat.py: latency measurement policy shared by the cases, report.py and baseline.py.
 #   * a "latency record" is metrics["lat"][key] = {phosphor, reference, overhead_ms, budget_ms, budget_kind, prev, baseline, remeasure, verdict}
+#   * BANDS (owner 2026-11-12, appci/bands.py, docs/testing.md "Perf and memory bands"): evaluate(banded=True) replaces the fixed budget by the history band of the
+#     metric; the previous-build / baseline comparisons below are then NOTES only. The text below describes the fixed-budget mechanics the band reuses.
 #   * budget verdicts (owner budgets, docs/testing.md "Latency budgets"): with a reference terminal measured the same way in the same
 #     session the verdict is PASS/FAIL on OVERHEAD (Phosphor median - reference median); without one it is "no-reference" (never pass);
 #     budget_kind "absolute" (Ctrl-C <= 20 ms over the harness floor, UI work) is judged on the number itself.
@@ -13,6 +15,8 @@
 #     (rec[prev|baseline].median_verdict). The share has a hard budget of its own (app_share.budget_ms): over it is a FAIL whatever n is and whatever
 #     the basis. When the share is not usable the median gate applies exactly as before.
 import json, os, statistics
+
+import bands
 
 RANK = {"pass": 0, "no-reference": 1, "no-compare": 1, "inconclusive": 1, "pending": 1, "none": 0, "warn": 2, "fail": 3}
 
@@ -299,7 +303,7 @@ def old_app_share(what, rec_old, case_metric=None):
 
 
 def evaluate(rid, phos, ref, budget_ms, kind, platform, remeasure=None, ref_name=None, floor=None, notes=None, pane_shell=None, ref_shell=None,
-             expected=None, resolution_ms=None, mode="sequential", implausible_neg_ms=None, app_share=None):
+             expected=None, resolution_ms=None, mode="sequential", implausible_neg_ms=None, app_share=None, banded=False, band_on_median=False):
     """phos/ref: sample lists (warm-up already dropped). remeasure: callable returning a fresh phos sample list, or None.
     expected: samples the case asked for (a PASS needs >= 90 % of them AND >= min_n, #1514); resolution_ms: the measurement's time quantum
     (a PASS is withheld when it exceeds budget/2). Both only ever turn a pass into 'inconclusive', never a fail into a pass.
@@ -309,10 +313,22 @@ def evaluate(rid, phos, ref, budget_ms, kind, platform, remeasure=None, ref_name
     app_share: None, or dict(what=<figure name>, p50, n, budget_ms, metric=<case metric of older runs, optional>, remeasure=<callable -> dict(p50, n,
     samples=<end-to-end list, optional>), optional>): the app's own share of this measurement (header, "app-share basis"). Usable -> the prev/baseline
     regression verdicts are judged on it and rec['regress_basis'] == 'app_share'; not usable -> the median gate, as without it. Over budget_ms -> FAIL.
+    banded (owner 2026-11-12, appci/bands.py): the budget is the BAND of this (platform, mode, pane, metric) from test-results/bands.json: budget_ms is
+    only a fallback for a caller that does not band; with banded the band's upper replaces it, no band = 'no-reference' (NOREF, never a pass), the
+    previous-build / baseline regression verdicts become notes (they no longer decide the record), and the app share (app_share) is judged against the
+    band of "<id>#app". band_on_median: no reference exists by construction (latency_key_log): the Phosphor median itself is the banded figure.
     Returns the latency record (see header)."""
+    band, bkey = None, None
+    if banded:
+        bkey = bands.key(platform, rid)
+        band = bands.lookup(bkey)
+        budget_ms = band["upper"] if band else 0.0
     ps = summarize(phos)
     rec = {"measurement_mode": mode, "phosphor": ps, "reference": summarize(ref) if ref else None, "reference_name": ref_name if ref else None,
            "budget_ms": budget_ms, "budget_kind": kind, "floor_ms": floor, "notes": list(notes or [])}
+    if banded:
+        rec["band_key"] = bkey
+        rec["band"] = dict(band, status="band") if band else {"status": "none"}
     rec["per_side"] = {"phosphor": dict(n=ps["n"], se_median_ms=(lambda x: round(x, 2) if x is not None else None)(median_se(phos)))}
     if ref:
         rec["per_side"]["reference"] = dict(n=len(ref), se_median_ms=(lambda x: round(x, 2) if x is not None else None)(median_se(ref)))
@@ -335,6 +351,9 @@ def evaluate(rid, phos, ref, budget_ms, kind, platform, remeasure=None, ref_name
                                     "not a Phosphor figure; NOREF, no verdict (a PASS here would rest on a mis-measured reference)" % (-rec["overhead_ms"], implausible_neg_ms, se))
             elif bv == "no-compare":
                 rec["notes"].append("pane shell %s != reference shell %s: overhead %.2f ms is NOT a Phosphor figure; no verdict" % (pane_shell, ref_shell, rec["overhead_ms"]))
+        elif banded and band_on_median and ps["p50"] is not None:
+            rec["overhead_ms"] = None
+            bv = "pass" if ps["p50"] <= budget_ms else "fail"
         else:
             rec["overhead_ms"] = None
             bv = "no-reference"
@@ -342,6 +361,15 @@ def evaluate(rid, phos, ref, budget_ms, kind, platform, remeasure=None, ref_name
         base = ps["p50"]
         rec["overhead_ms"] = round(base - (floor or 0.0), 2) if base is not None else None
         bv = "pass" if rec["overhead_ms"] is not None and rec["overhead_ms"] <= budget_ms else "fail"
+    if banded:
+        val = rec.get("overhead_ms") if rec.get("overhead_ms") is not None else (ps["p50"] if band_on_median else None)
+        if band is None:
+            rec["notes"].append("no band yet for %s: NOREF, not a pass" % bkey)
+            if bv in ("pass", "fail", "inconclusive"):
+                bv = "no-reference"
+        elif val is not None:
+            rec["band"]["value"] = val
+            rec["notes"].append("%s: %s" % (bkey, bands.judge(bkey, val)[1]))
     # #1514: thin evidence is never a pass. Fails stay fails.
     why = []
     if ps["n"] < min_n():
@@ -389,6 +417,14 @@ def evaluate(rid, phos, ref, budget_ms, kind, platform, remeasure=None, ref_name
         usable, why_not = app_share_usable(app_share, expected)
         sh = rec["app_share"] = {"what": app_share.get("what"), "p50": app_share.get("p50"), "n": app_share.get("n") or 0, "budget_ms": app_share.get("budget_ms"),
                                  "usable": usable}
+        if banded:
+            sb = bands.lookup(bkey + "#app")
+            sh["band_key"] = bkey + "#app"
+            sh["budget_ms"] = sb["upper"] if sb else None
+            if sb:
+                sh["band_note"] = bands.describe(sb)
+            else:
+                rec["notes"].append("no band yet for %s#app: the app's own share is not judged (NOREF)" % bkey)
         if sh["p50"] is not None and sh["budget_ms"] is not None:
             # the hard bound on the app's own time: a FAIL whatever n is (thin evidence never turns a fail into anything else)
             share_bv = sh["budget_verdict"] = "fail" if sh["p50"] > sh["budget_ms"] else "pass"
@@ -449,6 +485,6 @@ def evaluate(rid, phos, ref, budget_ms, kind, platform, remeasure=None, ref_name
         if rec["baseline"].get("p50") is not None:
             rec["baseline"]["verdict"] = bsv
     rec["prev_verdict"], rec["baseline_verdict"] = pv, bsv
-    v = worst(bv, pv, bsv if bsv != "pending" else "pass", share_bv)
+    v = worst(bv, share_bv) if banded else worst(bv, pv, bsv if bsv != "pending" else "pass", share_bv)
     rec["verdict"] = v
     return rec

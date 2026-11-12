@@ -71,7 +71,10 @@ lat_rows = []
 for r in rows:
     for k, rec in ((r.get("metrics") or {}).get("lat") or {}).items():
         b = "-"
-        if rec.get("budget_kind") == "overhead":
+        if rec.get("band_key"):
+            bd = rec.get("band") or {}
+            b = ("band <= %g ms (n=%s%s)" % (rec["budget_ms"], bd.get("n"), ", provisional" if bd.get("provisional") else "")) if bd.get("status") == "band" else "no band yet"
+        elif rec.get("budget_kind") == "overhead":
             b = "overhead <= %g ms" % rec["budget_ms"]
         elif rec.get("budget_kind") == "absolute":
             b = "<= %g ms over floor" % rec["budget_ms"]
@@ -87,7 +90,7 @@ for r in rows:
             lat_rows.append("| | re-measure | %s | | | | | | | |" % cell(rec["remeasure"]["phosphor"]))
 if lat_rows:
     m += ["", "## Latency (%s): median / p95 ms, warm-up discarded" % meta.get("platform", "?"), "",
-          "| mode | case/measure | Phosphor | reference | overhead ms | budget | previous build | baseline | verdict | n |",
+          "| mode | case/measure | Phosphor | reference | overhead ms | band (budget) | previous build (note)  | baseline | verdict | n |",
           "|---|---|---|---|---|---|---|---|---|---|"] + lat_rows
 kl = [(r.get("mode", ""), (r.get("metrics") or {}).get("key_loss")) for r in rows if (r.get("metrics") or {}).get("key_loss")]
 if kl:

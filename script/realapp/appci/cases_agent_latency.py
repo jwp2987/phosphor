@@ -2,9 +2,9 @@
 # the scripted fake model's own request log (fake_model.FakeModel.ACTIVE.reqs, APPCI_FAKE_MODEL=1), never a screenshot alone.
 #   agent_latency_key    key -> frame (hop=key_frame, the first frame built after a key-down; #1828 hook in crates/warpui_core/src/input_order.rs) in the agent input,
 #                        idle and while a slow steady fake reply streams, against the SAME measure in the terminal-mode input editor of the same session
-#                        (overhead budget APPCI_KEY_BUDGET_MS, 2 ms). Also the UI-work items (hop=ui_item >= 4 ms) while typing.
+#                        (overhead against its history band, bands.py). Also the UI-work items (hop=ui_item >= 4 ms) while typing.
 #   agent_latency_enter  Enter -> hop=enter_begin (the app's own share of Enter) for a prose line in the agent input, idle and while a reply streams, against a
-#                        shell line in the terminal-mode editor (APPCI_ENTER_BUDGET_MS, 2 ms); Enter -> the request arriving at the fake model is a metric.
+#                        shell line in the terminal-mode editor (its history band, bands.py); Enter -> the request arriving at the fake model is a metric.
 #   agent_steer_fast     #851 (by design): a 200+ character line with shell-looking text typed at 10-25 ms/key with instant Enter while a reply streams reaches
 #                        the agent as a steer exactly once, byte for byte, three times in a row, and nothing reaches the pty or the shell.
 # Platforms: Linux, macOS, Windows (all use the loopback fake model and the app log); each needs a build with the hop=key_frame hook (older builds: the key case
@@ -286,7 +286,7 @@ def judge_ui_items(r, txts, n_keys, label):
 
 def evaluate(ctx, r, name, ds, rs, budget, expected, notes):
     rec = lat.evaluate("%s/%s" % (ctx.label, name), ds, rs, budget, "overhead", plat(), ref_name="same app, terminal-mode input editor" if rs else None,
-                       expected=expected, mode="sequential", notes=notes)
+                       banded=True, expected=expected, mode="sequential", notes=notes)
     r.metrics.setdefault("lat", {})[name.split("/", 1)[1]] = rec
     cases.lat_checks(r, rec, name)
     return rec
@@ -296,10 +296,10 @@ def evaluate(ctx, r, name, ds, rs, budget, expected, notes):
 @case("agent_latency_key", modes=("agent",), order=52, gui=True)
 def c_agent_latency_key(ctx, r):
     """#1828: key -> first frame built in the AGENT input (a) idle and (b) while a slow steady fake reply streams, each judged as overhead over the terminal-mode
-    input editor's key -> frame in the same session (budget APPCI_KEY_BUDGET_MS, 2 ms; lat.evaluate decides at 2 SE, thin evidence is never a pass)."""
+    input editor's key -> frame in the same session (its history band, bands.py; lat.evaluate decides at 2 SE, thin evidence is never a pass)."""
     fm = need_model(ctx, r)
     n, warm = ctx.count_lat(60), lat.warmup()
-    budget = float(os.environ.get("APPCI_KEY_BUDGET_MS", "2"))
+    budget = None          # owner 2026-11-12: the band of agent/agent_latency_key/{idle,streaming} replaces the fixed 2 ms (bands.py)
     ctx.reset()
     AG.fresh_conversation(ctx, r)
     probe, _ = key_batch(ctx, 4)
@@ -489,10 +489,10 @@ def enter_batch(ctx, r, count, line_fn, fm=None, streaming=False, settle=0.4):
 def c_agent_latency_enter(ctx, r):
     """#1828: the app's own share of Enter (Enter key-down -> hop=enter_begin) for a prose line typed into the agent input at 10-25 ms/key with instant Enter,
     (a) idle and (b) while a slow steady fake reply streams, judged as overhead over the same share for a shell line in the terminal-mode editor (budget
-    APPCI_ENTER_BUDGET_MS, 2 ms). Enter -> the request arriving at the fake model is a metric (loopback; includes the app's request build)."""
+    its history band, bands.py). Enter -> the request arriving at the fake model is a metric (loopback; includes the app's request build)."""
     fm = need_model(ctx, r)
     n, warm = ctx.count_lat(60), lat.warmup()
-    budget = float(os.environ.get("APPCI_ENTER_BUDGET_MS", "2"))
+    budget = None          # owner 2026-11-12: the band of agent/agent_latency_enter/{idle,streaming} replaces the fixed 2 ms (bands.py)
     ctx.reset()
     try:
         AG.fresh_conversation(ctx, r)

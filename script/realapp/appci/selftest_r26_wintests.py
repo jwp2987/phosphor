@@ -57,9 +57,9 @@ def r26_pwsh7_identity_probe_logs_path():
 @check
 def r26_rc_clear_names_2025_and_keeps_budget():
     src = open(os.path.join(HERE, "cases_subshell_ready.py")).read()
-    assert "r.check(dt < 2.0," in src, "the 2 s budget stays"
+    assert "dt < 2.0" not in src and src.count("inner_line_after_enter_s\" % ctx.label)") == 2, "owner 2026-11-12: the fixed 2 s budget is its history band now"
     import cases_subshell_ready as S
-    assert "#2025" in S.WIN_BOOTSTRAP_NOTE and "4760" in S.WIN_BOOTSTRAP_NOTE and "unchanged" in S.WIN_BOOTSTRAP_NOTE
+    assert "#2025" in S.WIN_BOOTSTRAP_NOTE and "4760" in S.WIN_BOOTSTRAP_NOTE and "band" in S.WIN_BOOTSTRAP_NOTE
 
 
 @check
