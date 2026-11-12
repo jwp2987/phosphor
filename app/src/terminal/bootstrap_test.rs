@@ -5699,8 +5699,14 @@ exit 0
         std::fs::write(hushed_home.join(".hushlogin"), "").unwrap();
         let run_far_in = |home: &std::path::Path, shell: &str, mode: &[u8]| -> String {
             use std::io::Write as _;
+            // The bash arm execs the shell that runs the command by path (`${BASH:-$SHELL}`,
+            // #2154), so a stub named `bash` on PATH is no longer found. The stub plays the
+            // remote bash by being `$BASH`: the command is run under the real bash (a `bash -c`
+            // sets `$BASH` itself, and nothing else would intercept the absolute exec), and the
+            // assignment in front is the only difference from `$SHELL -c <command>`.
+            let command = format!("BASH='{}'\n{remote}", far.join("bash").display());
             let mut child = Command::new(real_bash)
-                .args(["-c", remote])
+                .args(["-c", command.as_str()])
                 .env(
                     "PATH",
                     format!(

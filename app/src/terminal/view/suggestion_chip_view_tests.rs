@@ -106,6 +106,19 @@ fn a_late_prompt_suggestion_is_a_chip_that_moves_neither_the_output_nor_the_inpu
         initialize_app_for_terminal_view(&mut app);
         let (window_id, terminal) = add_window_with_id_and_terminal(&mut app, None);
 
+        // `TerminalView::new_for_test` builds a 7 x 10.5 px pane (every platform): no editor line
+        // that narrow has room for a chip (it needs 16 cells), so the chip was never drawn. Give
+        // the pane the size of a real window the way a layout does (#2138, r22c on macOS).
+        terminal.update(&mut app, |view, ctx| {
+            let update = crate::terminal::view::SizeUpdateBuilder::after_layout(
+                *view.size_info,
+                vec2f(800., 600.),
+            )
+            .build(view, ctx);
+            view.resize_internal(update, ctx);
+            assert_eq!(view.size_info.pane_width_px, 800.);
+        });
+
         let (block_id, pane_width_px) = terminal.update(&mut app, |view, _ctx| {
             let pane_width_px = view.size_info.pane_width_px;
             let mut model = view.model.lock();
