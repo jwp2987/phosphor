@@ -754,6 +754,15 @@ def zsh_evidence_line(path):
     return ("() { setopt localoptions appendcreate clobber; { typeset -p preexec_functions; whence -v __pa_pxh; print -r -- \"PA_CTL=$PA_CTL\"; [[ -w $PA_CTL ]] && print wr=1 || print wr=0; } >> %s; }" % path)
 
 
+def tab_menu_names(items):
+    """pure (r28): the names in the app's `hop=tab_menu ... items=[...]` list (the last path component of each, quotes and a trailing `/` dropped), or None
+    when the app logged lengths instead of names (`<N chars>`: the run did not opt in with WARP_INPUT_ORDER_LOG_TEXT=1), which cannot be compared."""
+    parts = [x.strip() for x in (items or "").strip().strip("[]").split(",") if x.strip()]
+    if any(re.fullmatch(r"<\d+ chars>", x) for x in parts):
+        return None
+    return {x.strip(" \"'").rstrip("/").rsplit("/", 1)[-1] for x in parts}
+
+
 def remote_tab_waits(log_text):
     """pure (#2188): every `remote_tab_wait:` line of the app log, in order, as dicts {end: released|gave_up, why, waited_ms, held, enter_held}. The app writes
     one when the remote Tab completion gate closes: `released why=answered_applied` is a fast Enter that waited for the completer's answer and ran the
@@ -856,8 +865,10 @@ def c_tab_remote_dir(ctx, r, arm):
     ctx.be.key("Tab")
     m = ctx.until(lambda: HOOK_TAB_MENU.search(ctx.log_since(off)), 3 + 3 * rt, step=0.05)
     ctx.shot("lab_tab_menu")
-    if m and cand is not None:
-        shown = {x.strip(" \"'").rstrip("/").rsplit("/", 1)[-1] for x in m.group(1).strip("[]").split(",") if x.strip()}
+    shown = tab_menu_names(m.group(1)) if m else None
+    if m and shown is None:
+        r.unverifiable("[hook] the tab-menu line carries lengths, not names (the run did not opt in to logging text): the menu is not compared with the shell's candidates")
+    elif m and cand is not None:
         r.check(shown == names, "the app's completion menu shows %s, the shell's own candidates are %s" % (sorted(shown), sorted(names)))
     elif not m:
         r.unverifiable("[hook] no tab-menu line in the app log (hop=tab_menu items=[...]): the menu is not compared with the shell's candidates")

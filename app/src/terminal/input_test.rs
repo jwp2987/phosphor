@@ -20287,3 +20287,218 @@ fn test_remote_tab_enter_wait_kill_switch_name_and_semantics() {
     assert!(!switch_is_on(Some("0")));
     assert!(switch_is_on(None));
 }
+
+// ---- #2188 follow-up (r27b lab, zsh without the helper at 150 ms): an Enter held for the remote
+// ---- shell's in-band Tab answer keeps waiting for the completer when that answer is empty ----
+
+/// The fixture of the r27b failure: a remote session without the helper, the Tab asked the
+/// remote shell in-band (`remote_native`), and the fast Enter is held for that answer. Returns
+/// the id of the waiting Enter as well.
+async fn in_band_tab_with_held_enter(
+    app: &mut App,
+) -> (
+    ViewHandle<Input>,
+    Rc<RefCell<Vec<String>>>,
+    u64,
+    EditorSnapshot,
+    u64,
+) {
+    let (input, executed, generation, snapshot) = tab_enter_fixture(app, false).await;
+    let wait_id = input.update(app, |input, ctx| {
+        input.tab_completion_request.as_mut().unwrap().remote_native = true;
+        input.input_enter(ctx);
+        let wait = input
+            .verdict_wait
+            .as_ref()
+            .expect("the Enter holds for the remote in-band answer");
+        assert!(wait.holds_for_tab_completion());
+        wait.id
+    });
+    assert!(executed.borrow().is_empty(), "held for the remote answer");
+    (input, executed, generation, snapshot, wait_id)
+}
+
+/// The exact r27b sequence (zsh, no helper, 150 ms): Tab asks the remote shell in-band, the Enter
+/// arrives 23 ms later and is held, the shell answers with NOTHING two round trips later, and the
+/// completer (which has the answer) is asked. The Enter must not run the line as typed at the
+/// empty answer: it keeps waiting, the completer's single match is applied, and the COMPLETED
+/// line runs, once. The net armed for the completer finds nothing left to do.
+#[test]
+fn test_in_band_empty_answer_with_held_enter_waits_for_the_completer_and_runs_the_completed_line() {
+    App::test((), |mut app| async move {
+        let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+        let (input, executed, generation, snapshot, wait_id) =
+            in_band_tab_with_held_enter(&mut app).await;
+        let kept = input.update(&mut app, |input, ctx| {
+            input.keep_held_enter_for_remote_completer(ctx)
+        });
+        assert!(kept, "the Enter is handed to the completer, not run");
+        assert!(
+            executed.borrow().is_empty(),
+            "the empty in-band answer must not run the line as typed"
+        );
+        input.update(&mut app, |input, _| {
+            assert!(
+                input
+                    .verdict_wait
+                    .as_ref()
+                    .is_some_and(|wait| wait.id == wait_id && wait.holds_for_tab_completion()),
+                "the same Enter is still held"
+            );
+            assert_eq!(input.enter_waits_for_remote_completer, Some(wait_id));
+            // The request the completer run records (`run_completions_async`): not in-band.
+            input.tab_completion_request = Some(TabCompletionRequest {
+                generation,
+                snapshot: snapshot.clone(),
+                local: false,
+                remote_native: false,
+                compute: ComputeClock::default(),
+            });
+        });
+        // The completer answers over the link: slower than the lab's 150 ms round trip.
+        warpui::r#async::Timer::after(Duration::from_millis(200)).await;
+        assert!(
+            executed.borrow().is_empty(),
+            "nothing runs before the answer"
+        );
+        input.update(&mut app, |input, ctx| {
+            input.deliver_tab_job_results(
+                None,
+                generation,
+                build_suggestion_results(
+                    vec![argument_suggestion("feature")],
+                    (13, 15),
+                    MatchStrategy::CaseInsensitive,
+                ),
+                CompletionsTrigger::Keybinding,
+                snapshot,
+                ctx,
+            );
+        });
+        assert_eq!(executed.borrow().len(), 1);
+        assert_eq!(executed.borrow()[0].trim_end(), "git checkout feature");
+        input.update(&mut app, |input, ctx| {
+            assert!(input.verdict_wait.is_none());
+            assert_eq!(input.enter_waits_for_remote_completer, None);
+            // The net of the hand-over fires later: that Enter has run, nothing happens.
+            input.remote_completer_enter_net_fired(wait_id, ctx);
+        });
+        assert_eq!(executed.borrow().len(), 1, "the net runs nothing twice");
+    });
+}
+
+/// The same sequence through `native_completions_missed` itself (the remote shell ANSWERED, with
+/// nothing): the Enter is neither run nor dropped by the empty answer; it is still the held one
+/// when the call returns, waiting for the completer the call started.
+#[test]
+fn test_native_completions_missed_with_an_answer_keeps_the_held_enter_for_the_completer() {
+    App::test((), |mut app| async move {
+        let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+        let (input, executed, generation, snapshot, wait_id) =
+            in_band_tab_with_held_enter(&mut app).await;
+        let sink = executed.clone();
+        input.update(&mut app, |input, ctx| {
+            let completion_context = input
+                .completion_session_context(ctx)
+                .expect("the fixture has a session");
+            let cursor = input.start_byte_index_of_last_selection(ctx);
+            input.native_completions_missed(
+                generation,
+                false, /* no_answer: the shell answered, with no candidates */
+                "git checkout fe".to_string(),
+                MatchStrategy::Fuzzy,
+                CompletionsTrigger::Keybinding,
+                snapshot,
+                cursor,
+                completion_context,
+                ctx,
+            );
+            assert!(
+                sink.borrow().is_empty(),
+                "the empty in-band answer must not run the line as typed"
+            );
+            assert!(
+                input
+                    .verdict_wait
+                    .as_ref()
+                    .is_some_and(|wait| wait.id == wait_id && wait.holds_for_tab_completion()),
+                "the same Enter is still held, for the completer"
+            );
+            assert_eq!(input.enter_waits_for_remote_completer, Some(wait_id));
+        });
+    });
+}
+
+/// The completer never answers the handed-over Enter: the link-sized net cancels the completion
+/// and the Enter runs the line as typed (not dropped), once; a late answer changes nothing.
+#[test]
+fn test_in_band_empty_answer_hand_over_net_runs_the_line_as_typed_and_drops_the_late_answer() {
+    App::test((), |mut app| async move {
+        let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+        let (input, executed, generation, snapshot, wait_id) =
+            in_band_tab_with_held_enter(&mut app).await;
+        input.update(&mut app, |input, ctx| {
+            assert!(input.keep_held_enter_for_remote_completer(ctx));
+            // A net armed for another Enter does not touch this one.
+            input.remote_completer_enter_net_fired(wait_id.wrapping_add(1), ctx);
+        });
+        assert!(executed.borrow().is_empty());
+        input.update(&mut app, |input, ctx| {
+            input.remote_completer_enter_net_fired(wait_id, ctx)
+        });
+        assert_eq!(
+            executed.borrow().as_slice(),
+            ["git checkout fe"],
+            "the Enter is not dropped: the line runs as typed"
+        );
+        deliver_tab_result(&input, &mut app, generation, vec!["feature"], snapshot);
+        assert_eq!(executed.borrow().len(), 1, "a late answer runs nothing");
+        input.read(&app, |input, ctx| {
+            assert!(input.verdict_wait.is_none());
+            assert_eq!(input.buffer_text(ctx).trim_end(), "git checkout fe");
+        });
+    });
+}
+
+/// With no Enter held there is nothing to hand over: the miss goes on as before (the completer
+/// answers under the remote Tab gate).
+#[test]
+fn test_in_band_empty_answer_without_a_held_enter_hands_nothing_over() {
+    App::test((), |mut app| async move {
+        let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+        let (input, executed, _generation, _snapshot) = tab_enter_fixture(&mut app, false).await;
+        let kept = input.update(&mut app, |input, ctx| {
+            input.tab_completion_request.as_mut().unwrap().remote_native = true;
+            input.keep_held_enter_for_remote_completer(ctx)
+        });
+        assert!(!kept);
+        input.read(&app, |input, _| {
+            assert_eq!(input.enter_waits_for_remote_completer, None)
+        });
+        assert!(executed.borrow().is_empty());
+    });
+}
+
+/// The `tab_menu` hop the lab compares with the shell's own candidates: the count, then the items
+/// last (so the bracket closes the list), each through the describer, capped.
+#[test]
+fn test_tab_menu_hop_detail_format() {
+    let quoted = |s: &str| format!("{s:?}");
+    assert_eq!(
+        tab_menu_hop_detail(["amb_a/", "amb_b/"].into_iter(), quoted),
+        r#"count=2 items=["amb_a/", "amb_b/"]"#
+    );
+    assert_eq!(
+        tab_menu_hop_detail(std::iter::empty(), quoted),
+        "count=0 items=[]"
+    );
+    let redacted = |s: &str| format!("<{} chars>", s.chars().count());
+    assert_eq!(
+        tab_menu_hop_detail(["ab", "cde"].into_iter(), redacted),
+        "count=2 items=[<2 chars>, <3 chars>]"
+    );
+    let many: Vec<String> = (0..60).map(|i| format!("f{i}")).collect();
+    let detail = tab_menu_hop_detail(many.iter().map(String::as_str), quoted);
+    assert!(detail.starts_with("count=60 items=["), "{detail}");
+    assert_eq!(detail.matches('"').count(), 2 * TAB_MENU_HOP_MAX_ITEMS);
+}
