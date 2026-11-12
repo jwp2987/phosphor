@@ -927,6 +927,13 @@ fuzz-smoke:
       - fuzz/artifacts/
       - fuzz/logs/
 
+# ---------------------------------------------------------------------------------------------------------------------
+# REPO VALIDATION (not a release gate): the jobs `bench`, `bench-remote-server`, `mutants`, `mutants-warpui-core` and their
+# `-macos` / `-windows` twins measure the code and its tests, not the app. Owner 2026-11-12: they are no longer part of the
+# release tier; they run on demand through `python3 script/ci/ci_seq.py build/<ref> --tier repo-validation` (alias `--tier repo`).
+# They stay MANUAL (allow_failure) here; the stage and the rules are unchanged.
+# ---------------------------------------------------------------------------------------------------------------------
+
 # The scope of the `mutants` job (box, Mac and Windows): one definition so the three platforms mutate the same code.
 .mutants_scope:
   variables:
@@ -935,7 +942,7 @@ fuzz-smoke:
     MUTANTS_TEST_FILTER: "test(/terminal::(pane_key|model::key_facts|input_queue)::/) | test(/terminal::view::tests::.*(table_mode|shadow_mode|legacy_mode|route_facts|shadow_reports)/)"
     MUTANTS_SHARD: ""
 
-# cargo-mutants, SCOPED (release tier). Default scope = the pure, self-contained input-path logic:
+# cargo-mutants, SCOPED (repo validation tier, not a release gate). Default scope = the pure, self-contained input-path logic:
 # app/src/terminal/{pane_key.rs, model/key_facts.rs, view/dest_table.rs, input_queue/{gates,table,facts,mod,pane,shadow}.rs}
 # (the #1424 destination table and its plumbing; ~4,000 lines, so several hundred mutants: UNMEASURED, shard it with
 # MUTANTS_SHARD=k/n; the legacy input_queue/destination.rs is NOT in scope, it is the 134-line function being replaced) with the test run restricted to their modules via
