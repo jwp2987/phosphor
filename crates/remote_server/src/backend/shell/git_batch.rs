@@ -74,6 +74,10 @@ const KEEP: Duration = Duration::from_secs(10);
 /// always joined, however long its exec takes.
 const PROMPT_MAX_AGE: Duration = Duration::from_secs(2);
 
+/// A navigation's prompt bump is reused by the Precmd that follows it for this long (the cd's
+/// events arrive navigation first, prompt second).
+const NAV_PROMPT_REUSE: Duration = Duration::from_secs(3);
+
 /// Whether the generation is keyed on the prompt counter (see [`GitBatchStore::begin_prompt`]):
 /// everything but `PHOSPHOR_SHELL_BATCH_PROMPT=0`, which brings back the pure 100 ms window.
 /// Read once.
@@ -168,6 +172,8 @@ pub struct GitBatchStore {
     prompt_keyed: bool,
     /// Bumped once per prompt by the manager ([`Self::begin_prompt`]); 0 until the first one.
     prompt: AtomicU64,
+    /// When a navigation last bumped the counter and no prompt has claimed that bump yet.
+    nav_bump: Mutex<Option<Instant>>,
     next_id: AtomicU64,
     tree_caps: TreeCaps,
 }
@@ -186,6 +192,7 @@ impl GitBatchStore {
             prompt_max_age: PROMPT_MAX_AGE,
             prompt_keyed: prompt_keying_enabled(),
             prompt: AtomicU64::new(0),
+            nav_bump: Mutex::new(None),
             next_id: AtomicU64::new(1),
             tree_caps: TreeCaps::DEFAULT,
         }
@@ -214,8 +221,28 @@ impl GitBatchStore {
     /// A new prompt (or user refresh) started for this host: no producer of it may join an
     /// answer read for the previous one. Every producer of this prompt, however late it asks and
     /// however it spells the repo path, then joins the ONE exec the first of them starts.
+    ///
+    /// A `cd` delivers its navigation BEFORE its prompt: [`Self::begin_navigation`] already
+    /// counted this prompt, and the Precmd that follows within [`NAV_PROMPT_REUSE`] claims that
+    /// bump instead of opening a second generation (#2156: the tree landed in the previous
+    /// prompt's generation and the chips started another).
     pub fn begin_prompt(&self) {
+        let claimed = self
+            .nav_bump
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+            .is_some_and(|at| at.elapsed() < NAV_PROMPT_REUSE);
+        if !claimed {
+            self.prompt.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    /// A navigation (the cwd moved) is about to ask for the tree: it opens the generation of the
+    /// prompt that follows it. Calling it again before that prompt arrives opens another.
+    pub fn begin_navigation(&self) {
         self.prompt.fetch_add(1, Ordering::SeqCst);
+        *self.nav_bump.lock().unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());
     }
 
     /// Forgets every generation: a write just happened (or is about to), so no later request may

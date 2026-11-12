@@ -851,6 +851,9 @@ pub struct RemoteServerManager {
     /// `navigate_to_directory` calls when `update_active_session` fires
     /// repeatedly for the same CWD.
     last_navigated_path: HashMap<SessionId, String>,
+    /// Sessions whose `navigate_to_directory` is running, and since when. A refresh event meanwhile
+    /// would re-read the PREVIOUS root (an exec of its own); the navigation's snapshot is fresher.
+    navigating: HashMap<SessionId, std::time::Instant>,
     /// The root `navigate_to_directory` last indexed for each session: the tree a shell-mode
     /// refresh re-reads.
     indexed_root: HashMap<SessionId, String>,
@@ -945,6 +948,7 @@ impl RemoteServerManager {
             host_to_sessions: HashMap::new(),
             spawner: ctx.spawner(),
             last_navigated_path: HashMap::new(),
+            navigating: HashMap::new(),
             indexed_root: HashMap::new(),
             tree_refresh: HashMap::new(),
             agent_refresh: HashMap::new(),
@@ -1928,6 +1932,7 @@ impl RemoteServerManager {
         ctx: &mut ModelContext<Self>,
     ) {
         self.last_navigated_path.remove(&session_id);
+        self.navigating.remove(&session_id);
         self.indexed_root.remove(&session_id);
         self.tree_refresh.remove(&session_id);
         self.agent_refresh.remove(&session_id);
@@ -2138,6 +2143,11 @@ impl RemoteServerManager {
         // Record only after confirming something can serve it, so that a retry after
         // SessionConnected is not incorrectly deduplicated.
         self.last_navigated_path.insert(session_id, path.clone());
+        self.navigating
+            .insert(session_id, std::time::Instant::now());
+        // The cd's navigation comes before its Precmd: it opens the batch generation that Precmd
+        // then joins (#2156).
+        self.router.git_batch_for(&host_id).begin_navigation();
 
         // A no-helper session reads the host's skills and rules once, here, at its start (a
         // helper pushes its own snapshot on connect).
@@ -2155,6 +2165,7 @@ impl RemoteServerManager {
                         let pushes = backend.take_shell_pushes();
                         let _ = spawner
                             .spawn(move |me, ctx| {
+                                me.navigating.remove(&session_id);
                                 me.indexed_root
                                     .insert(session_id, resp.indexed_path.clone());
                                 ctx.emit(RemoteServerManagerEvent::NavigatedToDirectory {
@@ -2171,7 +2182,8 @@ impl RemoteServerManager {
                         log::error!("navigate_to_directory failed for session {session_id:?}: {e}");
                         let error_kind = RemoteServerErrorKind::from_backend_error(&e);
                         let _ = spawner
-                            .spawn(move |_me, ctx| {
+                            .spawn(move |me, ctx| {
+                                me.navigating.remove(&session_id);
                                 ctx.emit(RemoteServerManagerEvent::ClientRequestFailed {
                                     session_id,
                                     operation: RemoteServerOperation::NavigateToDirectory,
@@ -2228,6 +2240,15 @@ impl RemoteServerManager {
             self.refresh_agent_context(session_id, ctx);
         }
         if !self.indexed_root.contains_key(&session_id) {
+            return;
+        }
+        // A navigation is reading the new tree right now: re-reading the old root would be one
+        // more exec for a tree that is about to be replaced (#2156). A stuck flag times out.
+        if self
+            .navigating
+            .get(&session_id)
+            .is_some_and(|since| since.elapsed() < std::time::Duration::from_secs(10))
+        {
             return;
         }
         let backend = self.backend_for_session(session_id);
@@ -2844,6 +2865,7 @@ impl RemoteServerManager {
         // We need to do this on disconnect because the cached
         // navigated path is only deduping for the current _remote server session.
         self.last_navigated_path.remove(&session_id);
+        self.navigating.remove(&session_id);
         self.indexed_root.remove(&session_id);
 
         // A daemon that keeps dying right after the handshake is not reconnected to forever
