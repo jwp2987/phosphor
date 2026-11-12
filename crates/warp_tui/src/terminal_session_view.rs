@@ -2366,6 +2366,7 @@ impl TuiTerminalSessionView {
                 | SessionsEvent::SessionInitialized { .. }
                 | SessionsEvent::EnvironmentVariablesUpdated { .. }
                 | SessionsEvent::LegacySshFallback { .. }
+                | SessionsEvent::SshNoHelper { .. }
                 | SessionsEvent::RemoteServerSetupStateChanged { .. } => {}
             },
         );
