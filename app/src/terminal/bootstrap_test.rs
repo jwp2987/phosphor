@@ -1397,29 +1397,48 @@ fn ssh_wrapper_job_text_is_short_and_remote_script_still_arrives() {
             true,
         ),
     ] {
-        // The statement that runs `command ssh ... -t <args>` with the remote script.
-        let start = source
-            .find(if fish {
-                "$warp_ipqos_args -o ControlMaster=$control_master_mode"
-            } else {
-                "-o ControlMaster=$control_master_mode"
+        // The statements that run `command ssh ... -t <args>`: since the fish/nu managed path
+        // there are two with the same options, one per kind of remote login shell.
+        // (#1035: the background-master start before them, `... -N -f "$@"`, is a separate
+        // short ssh call with no remote script.)
+        let pattern = if fish {
+            "$warp_ipqos_args -o ControlMaster=$control_master_mode"
+        } else {
+            "-o ControlMaster=$control_master_mode"
+        };
+        let statements: Vec<String> = source
+            .match_indices(pattern)
+            .map(|(at, _)| {
+                let start = source[..at].rfind("command ssh").unwrap();
+                source[start..]
+                    .lines()
+                    .take(2)
+                    .collect::<Vec<_>>()
+                    .join("\n")
             })
-            .unwrap_or_else(|| panic!("{name}: the wrapper's ssh invocation moved"));
-        // (#1035: the background-master start before it, `... -N -f "$@"`, is a separate short
-        // ssh call with no remote script; this is the session invocation that carries it.)
-        let start = source[..start].rfind("command ssh").unwrap();
-        let statement: String = source[start..]
-            .lines()
-            .take(2)
-            .collect::<Vec<_>>()
-            .join("\n");
+            .collect();
+        assert!(
+            !statements.is_empty(),
+            "{name}: the wrapper's ssh invocation moved"
+        );
+        let statement = statements
+            .iter()
+            .find(|s| s.contains("warp_remote_bootstrap"))
+            .unwrap_or_else(|| panic!("{name}: no ssh invocation carries the bootstrap"));
         assert!(
             statement.len() < 400 && !statement.contains("TERM_PROGRAM"),
             "{name}: the ssh invocation must not carry the script inline (#995): {statement}"
         );
+        // The fish/nu managed invocation hands over the short staged command, never a script.
+        let fishnu = statements
+            .iter()
+            .find(|s| s.contains("\"$warp_ssh_fishnu_cmd\""))
+            .unwrap_or_else(|| panic!("{name}: no ssh invocation passes the fish/nu command"));
         assert!(
-            statement.contains("warp_remote_bootstrap"),
-            "{name}: {statement}"
+            fishnu.len() < 400
+                && !fishnu.contains("TERM_PROGRAM")
+                && !fishnu.contains("warp_remote_bootstrap"),
+            "{name}: the fish/nu ssh invocation must stay short and carry no script: {fishnu}"
         );
 
         // Run the real helper with a stub ssh: the last argument must still be the whole script.
@@ -6065,17 +6084,23 @@ fn bash_arm_of_the_ssh_remote_command_does_not_resolve_bash_through_path() {
 /// #2019 follow-up: the line each wrapper holds the staged shim on, with its text: the part
 /// between the quotes of `warp_fishnu_shim='...'` (or fish's `set -l warp_fishnu_shim '...'`).
 fn fishnu_shim_of(wrapper: &str) -> String {
-    let line = wrapper
-        .lines()
-        .find(|line| {
-            let line = line.trim_start();
-            line.starts_with("local warp_fishnu_shim='")
-                || line.starts_with("set -l warp_fishnu_shim '")
-        })
-        .expect("the wrapper holds the staged shim");
-    let first = line.find('\'').expect("an opening quote");
-    let last = line.rfind('\'').expect("a closing quote");
-    line[first + 1..last].to_owned()
+    // The shim is built from several assignments, each line well under 1024 bytes: the bodies
+    // are typed through a cooked tty and macOS drops a canonical line over MAX_CANON.
+    let mut shim = String::new();
+    for line in wrapper.lines() {
+        let line = line.trim_start();
+        let piece = line
+            .strip_prefix("local warp_fishnu_shim='")
+            .or_else(|| line.strip_prefix("warp_fishnu_shim+='"))
+            .or_else(|| line.strip_prefix("set -l warp_fishnu_shim '"))
+            .or_else(|| line.strip_prefix("set warp_fishnu_shim \"$warp_fishnu_shim\"'"));
+        if let Some(piece) = piece {
+            let last = piece.rfind('\'').expect("a closing quote");
+            shim.push_str(&piece[..last]);
+        }
+    }
+    assert!(!shim.is_empty(), "the wrapper holds the staged shim");
+    shim
 }
 
 /// The shim is the remote command's whole program for a login shell that is not POSIX: sshd hands

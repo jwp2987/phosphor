@@ -40,11 +40,15 @@ def read(name):
 
 # ---- 1. the shim -----------------------------------------------------------------------------
 def shim_of(text):
+    pieces = []
     for line in text.splitlines():
         t = line.strip()
-        if t.startswith("local warp_fishnu_shim='") or t.startswith("set -l warp_fishnu_shim '"):
-            return t[t.index("'") + 1:t.rindex("'")]
-    return None
+        for pre in ("local warp_fishnu_shim='", "warp_fishnu_shim+='", "set -l warp_fishnu_shim '",
+                    'set warp_fishnu_shim "$warp_fishnu_shim"\''):
+            if t.startswith(pre):
+                pieces.append(t[len(pre):t.rindex("'")])
+                break
+    return "".join(pieces) or None
 
 
 shims = {n: shim_of(read(n)) for n in ("bash_body.sh", "zsh_body.sh", "fish.sh")}
