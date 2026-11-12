@@ -1040,7 +1040,7 @@ def routing_ps_skip_reason(pane):
     return "runs in the PowerShell pane (routing_table judges the Git Bash pane from rec.log)"
 
 
-@case("routing_table_powershell", order=48, gui=True)
+@case("routing_table_powershell", order=48, gui=True, enters_agent=True)
 def c_routing_table_powershell(ctx, r):
     """T5: the autodetect routing table in the Windows PowerShell pane (routing_table needs rec.log, so it runs in the Git Bash pane only). Each line
     is typed at 10-25 ms per key with an instant Enter; where it went is proven: shell = PSReadLine's history file holds the exact line; agent =

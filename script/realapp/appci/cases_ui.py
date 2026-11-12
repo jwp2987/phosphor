@@ -1319,6 +1319,7 @@ def c_completions_as_you_type_local(ctx, r):
     d = os.path.join(ctx.W, "tc")
     for n in ("cayt_alpha.txt", "cayt_bravo.txt"):
         open(os.path.join(d, n), "w").close()
+    off = ctx.log_size()
     ctx.be.type("ls tc/cayt_", 15)
     time.sleep(1.2)
     txt = ctx.ocr("cayt_menu")
@@ -1326,7 +1327,11 @@ def c_completions_as_you_type_local(ctx, r):
         r.unverifiable("no OCR on this machine (tesseract): the completion menu is not checked")
     else:
         flat = " ".join(txt.split())
-        r.check(CAG.fuzzy_has(flat, "cayt_alpha") and CAG.fuzzy_has(flat, "cayt_bravo"), "no completion menu with both candidates after typing a shared prefix without Tab")
+        ok = CAG.fuzzy_has(flat, "cayt_alpha") and CAG.fuzzy_has(flat, "cayt_bravo")
+        if not ok:      # r26: setup evidence for the row: is the fixture where the pane's cwd is, and what did the completion menu do while typing
+            r.note("fixture dir %s exists=%s files=%s; menu hops: %s" % (d, os.path.isdir(d), sorted(os.listdir(d))[:6] if os.path.isdir(d) else None,
+                   [l.split("hop=suggestions_mode", 1)[1].strip()[:90] for l in ctx.log_since(off).splitlines() if "hop=suggestions_mode" in l][-6:]))
+        r.check(ok, "no completion menu with both candidates after typing a shared prefix without Tab")
     mark = ctx.cmd_mark()
     ctx.be.key("Escape")
     ctx.reset()
