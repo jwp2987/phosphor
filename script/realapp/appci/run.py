@@ -11,7 +11,7 @@
 import argparse, json, os, re, shutil, subprocess, sys, time, traceback
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import backend, cases, deadline, injacct, lab as labmod, profile, sshd, winmap, app as appmod  # noqa: E402
+import backend, cases, deadline, injacct, lab as labmod, modeguard, profile, sshd, winmap, app as appmod  # noqa: E402
 
 
 def skip_status(r, why):
@@ -473,7 +473,32 @@ def main():
                             break
                         emit(dict(name="key_delivery", mode=label, status="pass", seconds=0, detail=["marker typed and received via SendInput %s" % be.key_method],
                                   metrics={"method": be.key_method}, shots=[]))
+                ran_mode, guard_notes = None, []
+                if not sim:
+                    # #2170: the view mode is established before EVERY case, in both modes (round 15: a terminal case ran in agent view and passed)
+                    rl = {}
+
+                    def guard_relaunch(why=c["name"]):
+                        rl["r"] = relaunch(ctx, app, prof, be, win, a, run, label, ollama_url, instance, emit, "wrong_mode_before_" + why)
+                    g = modeguard.ensure(ctx, mode, c["name"], relaunch=guard_relaunch, exempt=(c["name"] == "mode_proof"))
+                    if "r" in rl:
+                        instance, proved = rl["r"]
+                        if win and not proved and ctx.reprove:
+                            bad = ctx.reprove()
+                            proved = not bad
+                            if bad:
+                                emit(dict(name="key_delivery", mode=label, status="fail", seconds=0, detail=[bad], metrics={}, shots=[ctx.shot("keys_not_delivered") or ""]))
+                                exit_fail = True
+                                break
+                    ran_mode, guard_notes = g["ran_mode"], g["notes"]
+                    if not g["ok"]:
+                        emit(dict(name=c["name"], mode=label, status="fail", seconds=0, ran_mode=ran_mode, metrics={}, detail=[g["fail"]] + guard_notes,
+                                  shots=[ctx.shot("wrong_mode_" + c["name"]) or ""]))
+                        exit_fail = True
+                        continue
                 r = cases.Result(c["name"], mode)
+                for gn in guard_notes:
+                    r.note(gn)
                 t0 = time.time()
                 ctx.t_case0 = t0
                 ctx.extra_logs = []
@@ -594,7 +619,7 @@ def main():
                     r.fails.append(dead)
                     if not sim:        # the dying instance's lines of THIS case, before the relaunch moves the log (audit #10)
                         save_case_log(run, label, c["name"], t0, prof, ctx, app, ollama_url, log_off=log_off, backend_name=a.backend)
-                    emit(dict(name=c["name"], mode=label, status=status, seconds=round(time.time() - t0, 1), evidence=evidence, tainted=tainted, wall=[round(t0, 3), round(time.time(), 3)],
+                    emit(dict(name=c["name"], mode=label, status=status, ran_mode=ran_mode, seconds=round(time.time() - t0, 1), evidence=evidence, tainted=tainted, wall=[round(t0, 3), round(time.time(), 3)],
                               detail=r.fails + r.notes, metrics=r.metrics, shots=[shot] if shot else []))
                     exit_fail = True
                     instance, proved = relaunch(ctx, app, prof, be, win, a, run, label, ollama_url, instance, emit, "death_of_" + c["name"], stop=False)
@@ -610,7 +635,7 @@ def main():
                         save_case_log(run, label, c["name"], t0, prof, ctx, app, ollama_url, cap=1_000_000, log_off=log_off, backend_name=a.backend)
                 if status == "fail":
                     exit_fail = True
-                emit(dict(name=c["name"], mode=label, status=status, seconds=round(time.time() - t0, 1), evidence=evidence, tainted=tainted, wall=[round(t0, 3), round(time.time(), 3)],
+                emit(dict(name=c["name"], mode=label, status=status, ran_mode=ran_mode, seconds=round(time.time() - t0, 1), evidence=evidence, tainted=tainted, wall=[round(t0, 3), round(time.time(), 3)],
                           detail=(r.fails or []) + r.notes, metrics=r.metrics, shots=[os.path.relpath(shot, run)] if shot else []))
                 if c["name"].startswith(("ssh_", "remote_")) and cases.post_case_invariants_apply(status):
                     # r18ct: a failed nested-ssh case left the pane inside the remote shell, and the next case (latency_enter) typed a zsh-only
@@ -1099,6 +1124,7 @@ def relaunch(ctx, app, prof, be, win, a, run, label, ollama_url, instance, emit,
     while the pane is provably clean (Windows records it in prove_keys). -> (instance + 1, proved): a relaunched Windows pane needs its keys
     proven again (and its cwd set)."""
     keep_instance_log(run, label, prof, a.backend, ollama_url, instance, app)
+    ctx.shell_kind = None          # #2170: a fresh pane: the shell in front is the pane's own again
     if stop:
         app.stop()
     nb = prof.prompts()
