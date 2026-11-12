@@ -218,6 +218,15 @@ def ctrl_c_prompt_bounds(log_text, pressed):
     return 2, 2 + max(0, min(wrote, pressed) - 1)
 
 
+def ctrl_c_burst_settle_s(nctl, gap_ms, rtt_s):
+    """pure: seconds after a burst's FIRST Ctrl-C by which every Ctrl-C of it has reached the server and the shell has drawn the prompt each one draws (#2187).
+    A Ctrl-C that meets a shell already at its prompt starts a fresh prompt cycle, and a key typed inside that cycle is dropped by the shell itself (r27b, nu:
+    the last typed line after `x2 gap 50 ms` lost its opening characters while the app had written them in order). One Ctrl-C has no later one to wait for."""
+    if nctl <= 1:
+        return 0.0
+    return (nctl - 1) * gap_ms / 1000.0 + rtt_s + 0.5
+
+
 def enter_wait_verdict(delayed_ms, lan_ms, rtt_ms, budget_ms=2.0, min_n=8):
     """#1970: did an Enter wait on the network before its line was written? Inputs are the APP's own Enter -> write times in ms (`hop=enter_begin` -> the
     line's `pty_write`, cases.enter_segment_samples): `delayed_ms` typed with the link at `rtt_ms`, `lan_ms` typed in the same ssh session with the delay

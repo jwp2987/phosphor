@@ -1353,6 +1353,7 @@ def c_ctrl_c_no_esc_i(ctx, r, arm):
             c0, p0 = len(rem.commands()), rem.prompts()
             ctx.be.type(sleep_line, type_pace(ctx), enter=True)
             time.sleep(0.8 + 2 * rt)
+            burst_at = time.monotonic()
             for i in range(nctl):
                 ctx.be.key("ctrl+c")
                 if i < nctl - 1 and gap:
@@ -1362,6 +1363,13 @@ def c_ctrl_c_no_esc_i(ctx, r, arm):
                 r.check(bool(back), "[%s] no prompt after the Ctrl-C burst" % label)
             else:
                 time.sleep(1.0 + 2 * rt)
+            # #2187: a further Ctrl-C that reaches a shell already at its prompt makes the shell draw ANOTHER prompt (a fresh read of the line); a key that lands
+            # inside that second cycle is dropped by the shell itself (nu: the typed `"t...` of the r27b rounds), under plain ssh too. The first prompt is not the
+            # end of the burst's effect: type once every Ctrl-C has reached the server and the prompt it draws is out. A single Ctrl-C draws no second prompt,
+            # and its round still types right behind the first one (a key typed ahead of the app's own view of the prompt: the zsh `e` of the same rounds).
+            wait = L.ctrl_c_burst_settle_s(nctl, gap, rt) - (time.monotonic() - burst_at)
+            if wait > 0:
+                time.sleep(wait)
             tok = unique(ctx, 8)
             toks.append(tok)
             ctx.be.type(ctx.append_cmd(shell_kind, tok, work(arm, f)), type_pace(ctx), enter=True)

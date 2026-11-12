@@ -2282,6 +2282,44 @@ mod typeahead_handoff {
         });
     }
 
+    /// #2187: a key typed right after a Ctrl-C, before the app saw the prompt, is in the shell's
+    /// line (r27b: the `e` of `echo ...`; nu: the opening quote). The shell's prompt arrives and the
+    /// fallback opens the write gate before the line editor's own signal. Handing input to the
+    /// editor then stranded the key: the editor's command write killed the line and the shell ran
+    /// `cho ...`. The decision waits for the proof instead (keys keep going to the pty, in typed
+    /// order, no request to an unproven editor), and the signal asks for the line as before.
+    #[test]
+    fn a_key_typed_ahead_of_an_unproven_activation_is_not_stranded() {
+        App::test((), |mut app| async move {
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            let harness = harness(&mut app);
+            submit(&mut app, &harness, "sleep 30");
+            user_types(&mut app, &harness, &[escape_sequences::C0::ETX]);
+            user_types(&mut app, &harness, b"e");
+            shell_runs_a_command(&harness.model, "sleep 30");
+            line_editor_becomes_active_unproven(&mut app, &harness);
+            assert!(
+                matches!(
+                    harness.model.lock().typeahead_handoff().state(),
+                    HandoffState::PtyOwned { .. }
+                ),
+                "input must not move to the editor while a typed key sits in the shell's line"
+            );
+            assert!(!written(&harness).iter().any(|w| w == &REQUEST.to_vec()));
+            // The rest of the line is typed meanwhile: it follows the key to the pty.
+            user_types(&mut app, &harness, b"cho");
+            // The shell's own signal proves its line editor reads: the line is asked for.
+            harness.controller.update(&mut app, |controller, ctx| {
+                controller.activate_line_editor_on_ready_signal(false, ctx)
+            });
+            assert_eq!(written(&harness).last(), Some(&REQUEST.to_vec()));
+            assert_eq!(
+                harness.model.lock().typeahead_handoff().state(),
+                &HandoffState::AwaitingReport
+            );
+        });
+    }
+
     /// The queued-prompts panel (or the agent) fires right after the prompt, before the line
     /// editor is active, while `foo` -- typed during the last command, no Enter -- sits in the
     /// shell's line. The command waits without starting its block, so the prompt still reads as

@@ -9447,5 +9447,7 @@ import selftest_r27_remotetabenter  # noqa: E402  (#2188 lab_tab_remote_dir fast
 CHECKS.extend(selftest_r27_remotetabenter.CHECKS)
 import selftest_r27_loganchors  # noqa: E402  (r27 loganchors: hop patterns anchored at a real log line, diff-body echo, focus-lost hops, the pane path always closes; own file)
 CHECKS.extend(selftest_r27_loganchors.CHECKS)
+import selftest_r28_ctrlcnu  # noqa: E402  (#2187 lab_ctrl_c_no_esc_i waits out the burst's own second prompt cycle; own file)
+CHECKS.extend(selftest_r28_ctrlcnu.CHECKS)
 import selftest_r28_tabscleanup  # noqa: E402  (r28: tab cleanup retries lost close keys, final Ctrl-C probe, second window left open fails, #1658 row text; own file)
 CHECKS.extend(selftest_r28_tabscleanup.CHECKS)
