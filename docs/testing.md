@@ -868,7 +868,7 @@ comparisons are **notes only** now (`NOTE (not judged; the band decides)`).
   key (a new metric or pane) is **NOREF `no band yet`**, never a FAIL and never a PASS. `lat.evaluate(banded=True)` keeps the statistical guard (the overhead is a FAIL
   only when `overhead - 2 SE` is above the band, a PASS needs `+ 2 SE` inside, thin evidence is INCONCLUSIVE) with the band's upper as the threshold.
 * **Ratchet:** regenerating may only move an `upper` DOWN. If the data would raise it the old one stays and the run prints
-  `WOULD LOOSEN <key> old -> new (owner OK needed: --allow-loosen KEY)`. **Loosening needs the owner's OK:** `python3 script/ci/perf_bands.py --allow-loosen KEY` applies it
+  `WOULD LOOSEN <key> old -> new (owner OK needed: --allow-loosen KEY)`. **Loosening needs the owner's OK:** `python3 script/ci/perf_bands.py --allow-loosen KEY` applies it A widening of at most 0.5 ms (15 MB, 0.3 s) applies by itself (`AUTO-LOOSEN` line; owner 2026-11-12: "I am fine with half a milli"); a larger one prints `WOULD LOOSEN` and needs `--allow-loosen KEY` with the owner's OK.
   and records `set_by: "owner"` and the date. Tightening is automatic (`set_by: "data"`).
 * **`since`** (`script/ci/perf_bands_config.json`): fnmatch pattern on the key to a run-directory substring; history before that run is ignored for the matching bands
   (a regression that was fixed would otherwise make the band far too loose). Seeded: Wayland `latency_key_log` key to frame and key to pty write since `build_r11a` (r10a

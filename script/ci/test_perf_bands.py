@@ -99,7 +99,7 @@ def ratchet_down_refuse_loosen_and_allow():
 
 @t
 def small_widening_applies_by_itself_larger_needs_the_owner():
-    """owner 2026-11-12: a band may widen by up to its floor (0.3 ms) on its own (AUTO-LOOSEN); more is held (WOULD LOOSEN)"""
+    """owner 2026-11-12: a band may widen by up to 0.5 ms on its own (AUTO-LOOSEN); more is held (WOULD LOOSEN)"""
     root = fresh([5.0] * 8)
     try:
         old, _ = pb.generate(root, {}, config={})
@@ -107,9 +107,9 @@ def small_widening_applies_by_itself_larger_needs_the_owner():
         make_run(root, "2027-01-01_build_noise_9001", [5.5])        # +0.2 over the upper: noise-sized
         small, notes = pb.generate(root, old, config={})
         assert small[KEY]["upper"] == 5.5 and notes and notes[0].startswith("AUTO-LOOSEN " + KEY + " 5.3 -> 5.5"), (small[KEY], notes)
-        make_run(root, "2027-01-02_build_slow_9002", [6.0])          # +0.5 over the new upper: needs the owner
+        make_run(root, "2027-01-02_build_slow_9002", [6.2])          # +0.7 over the new upper: needs the owner
         held, notes = pb.generate(root, small, config={})
-        assert held[KEY]["upper"] == 5.5 and notes and notes[0].startswith("WOULD LOOSEN " + KEY + " 5.5 -> 6.0"), (held[KEY], notes)
+        assert held[KEY]["upper"] == 5.5 and notes and notes[0].startswith("WOULD LOOSEN " + KEY + " 5.5 -> 6.2"), (held[KEY], notes)
     finally:
         shutil.rmtree(root)
 

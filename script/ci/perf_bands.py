@@ -18,7 +18,7 @@ perf_bands_config.json) and writes test-results/bands.json:
 
 RATCHET: regenerating may only move an `upper` DOWN. If the data would raise it the old one is kept and
     WOULD LOOSEN <key> old -> new (owner OK needed: --allow-loosen KEY)
-is printed, unless the widening is at most the kind's floor (0.3 ms / 15 MB / 0.3 s): that applies by itself and prints AUTO-LOOSEN (owner
+is printed, unless the widening is at most the kind's AUTO_LOOSEN limit (0.5 ms / 15 MB / 0.3 s): that applies by itself and prints AUTO-LOOSEN (owner
 2026-11-12: noise-sized widening needs no OK; anything larger does). --allow-loosen KEY applies a larger one and records set_by "owner" and the date. Changing perf_bands_config.json "since" so that a band loosens
 is a loosen as well: it is held back the same way.
 
@@ -44,6 +44,8 @@ CONFIG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "perf_bands_co
 WINDOW = 8
 PROVISIONAL_BELOW = 5
 FLOOR = {"ms": 0.3, "mb": 15.0, "s": 0.3}
+# owner 2026-11-12 ("I am fine with half a milli"): how far a band may widen by itself per regeneration; more needs --allow-loosen
+AUTO_LOOSEN = {"ms": 0.5, "mb": 15.0, "s": 0.3}
 SKIP_PLATFORMS = ("linux-x11", "x11")
 
 
@@ -215,9 +217,9 @@ def generate(results=RESULTS, old=None, allow=(), config=None, today=None):
         if o and b["upper"] > o["upper"] + 1e-9:
             if key in allow:
                 b["set_by"], b["owner_date"] = "owner", today or datetime.date.today().isoformat()
-            elif b["upper"] - o["upper"] <= FLOOR[kinds[key]] + 1e-9:
+            elif b["upper"] - o["upper"] <= AUTO_LOOSEN[kinds[key]] + 1e-9:
                 # owner 2026-11-12: a band may widen on its own by up to its floor per regeneration (measurement noise); more needs the owner
-                notes.append("AUTO-LOOSEN %s %s -> %s (within the %s %s floor)" % (key, o["upper"], b["upper"], FLOOR[kinds[key]], kinds[key]))
+                notes.append("AUTO-LOOSEN %s %s -> %s (within the %s %s auto-loosen limit)" % (key, o["upper"], b["upper"], AUTO_LOOSEN[kinds[key]], kinds[key]))
                 b["set_by"] = "data"
             else:
                 notes.append("WOULD LOOSEN %s %s -> %s (owner OK needed: --allow-loosen KEY)" % (key, o["upper"], b["upper"]))
