@@ -307,6 +307,13 @@ def pwd_append_line(arm_or_shell, fname):
     return "pwd >> %s" % fname
 
 
+def kill_self_line(arm_or_shell):
+    """pure: the line that SIGKILLs the shell it is typed into (the connection then ends like a dropped link): `$$` in POSIX shells, `$fish_pid` in fish
+    (fish rejects `$$`), `$nu.pid` in nu (r24a lab-macos: `kill -9 $$` was a nu parse error, so the ssh_drop kill arm never dropped)"""
+    sh = arm_or_shell["shell"] if isinstance(arm_or_shell, dict) else arm_or_shell
+    return {"nu": "kill -9 $nu.pid", "fish": "kill -9 $fish_pid"}.get(sh, "kill -9 $$")
+
+
 def then_line(arm_or_shell):
     """pure: what joins `cd <dir>` to the line after it: `&&` (the next line runs only when the cd worked), `;` in nu, which has no `&&` and stops the line
     at the first error"""

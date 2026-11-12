@@ -243,3 +243,16 @@ def r25_no_lab_case_builds_a_raw_append_line_for_a_nu_arm():
         src = inspect.getsource(getattr(__import__("cases_lab"), func))
         assert "append_line(" in src or "pwd_append_line(" in src, func
     assert "CLG.sh_c(" in open(os.path.join(HERE, "cases_lab_index.py"), encoding="utf-8").read()
+
+
+
+@check
+def r25_kill_and_append_lines_follow_the_lab_shell():
+    """r24a lab-macos (nu, managed): `kill -9 $$` was a nu parse error and `echo X >> f` printed a table. The shared ssh_drop code (cases_coverage_a) now
+    builds both through cases_lab for a lab arm."""
+    import cases_lab as CL, os as _os
+    assert CL.kill_self_line({"shell": "nu"}) == "kill -9 $nu.pid"
+    assert CL.kill_self_line({"shell": "fish"}) == "kill -9 $fish_pid"
+    assert CL.kill_self_line({"shell": "bash"}) == CL.kill_self_line("zsh") == "kill -9 $$"
+    src = open(_os.path.join(HERE, "cases_coverage_a.py"), encoding="utf-8").read()
+    assert "CLB.kill_self_line(arm)" in src and "CLB.append_line(arm, t" in src

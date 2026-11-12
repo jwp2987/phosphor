@@ -253,52 +253,6 @@ are in a local shell. The split stays local when any of these holds:
 - that local directory is gone, and the command depends on it (a glob, a
   relative `-i`/`-F`/`-E` path, or a relative file or command in `-o`).
 
-#### 3. The tmux wrapper (`ssh_tmux_wrapper`)
-
-`ssh_tmux_wrapper` is in this fork's `default` Cargo feature list, so
-`FeatureFlag::SSHTmuxWrapper` is on. It is still **opt-in per user**:
-`warpify.ssh.use_ssh_tmux_wrapper` defaults to `false`. Turn it on at
-Settings → Phosphorize → SSH → *Use Tmux Phosphorization*.
-
-What it does: rather than wrapping `ssh` locally, Phosphor detects that you have
-run an interactive SSH command, shows a "Phosphorizing SSH Session…" block, and
-drives a tmux **control-mode** session on the remote host as the transport for
-block boundaries. Because it does not depend on rewriting the remote shell's
-startup, it works in many situations the ControlMaster wrapper does not.
-
-Phosphor keeps this wrapper deliberately — upstream Warp deprecated it in favour
-of the extension; this fork did not, because it should Phosphorize whatever host
-you SSH into (`DECLINED.md`, "SSH tmux wrapper — kept, deprecation not ported").
-
-**Its limits, honestly:**
-
-- **It needs tmux ≥ 3.0 on the remote.** If tmux is missing or too old you get
-  an error block; Phosphor no longer offers to install tmux for you.
-- **It is mutually exclusive with the legacy wrapper.** Turning it on disables
-  the ControlMaster wrapper for the session, and vice versa; the choice is
-  computed once, in `TerminalManager`, at PTY creation.
-- **It only takes effect in new tabs.** The setting's own description says so.
-  If a session is already running — including one in which you have started a
-  CLI agent — toggling the setting will not Phosphorize it. You must exit that
-  session and open a new tab. There is no way to retrofit the wrapper onto a
-  live PTY.
-- **It never engages on Windows.** tmux control mode needs DCS, and ConPTY does
-  not support DCS. On Windows the SSH extension is the only route to an
-  integrated SSH session. This is a documented, accepted platform asymmetry
-  (`DECLINED.md`), not a bug to file.
-- **The banner is suppressed** if the command also matches a subshell pattern,
-  if the host is denylisted, or if SSH Phosphorization is off entirely.
-
-Beyond literal `ssh`, the tmux route also recognises `gcloud compute ssh`,
-`eb ssh` and `doctl compute ssh`. `ssh -T` and `ssh -W` are correctly treated as
-non-interactive and ignored.
-
-**Denylisting a host** (the banner's "don't ask again", or Settings →
-Phosphorize → SSH → *Denylisted hosts*) writes a regex to
-`warpify.ssh.ssh_hosts_denylist`. A typed `ssh` to a host that matches gets a plain ssh
-session, never a managed one; the list is read when a shell starts, so a host added later
-applies to new tabs.
-
 #### The `enable_legacy_ssh_wrapper` trap
 
 `warpify.ssh.enable_legacy_ssh_wrapper` is **deprecated and overloaded**. Until
@@ -371,7 +325,7 @@ dead — until issue #632.
 |---|---|---|---|
 | `warpify.subshells.added_subshell_commands` | Extra regexes treated as subshell-spawning commands | `[]` | Settings → Phosphorize → Subshells → Added commands |
 | `warpify.subshells.subshell_commands_denylist` | Regexes that never raise the subshell banner | `[]` | same page → Denylisted commands |
-| `warpify.ssh.ssh_hosts_denylist` | Retained key with no effect: the per-host SSH prompt it guarded no longer exists | `[]` | settings file only |
+| `warpify.ssh.ssh_hosts_denylist` | Host regexes for which a typed `ssh` gets a plain ssh session, never a managed one (bash, zsh and fish panes). Read when a shell starts, so a change applies to new tabs | `[]` | Settings → Phosphorize |
 | `warpify.ssh.enable_ssh_warpification` | Master switch for Phosphorizing SSH sessions | `true` | Settings → Phosphorize → SSH → *Phosphorize SSH Sessions* |
 | `warpify.ssh.reuse_existing_control_master` | Attach to your own live ControlMaster instead of creating one. New tabs only | `false` | same page → *Reuse existing SSH ControlMaster* |
 | `warpify.ssh.keepalive` | Add ssh keepalives (30 s x 6) when your ssh config sets none. New tabs only | `true` | settings file only |

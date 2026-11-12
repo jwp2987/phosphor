@@ -603,20 +603,10 @@ shell that is none of bash, zsh, fish or nushell, a Windows OpenSSH server, or a
 integration and appearance*, SSH).
 
 If your completions have stopped working over SSH, Phosphor raises a banner with
-a "more info" link. Its closing words still read *"Enabling tmux phosphorization
-in settings may resolve this issue."* That option has been removed; there is
-nothing to enable. Turn `enable_ssh_warpification` back on if you had turned it
-off, and open a new tab.
-Enabling the tmux wrapper **disables** the legacy ControlMaster wrapper — they
-are mutually exclusive. If your completions have stopped working over SSH,
-Phosphor raises a banner about it, which now points at the SSH extension: *"Allowing
-the SSH extension to install in settings may resolve this issue."*
-
-When the remote side cannot be phosphorized you get a specific message —
-tmux not installed, tmux older than 3.0, tmux failed to execute, a timeout, or an
-unsupported shell (only bash, zsh and fish work; PowerShell does not) — plus two
-escape hatches: **Phosphorize this session** and **Continue without
-Phosphorization**.
+a "more info" link. Its closing words read *"Allowing the SSH extension to install
+in settings may resolve this issue."* (Settings → Phosphorize → SSH → *Install SSH
+extension*). Also turn `enable_ssh_warpification` back on if you had turned it off,
+and open a new tab.
 
 > **The "More info" and "Learn more" links in these banners open this manual.**
 > The known-issues and prompt-compatibility links open this chapter, and the

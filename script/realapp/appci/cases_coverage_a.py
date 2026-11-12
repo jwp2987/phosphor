@@ -460,7 +460,12 @@ def remote_lines_exact(ctx, r, label, n):
     f = "ca_%s_r.txt" % label
     CR.rm_remote(ctx, f)
     toks = [ctx.tok(8).lower() for _ in range(n)]
-    CR.typed_lines(ctx, ["echo %s >> ~/%s" % (t, f) for t in toks])
+    arm = getattr(ctx, "arm", None)
+    if arm:     # a lab arm: the remote login shell may be nu/fish (managed since r24), so the line is built in its own syntax (cases_lab.append_line)
+        import cases_lab as CLB
+        CR.typed_lines(ctx, [CLB.append_line(arm, t, "~/" + f) for t in toks])
+    else:
+        CR.typed_lines(ctx, ["echo %s >> ~/%s" % (t, f) for t in toks])
     ctx.until(lambda: len(ctx.lines(f, remote=True)) >= n, 15)
     exact_lines(r, "%s: lines typed into the remote shell" % label, toks, ctx.lines(f, remote=True))
 
@@ -515,7 +520,12 @@ def ssh_drop_body(ctx, r, host, variants):
         elif variant == "rst":
             ctx.lab.drop(ctx.arm["user"], "rst")
         else:
-            ctx.be.type("kill -9 $$", 15, enter=True)
+            arm = getattr(ctx, "arm", None)
+            if arm:
+                import cases_lab as CLB
+                ctx.be.type(CLB.kill_self_line(arm), 15, enter=True)
+            else:
+                ctx.be.type("kill -9 $$", 15, enter=True)
         up = ctx.until(lambda: ctx.prompts() > before, 20, step=0.1)
         r.check(bool(up), "[%s] no local prompt within 20 s after the connection was lost" % variant)
         ctx.shot("ssh_drop_%s_dropped" % variant)
