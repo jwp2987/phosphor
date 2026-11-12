@@ -44,7 +44,7 @@ impl ShellBackend {
         cached_main_branch: Option<String>,
     ) -> Result<Option<GitStatusPush>, BackendError> {
         log::debug!("shell arm serving {:?}", Family::GitStatus);
-        let runner = self.git_runner("git_status")?;
+        let runner = self.batched_git_runner("git_status", repo_path).await?;
         match compute_git_status_metadata(&runner, Path::new(repo_path), cached_main_branch).await {
             Ok(metadata) => Ok(Some(git_status_push(repo_path, metadata))),
             Err(e) => {
@@ -63,7 +63,7 @@ impl ShellBackend {
         force: bool,
     ) -> Result<PrLookup, BackendError> {
         log::debug!("shell arm serving {:?}", Family::Github);
-        let runner = self.git_runner("pr_info")?;
+        let runner = self.batched_git_runner("pr_info", repo_path).await?;
         let repo = Path::new(repo_path);
         let branch = branch_for_pr_lookup(&runner, repo).await;
         if !force && known_branch.as_ref() == Some(&branch) {
@@ -90,7 +90,9 @@ impl ShellBackend {
         repo_path: &str,
     ) -> Result<GitHubRepositoryInfoPush, BackendError> {
         log::debug!("shell arm serving {:?}", Family::Github);
-        let runner = self.git_runner("repository_info")?;
+        let runner = self
+            .batched_git_runner("repository_info", repo_path)
+            .await?;
         let info = match get_repository_info(&runner, Path::new(repo_path)).await {
             Ok(info) => info,
             Err(e) => {

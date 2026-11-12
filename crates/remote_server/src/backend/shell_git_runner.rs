@@ -38,11 +38,10 @@ impl ShellGitRunner {
         self
     }
 
-    /// The POSIX script for one git call. A patch or commit message (`stdin`) is NOT in the
-    /// script: the caller hands those bytes to the executor as the command's stdin (#1864), so
-    /// they never reach a command line (no `ps`/audit-log leak, no argument-length limit).
-    /// `Some` leaves the script's stdin open for git; `None` closes it (`</dev/null`).
-    pub fn git_script(&self, args: &[&str], stdin: Option<&[u8]>, cwd: &Path) -> String {
+    /// `env ... git -c ...` up to (not including) the caller's arguments: the fixed environment
+    /// and base arguments of every git call this runner makes. The batched read path (#2156)
+    /// wraps it in a shell function so a whole refresh shares the exact same prefix.
+    pub(super) fn git_command_prefix(&self) -> String {
         // `env -u` removes the askpass helpers; the assignments never let git or ssh prompt
         // (owner ruling), matching `daemon::git_runner` exactly.
         let mut env: Vec<String> = vec!["env".to_string()];
@@ -57,14 +56,21 @@ impl ShellGitRunner {
         if let Some(path) = &self.path_env {
             env.push(format!("PATH={}", sh_quote(path)));
         }
-        let mut argv: Vec<String> = GIT_BASE_ARGS.iter().map(|a| sh_quote(a)).collect();
-        argv.extend(args.iter().map(|a| sh_quote(a)));
-        let body = format!(
-            "cd {} && {} git {}",
-            sh_quote_path(&cwd.to_string_lossy()),
-            env.join(" "),
-            argv.join(" ")
-        );
+        let argv: Vec<String> = GIT_BASE_ARGS.iter().map(|a| sh_quote(a)).collect();
+        format!("{} git {}", env.join(" "), argv.join(" "))
+    }
+
+    /// The POSIX script for one git call. A patch or commit message (`stdin`) is NOT in the
+    /// script: the caller hands those bytes to the executor as the command's stdin (#1864), so
+    /// they never reach a command line (no `ps`/audit-log leak, no argument-length limit).
+    /// `Some` leaves the script's stdin open for git; `None` closes it (`</dev/null`).
+    pub fn git_script(&self, args: &[&str], stdin: Option<&[u8]>, cwd: &Path) -> String {
+        let mut command = self.git_command_prefix();
+        for arg in args {
+            command.push(' ');
+            command.push_str(&sh_quote(arg));
+        }
+        let body = format!("cd {} && {command}", sh_quote_path(&cwd.to_string_lossy()));
         match stdin {
             None => format!("{body} </dev/null"),
             Some(_) => body,

@@ -17,7 +17,8 @@ use super::executor::OutOfBandExecutor;
 use super::helper::client_id;
 use super::refresh::RemoteRefreshEvent;
 use super::shell::{
-    AgentContextCache, PrLookup, ShellBackend, ShellBuffers, ShellIndex, ShellPush, TreeCache,
+    AgentContextCache, GitBatchStore, PrLookup, ShellBackend, ShellBuffers, ShellIndex, ShellPush,
+    TreeCache,
 };
 use super::{Family, Requested};
 use crate::HostId;
@@ -172,6 +173,8 @@ struct State {
     agent_caches: HashMap<HostId, Arc<AgentContextCache>>,
     /// Per-host shell-mode buffer states (family c), shared likewise.
     buffer_states: HashMap<HostId, Arc<ShellBuffers>>,
+    /// Per-host batched git answers (#2156), shared likewise.
+    git_batches: HashMap<HostId, Arc<GitBatchStore>>,
     refresh_listeners: Vec<RefreshListener>,
 }
 
@@ -371,7 +374,8 @@ impl FeatureRouter {
         let mut shell = ShellBackend::new(self.executor_for(sessions.iter().copied()))
             .with_tree_cache(self.tree_cache_for(host))
             .with_agent_cache(self.agent_cache_for(host))
-            .with_buffers(self.buffers_for(host));
+            .with_buffers(self.buffers_for(host))
+            .with_git_batch(self.git_batch_for(host));
         if let Some(index) = self.index_for(host, &sessions) {
             shell = shell.with_index(index);
         }
@@ -399,6 +403,11 @@ impl FeatureRouter {
     /// The shell-mode file-tree state of `host` (created on first use).
     pub fn tree_cache_for(&self, host: &HostId) -> Arc<TreeCache> {
         Arc::clone(self.lock().tree_caches.entry(host.clone()).or_default())
+    }
+
+    /// The shell-mode batched git answers of `host` (created on first use).
+    pub fn git_batch_for(&self, host: &HostId) -> Arc<GitBatchStore> {
+        Arc::clone(self.lock().git_batches.entry(host.clone()).or_default())
     }
 
     /// The shell-mode buffer states of `host` (created on first use).

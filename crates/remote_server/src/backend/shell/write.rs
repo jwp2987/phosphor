@@ -68,6 +68,7 @@ impl ShellBackend {
     ) -> Result<WriteOutcome, BackendError> {
         log::debug!("shell arm serving {:?}", Family::FileWrite);
         let executor = self.executor_for("write_file")?;
+        self.git_batch.invalidate();
         let pwsh = executor.shell_kind().is_powershell();
         // POSIX hosts decode base64 when they can; with no decoder the bytes travel raw. Either
         // way they ride the command's stdin, never its argv (#1864).
@@ -152,6 +153,7 @@ impl ShellBackend {
         expect: Option<Expect>,
     ) -> Result<(), BackendError> {
         let executor = self.executor_for("delete_file")?;
+        self.git_batch.invalidate();
         let pwsh = executor.shell_kind().is_powershell();
         let command = match (pwsh, expect) {
             (true, Some(expect)) => pwsh_guarded_delete_command(&path, expect),
