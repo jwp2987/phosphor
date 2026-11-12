@@ -22,6 +22,14 @@
 #     sha=<tagged sha>, 0 failed cases and at least one pass. The verdict is the appci one (report.py / ci_seq.judged_nothing): a NOREF case
 #     (no reference terminal; not a pass, not a failure) and a KNOWN note (an ACCEPTED_FOR_RELEASE shortfall, recorded on a PASS row) never fail
 #     a run, so they do not fail the gate either.
+#   * OPEN ISSUES (owner decision 2026-11-12): no OPEN issue labelled with the tag's version (v0.2.0 for tag v0.2.0) may still carry the label
+#     `fixed-untested`. Every such issue is listed and the gate refuses. The issue list is read from GitLab with the same tokens as the job reads
+#     (CI_JOB_TOKEN, then the masked APPCI_API_TOKEN with read_api; GET /projects/:id/issues?state=opened&labels=<version>), or, when the job has no
+#     API access to issues, from a file the release job fills first:
+#         glab api --paginate "projects/winters-phosphor%2Fphosphor/issues?state=opened&labels=v0.2.0&per_page=100" > open-issues.json
+#         python3 script/ci/check_release_gate.py --open-issues open-issues.json
+#     (a JSON list of issue objects with "iid", "title", "labels"; concatenated --paginate pages `][` are accepted). The label filter is applied here
+#     again, so a file holding more issues than the release's is fine. An unreadable list is a FAILURE, never a pass.
 # Missing read access, expired artifacts and smoke/candidate-tier runs are FAILURES, never passes.
 import json, os, sys, urllib.error, urllib.request
 
@@ -29,6 +37,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import ci_seq  # noqa: E402  (the release tier's own job lists: the single source of truth)
 
 RELEASE_TIER = ci_seq.app_tier_name("release")
+UNTESTED_LABEL = "fixed-untested"
 BASE_JOBS = ["guards", "check-linux", "licenses", "advisories"]
 # app job -> results.json paths that must all be green (the Linux Wayland job also runs an XWayland pass).
 APP_RESULT_PATHS = {
@@ -85,6 +94,44 @@ class GlabApi:
         if st != 200:
             raise RuntimeError("HTTP %s for %s" % (st, path))
         return out if raw else json.loads(out)
+
+
+def release_label(tag):
+    """'v0.2.0' -> 'v0.2.0'; '0.2.0' -> 'v0.2.0' (the GitLab release label is the tag's version)."""
+    tag = (tag or "").strip()
+    return tag if tag.startswith("v") else "v" + tag
+
+
+def parse_issue_list(text):
+    """The JSON of `glab api --paginate` (pages may be concatenated as `][`) or of one API call -> list of issue dicts."""
+    text = text.strip()
+    if not text:
+        raise ValueError("empty issue list")
+    data = json.loads(text.replace("][", ",").replace("]\n[", ",")) if "][" in text or "]\n[" in text else json.loads(text)
+    if not isinstance(data, list):
+        raise ValueError("issue list is not a JSON list")
+    return data
+
+
+def fetch_open_issues(api, proj, label):
+    out, page = [], 1
+    while True:
+        got = api.get("/projects/%s/issues?state=opened&labels=%s&per_page=100&page=%d" % (proj, label, page))
+        out += got
+        if len(got) < 100:
+            return out
+        page += 1
+
+
+def judge_issues(issues, label):
+    """-> (ok lines, problems): every OPEN issue labelled `label` that still carries fixed-untested is a problem (owner decision 2026-11-12)."""
+    def labels(i):
+        return [l if isinstance(l, str) else l.get("name", "") for l in i.get("labels", [])]
+    mine = [i for i in issues if i.get("state", "opened") == "opened" and label in labels(i)]
+    bad = [i for i in mine if UNTESTED_LABEL in labels(i)]
+    problems = ["issue #%s is open, labelled %s and still %s: %s" % (i.get("iid", i.get("id", "?")), label, UNTESTED_LABEL, i.get("title", "")) for i in bad]
+    ok = [] if bad else ["no open %s issue carries %s (%d open %s issue(s) checked)" % (label, UNTESTED_LABEL, len(mine), label)]
+    return ok, problems
 
 
 def judge_results(res, sha, label):
@@ -166,9 +213,19 @@ def check(api, proj, sha, pipelines=()):
     return ok, problems
 
 
-def run(api, proj, sha, pipelines, label):
+def run(api, proj, sha, pipelines, label, rel_label=None, issues_file=None):
     try:
         ok, problems = check(api, proj, sha, pipelines)
+        if rel_label:
+            if issues_file:
+                issues = parse_issue_list(open(issues_file, encoding="utf-8").read())
+            else:
+                issues = fetch_open_issues(api, proj, rel_label)
+            iok, iprob = judge_issues(issues, rel_label)
+            ok += iok
+            problems += iprob
+        else:
+            ok.append("open-issue check SKIPPED (dry run without --tag)")
     except Exception as e:
         print("ERROR release gate could not query GitLab: %s" % e, file=sys.stderr)
         return 1
@@ -191,15 +248,18 @@ def main(argv):
     ap.add_argument("--sha", help="dry run: the commit to judge (reads through glab, read-only)")
     ap.add_argument("--pipeline", action="append", default=[], help="dry run: only these pipeline ids (default: every pipeline of --sha)")
     ap.add_argument("--project", default=ci_seq.PROJECT)
+    ap.add_argument("--tag", help="dry run: the tag whose version is the release label for the open-issue check (v0.2.0)")
+    ap.add_argument("--open-issues", metavar="FILE", help="JSON list of open issues (glab api --paginate output) instead of querying GitLab for them")
     a = ap.parse_args(argv)
     if a.sha:
         pipes = a.pipeline
-        return run(GlabApi(), a.project, a.sha, pipes, "dry run")
+        return run(GlabApi(), a.project, a.sha, pipes, "dry run", release_label(a.tag) if a.tag else None, a.open_issues)
     sha, proj = os.environ.get("CI_COMMIT_SHA", ""), os.environ.get("CI_PROJECT_ID", "")
     if not (sha and proj and os.environ.get("CI_COMMIT_TAG")):
         print("ERROR check_release_gate runs only in a tag pipeline (CI_COMMIT_TAG, CI_COMMIT_SHA, CI_PROJECT_ID), or with --sha for a dry run", file=sys.stderr)
         return 2
-    return run(CiApi(), proj, sha, [], "tag " + os.environ["CI_COMMIT_TAG"])
+    tag = os.environ["CI_COMMIT_TAG"]
+    return run(CiApi(), proj, sha, [], "tag " + tag, release_label(tag), a.open_issues)
 
 
 if __name__ == "__main__":

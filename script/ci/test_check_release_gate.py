@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # Offline fixtures for check_release_gate.py (fake GitLab API). Run: python3 script/ci/test_check_release_gate.py
 # Wired into the `guards` job (.gitlab-ci.yml) and script/precheck.
-import json, os, sys, unittest
+import json, os, pathlib, sys, unittest
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import check_release_gate as g
 
@@ -103,6 +103,81 @@ class Gate(unittest.TestCase):
             def get(self, path, raw=False):
                 return []
         self.assertTrue(g.check(Empty([], {}), "1", SHA)[1])
+
+
+def issue(iid, *labels, state="opened"):
+    return {"iid": iid, "title": "t%d" % iid, "state": state, "labels": list(labels)}
+
+
+class OpenIssues(unittest.TestCase):
+    """owner decision 2026-11-12: no open issue labelled with the release may still be fixed-untested"""
+    def test_label_from_tag(self):
+        self.assertEqual(g.release_label("v0.2.0"), "v0.2.0")
+        self.assertEqual(g.release_label("0.2.0"), "v0.2.0")
+
+    def test_none_passes(self):
+        ok, bad = g.judge_issues([], "v0.2.0")
+        self.assertEqual(bad, [])
+        self.assertTrue(ok)
+        self.assertEqual(g.judge_issues([issue(5, "v0.2.0", "verified")], "v0.2.0")[1], [])
+
+    def test_one_fails_naming_it(self):
+        _, bad = g.judge_issues([issue(7, "v0.2.0"), issue(1234, "v0.2.0", "fixed-untested")], "v0.2.0")
+        self.assertEqual(len(bad), 1)
+        self.assertIn("#1234", bad[0])
+        self.assertIn("fixed-untested", bad[0])
+
+    def test_lists_every_one(self):
+        _, bad = g.judge_issues([issue(1, "v0.2.0", "fixed-untested"), issue(2, "v0.2.0", "fixed-untested")], "v0.2.0")
+        self.assertEqual(len(bad), 2)
+
+    def test_other_labels_and_closed_ignored(self):
+        iss = [issue(1, "v0.1.18", "fixed-untested"), issue(2, "fixed-untested"), issue(3, "v0.2.0", "fixed-untested", state="closed")]
+        self.assertEqual(g.judge_issues(iss, "v0.2.0")[1], [])
+        self.assertEqual(g.judge_issues([{"iid": 4, "title": "x", "labels": [{"name": "v0.2.0"}, {"name": "fixed-untested"}]}], "v0.2.0")[1][0][:10], "issue #4 i")
+
+    def test_parse_paginated_file(self):
+        self.assertEqual(len(g.parse_issue_list('[{"iid":1}][{"iid":2}]')), 2)
+        self.assertEqual(g.parse_issue_list('[]'), [])
+        with self.assertRaises(ValueError):
+            g.parse_issue_list("")
+        with self.assertRaises(ValueError):
+            g.parse_issue_list('{"message":"401"}')
+
+    def run_gate(self, issues, issues_file=None):
+        class WithIssues(Fake):
+            def get(self, path, raw=False):
+                if "/issues?" in path:
+                    if isinstance(issues, Exception):
+                        raise issues
+                    return issues
+                return Fake.get(self, path, raw)
+        import contextlib, io
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = g.run(WithIssues(ALL_JOBS, ALL_RES), "1", SHA, [], "tag v0.2.0", "v0.2.0", issues_file)
+        return rc, err.getvalue()
+
+    def test_gate_run(self):
+        self.assertEqual(self.run_gate([])[0], 0)
+        rc, err = self.run_gate([issue(99, "v0.2.0", "fixed-untested")])
+        self.assertEqual(rc, 1)
+        self.assertIn("#99", err)
+        self.assertEqual(self.run_gate([issue(99, "v0.1.18", "fixed-untested")])[0], 0)
+        self.assertEqual(self.run_gate(RuntimeError("no token"))[0], 1)      # an unreadable list fails closed
+
+    def test_gate_run_from_file(self):
+        import tempfile
+        with tempfile.TemporaryDirectory(dir=os.path.dirname(os.path.abspath(__file__))) as d:
+            f = os.path.join(d, "i.json")
+            pathlib.Path(f).write_text(json.dumps([issue(42, "v0.2.0", "fixed-untested")]))
+            rc, err = self.run_gate(RuntimeError("must not be queried"), f)
+            self.assertEqual(rc, 1)
+            self.assertIn("#42", err)
+            pathlib.Path(f).write_text("[]")
+            self.assertEqual(self.run_gate(RuntimeError("must not be queried"), f)[0], 0)
+            pathlib.Path(f).write_text("not json")
+            self.assertEqual(self.run_gate([], f)[0], 1)
 
 
 if __name__ == "__main__":

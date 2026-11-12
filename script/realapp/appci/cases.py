@@ -5,9 +5,6 @@
 # r.metric(k, v) numbers, r.skip(msg) a skip. Typing is at the owner's stress rate: 10-25 ms/key, Enter in the same call.
 import hashlib, json, os, random, re, shutil, statistics, subprocess, sys, time
 
-# ACCEPTED_FOR_RELEASE v0.1.17 (#1606): see c_ctrl_c_d. Remove after the v0.1.17 release.
-CTRLC_FLOOD_RELEASE_MS = "45"
-
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import lat  # noqa: E402
 import backend  # noqa: E402
@@ -3099,11 +3096,7 @@ def ctrlc_flood(ctx, r, n, warm):
         r.metric("reference_ctrl_c_flood_ms", stats(rs))
         r.metric("reference", ref.name)
     if fl:
-        # ACCEPTED_FOR_RELEASE v0.1.17 (#1606, owner 2026-11-04): Ctrl-C under flood may be up to 45 ms over the reference
-        # for this release only (the main thread waits on the GPU's next drawable under a flood). Back to the 20 ms owner
-        # budget after v0.1.17: remove CTRLC_FLOOD_RELEASE_MS and this comment then.
-        flood_ms = float(os.environ.get("APPCI_CTRLC_FLOOD_MAX_MS", CTRLC_FLOOD_RELEASE_MS))
-        r.note("Ctrl-C under flood budget %.0f ms: ACCEPTED_FOR_RELEASE v0.1.17 (#1606); the owner budget is 20 ms" % flood_ms)
+        flood_ms = float(os.environ.get("APPCI_CTRLC_FLOOD_MAX_MS", "20"))   # the owner budget; no release allowance (removed for v0.2.0, owner 2026-11-12)
         rec = lat.evaluate("%s/ctrl_c_d/ctrl_c_flood" % ctx.label, fl, rs, flood_ms, "overhead", plat(),
                            remeasure=None, ref_name=ref.name if ref and rs else None, floor=ctx.be.key_floor_ms, expected=n,
                            pane_shell=pane_shell_id(ctx), ref_shell=getattr(ctx, "ref_shell", None) if ref else None, mode=mode,
@@ -6037,31 +6030,12 @@ def editor_open(ctx, palette, path):
     ctx.be.key("Return")   # the keysym name every backend maps (wtype refused "enter": r18e0)
 
 
-# ACCEPTED_FOR_RELEASE: owner decision 2026-11-04 (#1607): the cost of OPENING a big file in the code editor is accepted for v0.1.17 ONLY;
-# what must hold is that the memory is given back after close (that check is unchanged). While the app version under test (app/Cargo.toml)
-# is at or below `release`, the open-cost budget is reported as KNOWN with its numbers instead of failing. Past it the budget FAILS again, and
-# the offline self-test fails as soon as app/Cargo.toml moves past `release`, so the acceptance cannot silently become permanent: re-decide it.
-# macOS Enter overhead (latency_enter, latency_enter_ssh) is REPORT-ONLY, not accepted-for-release: see lat_checks(report_only_macos=True), owner 2026-11-05 (#1606 closed).
-# Also (owner 2026-11-04, v0.1.17 only): the Enter-to-command-start OVERHEAD budget of latency_enter on Linux (#1606, both modes) and the Ctrl-C-under-flood
-# OVERHEAD budget of ctrl_c_d (#1653 / #1606, both modes; judged at CTRLC_FLOOD_RELEASE_MS) are KNOWN. Every other check in those cases still fails (lost keys, sample counts,
-# the plain-sleep ctrl_c control at 20 ms, the 80 ms sanity bound, regressions vs the previous/baseline build); only lat_checks' overhead-over-budget verdict changes.
-# Also (v0.1.17 only, #1129): remote_heredoc_paste's no-file-in-budget verdict when its plain-ssh CONTROL proves the remote shell's line editor is the bottleneck
-# (cases_caseremote.classify_timeout 'env': plain ssh with the app's own wrapper line, scaled to the step, could not have finished in the time the app had).
-# Wrong bytes, a step the control does not cover, and the app being slower than plain ssh still FAIL.
-ACCEPTED_FOR_RELEASE = {"editor_open_cost": {"issue": 1607, "release": "0.1.17", "why": "owner 2026-11-04: open cost accepted, release after close required"},
-                        "latency_enter_overhead": {"issue": 1606, "release": "0.1.17", "platforms": ("linux",),
-                                                   "why": "owner 2026-11-04: Enter-to-command-start overhead accepted for this release"},
-                        "latency_enter_ssh_overhead": {"issue": 1606, "release": "0.1.17", "platforms": ("linux",),
-                                                       "why": "owner 2026-11-05: Enter-over-ssh overhead accepted for this release (the gap is OS event delivery before the app, #1606)"},
-                        "ctrl_c_flood": {"issue": 1653, "release": "0.1.17", "platforms": ("macos", "linux", "windows"),
-                                         "why": "owner 2026-11-04: Ctrl-C under flood over %s ms accepted for this release (#1653 / #1606)" % CTRLC_FLOOD_RELEASE_MS},
-                        "tabs_streaming_reorder_1658": {"issue": 1658, "release": "0.1.17", "platforms": ("windows",),
-                                                        "why": "owner 2026-11-04: the Windows streaming-tabs young-hold reorder (#1658) is known for v0.1.17; design after the release"},
-                        "editor_close_trim_ui": {"issue": 1607, "release": "0.1.17", "platforms": ("linux",),
-                                                 "why": "owner 2026-11-05: the one-off close-trim UI pause on Linux is accepted"},
-                        "remote_heredoc_remote_editor": {"issue": 1129, "release": "0.1.17",
-                                                         "why": "owner rule for STUCK items, relayed 2026-11-04 (fixed, or proven ENV and KNOWN): the remote shell's line editor is the "
-                                                                "bottleneck, proven by the plain-ssh control; the wrapper's design for bash < 4.4 is open"}}
+# ACCEPTED_FOR_RELEASE: the mechanism for an owner-accepted shortfall. An entry is {"issue": N, "release": "X.Y.Z", ["platforms": (...)], "why": "..."} keyed by
+# the case's known_key. While the app version under test (app/Cargo.toml) is at or below `release` (and the platform is one it names) the matching budget
+# verdict is reported as KNOWN with its numbers instead of failing; past it the budget FAILS again. The dict is EMPTY on purpose: every v0.1.17 acceptance
+# (#1606, #1607, #1653, #1658, #1129) was removed for v0.2.0 (owner 2026-11-12), so every case is judged against the owner's real budgets. Do not add an
+# entry without a new owner decision; the self-tests exercise the mechanism with made-up fixture entries.
+ACCEPTED_FOR_RELEASE = {}
 _REPO = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".."))
 
 
