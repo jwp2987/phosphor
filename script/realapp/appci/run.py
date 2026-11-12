@@ -1137,6 +1137,7 @@ def relaunch(ctx, app, prof, be, win, a, run, label, ollama_url, instance, emit,
     proven again (and its cwd set)."""
     keep_instance_log(run, label, prof, a.backend, ollama_url, instance, app)
     ctx.shell_kind = None          # #2170: a fresh pane: the shell in front is the pane's own again
+    ctx.nested_posix = False
     if stop:
         app.stop()
     nb = prof.prompts()

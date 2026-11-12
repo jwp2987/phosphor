@@ -695,6 +695,7 @@ def c_altgr_bash(ctx, r):
         with unicode_keys(ctx):
             if ctx.pane == "powershell":      # Git Bash from the pane, as a user would start it
                 ctx.be.type("$env:CHERE_INVOKING = '1'; $env:LC_ALL = 'C.UTF-8'; & '%s' --login -i" % bash.replace("\\", "/"), 12, enter=True)
+                ctx.note_nested_posix()        # #2170 follow-up
                 time.sleep(4)
             else:
                 ctx.be.type("export LC_ALL=C.UTF-8", 12, enter=True)

@@ -279,6 +279,40 @@ def work(arm, name=""):
     return "/work/%s/%s" % (arm["user"], name)
 
 
+# ---- the ONE place a lab case builds a line that APPENDS to a file in the remote shell (r25, #2045 follow-up). Every arm's shell is judged now (fish and nu
+# are managed sessions), so a raw `echo X >> f` or `a && b` typed into the pane is wrong on nu: `echo x >> f` PRINTS a table there and writes nothing, and
+# `&&` is not nu syntax. fish needs nothing special: `>>` and `&&` work in fish 3.0 and later, and the lab image (script/realapp/sshlab/Containerfile, Debian
+# trixie, `apt-get install fish`) ships fish 4.x. nu 0.116: `"text\n" | save --append f` creates the file when it is absent and appends exactly `text` plus
+# the newline written in the string (save --append adds none of its own, so it is spelled out: the file then holds the same bytes `echo text >> f` writes).
+def shell_syntax(arm_or_shell):
+    """pure: 'nu' for a nushell arm, else 'posix' (bash, zsh, dash, ash, fish and the other lab shells run `>>` and `&&`; pwsh arms use the same lines the
+    cases already used)"""
+    sh = arm_or_shell["shell"] if isinstance(arm_or_shell, dict) else arm_or_shell
+    return "nu" if sh == "nu" else "posix"
+
+
+def append_line(arm_or_shell, text, fname):
+    """pure: the line that appends `text` + a newline to `fname` in the arm's shell. `text` is a plain word or words (no quote, no `$`, no backslash) for nu;
+    the POSIX form keeps expansions (`$ENV`, quotes) as the case wrote them."""
+    if shell_syntax(arm_or_shell) == "nu":
+        assert not any(c in text for c in "\"'$\\"), "a nu append line takes plain text: %r" % text
+        return '"%s\\n" | save --append %s' % (text, fname)
+    return "echo %s >> %s" % (text, fname)
+
+
+def pwd_append_line(arm_or_shell, fname):
+    """pure: the line that appends the shell's current directory + a newline to `fname` (nu has no `pwd` command: it is `$env.PWD`)"""
+    if shell_syntax(arm_or_shell) == "nu":
+        return '$"($env.PWD)\\n" | save --append %s' % fname
+    return "pwd >> %s" % fname
+
+
+def then_line(arm_or_shell):
+    """pure: what joins `cd <dir>` to the line after it: `&&` (the next line runs only when the cd worked), `;` in nu, which has no `&&` and stops the line
+    at the first error"""
+    return " ; " if shell_syntax(arm_or_shell) == "nu" else " && "
+
+
 def connect_or_fail(ctx, r, arm, label=""):
     secs = CR.connect(ctx, host_of(arm), 90 if arm["lat_ms"] < 300 else 150)
     r.check(secs is not None, "%sno remote prompt after `ssh %s`. Test host: %s" % (label, host_of(arm), ctx.ssh_diag() if secs is None else ""))
@@ -697,7 +731,7 @@ def c_tab_remote_dir(ctx, r, arm):
     else:
         r.unverifiable("[hook] no tab-insert line in the app log (hop=tab_insert / completion_inserted): the Tab -> insert time is not measured until the Wave 0 code logs it")
         time.sleep(0.5 + 2 * rt)
-    ctx.be.type(" && pwd >> %stab.txt" % base, type_pace(ctx), enter=True)
+    ctx.be.type(then_line(arm) + pwd_append_line(arm, "%stab.txt" % base), type_pace(ctx), enter=True)
     got = ctx.until(lambda: ctx.remote.lines("tab.txt"), 10 + 6 * rt)
     CA.exact_lines(r, "unique prefix + Tab: the remote directory the completed `cd` entered", ["%s%s/zzq%s_only" % (base, fx, uid)], got)
     ctx.shot("lab_tab_unique")
@@ -728,7 +762,7 @@ def c_tab_remote_dir(ctx, r, arm):
     time.sleep(0.03)
     ctx.be.key("Return")
     time.sleep(0.5 + 3 * rt)
-    ctx.be.type("pwd >> %stab2.txt" % base, type_pace(ctx), enter=True)
+    ctx.be.type(pwd_append_line(arm, "%stab2.txt" % base), type_pace(ctx), enter=True)
     got2 = ctx.until(lambda: ctx.remote.lines("tab2.txt"), 10 + 6 * rt)
     CA.exact_lines(r, "Tab then Enter 30 ms later: the directory the shell entered (the COMPLETED line ran)", ["%s%s/zzq%s_only" % (base, fx, uid)], got2)
     recs = [c for _, c in ctx.remote.commands()[n0:] if c.startswith("cd ")]
@@ -1159,7 +1193,7 @@ def c_lab_drop(ctx, r, arm):
         toks = [unique(ctx, 8) for _ in range(3)]
         ctx.lab.drop(arm["user"], "stall", 10)
         time.sleep(0.5)
-        CR.typed_lines(ctx, ["echo %s >> ~/%s" % (t, f) for t in toks])
+        CR.typed_lines(ctx, [append_line(arm, t, "~/" + f) for t in toks])
         ctx.until(lambda: len(ctx.remote.lines(f)) >= 3, 30 + 6 * rt)
         CA.exact_lines(r, "lines typed during a 10 s server stall", toks, ctx.remote.lines(f))
         ctx.shot("lab_stall_after")
@@ -1404,7 +1438,7 @@ def c_sh_login_profile(ctx, r, arm):
         ctx.reset()
         return
     time.sleep(1.0 + 2 * rt)
-    ctx.be.type('echo %s %s >> %s' % (tok, "control" if control else '"${ENV:-noenv}"', eff), type_pace(ctx), enter=True)
+    ctx.be.type(append_line(arm, '%s %s' % (tok, "control" if control else '"${ENV:-noenv}"'), eff), type_pace(ctx), enter=True)
     ctx.until(lambda: any(tok in x for x in ctx.remote.lines(eff)), 10 + 4 * rt, step=0.05)
     time.sleep(0.5 + 2 * rt)                                       # a second copy of the line would land here
     why = sh_login_profile_verdict(tok, hook, ctx.remote.lines(eff))

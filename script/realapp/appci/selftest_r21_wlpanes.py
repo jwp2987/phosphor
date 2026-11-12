@@ -116,34 +116,39 @@ def r21_leave_nested_types_no_exit_in_another_tabs_shell():
 
 @check
 def r21_cb_ui_action_latency_closes_only_the_throwaway_tab():
-    """#2146: with two tabs the next-tab key puts the pass's own tab in front; the close key then closed it. throwaway_tab_step decides from the
-    two pids, and close_throwaway_tab sends the close key only with another shell in front."""
+    """#2146 (round 25: the throw-away tab's own pid is recorded when it is opened; N tabs): throwaway_tab_step decides from the pass's pid, the
+    throw-away tab's pid, the pid in front and the number of previous-tab keys sent; close_throwaway_tab sends the close key only with the throw-away
+    shell in front. The model of the app's tab ring is in selftest_r25_harness_a.py (any number of leaked tabs)."""
     import cases_coverage_b as B
     import cases_robust as R
     S = B.throwaway_tab_step
-    assert S(100, 200, False) == "close" and S(100, 200, True) == "close"
-    assert S(100, 100, False) == "switch"
-    assert S(100, 100, True) == "refuse" and S(100, None, False) == "refuse" and S(100, None, True) == "refuse"
-    assert S(None, 200, False) == "unproven" and S(None, None, False) == "unproven"
+    assert S(100, 200, 200, 0) == "close" and S(100, 200, 200, 2) == "close"
+    assert S(100, 200, 100, 0) == "switch" and S(100, 200, 300, 1) == "switch"     # the pass's own tab, or a leaked one: look again
+    assert S(100, 200, 100, 2) == "refuse" and S(100, 200, None, 0) == "refuse" and S(100, 200, None, 2) == "refuse"
+    assert S(100, None, 100, 0) == "refuse" and S(100, 100, 100, 0) == "refuse", "the throw-away tab was never told apart from the pass's own"
+    assert S(None, 200, 200, 0) == "unproven" and S(None, None, None, 0) == "unproven"
     keys, fails, notes = [], [], []
 
-    def run(pids):
+    def run(pids, throw="200"):
         it = iter(pids)
         ctx = types.SimpleNamespace(be=types.SimpleNamespace(key=lambda k, *a, **kw: keys.append(k)), shell_pid=lambda: next(it))
         r = types.SimpleNamespace(check=lambda ok, msg: (fails.append(msg) if not ok else None) or ok, note=notes.append)
-        return B.close_throwaway_tab(ctx, r, pids[0] if pids and pids[0] == "own" else "100", "NEXT")
+        return B.close_throwaway_tab(ctx, r, "100", throw, "PREV")
     saved = R.CLOSE_PANE
     R.CLOSE_PANE = "CLOSE"
     try:
-        # the round 15 order: the pass's own tab is in front after next-tab -> switch, the throw-away shell answers, close, own shell is back
+        # the round 15 order: the pass's own tab is in front after the switch -> previous-tab, the throw-away shell answers, close, own shell is back
         keys.clear(); fails.clear()
-        assert run(["100", "200", "100"]) == "closed" and keys == ["NEXT", "CLOSE"] and not fails, (keys, fails)
+        assert run(["100", "200", "100"]) == "closed" and keys == ["PREV", "CLOSE"] and not fails, (keys, fails)
         # the throw-away tab is already in front: no switch
         keys.clear(); fails.clear()
         assert run(["200", "100"]) == "closed" and keys == ["CLOSE"] and not fails, (keys, fails)
-        # the switch did not help: the close key is NOT sent
+        # round 24: a leaked tab is in front first (not the pass's own, not the throw-away one): it is NOT closed, previous-tab is pressed
         keys.clear(); fails.clear()
-        assert run(["100", "100"]) == "refused" and keys == ["NEXT"] and len(fails) == 1 and "NOT sent" in fails[0], (keys, fails)
+        assert run(["300", "200", "100"]) == "closed" and keys == ["PREV", "CLOSE"] and not fails, (keys, fails)
+        # the switches did not help: the close key is NOT sent
+        keys.clear(); fails.clear()
+        assert run(["100", "300", "100"]) == "refused" and keys == ["PREV", "PREV"] and len(fails) == 1 and "NOT sent" in fails[0], (keys, fails)
         # the close key did not bring the pass's own shell back: a failure, not a silent pass
         keys.clear(); fails.clear()
         assert run(["200", "200"]) == "closed" and keys == ["CLOSE"] and len(fails) == 1 and "expected the pass's own shell" in fails[0], fails
@@ -151,11 +156,11 @@ def r21_cb_ui_action_latency_closes_only_the_throwaway_tab():
         keys.clear(); fails.clear(); notes.clear()
         ctx = types.SimpleNamespace(be=types.SimpleNamespace(key=lambda k, *a, **kw: keys.append(k)), shell_pid=lambda: None)
         r = types.SimpleNamespace(check=lambda ok, msg: ok, note=notes.append)
-        assert B.close_throwaway_tab(ctx, r, None, "NEXT") == "unproven" and keys == ["CLOSE"] and notes, (keys, notes)
+        assert B.close_throwaway_tab(ctx, r, None, None, "PREV") == "unproven" and keys == ["CLOSE"] and notes, (keys, notes)
     finally:
         R.CLOSE_PANE = saved
     body = inspect.getsource(B.c_ui_action_latency)
-    assert body.index("own_pid = ctx.shell_pid()") < body.index("ctx.be.key(newtab)") < body.index("close_throwaway_tab(ctx, r, own_pid, nexttab)")
+    assert body.index("own_pid = ctx.shell_pid()") < body.index("ctx.be.key(newtab)") < body.index("throw_pid = ctx.shell_pid()") < body.index("close_throwaway_tab(ctx, r, own_pid, throw_pid, prevtab)")
     assert "R.close_tab_best_effort(ctx, r)" not in body, "the case closes the tab in front without proving which one it is"
 
 

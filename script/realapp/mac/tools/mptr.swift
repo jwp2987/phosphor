@@ -23,6 +23,9 @@
 //     point inside the main screen's visibleFrame (the display minus what the Dock bar and the menu bar take). A point on the Dock bar or the menu
 //     bar is therefore still refused, and so is any other Dock-owned window (a smaller one, or one at another level). A refusal lists every window at
 //     the point, front to back, so a wrong guess here is readable from the job trace.
+//   - the mouse-cursor sprite window is looked through too (r25, #2118 follow-up, app-test-macos wheel_scroll): owner "Window Server", layer at or above
+//     the cursor level (CGWindowLevelForKey(.cursorWindow), 2147483630), smaller than 64x64 pt. Other Window Server windows (dialogs) are still
+//     refused. A refusal's window list names the cursor window ("mouse-cursor sprite window") wherever it is in the stack.
 // OUTFILE: "T0 mach_ms= epoch=", one "P <op> <x> <y> <mach_ms>" per posted action, "LOC x y" (the cursor read back from the window server after the
 // last op: the proof that the events were accepted), or "ERR <why>".
 import Foundation
@@ -39,6 +42,7 @@ let mainBounds = CGDisplayBounds(CGMainDisplayID())
 
 let ignoreOwners = Set((ProcessInfo.processInfo.environment["APPCI_MAC_PTR_IGNORE_OWNERS"] ?? "").split(separator: ",").map { String($0) })
 let dockLayer = Int(CGWindowLevelForKey(.dockWindow))
+let cursorLayer = Int(CGWindowLevelForKey(.cursorWindow))          // 2147483630: the window server's mouse-cursor sprite window
 /// the main display minus what the Dock bar and the menu bar take, in the top-left-origin point space CGWindowList uses; nil when AppKit names no screen
 let clearOfBars: CGRect? = {
   guard let s = NSScreen.screens.first else { return nil }
@@ -46,6 +50,13 @@ let clearOfBars: CGRect? = {
   return CGRect(x: mainBounds.minX + (v.minX - f.minX), y: mainBounds.minY + (f.maxY - v.maxY), width: v.width, height: v.height)
 }()
 var lookedThroughDock = false
+var lookedThroughCursor = false
+/// the mouse-cursor sprite (r25, #2118): the window server draws the pointer as a small window of its own ("Window Server", at the cursor level or above,
+/// e.g. 28x40 pt just up-left of the point). It takes no press (the press goes to the window below it). ONLY a Window Server window of that kind is
+/// looked through; any other Window Server window (a dialog, a bigger one, one below the cursor level) is still an obstacle.
+func isCursorSprite(_ own: String, _ layer: Int, _ r: CGRect) -> Bool {
+  return own == "Window Server" && layer >= cursorLayer && r.width < 64 && r.height < 64
+}
 /// the Dock's display-sized see-through backing window, at a point where the Dock draws nothing (see SAFETY above)
 func isDockBacking(_ own: String, _ layer: Int, _ r: CGRect, _ p: CGPoint) -> Bool {
   guard own == "Dock", layer == dockLayer, r.contains(mainBounds.insetBy(dx: 1, dy: 1)), let c = clearOfBars else { return false }
@@ -71,6 +82,7 @@ func windowsAt(_ p: CGPoint) -> [(Int, String, Int, CGRect)] {
 func ownerAt(_ p: CGPoint) -> (Int, String, Int)? {
   for w in windowsAt(p) {
     if isDockBacking(w.1, w.2, w.3, p) { lookedThroughDock = true; continue }
+    if isCursorSprite(w.1, w.2, w.3) { lookedThroughCursor = true; continue }
     return (w.0, w.1, w.2)
   }
   return nil
@@ -80,7 +92,8 @@ func describeWindowsAt(_ p: CGPoint) -> String {
   var ws: [String] = []
   for w in windowsAt(p).prefix(8) {
     let rect = String(Int(w.3.minX)) + "," + String(Int(w.3.minY)) + "," + String(Int(w.3.width)) + "," + String(Int(w.3.height))
-    ws.append(w.1 + " (pid " + String(w.0) + ", layer " + String(w.2) + ", " + rect + ")")
+    let tag = isCursorSprite(w.1, w.2, w.3) ? " [mouse-cursor sprite window, looked through]" : ""
+    ws.append(w.1 + " (pid " + String(w.0) + ", layer " + String(w.2) + ", " + rect + ")" + tag)
   }
   return ws.isEmpty ? "none" : ws.joined(separator: " > ")
 }
@@ -157,6 +170,7 @@ func finish(_ code: Int32, _ why: String?) -> Never {
   let c = cursor()
   out += "LOC \(c.x) \(c.y)\n"
   if lookedThroughDock { out += "NOTE looked through the Dock's display-sized backing window\n" }
+  if lookedThroughCursor { out += "NOTE looked through the mouse-cursor sprite window (Window Server, layer >= \(cursorLayer), under 64x64 pt)\n" }
   if let w = why { out += "ERR \(w)\n"; err(w) }
   try? out.write(toFile: outPath, atomically: true, encoding: .utf8)
   exit(code)

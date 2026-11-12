@@ -13,6 +13,7 @@ import hashlib, os, re, sys, time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import cases_lab as CL  # noqa: E402
+import cases_lab_git as CLG  # noqa: E402
 
 SYNC = re.compile(r"hop=remote_index_sync done files=(\d+) fragments=(\d+) embedded=(\d+) already=(\d+) stale=(\d+)")
 EMBED = re.compile(r"hop=remote_index_embed texts=(\d+) via=network_gate purpose=ai_endpoint")
@@ -84,7 +85,7 @@ def c_codebase_index_remote(ctx, r, arm):
 
     # an outside edit, then a HEAD-changing command: only the changed fragment is embedded
     mark = ctx.log_size()
-    lab.ssh(u, "echo 'delta epsilon' >> %s/a.txt" % repo)
+    lab.ssh(u, CLG.sh_c("echo delta epsilon >> %s/a.txt" % repo))      # r25: the one-shot runs in the arm's LOGIN shell (nu: `>>` prints a table), so it goes through sh
     ctx.be.type("git checkout -q -b b_%s" % uid, CL.type_pace(ctx), enter=True)
     second = ctx.until(lambda: bool(syncs(ctx.log_since(mark))), 40 + 10 * rt, step=0.25)
     r.check(bool(second), "the prompt after a HEAD-changing git command did not re-sync the index")
