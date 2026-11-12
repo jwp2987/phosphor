@@ -7844,6 +7844,138 @@ fn test_enter_settles_pending_unambiguous_command_as_shell() {
     });
 }
 
+/// Turns the deferred post-submit input reset on or off for one test (#2184); off again on drop.
+struct DeferSubmitInputResetGuard;
+
+impl DeferSubmitInputResetGuard {
+    fn set(on: bool) -> Self {
+        super::DEFER_SUBMIT_INPUT_RESET_FOR_TEST.with(|cell| cell.set(on));
+        Self
+    }
+}
+
+impl Drop for DeferSubmitInputResetGuard {
+    fn drop(&mut self) {
+        super::DEFER_SUBMIT_INPUT_RESET_FOR_TEST.with(|cell| cell.set(false));
+    }
+}
+
+/// Submits a shell line typed in agent mode with autodetection on, and records the input type
+/// the model has at the moment the `ExecuteCommand` reaches its subscribers (the write to the
+/// pty follows it). Returns the input and what was recorded.
+async fn submit_in_agent_mode_recording_type_at_execute(
+    app: &mut App,
+) -> (ViewHandle<Input>, Rc<RefCell<Vec<InputType>>>) {
+    use crate::ai::blocklist::InputConfig;
+
+    let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+    let _agent_view_flag = FeatureFlag::AgentView.override_enabled(true);
+    initialize_app(app);
+    AISettings::handle(app).update(app, |ai_settings, ctx| {
+        let _ = ai_settings
+            .ai_autodetection_enabled_internal
+            .set_value(true, ctx);
+    });
+    let terminal = add_window_with_bootstrapped_terminal(app, None, None).await;
+    let input = terminal.read(app, |terminal, _| terminal.input().clone());
+    let ai_input_model = input.read(app, |input, _| input.ai_input_model().clone());
+
+    let line = "echo b30 >> ~/blk.txt";
+    input.update(app, |input, ctx| {
+        input.ai_input_model().update(ctx, |ai_input, ctx| {
+            ai_input.set_input_config(
+                InputConfig {
+                    input_type: InputType::AI,
+                    is_locked: false,
+                },
+                false, /* is_input_buffer_empty */
+                ctx,
+            );
+        });
+        input.clear_buffer_and_reset_undo_stack(ctx);
+        input.user_insert("x", ctx);
+    });
+    input.update(app, |input, ctx| {
+        input.clear_buffer_and_reset_undo_stack(ctx);
+        input.user_insert(line, ctx);
+    });
+
+    let seen = Rc::new(RefCell::new(Vec::<InputType>::new()));
+    let sink = seen.clone();
+    app.update(|ctx| {
+        ctx.subscribe_to_view(&input, move |_, event: &super::Event, ctx| {
+            if let super::Event::ExecuteCommand(_) = event {
+                sink.borrow_mut()
+                    .push(ai_input_model.as_ref(ctx).input_type());
+            }
+        });
+    });
+    input.update(app, |input, ctx| {
+        input.input_enter(ctx);
+    });
+    (input, seen)
+}
+
+/// #2184 (a): with the switch on, the command reaches its write while the input config is still
+/// the one the line was typed in; the reset runs after it.
+#[test]
+fn test_submit_input_reset_runs_after_the_execute_command_2184() {
+    App::test((), |mut app| async move {
+        let _guard = DeferSubmitInputResetGuard::set(true);
+        let (_input, seen) = submit_in_agent_mode_recording_type_at_execute(&mut app).await;
+        assert_eq!(
+            *seen.borrow(),
+            vec![InputType::AI],
+            "the ExecuteCommand must be delivered before the input reset"
+        );
+    });
+}
+
+/// #2184 (b): a key typed right after the Enter sees the reset config.
+#[test]
+fn test_submit_input_reset_runs_before_the_next_key_2184() {
+    App::test((), |mut app| async move {
+        let _guard = DeferSubmitInputResetGuard::set(true);
+        let (input, seen) = submit_in_agent_mode_recording_type_at_execute(&mut app).await;
+        assert_eq!(seen.borrow().len(), 1, "precondition: the command executed");
+        input.read(&app, |input, ctx| {
+            assert_eq!(
+                input.ai_input_model().as_ref(ctx).input_type(),
+                InputType::AI,
+                "precondition: the reset is still pending before the next key"
+            );
+        });
+        input.update(&mut app, |input, ctx| {
+            input.user_insert("y", ctx);
+        });
+        input.read(&app, |input, ctx| {
+            assert_eq!(
+                input.ai_input_model().as_ref(ctx).input_type(),
+                InputType::Shell,
+                "the next typed key must see the reset config"
+            );
+            assert!(input.pending_submit_input_reset.is_none());
+        });
+    });
+}
+
+/// #2184 (c): with the switch off the reset runs before the write, as it always did.
+#[test]
+fn test_submit_input_reset_before_the_execute_command_with_the_switch_off_2184() {
+    App::test((), |mut app| async move {
+        let _guard = DeferSubmitInputResetGuard::set(false);
+        let (input, seen) = submit_in_agent_mode_recording_type_at_execute(&mut app).await;
+        assert_eq!(*seen.borrow(), vec![InputType::Shell]);
+        input.read(&app, |input, ctx| {
+            assert_eq!(
+                input.ai_input_model().as_ref(ctx).input_type(),
+                InputType::Shell
+            );
+            assert!(input.pending_submit_input_reset.is_none());
+        });
+    });
+}
+
 /// #1016: text typed behind an Enter that waits for its verdict must not join the text that
 /// Enter submits, and a second Enter must not be dropped or submit the joined line. Both queue,
 /// in order, behind the waiting Enter.
