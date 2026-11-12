@@ -9210,6 +9210,8 @@ import selftest_r23_modeguard  # noqa: E402  (#2170 view-mode guard before every
 CHECKS.extend(selftest_r23_modeguard.CHECKS)
 import selftest_r22_labcases  # noqa: E402  (round 22, #2160 #2163 #2164 #2165: the plain-session gate on managed-session lab cases, the self-match-proof daemon count, the helper-takeover wait and per-channel evidence, the chips OCR read; own file)
 CHECKS.extend(selftest_r22_labcases.CHECKS)
+import selftest_r25_manual  # noqa: E402  (#2178: no docs/manual page names a removed setting, starting with warpify.ssh.use_ssh_tmux_wrapper; own file)
+CHECKS.extend(selftest_r25_manual.CHECKS)
 
 
 def missing_required(required, passed):

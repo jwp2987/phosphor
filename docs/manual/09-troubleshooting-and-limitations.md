@@ -567,7 +567,7 @@ integration.
 | `WARP_SHELL_DEBUG_MODE` | `1` when shell debug mode is on; the bootstrap adds `-x` to the re-exec. |
 | `WARP_INITIAL_WORKING_DIR` | The bootstrap `cd`s here rather than the process setting its own cwd. |
 | `WARP_IS_SUBSHELL` | Set to `1` by subshell initialization. When set, the bootstrap deliberately skips sourcing the login-shell rc files. |
-| `WARP_USE_SSH_WRAPPER`, `WARP_SSH_REUSE_CONTROL_MASTER`, `SSH_SOCKET_DIR` | The legacy ControlMaster SSH wrapper. |
+| `WARP_USE_SSH_WRAPPER`, `WARP_SSH_REUSE_CONTROL_MASTER`, `SSH_SOCKET_DIR` | The `ssh` wrapper that starts a managed session (it uses an SSH ControlMaster). |
 | `WARP_PATH_APPEND` | Extra `PATH` entries. |
 | `HISTSIZE` / `HISTFILESIZE` and `WARP_INITIAL_HISTSIZE` / `WARP_INITIAL_HISTFILESIZE` | bash only. Phosphor sets a sentinel value so it can tell whether your rc files overrode it. |
 
@@ -584,30 +584,29 @@ raises a footer offering to bootstrap it. The keybinding is
 | `warpify.subshells.added_subshell_commands` — extra commands to treat as subshells | empty |
 | `warpify.subshells.subshell_commands_denylist` — commands never to offer it for | empty |
 
-For SSH, Phosphor can bootstrap the *remote* shell through tmux. That path is
-gated on **three** conditions, and the middle one is off by default, so most
-users will never see the offer:
+For SSH there is no button and no offer to answer. When you type `ssh` in a local
+bash, zsh or fish tab, Phosphor's `ssh` wrapper starts a **managed session**:
+it bootstraps the remote shell itself (bash, zsh, fish or nushell on the remote
+host), with or without the Phosphor helper installed there. Whether the wrapper
+is on depends on one setting, read when the tab's PTY is created:
 
 | Setting | Default |
 |---|---|
 | `warpify.ssh.enable_ssh_warpification` | `true` |
-| `warpify.ssh.use_ssh_tmux_wrapper` (macOS and Linux only) | **`false`** |
-| `warpify.ssh.ssh_hosts_denylist` | empty |
 
-Turn `use_ssh_tmux_wrapper` on and a **Phosphorize SSH session** button appears
-in the footer once you are logged in (`terminal:warpify_ssh_session`). Phosphor
-then probes the remote host and re-enters the session under tmux. It gives up after eight seconds.
+There is no tmux step, so there is no tmux version to satisfy and no timeout to
+wait for. If the helper is not on the host (or you declined it), a dim line says
+*"Connected without the Phosphor helper: some remote features use the shell
+instead."* once per session; the session itself is complete. A remote login
+shell that is none of bash, zsh, fish or nushell, a Windows OpenSSH server, or an
+`ssh_config` `RemoteCommand` gets a plain `ssh` login instead (see *Shell
+integration and appearance*, SSH).
 
-Enabling the tmux wrapper **disables** the legacy ControlMaster wrapper — they
-are mutually exclusive. If your completions have stopped working over SSH,
-Phosphor raises a banner suggesting exactly this: *"Enabling tmux phosphorization
-in settings may resolve this issue."*
-
-When the remote side cannot be phosphorized you get a specific message —
-tmux not installed, tmux older than 3.0, tmux failed to execute, a timeout, or an
-unsupported shell (only bash, zsh and fish work; PowerShell does not) — plus two
-escape hatches: **Phosphorize without TMUX** and **Continue without
-Phosphorization**.
+If your completions have stopped working over SSH, Phosphor raises a banner with
+a "more info" link. Its closing words still read *"Enabling tmux phosphorization
+in settings may resolve this issue."* That option has been removed; there is
+nothing to enable. Turn `enable_ssh_warpification` back on if you had turned it
+off, and open a new tab.
 
 > **The "More info" and "Learn more" links in these banners open this manual.**
 > The known-issues and prompt-compatibility links open this chapter, and the
@@ -794,8 +793,7 @@ These are private settings: they have no TOML path and are stored in
 | `appearance.text.font_name` | Terminal font. An unresolvable name fails silently — see Fonts. | `Hack` | Settings → Appearance |
 | `appearance.text.fallback_font_name` | Per-cell fallback font for the terminal grid. | empty | Settings → Appearance |
 | `warpify.ssh.enable_ssh_warpification` | Allow bootstrapping a remote shell over SSH. | `true` | Settings → Phosphorize |
-| `warpify.ssh.use_ssh_tmux_wrapper` | Required for the SSH "Phosphorize" offer to appear. macOS and Linux only. | `false` | Settings → Phosphorize |
-| `warpify.ssh.ssh_hosts_denylist` | Hosts never to offer phosphorization for. | empty | Settings → Phosphorize |
+| `warpify.ssh.ssh_hosts_denylist` | Retained key with no effect: the per-host SSH prompt it guarded no longer exists. | empty | `settings.toml` |
 | `warpify.subshells.added_subshell_commands` | Extra commands to treat as subshells. | empty | Settings → Phosphorize |
 | `warpify.subshells.subshell_commands_denylist` | Commands never to offer phosphorization for. | empty | Settings → Phosphorize |
 | `agents.mcp_servers.file_based_mcp_enabled` | Auto-spawn MCP servers found in third-party agents' *global* config files. | `false` | Settings → MCP Servers |
@@ -899,7 +897,7 @@ the part you actually want.
 |---|---|---|
 | **Oz platform plugins** (`oz-harness-support@claude-code-warp`, `orchestration@codex-warp`) | Installed skills into Claude Code / Codex that called back into `oz harness-support` and Warp's server. | **Removed.** Every skill in those plugins would fail here, because `oz harness-support` does not exist. Wiring them up would turn a working local Codex launch into a hard failure. |
 | **CLI-agent notification plugins** (`claude-code-warp`, `codex-warp`, `gemini-cli-warp`, `opencode-warp`) | Let Claude Code / Codex / Gemini CLI / opencode report progress to the terminal. | **These work.** All four plugins ship inside Phosphor and are installed from that local folder with no download (Claude Code, Codex and Gemini CLI through the agent's own CLI pointed at the folder; opencode as a `file://` entry in `opencode.json`) — never GitHub, GitLab, npm or a Warp registry — and once installed they talk to the terminal over a local OSC 777 protocol. The Phosphor UI calls them "the notification plugin"; the exact package name to type is shown in the runnable command beside each instruction. |
-| **Warp's SSH host manager** | Stored hosts and keys inside the app. | **Deliberately not implemented.** `~/.ssh/config` and `ssh-agent` are the source of truth and Phosphor never writes to them. SSH itself is fully supported, including the remote-server extension and the tmux wrapper (which Warp deprecated and Phosphor keeps). |
+| **Warp's SSH host manager** | Stored hosts and keys inside the app. | **Deliberately not implemented.** `~/.ssh/config` and `ssh-agent` are the source of truth and Phosphor never writes to them. SSH itself is fully supported, as a managed session with or without the remote helper. |
 | **Voice input / transcription** | Recorded audio and transcribed it with Warp's hosted Wispr STT. | **Not shipped.** Audio capture code still exists and works; the transcriber is hard-disabled, because the BYOP protocol cannot carry audio. The `/voice` command and the TUI voice composer are deliberately not registered rather than shipped as a control that always fails. |
 | **Screen and session recording** | Local `ffmpeg` capture, with artifact upload to Warp. | **Not shipped.** Not a cloud limitation — a product decision. |
 | **xAI / Grok subscription OAuth** | Signed in with an xAI subscription instead of an API key. | **Not supported.** API keys only. An xAI key works — add it as a custom agent provider. This one is a product decision, not a cloud limitation: the OAuth flow never touched Warp's servers. |
@@ -1061,7 +1059,7 @@ the part you actually want.
 - banner text and "Show initialization block" button: app/i18n/en/warp.ftl:3686-3687; construction app/src/terminal/view.rs:3680-3701
 - shell exited prematurely keeps the pane open and force-shows the init block: app/src/pane_group/pane/terminal_pane.rs:585-596, app/src/terminal/view.rs:10817-10820, :25012-25017; strings app/i18n/en/warp.ftl:3690-3691
 - incompatible-configuration banner, p10k and pure tags: app/src/terminal/view.rs:21355-21408; string app/i18n/en/warp.ftl:247; working p10k link app/src/terminal/view.rs:680-681
-- completions-not-working banner suggesting the tmux wrapper: app/i18n/en/warp.ftl:241-246; app/src/terminal/view.rs:3717-3741
+- completions-not-working banner (its closing words still mention the removed tmux option): app/i18n/en/warp.ftl:244-248; app/src/terminal/view.rs:5394-5411
 - empty help URLs KNOWN_ISSUES_URL / PROMPT_COMPATIBILITY_URL / CONTROLMASTER_ISSUES_URL: app/src/terminal/view.rs:668-677; SSH_DOCS_URL / SUBSHELL_DOCS_URL: app/src/terminal/warpify/render.rs:35-36
 - App menu "Show initialization block": app/src/app_menus.rs:643-675; strings app/i18n/en/warp.ftl:213-214, :630-631
 - `appearance.blocks.should_show_bootstrap_block` default false: app/src/settings/block_visibility.rs:8-16
@@ -1072,12 +1070,10 @@ the part you actually want.
 - shell debug mode adds -x on re-exec: app/assets/bundled/bootstrap/zsh_body.sh:1074-1076, bash_body.sh:1176-1178
 - `terminal.input.honor_ps1` default false: app/src/terminal/session_settings.rs:299-307; coupling to input box type app/src/settings/init.rs:236-254 and app/src/settings/initializer.rs:121-129; runtime fallback app/src/settings/input.rs:236-244
 - subshell detection regexes: app/src/terminal/warpify/settings.rs:219-243 (+ wsl at :206-212), matcher :459-488; footer app/src/terminal/view.rs:11036-11052; keybinding app/src/terminal/view/init.rs:345; strings app/i18n/en/warp.ftl:394-395
-- Warpify settings group and defaults (enable_ssh_warpification true, use_ssh_tmux_wrapper false, denylists empty): app/src/terminal/warpify/settings.rs:18-56, :85-93
-- three-condition SSH gate: app/src/terminal/ssh/ssh_detection.rs:63-91
-- tmux wrapper supersedes the ControlMaster wrapper: app/src/terminal/local_tty/terminal_manager.rs:688-696
-- Phosphorize SSH button and keybinding: app/src/terminal/view.rs:24922-24951; app/src/terminal/view/use_agent_footer/warpify_footer.rs:87-89; app/src/terminal/view/init.rs:354
-- 8s timeout: app/src/terminal/ssh/mod.rs:10; script selection and PowerShell unsupported: app/src/terminal/ssh/warpify.rs:184-196
-- remote failure messages verbatim: app/src/terminal/ssh/error.rs:32-42; escape hatches app/i18n/en/warp.ftl:3665-3666
+- Warpify settings group and defaults (enable_ssh_warpification true, denylists empty): app/src/terminal/warpify/settings.rs:18-56
+- the tmux prompt is gone, evaluate_warpify_ssh_host always answers FeatureDisabled: app/src/terminal/ssh/ssh_detection.rs:21-49; bash/zsh/fish/nu are the managed remote shells: app/src/terminal/input_queue/ssh_phase.rs:55-65
+- the ssh wrapper follows enable_ssh_warpification, computed at PTY creation: app/src/terminal/local_tty/terminal_manager.rs:755-765
+- the no-helper notice (once per managed session without a helper): app/src/terminal/view/ssh_no_helper_notice.rs:18-21; app/src/terminal/model/session.rs:204-210; app/i18n/en/warp.ftl:254
 
 ## Fonts
 - FontSettings group, every toml_path and default: app/src/settings/font.rs:28-227; constants :15-26
@@ -1152,7 +1148,7 @@ All rows are drawn from DECLINED.md; the specific rows and their supporting code
 - MCP gallery, well-known ids, warp_id, shared templates: DECLINED.md "MCP gallery in the TUI /mcp catalog"; app/src/ai/agent_sdk/mcp_config.rs:26-48
 - Oz platform plugins removed: DECLINED.md "Oz platform plugins" (#595)
 - CLI agent notification plugins kept and working: DECLINED.md "CLI agent notification plugins - Warp's packages, Phosphor's prose"
-- SSH manager declined: DECLINED.md "SSH connection management - the system owns it, not the app"; tmux wrapper kept: DECLINED.md "SSH tmux wrapper - kept, deprecation not ported" (#322)
+- SSH manager declined: DECLINED.md "SSH connection management - the system owns it, not the app"; tmux phosphorization option removed 2026-11-08: DECLINED.md "SSH tmux wrapper option - REMOVED 2026-11-08" (#322)
 - voice: DECLINED.md "Voice input - recording exists, transcription is cloud and disabled" (#389, #352)
 - screen/session recording: DECLINED.md "Screen recording" (#367), "computer_use session recording" (#350)
 - Grok subscription OAuth: DECLINED.md "xAI / Grok subscription OAuth" (#319). The Grok-specific rejection message in session.rs is gone as of #629 — all four providers now hit the same refusal in reject_provider_api_key_flags
