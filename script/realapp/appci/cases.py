@@ -6339,6 +6339,69 @@ def trim_ui_verdict(r, is_close_trim, over, msg):
         r.check(not over, msg)
 
 
+def median_open_cost(pairs):
+    """#2185: the open cost the verdict is made on = the MEDIAN, per figure, of (after-open - pre-open) over every measured cycle. [(opened, pre)]
+    -> {metric: MB}; one pair gives that pair's cost (rss-only or every figure of a macOS / Windows sample)."""
+    out = {}
+    for k in sorted({k for o, p in pairs for k in o if k in p}):
+        xs = sorted(o[k] - p[k] for o, p in pairs if k in o and k in p)
+        n = len(xs)
+        out[k] = xs[n // 2] if n % 2 else (xs[n // 2 - 1] + xs[n // 2]) / 2.0
+    return out
+
+
+def worst_open_cost(pairs):
+    """#2185: the open cost the verdict is made on = the WORST cycle, per figure, of (after-open - pre-open): every cycle must meet the target, so
+    the verdict is never looser than the old cycle-1-only check. [(opened, pre)] -> {metric: MB}."""
+    out = {}
+    for k in sorted({k for o, p in pairs for k in o if k in p}):
+        out[k] = max(o[k] - p[k] for o, p in pairs if k in o and k in p)
+    return out
+
+
+def editor_cycle_note(tag, pre, opened, app_open):
+    """#2185: one note per cycle with the figures a reader needs to see how the number was made: the base (pre-open) and after-open memory, the
+    cost, and the app's own 'editor_memory open' breakdown (identical in r24a and r25a while the RSS cost differed: the cost depends on the
+    heap the open starts from, not on what the open allocates)."""
+    figs = ", ".join("%s base %.0f MB -> after-open %.0f MB = +%.0f MB" % (k, pre[k], opened[k], opened[k] - pre[k]) for k in sorted(opened) if k in pre)
+    bd = ""
+    if app_open:
+        bd = "; app breakdown: " + " ".join("%s=%s" % (k, v) for k, v in sorted(app_open[-1].items()))
+    return "open cost %s: %s%s" % (tag, figs, bd)
+
+
+def editor_prime(ctx, r, palette, path):
+    """#2185: put the heap in a defined state before the first base is taken. The open cost depends on what ran before the case (r24a: the first
+    open started at 608 MB RSS with ~285 MB of freed-but-resident heap and reported 97 MB; r25a started at 317 MB and reported 129 MB for the same
+    app breakdown). One unmeasured open + close of the case's own file, then wait for the app's close trim (PHOSPHOR_HEAP_TRIM_ON_CLOSE) and let
+    the RSS settle: the base is taken after that trim, from the heap the app itself hands back, whatever ran earlier. The same file (not a small one)
+    is used because the close trim runs only for a large buffer's drop. Returns a dict for the row's notes, or None when the prime could not run
+    (no close way / the file did not open); the case then keeps its cold base and says so."""
+    off = ctx.log_size() if getattr(ctx, "log_path", None) else 0
+    pre = settle_rss(ctx)
+    editor_open(ctx, palette, path)
+    opened = settle_rss(ctx)
+    app_opens = editor_mem_log(ctx, off)["open"]
+    if not editor_opened(max(opened[k] - pre[k] for k in opened if k in pre), app_opens):
+        ctx.be.key("escape")
+        ctx.reset()
+        return None
+    how = editor_close(ctx, r)
+    if not how:
+        ctx.reset()
+        return None
+    time.sleep(1.0)
+    if getattr(ctx, "log_path", None):
+        editor_wait_dropped(ctx, off)
+        trims = editor_wait_close_trim(ctx, off)
+    else:
+        trims = []
+    post = settle_rss(ctx, quiet_s=4.0, timeout=60)
+    ctx.reset()
+    return {"pre": pre, "opened": opened, "post_trim": post, "close_trim_seen": bool(trims),
+            "freed_estimate": (trims[-1].get("freed_estimate") if trims else None)}
+
+
 def editor_warm_up(ctx, r, palette):
     """#1340: a WARM baseline. The first editor open in an app run pays one-off costs (code-editor and syntax machinery, fonts, thread pools, the
     allocator's first arenas) that a cold baseline books to the 7 MB file. One small file is opened and closed first, in the same app run, and
@@ -6488,9 +6551,20 @@ def c_editor_mem(ctx, r):
         path = os.path.join(ctx.W, "editor_mem_%s.%s" % (kind, "rs" if kind == "rs" else "txt"))
         editor_mem_file(path, kind, size)
         n_cycles = cycles if kind == kinds[0] else 1
+        # #2185: the base must not depend on the cases that ran before (see editor_prime). Once per run, before the first kind's base.
+        if kind == kinds[0] and os.environ.get("APPCI_EDITOR_MEM_PRIME", "1") not in ("", "0"):
+            primed = editor_prime(ctx, r, palette, path)
+            r.metric("heap_prime", primed if primed else "not run")
+            if primed:
+                r.note("heap prime (#2185): one unmeasured open+close of the %s file first; RSS before %.0f MB, after open %.0f MB, after the close trim %.0f MB "
+                       "(close trim line seen: %s, freed_estimate %s); the baseline below is taken from that post-trim heap" % (
+                           kind, primed["pre"]["rss"], primed["opened"]["rss"], primed["post_trim"]["rss"], primed["close_trim_seen"], primed["freed_estimate"]))
+            else:
+                r.note("heap prime (#2185) could not run (the file did not open or no close way): the baseline stays whatever the earlier cases left")
         base = settle_rss(ctx)
         mem_metrics(r, "%s_rss_base" % kind, base)
         opens, closes, how = [], [], None
+        cost_pairs = []
         for cyc in range(n_cycles):
             off = ctx.log_size() if getattr(ctx, "log_path", None) else 0
             pre = settle_rss(ctx) if cyc else base
@@ -6514,10 +6588,10 @@ def c_editor_mem(ctx, r):
                 break
             opened_any = True
             opens.append(opened)
+            cost_pairs.append((opened, pre))
+            r.note(editor_cycle_note(tag, pre, opened, app_opens))
             if cyc == 0:
                 editor_cost_vs_file(r, kind, opened, pre, size)
-                mem_judge_known(r, opened, pre, limits[kind], "%s: opening a %d MB file cost %%.0f MB of %%s (> %.0f MB target)" % (kind, size >> 20, limits[kind]),
-                                "editor_open_cost")
             how = editor_close(ctx, r)
             if not how:
                 r.note("%s: release on close NOT MEASURED: no close key and no command-palette close on this platform (APPCI_KEY_CLOSE / APPCI_KEY_CMD_PALETTE empty)" % kind)
@@ -6574,6 +6648,18 @@ def c_editor_mem(ctx, r):
                 else:
                     r.note("%s: close trim not run (trim=%s: a PHOSPHOR_HEAP_TRIM* kill switch)" % (tag, dropped[-1].get("trim")))
             ctx.reset()
+        # #2185: the target is judged on EVERY cycle (the worst one), each measured from its own settled pre-open (post-close-trim) base, not on
+        # cycle 1 alone: one cycle's cost swings with the heap it starts from (r24a 97 / 202 / 205 MB, r25a 129 / 145 / 147 MB). The limits are
+        # unchanged; the median is reported, not judged.
+        if cost_pairs:
+            med = median_open_cost(cost_pairs)
+            worst = worst_open_cost(cost_pairs)
+            r.metric("%s_open_cost_median_mb" % kind, {k: round(v, 1) for k, v in med.items()})
+            r.metric("%s_open_cost_worst_mb" % kind, {k: round(v, 1) for k, v in worst.items()})
+            r.metric("%s_open_cost_cycles_mb" % kind, [{k: round(o[k] - p[k], 1) for k in o if k in p} for o, p in cost_pairs])
+            mem_judge_known(r, worst, {k: 0.0 for k in worst}, limits[kind],
+                            "%s: opening a %d MB file cost %%.0f MB of %%s (worst of %d cycle(s); > %.0f MB target)" % (kind, size >> 20, len(cost_pairs), limits[kind]),
+                            "editor_open_cost")
         if not opens or not how:
             continue
         r.metric("%s_close_method" % kind, how)
