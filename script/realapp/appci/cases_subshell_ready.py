@@ -843,6 +843,11 @@ def c_ready_zsh_newuser_install(ctx, r):
     leave_and_prove_parent(ctx, r, "zshnew", f, [tok])
 
 
+# r26: Windows Git Bash measurement for the 2 s budget. There is NO per-platform budget (none approved by the owner); the budget stays 2 s and the row names the known cause.
+WIN_BOOTSTRAP_NOTE = (" (Windows Git Bash: known issue #2025, the ~83 KB bootstrap is typed through the inner bash's line editor over ConPTY at about 40 lines/s; "
+                      "r24a measured Bootstrapped at 4760 ms against this 2 s budget; the budget is unchanged, no owner-approved Windows number exists)")
+
+
 @case("subshell_ready_rc_clear", order=22)
 @guarded
 def c_ready_rc_clear(ctx, r):
@@ -862,7 +867,9 @@ def c_ready_rc_clear(ctx, r):
         # where the time went, in the row (the budget below is unchanged): a line typed behind a setup that was already written is held to
         # the setup's own end, so its time is the shell's setup time; a line typed before the write runs at once (setup_timeline)
         r.note("clear: setup " + setup_timeline(ctx.log_since(off)))
-        r.check(dt < 2.0, "the first inner line ran %.2f s after its Enter (budget 2 s)" % dt)
+        r.check(dt < 2.0, "the first inner line ran %.2f s after its Enter (budget 2 s)%s" % (dt, WIN_BOOTSTRAP_NOTE if ctx.win else ""))
+        if ctx.win:
+            r.note(WIN_BOOTSTRAP_NOTE.strip(" ()"))
     r.check(first_index(hops(ctx, off), "subshell_setup_ready_write") is not None, "the setup was written after the clear")
     leave_and_prove_parent(ctx, r, "clear", f, [tok])
 

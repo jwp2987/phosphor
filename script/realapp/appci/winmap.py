@@ -282,6 +282,9 @@ VARIANT_PROCESS = {
 }
 
 
+CONSOLE_HOSTS = ("openconsole.exe", "conhost.exe", "wslhost.exe")
+
+
 def variant_shell_problem(variant, names):
     """pure: None when the processes running under the app (`names`, lower-case image names) fit the pass `variant`, else one sentence saying which
     shell the app started instead. An empty list means the job object could not be read: no verdict (None). A wanted image under the app is
@@ -289,6 +292,10 @@ def variant_shell_problem(variant, names):
     names = [n.lower() for n in names if n]
     want, never = VARIANT_PROCESS[variant]
     if not names or any(n in want for n in names):
+        return None
+    # r26: a pane shell that runs under a console host child is not always listed in the job (r24a pwsh7: only openconsole.exe was listed although the
+    # app log showed the shell running, hop=precmd_seen). Console hosts alone are no verdict; startup_shell_pane's identity probe judges the shell.
+    if variant != "wsl" and all(n in CONSOLE_HOSTS for n in names):
         return None
     other = sorted(set(n for n in names if n in never))
     if other:

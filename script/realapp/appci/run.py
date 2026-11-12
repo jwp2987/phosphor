@@ -1206,7 +1206,11 @@ def variant_pane_problem(variant, app):
     except Exception as e:
         print("[appci] could not list the app's processes for the %s pass: %r" % (variant, e), flush=True)
         return None
-    return winmap.variant_shell_problem(variant, names)
+    bad = winmap.variant_shell_problem(variant, names)
+    print("[appci] %s pass: processes under the app: %s%s" % (variant, ", ".join(sorted(set(n for n in names if n))) or "(none listed)",
+          "; no verdict from the process list, startup_shell_pane judges the shell by identity" if not bad and not any(
+              (n or "").lower() in winmap.VARIANT_PROCESS[variant][0] for n in names) else ""), flush=True)
+    return bad
 
 
 def prove_keys(ctx, be, pane, label):

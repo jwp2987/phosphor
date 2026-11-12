@@ -9369,3 +9369,5 @@ def main(argv=None):
 
 if __name__ == "__main__":
     sys.exit(main())
+import selftest_r26_wintests  # noqa: E402  (r24a Windows test faults: enters_agent on the routing tables, md fixture fits the viewer, pane-shell identity, #2025 row; own file)
+CHECKS.extend(selftest_r26_wintests.CHECKS)

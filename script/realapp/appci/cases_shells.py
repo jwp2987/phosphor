@@ -58,6 +58,11 @@ def c_startup_shell_pane(ctx, r):
     ctx.be.type(ident, 12, enter=True)
     ctx.until(lambda: ctx.lines("who.txt"), 8)
     got = ctx.lines("who.txt")
+    if variant == "pwsh7":      # r26: the resolved executable of the pane's shell, logged (the job-object process list can miss it)
+        ctx.rm("who_path.txt")
+        ctx.be.type("Add-Content -LiteralPath who_path.txt -Value ([Diagnostics.Process]::GetCurrentProcess().MainModule.FileName)", 12, enter=True)
+        ctx.until(lambda: ctx.lines("who_path.txt"), 8)
+        r.note("pwsh7 pane shell resolved to: %s" % (ctx.lines("who_path.txt") or ["(not written)"])[0].strip())
     if not r.check(identity_ok(variant, got), "the pane is not %s: who.txt holds %r%s" % (variant, got, identity_hint(variant, got))):
         ctx.shot("startup_shell_%s_identity" % variant)
         ctx.reset()

@@ -6848,7 +6848,7 @@ Intro paragraph with `inline code` and a [link](https://example.com).
 | QUINCEBERRY | 17 |
 
 ```mermaid
-graph TD
+graph LR
     A[AlphaNodeStart] --> B[BetaNodeMiddle]
     B --> C[GammaNodeEnd]
 ```

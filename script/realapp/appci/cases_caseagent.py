@@ -524,7 +524,7 @@ def routing_table_rows(ctx, off):
     return [dict(route=m.group(1), rule=m.group(2), surface=m.group(3), head=m.group(4), n=int(m.group(5))) for m in ROUTE_RE.finditer(ctx.log_since(off))]
 
 
-@case("routing_table", order=48, gui=True)
+@case("routing_table", order=48, gui=True, enters_agent=True)
 def c_routing_table(ctx, r):
     """Typed lines (10-25 ms/key, instant Enter) and where they went: shell (rec.log has the exact line) or agent (the enter-stage
     routing decision says Agent and the shell received nothing). Installed commands -> shell; clear natural language -> agent when
