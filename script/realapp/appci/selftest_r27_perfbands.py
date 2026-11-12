@@ -170,3 +170,20 @@ def r27_subshell_first_inner_line_reads_its_band():
         assert bands.judge(k, 4.8)[0] == "pass" and bands.judge(k, 6.0)[0] == "fail"
     with Fx({}):
         assert bands.judge(k, 4.8)[0] == "noref"
+
+
+@check
+def r27a_every_banded_record_name_has_its_band():
+    """r27a: latency_enter_ssh's record was named .../enter_to_start while its band is .../ssh_enter_to_start, so the macOS and Wayland ssh Enter
+    rows read 'no band yet' and were never judged. Every literal lat.evaluate record name must match a band in test-results/bands.json."""
+    import glob, re
+    here = os.path.dirname(os.path.abspath(__file__))
+    root = os.path.abspath(os.path.join(here, "..", "..", ".."))
+    b = json.load(open(os.path.join(root, "test-results", "bands.json")))
+    suffixes = {"/".join(k.split("/")[2:]) for k in b.get("bands", b)}
+    missing = []
+    for f in glob.glob(os.path.join(here, "*.py")):
+        for m in re.finditer(r'lat\.evaluate\(\s*"%s/([a-z0-9_]+/[a-z0-9_]+)"', open(f).read()):
+            if m.group(1) not in suffixes:
+                missing.append((os.path.basename(f), m.group(1)))
+    assert not missing, missing

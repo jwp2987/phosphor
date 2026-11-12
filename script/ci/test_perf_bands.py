@@ -115,6 +115,20 @@ def small_widening_applies_by_itself_larger_needs_the_owner():
 
 
 @t
+def a_newest_value_inside_the_band_never_widens_it():
+    """r27a: two far-apart points (4.87 then -4.97) made median + 3 MAD = 14.71 over a 5.17 band; the newest value is inside, so no loosen"""
+    root = fresh([4.87])
+    try:
+        old, _ = pb.generate(root, {}, config={})
+        assert old[KEY]["upper"] == 5.17, old[KEY]
+        make_run(root, "2027-01-01_build_fast_9100", [-4.97])
+        new, notes = pb.generate(root, old, config={})
+        assert new[KEY]["upper"] == 5.17 and not notes, (new[KEY], notes)
+    finally:
+        shutil.rmtree(root)
+
+
+@t
 def bom_jsonl_and_skips():
     root = tempfile.mkdtemp()
     try:

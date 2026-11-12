@@ -1,0 +1,172 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="appci-linux-wayland" tests="65" failures="2" skipped="35">
+<testcase classname="terminal" name="mode_proof" time="1.50">
+</testcase>
+<testcase classname="terminal" name="ctrl_c_d" time="435.80">
+</testcase>
+<testcase classname="terminal" name="subshell_sh_probe_empty_ps1" time="31.40">
+</testcase>
+<testcase classname="terminal" name="subshell_ready_rc_clear" time="13.70">
+</testcase>
+<testcase classname="terminal" name="latency_enter" time="163.80">
+</testcase>
+<testcase classname="terminal" name="latency_key_log" time="15.50">
+</testcase>
+<testcase classname="terminal" name="latency_paint" time="0.70">
+<skipped message="kl3 (ScreenCaptureKit) is macOS only; no key-&gt;paint read-back exists on this platform, so there is nothing to compare"/>
+</testcase>
+<testcase classname="terminal" name="latency_first_key_after_idle" time="311.20">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: First key after 1 s idle: overhead -0.05 +/- 0.29 ms (SE) vs budget 0.25 ms is within noise: INCONCLUSIVE/NO-COMPARE, the overhead budget was NOT judged (not a pass)"/>
+</testcase>
+<testcase classname="terminal" name="routing_table" time="56.60">
+</testcase>
+<testcase classname="terminal" name="routing_table_powershell" time="0.70">
+<skipped message="Windows only: the PowerShell pane (routing_table judges the POSIX panes from rec.log)"/>
+</testcase>
+<testcase classname="terminal" name="remote_tab_no_helper" time="7.60">
+</testcase>
+<testcase classname="terminal" name="remote_tab_enter_no_helper" time="10.10">
+</testcase>
+<testcase classname="terminal" name="ssh_gitbash_managed" time="0.70">
+<skipped message="Windows only (ConPTY)"/>
+</testcase>
+<testcase classname="terminal" name="ssh_gitbash_bootstrap_in_command" time="0.70">
+<skipped message="Windows only (ConPTY)"/>
+</testcase>
+<testcase classname="terminal" name="ssh_gitbash_kill_switch" time="0.70">
+<skipped message="Windows only (ConPTY)"/>
+</testcase>
+<testcase classname="terminal" name="ui_completions_as_you_type_local" time="3.40">
+</testcase>
+<testcase classname="terminal" name="latency_enter_ssh" time="168.50">
+<skipped message="NO-REFERENCE (not a pass): measurement mode: interleaved, blocks of 5 kept samples (+1 discarded lead per block), 24 blocks"/>
+</testcase>
+<testcase classname="terminal" name="intl_compose_linux" time="26.80">
+<skipped message="NO-REFERENCE (not a pass): injector accounting: injector sent 703; app saw 695; lost-before-app 8 (Enter: sent 6, app saw 6); of the app's: 682 unbound keydown/typed, 7 taken by a key binding, 6 Enter by a b"/>
+</testcase>
+<testcase classname="terminal" name="history_up_recall" time="23.40">
+</testcase>
+<testcase classname="terminal" name="ssh_drop_reconnect" time="62.80">
+<failure message="[escape_after_cleared_line] the erased line (or the escape) ran a command: ['ssh fake']">[escape_after_cleared_line] the erased line (or the escape) ran a command: ['ssh fake']
+injector accounting: injector sent 2316; app saw 2316; lost-before-app 0 (Enter: sent 61, app saw 61); of the app's: 2251 unbound keydown/typed, 4 taken by a key binding, 61 Enter by a binding
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 61 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="terminal" name="scroll_keys_position" time="23.00">
+</testcase>
+<testcase classname="terminal" name="ime_compose" time="53.80">
+<skipped message="NO-REFERENCE (not a pass): injector accounting: injector sent 334; app saw 316; lost-before-app 18 (Enter: sent 6, app saw 6); of the app's: 303 unbound keydown/typed, 7 taken by a key binding, 6 Enter by a "/>
+</testcase>
+<testcase classname="terminal" name="startup_shell_pane" time="1.40">
+<skipped message="Windows only: the pane-shell passes (PowerShell 7, cmd.exe, WSL chosen through the app's own shell settings) exist on the Windows runner; no machine change makes it run here"/>
+</testcase>
+<testcase classname="terminal" name="link_and_path_click" time="54.70">
+</testcase>
+<testcase classname="terminal" name="drag_drop_file" time="11.30">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: the drag source reported no drag at all (events []): the pointer press and motion did not start a drag on it. The app was never offered the file; nothin"/>
+</testcase>
+<testcase classname="terminal" name="md_viewer" time="5.70">
+</testcase>
+<testcase classname="terminal" name="editor_memory_7mb" time="374.30">
+<skipped message="NO-REFERENCE (not a pass): heap prime (#2185): one unmeasured open+close of the txt file first; RSS before 320 MB, after open 443 MB, after the close trim 300 MB (close trim line seen: True, freed_estimate 1"/>
+</testcase>
+<testcase classname="terminal" name="ui_vertical_tabs_panel_click" time="45.30">
+</testcase>
+<testcase classname="terminal" name="tab_pointer_use" time="92.80">
+<skipped message="NO-REFERENCE (not a pass): vertical panel: tab 2 at (125, 155), tab 3 at (125, 218), tab 4 at (125, 280)"/>
+</testcase>
+<testcase classname="terminal" name="network_gate_switch" time="71.20">
+<skipped message="NO-REFERENCE (not a pass): Escape left the settings page open (the shell did not take the probe line); closed it with key ctrl+shift+w"/>
+</testcase>
+<testcase classname="terminal" name="gpu_real_render" time="75.40">
+<skipped message="NO-REFERENCE (not a pass): 'a lost device recovers' (the third oracle of r14-test-gaps T48; #2091) is judged by its own case, gpu_lost_device_recovers (a renderer test hook reports the loss; the kernel's res"/>
+</testcase>
+<testcase classname="terminal" name="keybinding_rebind" time="95.00">
+</testcase>
+<testcase classname="terminal" name="gpu_lost_device_recovers" time="45.90">
+<skipped message="NO-REFERENCE (not a pass): the app log says terminal but the screen reads as agent (OCR); the log decides"/>
+</testcase>
+<testcase classname="terminal" name="upgrade_over_previous" time="46.90">
+<skipped message="NO-REFERENCE (not a pass): the app log says terminal but the screen reads as agent (OCR); the log decides"/>
+</testcase>
+<testcase classname="agent" name="mode_proof" time="0.60">
+</testcase>
+<testcase classname="agent" name="ctrl_c_d" time="435.30">
+</testcase>
+<testcase classname="agent" name="subshell_sh_probe_empty_ps1" time="31.30">
+</testcase>
+<testcase classname="agent" name="subshell_ready_rc_clear" time="13.70">
+</testcase>
+<testcase classname="agent" name="latency_enter" time="164.10">
+<skipped message="NO-REFERENCE (not a pass): measurement mode: interleaved, blocks of 5 kept samples (+1 discarded lead per block), 24 blocks"/>
+</testcase>
+<testcase classname="agent" name="latency_key_log" time="15.40">
+</testcase>
+<testcase classname="agent" name="latency_paint" time="0.60">
+<skipped message="kl3 (ScreenCaptureKit) is macOS only; no key-&gt;paint read-back exists on this platform, so there is nothing to compare"/>
+</testcase>
+<testcase classname="agent" name="latency_first_key_after_idle" time="311.10">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: First key after 1 s idle: overhead -0.04 +/- 0.17 ms (SE) vs budget 0.26 ms is within noise: INCONCLUSIVE/NO-COMPARE, the overhead budget was NOT judged (not a pass)"/>
+</testcase>
+<testcase classname="agent" name="routing_table" time="59.80">
+</testcase>
+<testcase classname="agent" name="routing_table_powershell" time="0.70">
+<skipped message="Windows only: the PowerShell pane (routing_table judges the POSIX panes from rec.log)"/>
+</testcase>
+<testcase classname="agent" name="remote_tab_no_helper" time="7.60">
+</testcase>
+<testcase classname="agent" name="remote_tab_enter_no_helper" time="9.90">
+</testcase>
+<testcase classname="agent" name="ssh_gitbash_managed" time="0.70">
+<skipped message="Windows only (ConPTY)"/>
+</testcase>
+<testcase classname="agent" name="ssh_gitbash_bootstrap_in_command" time="0.70">
+<skipped message="Windows only (ConPTY)"/>
+</testcase>
+<testcase classname="agent" name="ssh_gitbash_kill_switch" time="0.70">
+<skipped message="Windows only (ConPTY)"/>
+</testcase>
+<testcase classname="agent" name="latency_enter_ssh" time="168.30">
+<skipped message="NO-REFERENCE (not a pass): measurement mode: interleaved, blocks of 5 kept samples (+1 discarded lead per block), 24 blocks"/>
+</testcase>
+<testcase classname="agent" name="left_agent_mode_after_latency_enter_ssh" time="0.00">
+<failure message="after latency_enter_ssh the pane shows a TERMINAL session, not agent view; the app is relaunched (fresh agent session) so later agent cases measure agent mode. Candidate APP finding if the case typed no Escape.">after latency_enter_ssh the pane shows a TERMINAL session, not agent view; the app is relaunched (fresh agent session) so later agent cases measure agent mode. Candidate APP finding if the case typed no Escape.</failure>
+</testcase>
+<testcase classname="agent" name="intl_compose_linux" time="26.50">
+<skipped message="NO-REFERENCE (not a pass): injector accounting: injector sent 703; app saw 695; lost-before-app 8 (Enter: sent 6, app saw 6); of the app's: 682 unbound keydown/typed, 7 taken by a key binding, 6 Enter by a b"/>
+</testcase>
+<testcase classname="agent" name="history_up_recall" time="23.10">
+</testcase>
+<testcase classname="agent" name="scroll_keys_position" time="23.80">
+<skipped message="NO-REFERENCE (not a pass): control: the job printed 16 lines and none is on screen at the bottom of the agent view (shots/*skp_0_stream.png): the agent view does not draw a background job's output (#2145)"/>
+</testcase>
+<testcase classname="agent" name="ime_compose" time="52.50">
+<skipped message="NO-REFERENCE (not a pass): injector accounting: injector sent 332; app saw 314; lost-before-app 18 (Enter: sent 6, app saw 6); of the app's: 303 unbound keydown/typed, 5 taken by a key binding, 6 Enter by a "/>
+</testcase>
+<testcase classname="agent" name="link_and_path_click" time="56.20">
+</testcase>
+<testcase classname="agent" name="drag_drop_file" time="11.20">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: the drag source reported no drag at all (events []): the pointer press and motion did not start a drag on it. The app was never offered the file; nothin"/>
+</testcase>
+<testcase classname="agent" name="md_viewer" time="5.60">
+</testcase>
+<testcase classname="agent" name="ui_vertical_tabs_panel_click" time="26.90">
+<skipped message="NO-REFERENCE (not a pass): vertical tabs: on in the profile's settings (the owner's layout)"/>
+</testcase>
+<testcase classname="agent" name="tab_pointer_use" time="43.50">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: vertical panel: the tabs' titles could not be located in the strip (the rows are not top to bottom in tab order: tab 2 at (329, 459), tab 3 at (329, 459"/>
+</testcase>
+<testcase classname="agent" name="gpu_real_render" time="74.60">
+<skipped message="NO-REFERENCE (not a pass): 'a lost device recovers' (the third oracle of r14-test-gaps T48; #2091) is judged by its own case, gpu_lost_device_recovers (a renderer test hook reports the loss; the kernel's res"/>
+</testcase>
+<testcase classname="agent" name="keybinding_rebind" time="94.90">
+</testcase>
+<testcase classname="agent" name="gpu_lost_device_recovers" time="45.90">
+<skipped message="NO-REFERENCE (not a pass): device reported lost once; renderer rebuilt on Intel(R) UHD Graphics 630 (CFL GT2) (Vulkan); 17 frame(s) drawn after the rebuild"/>
+</testcase>
+<testcase classname="agent@fake" name="agent_latency_key" time="198.30">
+<skipped message="NO-REFERENCE (not a pass): a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context"/>
+</testcase>
+<testcase classname="agent@fake" name="agent_latency_enter" time="255.80">
+<skipped message="NO-REFERENCE (not a pass): a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context"/>
+</testcase>
+</testsuite>

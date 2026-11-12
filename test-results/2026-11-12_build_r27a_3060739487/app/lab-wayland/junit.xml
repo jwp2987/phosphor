@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="appci-linux-wayland" tests="2" failures="2" skipped="0">
+<testcase classname="terminal" name="case_selection" time="0.00">
+<failure message="unknown case name(s) lab_tab_remote_dir, lab_ssh_drop_reconnect, lab_chips, lab_ctrl_c_no_esc_i (not in the registry: renamed or misspelled?)">unknown case name(s) lab_tab_remote_dir, lab_ssh_drop_reconnect, lab_chips, lab_ctrl_c_no_esc_i (not in the registry: renamed or misspelled?)</failure>
+</testcase>
+<testcase classname="agent" name="case_selection" time="0.00">
+<failure message="unknown case name(s) lab_tab_remote_dir, lab_ssh_drop_reconnect, lab_chips, lab_ctrl_c_no_esc_i (not in the registry: renamed or misspelled?)">unknown case name(s) lab_tab_remote_dir, lab_ssh_drop_reconnect, lab_chips, lab_ctrl_c_no_esc_i (not in the registry: renamed or misspelled?)</failure>
+</testcase>
+</testsuite>

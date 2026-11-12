@@ -214,7 +214,14 @@ def generate(results=RESULTS, old=None, allow=(), config=None, today=None):
             continue
         b = compute_band(pairs, kinds[key])
         o = old.get(key)
-        if o and b["upper"] > o["upper"] + 1e-9:
+        if o and b["upper"] > o["upper"] + 1e-9 and max(b["values"] or [o["upper"]]) <= o["upper"] + 1e-9 and key not in allow:
+            # r27a: when every value in the window is INSIDE the band, nothing widens it — a spread-driven formula (median + 3 MAD over a few, far-apart points)
+            # would loosen the band when a run got FASTER (macOS ssh Enter -4.97 ms under a 5.17 ms band asked for 14.71). Keep the old upper.
+            b["upper"] = o["upper"]
+            b["set_by"] = o.get("set_by", "data")
+            if "owner_date" in o:
+                b["owner_date"] = o["owner_date"]
+        elif o and b["upper"] > o["upper"] + 1e-9:
             if key in allow:
                 b["set_by"], b["owner_date"] = "owner", today or datetime.date.today().isoformat()
             elif b["upper"] - o["upper"] <= AUTO_LOOSEN[kinds[key]] + 1e-9:

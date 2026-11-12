@@ -1391,7 +1391,7 @@ def c_lat_enter_ssh(ctx, r):
     if not left:
         return
     if ds:
-        rec = lat.evaluate("%s/latency_enter_ssh/enter_to_start" % ctx.label, ds, rs, None, "overhead",
+        rec = lat.evaluate("%s/latency_enter_ssh/ssh_enter_to_start" % ctx.label, ds, rs, None, "overhead",
                            plat(), banded=True, ref_name=ref.name if ref and rs else None, floor=ctx.be.key_floor_ms, expected=n, mode=mode,
                            notes=["both sides type into the SAME remote shell over ssh to the harness's local sshd; " +
                                   ("reference interleaved with Phosphor in blocks of %d (A/B/A/B, same session)" % lat.interleave_block() if mode == "interleaved"
