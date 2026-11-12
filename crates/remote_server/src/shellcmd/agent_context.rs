@@ -217,11 +217,12 @@ pub fn skills_command(kind: ShellKind) -> Option<String> {
     Some(format!(
         // No glob on purpose: zsh aborts the script on an unmatched glob ("no matches found",
         // #2152). `ls` of an existing root feeds a here-document, so `emit` runs in this shell
-        // (its running byte total survives) and a missing or empty root is simply no entries.
+        // (its running byte total survives) and a missing or empty root is simply no entries. `ls -1`, not `-A`: hidden
+        // directories are not skills (the helper and the old glob skip them; contract test).
         "{}for d in {roots}; do\n\
          [ -d \"$HOME/$d\" ] || continue\n\
          while IFS= read -r n; do emit \"$HOME/$d/$n/SKILL.md\"; done <<PHOSPHOR_SKILLS_EOF\n\
-         $(ls -1A \"$HOME/$d\" 2>/dev/null)\n\
+         $(ls -1 \"$HOME/$d\" 2>/dev/null)\n\
          PHOSPHOR_SKILLS_EOF\n\
          done\nexit 0",
         emit_function()

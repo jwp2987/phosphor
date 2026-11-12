@@ -282,10 +282,8 @@ fn skills_script_survives_missing_roots_in_every_shell() {
                 format!("{root}/.codex/skills/beta gamma/SKILL.md"),
                 b"beta body".to_vec(),
             ),
-            (
-                format!("{root}/.opencode/skills/.hidden/SKILL.md"),
-                b"hidden body".to_vec(),
-            ),
+            // `.opencode/skills/.hidden` is NOT a skill: hidden directories are left out, as the
+            // helper and the old glob did (backend::contract_tests::*_reports_the_host_agent_context).
         ];
         let mut want = want;
         want.sort();
