@@ -218,6 +218,26 @@ def path_open_verdict(new_calls, abs_path, line_tok_seen, first_tok_seen):
     return None, "nothing opened: no call to the desktop opener and the file's text is not on screen"
 
 
+def pane_focus_state(log_text):
+    """pure (r27, r25a macOS): who has the keyboard according to the app log's focus hops. The LAST of `hop=kh_focus_editor` (a code pane) and
+    `hop=kh_focus_input` / `hop=kh_focus_terminal_view` (the shell pane) decides -> 'editor' | 'shell' | None (no hop at all)."""
+    state = None
+    for m in re.finditer(r"hop=(kh_focus_editor|kh_focus_input|kh_focus_terminal_view)\b", log_text or ""):
+        state = "editor" if m.group(1) == "kh_focus_editor" else "shell"
+    return state
+
+
+def close_code_pane_verdict(pane_state, closed_state, close_key):
+    """pure (r27): after an in-app code pane took a path click, was it closed and does a local shell pane have the keyboard? -> (ok, text).
+    pane_state = pane_focus_state(log since the click), closed_state = pane_focus_state(log since the close key), close_key = the close-pane key."""
+    if not close_key:
+        return False, "the in-app code pane has the keyboard and this platform has no close-pane key (APPCI_KEY_CLOSE empty): the pane was left open and nothing was typed after the links"
+    if closed_state != "shell":
+        return False, ("the close-pane key %r was pressed but the app log does not show the shell pane taking the keyboard back (last focus hop: %s): "
+                       "nothing was typed after the links" % (close_key, closed_state or "none"))
+    return True, ""
+
+
 def parse_pane_probe(lines):
     """(pid, rows, cols) from the probe file's first line `PID ROWS COLS`, or None"""
     m = re.match(r"\s*(\d+)\s+(\d+)\s+(\d+)\s*$", (lines or [""])[0])
@@ -730,6 +750,20 @@ def links_play(ctx, r, m, calls, fx, tok, front_changed=None):
     if how in ("system", "external"):
         r.note("the path went to the desktop opener (%s): this profile's code.editor.open_file_editor is not the app's editor, so no file pane is expected" % how)
     r.check(ctx.app.alive(), "the app died while opening links")
+    if how == "pane" and err is None:
+        # r27 (r25a macOS): the in-app code pane took the keyboard; close it and prove the shell has it back before anything is typed
+        st = pane_focus_state(ctx.log_since(off))
+        r.note("the path opened in an in-app code pane at line %d (the line's text %r is drawn; last focus hop in the app log: %s)" % (fx["line_no"], t_line, st or "none"))
+        if st == "editor":
+            off2 = ctx.log_size()
+            if R.CLOSE_PANE:
+                ctx.be.key(R.CLOSE_PANE)
+                time.sleep(1.0)
+            ok, why = close_code_pane_verdict(st, pane_focus_state(ctx.log_since(off2)), R.CLOSE_PANE)
+            if not ok:
+                r.check(False, why)
+                return "pane_open"
+    return how
 
 
 def mac_recorder_or_skip(ctx, r):
@@ -762,12 +796,16 @@ def link_click_mac(ctx, r, m):
             ctx.be.refocus()
             return name
         return None
+    state = None
     try:
-        links_play(ctx, r, m, calls, link_fixture(ctx), tok, front_changed)
+        state = links_play(ctx, r, m, calls, link_fixture(ctx), tok, front_changed)
     finally:
         ctx.be.refocus()
     r.note("macOS: this case has no trace of the app's own connections (strace is Linux; the per-platform network trace is r14-test-gaps T41): 'no other "
            "outbound connection' is NOT judged here")
+    if state == "pane_open":
+        r.note("the after_links probe lines were NOT typed: the in-app code pane could not be closed, so they would have gone into the editor")
+        return
     U.exact_burst(ctx, r, "after_links", 4)
 
 

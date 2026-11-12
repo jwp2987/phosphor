@@ -294,7 +294,7 @@ def skp_stream_state(mode, printed, read_on_screen):
     'agent_hidden': the agent view draws only blocks its conversation produced, and output printed between a prompt and the next command is a
     background block of no conversation (Block::should_hide_block), so the job's lines are on no screen there (#2145). 'missing': a terminal
     session that does not show them is a failure of the case's control. 'too_early': fewer than 5 lines printed, nothing can be said."""
-    if read_on_screen:
+    if read_on_screen and read_on_screen >= max(3, printed // 3):      # r27: one stale line of 28 (r25a macOS agent, #2145) is not 'drawn'
         return "drawn"
     if printed < 5:
         return "too_early"
