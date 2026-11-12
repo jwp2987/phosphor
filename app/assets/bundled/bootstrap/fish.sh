@@ -370,8 +370,11 @@ function warp_update_prompt_vars
     functions -c fish_right_prompt warp_original_fish_right_prompt
   end
 
-  # If not honoring PS1, set both prompts to be empty
-  if test "$WARP_HONOR_PS1" = "0"
+  # If not honoring PS1, set both prompts to be empty. Anything but "1" is "not honoring": a managed
+  # ssh session (#2019, #2177) starts fish from the wrapper's shim, which does not export
+  # WARP_HONOR_PS1; unset used to take the honor branch below while the Precmd said
+  # ignore_prompt_markers, so fish's own `fish> ` prompt landed in every block's output.
+  if test "$WARP_HONOR_PS1" != "1"
     function fish_prompt; __warp_lr_print; end
     function fish_right_prompt; builtin echo -n ""; end
   # If honoring PS1, add prefix/suffix to both prompts

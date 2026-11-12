@@ -6212,3 +6212,18 @@ fn the_staged_payload_of_the_shipped_bootstraps_is_counted_exactly() {
         assert_eq!(count, payload.len() - newline - 1, "{shell:?}");
     }
 }
+
+/// #2177: a managed ssh fish starts without WARP_HONOR_PS1 (the wrapper's shim does not export it).
+/// Unset must mean "the app owns the prompt", as in bash: only an exact "0" used to, so fish's own
+/// `fish> ` prompt was drawn into every block while the Precmd told the app to ignore prompt markers.
+#[test]
+fn fish_bootstrap_treats_an_unset_honor_ps1_as_not_honoring() {
+    let fish = include_str!("../../assets/bundled/bootstrap/fish.sh");
+    let start = fish.find("function warp_update_prompt_vars").unwrap();
+    let body = &fish[start..];
+    let first_if = body
+        .lines()
+        .find(|line| line.trim_start().starts_with("if test \"$WARP_HONOR_PS1\""))
+        .unwrap();
+    assert!(first_if.contains("!= \"1\""), "{first_if}");
+}

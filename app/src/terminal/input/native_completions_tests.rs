@@ -141,3 +141,32 @@ fn native_results_replace_the_token_before_the_cursor() {
     let results = native_suggestion_results(vec![], "é\u{3000}ab cd", 7);
     assert_eq!(results.replacement_span, Span::from((5, 7)));
 }
+
+/// #2177: a remote path token completed from a partial prefix is replaced, never appended to:
+/// the span starts at the token (after `cd `), not at the cursor or the line start, so applying
+/// the completion over `start..cursor` leaves `cd <completed>`.
+#[test]
+fn a_remote_path_token_is_replaced_from_its_partial_prefix() {
+    for buffer in ["cd /wo", "cd /work/u_fish/tabfx_a/zzqb"] {
+        let results = native_suggestion_results(
+            vec![ShellCompletion::new(
+                "/work/u_fish/tabfx_a/zzqb_only/".to_owned(),
+            )],
+            buffer,
+            buffer.len(),
+        );
+        let (start, end) = (
+            results.replacement_span.start(),
+            results.replacement_span.end(),
+        );
+        assert_eq!(start, 3, "{buffer:?}");
+        assert_eq!(end, buffer.len(), "{buffer:?}");
+        let applied = format!(
+            "{}{}{}",
+            &buffer[..start],
+            "/work/u_fish/tabfx_a/zzqb_only/",
+            &buffer[end..]
+        );
+        assert_eq!(applied, "cd /work/u_fish/tabfx_a/zzqb_only/", "{buffer:?}");
+    }
+}
