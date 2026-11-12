@@ -105,3 +105,81 @@ fn ready_pipe_gives_up_when_no_signal_arrives() {
         .expect_err("no signal");
     assert!(err.to_string().contains("timed out"));
 }
+
+/// A reader that blocks until released: stands in for ssh's stdin while the client is idle.
+struct BlockedInput(std::sync::mpsc::Receiver<()>);
+
+impl std::io::Read for BlockedInput {
+    fn read(&mut self, _buf: &mut [u8]) -> std::io::Result<usize> {
+        let _ = self.0.recv();
+        Ok(0)
+    }
+}
+
+/// A writer that hands what it was given to the test.
+struct SinkOutput(std::sync::mpsc::Sender<Vec<u8>>);
+
+impl std::io::Write for SinkOutput {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let _ = self.0.send(buf.to_vec());
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// #2195: the daemon dying (its socket end closing) ends the proxy at once, even though the
+/// client has sent nothing and stdin is still open: the client's connection then closes and it
+/// can fall back to the shell path without first failing a request. The bytes the daemon sent
+/// before it died still reach the output.
+#[test]
+fn bridge_ends_when_the_daemon_dies_with_stdin_still_open() {
+    let (proxy_end, mut daemon_end) = std::os::unix::net::UnixStream::pair().expect("pair");
+    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+    let (out_tx, out_rx) = std::sync::mpsc::channel::<Vec<u8>>();
+    let (done_tx, done_rx) = std::sync::mpsc::channel::<anyhow::Result<()>>();
+    std::thread::spawn(move || {
+        let _ = done_tx.send(bridge_streams(
+            proxy_end,
+            BlockedInput(release_rx),
+            SinkOutput(out_tx),
+        ));
+    });
+    std::io::Write::write_all(&mut daemon_end, b"hello").expect("daemon sends");
+    drop(daemon_end); // the daemon is killed
+    let res = done_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("the proxy must exit when the daemon closes, without waiting for stdin");
+    assert!(res.is_ok());
+    let got: Vec<u8> = out_rx.try_iter().flatten().collect();
+    assert_eq!(got, b"hello");
+    drop(release_tx); // let the parked input thread end
+}
+
+/// Client end first (stdin EOF): the bridge still ends and shuts the daemon socket.
+#[test]
+fn bridge_ends_when_stdin_closes() {
+    let (proxy_end, mut daemon_end) = std::os::unix::net::UnixStream::pair().expect("pair");
+    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+    let (out_tx, _out_rx) = std::sync::mpsc::channel::<Vec<u8>>();
+    let (done_tx, done_rx) = std::sync::mpsc::channel::<anyhow::Result<()>>();
+    std::thread::spawn(move || {
+        let _ = done_tx.send(bridge_streams(
+            proxy_end,
+            BlockedInput(release_rx),
+            SinkOutput(out_tx),
+        ));
+    });
+    drop(release_tx); // stdin reaches EOF
+    done_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("the proxy must exit on stdin EOF")
+        .expect("ok");
+    let mut buf = [0u8; 1];
+    assert_eq!(
+        std::io::Read::read(&mut daemon_end, &mut buf).expect("read"),
+        0,
+        "the daemon end sees the socket closed"
+    );
+}
