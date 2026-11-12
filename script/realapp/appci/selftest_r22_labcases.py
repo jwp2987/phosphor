@@ -251,3 +251,11 @@ def r27_ssh_drop_has_the_cleared_line_escape_arm_on_every_lab_shell():
     for sh in ("bash", "zsh", "fish", "nu"):
         for lat in ("lan", "150"):
             assert "lab_ssh_drop_reconnect.%s.%s.nohelper" % (sh, lat) in names, (sh, lat)
+
+
+@check
+def r27a_cleared_line_arm_ignores_only_the_sessions_own_ssh_line():
+    """r27a Wayland: the escape_after_cleared_line arm counted the local shell's own `ssh fake` (logged when the session ended) as a command the
+    erased line ran; only that exact line is excluded"""
+    body = _body("cases_coverage_a.py", "ssh_drop_body")
+    assert 'c.strip() != "ssh %s" % host' in body and "ctx.cmds_since(mark)" in body

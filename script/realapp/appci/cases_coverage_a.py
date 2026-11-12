@@ -563,7 +563,9 @@ def ssh_drop_body(ctx, r, host, variants):
                 return
             continue
         if variant == "escape_after_cleared_line":
-            ran = ctx.cmds_since(mark)
+            # The local shell's recorder logs the session's own `ssh <host>` line when the session ends (r27a Wayland: ['ssh fake']): that is the
+            # command the escape ENDED, not one the erased line ran. Every other command still fails the arm.
+            ran = [c for c in ctx.cmds_since(mark) if c.strip() != "ssh %s" % host]
             r.check(not ran, "[%s] the erased line (or the escape) ran a command: %r" % (variant, ran[:5]))
             hops = [l.strip()[-160:] for l in ctx.log_since(off).splitlines() if "hop=ssh_escape_cr" in l]
             r.metric("%s_cr_hops" % variant, hops[:4])
