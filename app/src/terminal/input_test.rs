@@ -11371,6 +11371,152 @@ fn block_completion_clears_exactly_the_submitted_text() {
     });
 }
 
+/// #2192: a nested or remote shell restarts its block counter, so the id of the block after the
+/// command can equal the one the input already recorded. The submitted line must still go when
+/// its block completes, and the next typed text starts a fresh line ('cd ~' then 'cd ...').
+#[test]
+fn block_completion_with_an_unchanged_block_id_still_clears_the_submitted_line() {
+    App::test((), |mut app| async move {
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        initialize_app(&mut app);
+        let terminal = add_window_with_bootstrapped_terminal(&mut app, None, None).await;
+        let input = terminal.read(&app, |view, _| view.input().clone());
+
+        input.update(&mut app, |input, ctx| {
+            input.replace_buffer_content("cd ~", ctx);
+            input.editor_submission = Some("cd ~".to_owned());
+            // The id the shell numbers the next block with is the one already recorded.
+            let same = input.model.lock().block_list().active_block_id().clone();
+            input.deferred_remote_operations.latest_block_id = same;
+            input.handle_block_completed_event(
+                BlockCompletedEvent {
+                    block_latency_data: None,
+                    block_type: BlockType::User(UserBlockCompleted::new_for_test(
+                        BlockIndex::zero(),
+                        Arc::new(SerializedBlock::new_for_test(b"cd ~".to_vec(), vec![])),
+                        "cd ~".to_owned(),
+                        "cd ~".to_owned(),
+                        String::new(),
+                        String::new(),
+                        false,
+                        None,
+                        0,
+                        0,
+                    )),
+                    num_secrets_obfuscated: 0,
+                    block_index: BlockIndex::zero(),
+                    eviction_stamp: Default::default(),
+                    block_id: BlockId::new(),
+                    session_id: None,
+                    restored_block_was_local: None,
+                },
+                ctx,
+            );
+            assert!(
+                input.buffer_text(ctx).is_empty(),
+                "the submitted line is gone"
+            );
+            // The next typed text is a fresh line, not glued onto the old one.
+            input.replace_buffer_content("cd phx", ctx);
+            assert_eq!(input.buffer_text(ctx), "cd phx");
+        });
+    });
+}
+
+/// #2192 (control): an unchanged id with nothing submitted from the editor (a typeahead line the
+/// shell ran) still leaves the editor alone.
+#[test]
+fn block_completion_with_an_unchanged_id_and_no_submission_leaves_the_editor_alone() {
+    App::test((), |mut app| async move {
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        initialize_app(&mut app);
+        let terminal = add_window_with_bootstrapped_terminal(&mut app, None, None).await;
+        let input = terminal.read(&app, |view, _| view.input().clone());
+
+        input.update(&mut app, |input, ctx| {
+            input.editor_submission = None;
+            input.replace_buffer_content("typed since", ctx);
+            let same = input.model.lock().block_list().active_block_id().clone();
+            input.deferred_remote_operations.latest_block_id = same;
+            complete_user_block_keeping_id(input, ctx);
+            assert_eq!(input.buffer_text(ctx), "typed since");
+        });
+    });
+}
+
+fn complete_user_block_keeping_id(input: &mut Input, ctx: &mut ViewContext<Input>) {
+    input.handle_block_completed_event(
+        BlockCompletedEvent {
+            block_latency_data: None,
+            block_type: BlockType::User(UserBlockCompleted::new_for_test(
+                BlockIndex::zero(),
+                Arc::new(SerializedBlock::new_for_test(b"x".to_vec(), vec![])),
+                "x".to_owned(),
+                "x".to_owned(),
+                String::new(),
+                String::new(),
+                false,
+                None,
+                0,
+                0,
+            )),
+            num_secrets_obfuscated: 0,
+            block_index: BlockIndex::zero(),
+            eviction_stamp: Default::default(),
+            block_id: BlockId::new(),
+            session_id: None,
+            restored_block_was_local: None,
+        },
+        ctx,
+    );
+}
+
+/// #2192: 'exit' in a nested shell ends that shell, and no block of it completes. The shell's
+/// exit ends the submission: the editor is empty, and text typed since the submit is kept.
+#[test]
+fn exit_of_the_shell_that_took_the_submission_empties_the_editor() {
+    App::test((), |mut app| async move {
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        initialize_app(&mut app);
+        let terminal = add_window_with_bootstrapped_terminal(&mut app, None, None).await;
+        let input = terminal.read(&app, |view, _| view.input().clone());
+
+        input.update(&mut app, |input, ctx| {
+            input.replace_buffer_content("exit", ctx);
+            input.editor_submission = Some("exit".to_owned());
+            input.editor_submission_session = Some(SessionId::from(7));
+            // Another session's shell exiting is none of this submission's business.
+            input.finish_submission_of_exited_shell(SessionId::from(8), ctx);
+            assert_eq!(input.buffer_text(ctx), "exit");
+            input.finish_submission_of_exited_shell(SessionId::from(7), ctx);
+            assert!(input.buffer_text(ctx).is_empty());
+            assert!(input.editor_submission.is_none());
+            // The next typed text starts a fresh line.
+            input.replace_buffer_content("echo hi", ctx);
+            assert_eq!(input.buffer_text(ctx), "echo hi");
+        });
+    });
+}
+
+/// #2192: keys typed after the 'exit' was submitted, before the shell's exit arrived, are kept.
+#[test]
+fn exit_of_the_shell_keeps_text_typed_after_the_submit() {
+    App::test((), |mut app| async move {
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        initialize_app(&mut app);
+        let terminal = add_window_with_bootstrapped_terminal(&mut app, None, None).await;
+        let input = terminal.read(&app, |view, _| view.input().clone());
+
+        input.update(&mut app, |input, ctx| {
+            input.editor_submission = Some("exit".to_owned());
+            input.editor_submission_session = Some(SessionId::from(7));
+            input.replace_buffer_content("exitecho wT", ctx);
+            input.finish_submission_of_exited_shell(SessionId::from(7), ctx);
+            assert_eq!(input.buffer_text(ctx), "echo wT");
+        });
+    });
+}
+
 #[test]
 fn newer_than_submission_rules() {
     use super::newer_than_submission;
