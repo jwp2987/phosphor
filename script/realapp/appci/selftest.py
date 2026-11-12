@@ -9255,6 +9255,8 @@ import selftest_r25_harness_a  # noqa: E402  (round 25 harness A: #2146 leaked t
 CHECKS.extend(selftest_r25_harness_a.CHECKS)
 import selftest_r25_manual  # noqa: E402  (#2178: no docs/manual page names a removed setting, starting with warpify.ssh.use_ssh_tmux_wrapper; own file)
 CHECKS.extend(selftest_r25_manual.CHECKS)
+import selftest_r25_labtests  # noqa: E402  (round 25 lab test faults: prompt nudge, zsh recorder hardening, nu internal command filter, branch/chip log witnesses; own file)
+CHECKS.extend(selftest_r25_labtests.CHECKS)
 
 
 def missing_required(required, passed):

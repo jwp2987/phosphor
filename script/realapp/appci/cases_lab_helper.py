@@ -528,16 +528,21 @@ def c_helper_killed(ctx, r, arm):
     time.sleep(1.0 + 2 * CL.rtt_s(arm))
     size0 = lab.sshd_since(0)["size"]
     off = ctx.log_size()
+    import cases_ui as UI
+    UI.register_find(ctx, br)
     ctx.be.type("cd %skil%s" % (CL.work(arm), uid), CL.type_pace(ctx), enter=True)
-    seen, txt = False, None
-    for i in range(6):
-        time.sleep(1.0 + 2 * CL.rtt_s(arm))
-        txt = ctx.ocr("lab_killed_%d" % i)
-        if txt is None or br in txt:
-            seen = txt is not None
+    # r25 G: the branch is judged from the app log (the ShellGitBranch chip update naming it) with the screen as a second witness (find_token: the app's find hook
+    # first, OCR second): OCR alone misses random tokens. Polled long enough for a 150 ms link (event: the log line; the limit is only a give-up).
+    rt = CL.rtt_s(arm)
+    in_log = bool(ctx.until(lambda: br in CL.chip_values(ctx.log_since(off)), 15 + 8 * rt, step=0.2))
+    on_screen = None
+    for i in range(3):
+        on_screen, _p = UI.find_token(ctx, "lab_killed_%d" % i, br, since=off, r=r)
+        if on_screen or in_log:
             break
-    if txt is not None:
-        r.check(seen, "branch %s not shown after the helper was killed: the read did not fall back to the shell" % br)
+        time.sleep(1.0 + 2 * rt)
+    r.note("branch %s: app log chip update %s; on screen %s" % (br, "names it" if in_log else "does not name it", "yes" if on_screen else "not found"))
+    r.check(in_log or bool(on_screen), "branch %s not shown after the helper was killed (neither the app log's ShellGitBranch chip update nor the screen has it): the read did not fall back to the shell" % br)
     r.check(new_channels(lab, size0) >= 1, "no out-of-band channel after the helper died: the read did not use the shell arm")
     got = routes(ctx.log_since(off), "git_read")
     if got:

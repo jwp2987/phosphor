@@ -638,6 +638,11 @@ def close_code_review(ctx, r, tag):
         r.note("the code-review panel was asked to close by the palette and the app logged no hop=right_panel line (shots/*%s_close_unconfirmed.png)" % tag)
 
 
+# #r25 B: the line a case types only to bring a prompt back. It must be a command in EVERY lab shell: `true` is a literal in nu, the router sent it to the agent
+# (enter_route [..AI..]). `pwd` is a builtin or a program in bash, zsh, fish, nu, pwsh, dash and ash.
+PROMPT_NUDGE = "pwd"
+
+
 def hold_line(gate):
     """a line for the remote shell that keeps the foreground busy (no prompt comes back) until the file `gate` exists; the harness creates it over its own ssh
     connection, so the prompt can be made to return WITHOUT a key typed into the app (the terminal need not have the focus). `sh -c '...'` with no `!`, no
@@ -668,22 +673,52 @@ def recorder_evidence(ctx, r, arm, since, why):
                 tails[name] = rem.read(name)[-12:]
             except Exception as e:  # noqa: BLE001
                 tails[name] = ["<unreadable: %s>" % e]
-        r.note("recorder evidence (%s, after %d recorded lines): rec.log tail %r; prompt.log tail %r; hook.log %r" % (why, since, tails["rec.log"], tails["prompt.log"][-3:], tails["hook.log"]))
+        for name in ("hook.err", "hook.enter"):
+            try:
+                tails[name] = rem.read(name)[-8:]
+            except Exception as e:  # noqa: BLE001
+                tails[name] = ["<unreadable: %s>" % e]
+        r.note("recorder evidence (%s, after %d recorded lines): rec.log tail %r; prompt.log tail %r; hook.log %r; hook.err %r; hook.enter tail %r" % (why, since, tails["rec.log"], tails["prompt.log"][-3:], tails["hook.log"], tails["hook.err"], tails["hook.enter"][-4:]))
         if arm["shell"] != "zsh":
             return
         f = "pf_%s.txt" % unique(ctx, 4)
-        ctx.be.type("print -l $preexec_functions >> %s" % work(arm, f), type_pace(ctx), enter=True)
-        got = ctx.until(lambda: rem.lines(f), 10)
+        ctx.be.type(zsh_evidence_line(work(arm, f)), type_pace(ctx), enter=True)
+        got = ctx.until(lambda: any(l.startswith("wr=") for l in rem.lines(f)) and rem.lines(f), 10)
         if got is None or not got:
-            r.note("recorder evidence: `print -l $preexec_functions` produced nothing (the shell did not run it or the file is unreadable)")
+            r.note("recorder evidence: the evidence line produced nothing (the shell did not run it or the file is unreadable)")
             return
-        if "__pa_pxh" not in got:
+        if not any("__pa_pxh" in g for g in got):
             r.note("APP evidence (#2162): preexec_functions in the bootstrapped zsh = %r has no __pa_pxh: the app's bootstrap dropped the user's preexec hook "
                    "(the rc re-adds it at the next prompt; hook.log names the loss)" % got)
         else:
-            r.note("TEST evidence (#2162): preexec_functions = %r carries __pa_pxh, yet rec.log has no C line for the commands: the recorder, not the app" % got)
+            ent = [e for e in (tails.get("hook.enter") or []) if not e.startswith("<unreadable")]
+            r.note("TEST evidence (#2162): preexec_functions = %r carries __pa_pxh, yet rec.log has no C line for the commands: the recorder, not the app (hook.enter has %d "
+                   "entries: %s; hook.err %r)" % (got, len(ent), "the hook RAN, so its write failed or was lost" if ent else "the hook NEVER ran in this shell", tails.get("hook.err")))
     except Exception as e:  # noqa: BLE001
         r.note("recorder evidence could not be captured: %s" % e)
+
+
+CHIP_UPDATE_RE = re.compile(r'\[chips\] update_chip_value (\w+) -> Some\(Text\("((?:[^"\\]|\\.)*)"\)\)')
+NO_HELPER_CHIP_VIEW = "SshNoHelperChip"
+FRAME_UPDATED_RE = re.compile(r"frame \d+: updated=\[[^\]]*\b%s\b" % NO_HELPER_CHIP_VIEW)
+
+
+def chip_values(log_text, kind="ShellGitBranch"):
+    """pure (r25 G): the values the app log says a context chip was set to, in order: `[chips] update_chip_value ShellGitBranch -> Some(Text("<branch>"))`"""
+    return [m.group(2) for m in CHIP_UPDATE_RE.finditer(log_text or "") if m.group(1) == kind]
+
+
+def no_helper_chip_in_log(log_text):
+    """pure (r25 H): the app log has a frame that updated the SshNoHelperChip view, i.e. the chip view was mounted and laid out in this session (the app has no
+    dedicated log line for it; the frame's updated=[...] list names the views). True/False."""
+    return bool(FRAME_UPDATED_RE.search(log_text or ""))
+
+
+def zsh_evidence_line(path):
+    """#2162/r25: the line typed into a zsh pane to capture what the recorder needs to be judged: the hook array, the function's definition (whence -v), $PA_CTL
+    and whether the ctl dir is writable. One `print -l` per fact, appended to `path`; no `;` inside quotes, no `!`. preexec_functions is the first block, so the
+    judge below can still read it as lines."""
+    return ("() { setopt localoptions appendcreate clobber; { typeset -p preexec_functions; whence -v __pa_pxh; print -r -- \"PA_CTL=$PA_CTL\"; [[ -w $PA_CTL ]] && print wr=1 || print wr=0; } >> %s; }" % path)
 
 
 def rec_ts(ctx, tok):
@@ -1327,11 +1362,14 @@ def c_no_helper_chip(ctx, r, arm):
         return
     txt = ctx.ocr("lab_no_helper_chip_%s" % arm_tag(arm))
     ocr_evidence(ctx, "lab_no_helper_chip_%s" % arm_tag(arm), arm, txt)
-    if txt is None:
-        r.unverifiable("no OCR on this machine (tesseract): the chip on screen is not checked")
-    else:
-        flat = " ".join(txt.split())
-        r.check(CAG.fuzzy_has(flat, "shell mode"), "no 'shell mode' chip on screen in a no-helper ssh session")
+    # r25 H: the chip is tiny and grey; OCR missed it while the screenshot showed it. The app log is the first witness (the frame that mounted the SshNoHelperChip
+    # view), OCR the second: either one proves the chip, both missing fails.
+    in_log = ctx.until(lambda: no_helper_chip_in_log(ctx.log_since(off0)), 5.0, step=0.2)
+    flat = " ".join(txt.split()) if txt is not None else None
+    ocr_has = flat is not None and CAG.fuzzy_has(flat, "shell mode")
+    r.note("shell-mode chip: app log %s; OCR %s" % ("has the chip view" if in_log else "has no chip view", "n/a (no OCR)" if flat is None else ("reads it" if ocr_has else "does not read it")))
+    r.check(bool(in_log) or ocr_has, "no 'shell mode' chip in a no-helper ssh session (the app log has no %s frame and OCR does not read it)" % NO_HELPER_CHIP_VIEW)
+    if flat is not None:
         r.check("ERROR" not in flat, "an ERROR text is on screen next to the no-helper chip: it must stay informational")
     tok = unique(ctx)
     ctx.be.type("echo chip%s" % tok, type_pace(ctx), enter=True)
