@@ -1950,6 +1950,15 @@ class WindowsBackend(Backend):
         img.save(path)
         return os.path.exists(path) and os.path.getsize(path) > 1000
 
+    def shot_origin(self):
+        """(left, top) on screen of the screenshot's first pixel: ImageGrab(all_screens=True) starts at the virtual desktop's corner, which is negative
+        when a monitor sits left of / above the primary. OCR word boxes (winocr) are shifted by it so they are the screen points the pointer takes."""
+        try:
+            vs = self.w.virtual_screen()
+            return (int(vs[0]), int(vs[1]))
+        except Exception:
+            return (0, 0)
+
     def _clip(self):
         u, k = self.w.user32, self.w.kernel32
         from ctypes import wintypes as wt

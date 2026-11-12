@@ -122,8 +122,8 @@ def is_windows(ctx):
 
 def need_tesseract(r, ctx=None):
     """SKIP without a word-box reader for screen positions: tesseract, or on macOS (a case that passes its ctx, #2061) Apple Vision through
-    mac/tools/ocrw. With `ctx` given, not on Windows: a case ported there places the pointer from the app's find hook only (no OCR engine on
-    the VM, gap H19), and a word the hook does not report makes that part UNVERIFIABLE (wl_check), never a pass."""
+    mac/tools/ocrw. With `ctx` given, not on Windows: a case ported there places the pointer from the app's find hook first, and a word the hook
+    does not report is looked for by Windows.Media.Ocr (winocr, #2060) when the VM has an engine, else that part is UNVERIFIABLE (wl_check), never a pass."""
     if ctx is not None and is_windows(ctx):
         return
     if ctx is not None and mac(ctx):
@@ -137,6 +137,9 @@ def need_tesseract(r, ctx=None):
 
 def have_word_ocr(ctx):
     """True when words() can read this platform's screen: tesseract, or Apple Vision word boxes on macOS"""
+    if is_windows(ctx):
+        import winocr
+        return winocr.available()
     if shutil.which("tesseract"):
         return True
     if mac(ctx):
@@ -146,14 +149,16 @@ def have_word_ocr(ctx):
 
 
 def words(ctx, tag):
-    """[(text, cx, cy, left, right, top, bottom)] of every word tesseract finds in a fresh screenshot, in screenshot pixels. No words (and the shot,
-    as evidence) where there is no OCR engine: Windows, where the callers have the find hook's positions or report the part as not judged."""
+    """[(text, cx, cy, left, right, top, bottom)] of every word tesseract finds in a fresh screenshot, in screenshot pixels. On Windows: the words
+    Windows.Media.Ocr finds (winocr), in SCREEN pixels (the shot's origin added). No words (and the shot, as evidence) where there is no OCR engine."""
     p = ctx.shot(tag)
     if not p:
         return [], None
     res = []
-    if is_windows(ctx):
-        return res, p
+    if is_windows(ctx):                                   # #2060: Windows.Media.Ocr (winocr), boxes already in screen pixels; none without an engine
+        import winocr
+        got = winocr.read(p, ctx.be.shot_origin()) if winocr.available() else None
+        return (got[1] if got else res), p
     if mac(ctx):                                          # #2061: Apple Vision word boxes first (the engine the Mac harness reads screens with, cases.ocr_engines)
         import macptr
         res += macptr.words(ctx.be, p)
@@ -581,10 +586,11 @@ def wl_check(ctx, r, ok, msg, what):
     #1789: a claim that is ONLY about the pointer (`what` == 'pointer') is a plain check whenever the session holds a live virtual pointer (wl_pointer_real):
     the events provably reach clients, so a missing effect is the app's. 'OCR' and mixed ('pointer/OCR') claims stay NOREF until the app hook gives positions."""
     if not ok and what == "OCR" and is_windows(ctx):
-        # Windows has no OCR engine; the app's find hook is the only source of a position there. No line from it is missing evidence (an app
-        # without the hook, RUST_LOG without warpui::appci_find=info, or the text was laid out before its token was registered): not judged.
-        r.unverifiable("%s [Windows: positions come from the app's find hook only (no OCR engine on the VM); the app logged no usable `appci_find` "
-                       "line, so this part was not judged]" % msg)
+        # Windows: the app's find hook first, Windows.Media.Ocr (winocr, #2060) as the fallback where the VM has an engine. A claim neither could place is
+        # missing evidence (an app without the hook, RUST_LOG without warpui::appci_find=info, a text laid out before its token was registered, or an
+        # OCR read that missed the word, which is as noisy as tesseract's): not judged, like the Wayland NOREF.
+        r.unverifiable("%s [Windows: positions come from the app's find hook (an `appci_find` line), else Windows.Media.Ocr (%s); neither placed it, so this part was not judged]" % (
+            msg, "an engine was available" if have_word_ocr(ctx) else "no OCR engine on this VM"))
         return False
     if ok or not on_wayland(ctx) or (what == "pointer" and wl_pointer_real(ctx)):
         return r.check(ok, msg)

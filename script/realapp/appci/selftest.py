@@ -8358,7 +8358,7 @@ def r14_w1a_wave1_cases_pure_parts_and_registry():
     assert winmap.skip_reason("tab_lifecycle_keys", "powershell") is None and winmap.skip_reason("tab_lifecycle_keys", "gitbash") is None
     assert winmap.skip_reason("find_basic", "gitbash") is None and "rec.log" in winmap.skip_reason("find_basic", "powershell")
     assert winmap.skip_reason("routing_table_powershell", "powershell") is None and winmap.skip_reason("routing_table_powershell", "gitbash")
-    assert all("OCR" in winmap.skip_reason("scroll_keys_position", p) for p in ("powershell", "gitbash"))
+    assert winmap.skip_reason("scroll_keys_position", "gitbash") is None and "Git Bash" in winmap.skip_reason("scroll_keys_position", "powershell")     # r23 (#2060): Windows.Media.Ocr
     # a skip names the missing capability
     assert "OCR" in inspect.getsource(w.c_scroll_keys_position) and "R.close_key(ctx)" in inspect.getsource(w.c_tab_lifecycle_keys) and "PowerShell pane" in inspect.getsource(w.c_routing_table_powershell)
 
@@ -9180,6 +9180,8 @@ import selftest_r17_misc  # noqa: E402  (round 17 misc: #2028 md_viewer_first_fr
 CHECKS.extend(selftest_r17_misc.CHECKS)
 import selftest_r19_winmisc  # noqa: E402  (round 19, Windows rest after the round 14 candidate: #2113 #2114)
 CHECKS.extend(selftest_r19_winmisc.CHECKS)
+import selftest_winocr  # noqa: E402  (#2060: Windows OCR reader, windows/lib/ocr.ps1)
+CHECKS.extend(selftest_winocr.CHECKS)
 import selftest_r19_decide  # noqa: E402  (round 19, owner decisions 2026-11-11: paste controls, the Enter gate on Windows Git Bash, dash / ash agent arms)
 CHECKS.extend(selftest_r19_decide.CHECKS)
 import selftest_r19_tabs  # noqa: E402  (round 19, #2108 / #2109 / #2110: the round 14 candidate's tab, Find, viewer and notification verdicts; own file)

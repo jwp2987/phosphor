@@ -141,7 +141,7 @@ NOT_WINDOWS = {
     # left here need something else that is not built for Windows, named in each reason
     "link_and_path_click": "T21: not ported: the recording opener is a POSIX xdg-open on the app's PATH and the network trace is strace (the pointer itself exists since r15 wave 4)",
     "primary_and_middle_click": "T23: the PRIMARY selection is an X11 / Wayland concept; Windows has one clipboard",
-    "wheel_scroll": "T24: not ported: the scroll position is read from the screen by OCR (no OCR engine on the VM) and bytes_reader.py needs termios (the wheel event itself exists since r15 wave 4: winapi.mouse_wheel_event)",
+    "wheel_scroll": "T24: not ported: bytes_reader.py needs termios (the wheel event exists since r15 wave 4: winapi.mouse_wheel_event; the OCR read exists since r23: winocr, Windows.Media.Ocr)",
     "pane_resize_maximize": "T25: not ported: the probe is POSIX `sh -c 'echo $PPID $(stty size)'` and the divider drag is judged by a SIGWINCH logger written for a POSIX tty; the Git Bash pane is a follow-up (the pointer exists since r15 wave 4)",
     "agent_interactive_vim": "#1829: POSIX read/vim/less/ssh programs under the agent hand-over (and the unix-only tty-read probe); not run in a Windows pane",
     "agent_interactive_ssh": "#1829: POSIX read/vim/less/ssh programs under the agent hand-over (and the unix-only tty-read probe); not run in a Windows pane",
@@ -185,15 +185,14 @@ NOT_WINDOWS = {
     "quit_24_tabs": "not yet ported: Linux quit key and log check",
     "flood_typed_line": "not yet ported: POSIX `seq`/`yes` floods and /proc sampling",
     "flood_typing_latency": "not yet ported: POSIX flood and pty arrival reader",
-    "flood_scrollback_find": "needs OCR (tesseract) and the Linux find flow",
+    "flood_scrollback_find": "needs the Linux find flow and POSIX floods (the OCR half exists since r23: winocr)",
     "soak": "not yet ported: samples /proc",
     "alt_screen_mouse_reporting": "not ported: the receiving program needs python3 termios (#1537), which a Windows pane does not have (the pointer exists since r15 wave 4)",
-    "scroll_keys_position": "#2072: the scroll position is read from the screen by OCR and the Windows runner has no OCR engine; the app logs no scroll-position hop yet (T34's grid hop would serve)",
     "sudo_su_real_shell": "sudo/su/ksu do not exist in a Windows pane (#1536)",
     "sudo_su_real_shell": "sudo/su/ksu do not exist in a Windows pane (#1536); by design, no machine change makes it run here",
     "ssh_drop_reconnect": "not yet ported: the `~.` escape and `kill -9 $$` need verifying against the msys/Win32 ssh clients (#1535)",
     "settings_ui_toggle_persists": "r14 T17: the Windows backend has no verified Ctrl-, chord (the settings file the app reads is wired since r15 wave 4, cases_ui.settings_path; the case has not been reviewed for Windows)",
-    "cb_settings_ui_open": "the Windows backend has no verified Ctrl-, chord and the page is not OCR-able there",
+    "cb_settings_ui_open": "the Windows backend has no verified Ctrl-, chord (OCR of the page exists since r23, winocr, but cannot be proven without the chord)",
     "cb_settings_migration": "needs a relaunch of the app on a rewritten settings file (the Linux/macOS App handle); the Windows relaunch is the separate runner flow",
     "cb_report_problem": "the Windows Downloads folder is a known folder, not under the scratch HOME, so the bundle does not land where the case looks (set PHOSPHOR_DIAG_BUNDLE_DIR in the app's environment to enable)",
     "cb_state_relaunch": "needs the App stop/start handle on a profile with state; Windows has a separate flow",
@@ -399,9 +398,14 @@ NOT_WINDOWS["keyring_unavailable_startup"] = ("#1805 / #2077: the no-keyring var
                                               "files: there is no service that can be absent; by design, no machine change makes it run here")
 NOT_WINDOWS["keychain_startup_macos"] = "T42 (#1977): the macOS keychain. Windows keeps secrets in DPAPI-protected files; by design, no machine change makes it run here"
 for _n in ("agent_gate_deny_allow", "network_gate_notice"):
-    NOT_WINDOWS[_n] = "#2077: NEEDS (harness, not built): pointer synthesis in the Windows backend (mouse SendInput, r14-test-gaps T31) and an OCR engine, for the toast's Allow link"
+    NOT_WINDOWS[_n] = "#2077: pointer (SendInput, r15 wave 4) and OCR (winocr, r23) now exist on Windows; NOT YET PORTED: the case itself (it drives a relaunch on a rewritten settings file and the Linux profile's settings.toml), NEEDS a review for the Windows profile"
 for _n in ("agent_gate_off_live", "agent_gate_key_never_leaves"):
     NOT_WINDOWS[_n] = ("#2077: not ported. NEEDS (harness, not built): the polled trace (nettrace.py) in place of the strace oracle, the app's live settings file "
                        "(cases_robust.live_settings_file) for the edits made while it runs, and for the page switch the pointer (r14-test-gaps T31)")
 # T45: tab counts from the app log (both panes), the prompt log where the pane has one. T50: the file is handed over the named pipe as editor_edit_save does
 BOTH.update({"keybinding_rebind", "editor_daily"})
+
+# r23 (#2060): Windows.Media.Ocr (appci/winocr.py, windows/lib/ocr.ps1) gives the Windows backend ctx.ocr and cases_ui.words. scroll_keys_position skipped on
+# Windows only for lack of OCR; it prints with bash `cat`, runs a bash background job and checks rec.log: Git Bash pane.
+NOT_WINDOWS.pop("scroll_keys_position", None)
+GITBASH_ONLY["scroll_keys_position"] = "r23 (#2060): bash `cat` of numbered lines, a bash background job, rec.log; the scroll position is read by Windows.Media.Ocr (winocr): runs in the Git Bash pane, SKIPs with the reason where the VM has no OCR engine"
