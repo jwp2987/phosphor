@@ -1198,8 +1198,9 @@ changed code. Only when that is green is the whole harness (fix / candidate) wor
 **labd `/complete` runs nu and pwsh by their image paths** (`/opt/nu/nu`, `/opt/pwsh/pwsh`; not on PATH in the image) and gives nu the line as a FILE
 (`nu --ide-complete <byte pos> <file>`; `-c` exits 1 with no output on nu 0.116). Found by the new #2161 image selftest in round 22 (`u_nu`/`u_pwsh`
 returned []); checked in the built image: bash, zsh, fish, nu and pwsh all return both `amb*` directories.
-**No app tests on red unit tests** (owner 2026-11-12): in ci_seq's targeted run, a unit suite that does not succeed stops that machine's app and lab
-jobs (row "not run (unit suite ... failed)"); the other machines go on. Fix the unit failures, rebuild, then app tests. Self-test: "a red unit suite stops
+**Unit tests FIRST, before the build; no build and no app tests on red unit tests** (owner 2026-11-12): in ci_seq's targeted run each machine plays its
+unit suites first (they never need the release build), then its build, then its app/lab jobs. A unit suite that does not succeed stops that machine's build
+and its app and lab jobs (rows "not built (unit suite ...)" / "not run (unit suite ... failed)"); the other machines go on. Fix the unit failures, rebuild, then app tests. Self-test: "a red unit suite stops
 that machine's app jobs".
 **Every targeted app job plays `mode_proof` first** (ci_seq `targeted_vars`; not lab jobs), whatever the cases file lists: the round 15 Windows targeted
 run had no `mode_proof` row, so nothing proved the app was in the mode its rows claimed (owner 2026-11-11, raised repeatedly). Self-test: "every targeted

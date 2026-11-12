@@ -388,8 +388,9 @@ def targeted_plan(spec):
         machines[LINUX] = [(LAB_IMAGE_JOB, None, "image"), (LAB_HELPER_JOB, None, "helper")]
     for p in (LINUX, MAC, WIN):
         mine = [k for k in TARGETED_APP if TARGETED_APP[k][0] == p and k in apps]
-        steps = [(BUILD[p], None, "build")] if mine else []
-        steps += [(n, {"TEST_FILTER": filters[n]} if n in filters else None, "unit") for n in suites.get(p, [])]
+        # owner 2026-11-12: unit suites FIRST, before the release build (they never need it); a red suite stops the build and the app jobs
+        steps = [(n, {"TEST_FILTER": filters[n]} if n in filters else None, "unit") for n in suites.get(p, [])]
+        steps += [(BUILD[p], None, "build")] if mine else []
         steps += [(TARGETED_APP[k][1], targeted_vars(k, apps[k]), "lab" if k.endswith("-lab") else "app") for k in mine]
         if steps:
             machines[p] = machines.get(p, []) + steps
@@ -406,9 +407,10 @@ def run_targeted(plan, ops, skip=(), log=print):
     is a "not run" row (FAIL); a lab job waits for the lab image and the helper job. -> False when check-linux failed (nothing else was played)."""
     tl, machines = ops.timeline, plan["machines"]
     for p in (MAC, WIN):
-        for n, _, k in machines.get(p, []):
-            if k == "build" and n not in skip and ops.play(n, None):
-                log("%s: started %s without waiting for check-linux (own machine)" % (time.strftime("%H:%M"), n))
+        steps = machines.get(p, [])
+        if steps and steps[0][2] == "build" and steps[0][0] not in skip and ops.play(steps[0][0], None):
+            # only a machine with NO unit suites starts its build early; otherwise the units run first (owner 2026-11-12)
+            log("%s: started %s without waiting for check-linux (own machine, no unit suites to run first)" % (time.strftime("%H:%M"), steps[0][0]))
     s = ops.wait("check-linux")
     log("check-linux %s" % s)
     if s != "success":
@@ -430,6 +432,11 @@ def run_targeted(plan, ops, skip=(), log=print):
                     continue
                 if k == "build":
                     build = n
+                    if red_unit:
+                        build_st = "not built (unit suite %s)" % red_unit
+                        tl[n] = ("not built (unit suite %s: no build on red unit tests)" % red_unit, None)
+                        log("%s: %s NOT played: unit suite %s (owner: unit tests first, no build on a red suite)" % (time.strftime("%H:%M"), n, red_unit))
+                        continue
                     ops.play(n, None)
                     if p != LINUX:
                         build_st = ops.wait(n)
@@ -1020,22 +1027,24 @@ def self_test_targeted(yml, src):
         (all(idx(o, "play_wait", u) < idx(o, "play_wait", "app-test-linux-wayland") for u in ("test-linux", "integration-linux: [3]"))
          and all(idx(o, "play_wait", u) < idx(o, "play_wait", "app-test-windows") for u in unit_suites(WIN)),
          "unit (and integration) suites run before that machine's app job"),
-        (names(LINUX) == [BUILD[LINUX], "test-linux", "integration-linux: [1]", "integration-linux: [2]", "integration-linux: [3]", "app-test-linux-wayland"]
-         and names(WIN) == [BUILD[WIN]] + unit_suites(WIN) + ["app-test-windows"],
-         "an explicit suite list is exact (`integration-linux` = its three shards, unit suites first); no list = the machine's three unit suites"),
+        (names(LINUX) == ["test-linux", "integration-linux: [1]", "integration-linux: [2]", "integration-linux: [3]", BUILD[LINUX], "app-test-linux-wayland"]
+         and names(WIN) == unit_suites(WIN) + [BUILD[WIN], "app-test-windows"],
+         "an explicit suite list is exact (`integration-linux` = its three shards); unit suites come BEFORE the build (owner 2026-11-12); no list = the machine's three unit suites"),
         (MAC not in plan["machines"] and not any("macos" in n for n in played(o)) and "app-test-linux-x11" not in played(o)
          and all(o.timeline[n] == (NOT_TARGETED, None) and verdict(n, NOT_TARGETED) == "SKIPPED" for n in ("app-test-macos", BUILD[MAC], "app-test-linux-x11", "test-macos", REPLAY_JOB))
          and all(verdict(k, v[0]) not in ("FAIL", "OFFLINE") for k, v in o.timeline.items()),
          "a platform with no cases is not played and not failed: its jobs are listed as `not in this targeted run`, verdict SKIPPED"),
         (vars_of["test-linux"] == {"TEST_FILTER": "test(/terminal::view/)"} and vars_of["integration-linux: [1]"] is None, "a suite's filter is passed as TEST_FILTER, to that suite only"),
-        (idx(o, "play", BUILD[WIN]) < idx(o, "wait", "check-linux") < idx(o, "play", BUILD[LINUX]) and idx(o, "wait", BUILD[WIN]) < idx(o, "play_wait", "test-windows")
-         and idx(o, "play_wait", "test-linux") < idx(o, "wait", BUILD[LINUX]) < idx(o, "play_wait", "app-test-linux-wayland"),
-         "the Windows build starts before check-linux and is waited for before its suites; the box build runs beside the box suites and is waited for before the app job"),
+        (idx(o, "wait", "check-linux") < idx(o, "play_wait", "test-windows") and all(idx(o, "play_wait", u) < idx(o, "play", BUILD[WIN]) for u in unit_suites(WIN))
+         and idx(o, "play_wait", "integration-linux: [3]") < idx(o, "play", BUILD[LINUX]) < idx(o, "wait", BUILD[LINUX]) < idx(o, "play_wait", "app-test-linux-wayland"),
+         "each machine plays its unit suites first and its build only after they are green (owner 2026-11-12: unit tests before the build); the build is waited for before the app job"),
+        (BUILD[WIN] not in played(ou) and ou.timeline.get(BUILD[WIN], ("",))[0].startswith("not built (unit suite test-windows failed"),
+         "a red unit suite also stops that machine's build (no build minutes spent on a red suite)"),
         (not run_targeted(plan, oc, log=silent) and not [c for c in oc.calls if c[0] == "play_wait"], "a failed check-linux plays no suite and no app job"),
         (ob.timeline["app-test-windows"][0] == "not run (%s failed)" % BUILD[WIN] and verdict("app-test-windows", ob.timeline["app-test-windows"][0]) == "FAIL"
          and "app-test-windows" not in played(ob) and "app-test-linux-wayland" in played(ob), "an app job whose build failed is a `not run` FAIL row; the other machines go on"),
         # the lab platforms
-        ([n for n, _, _ in lab["machines"][LINUX]] == [LAB_IMAGE_JOB, LAB_HELPER_JOB, BUILD[LINUX], LAB_APP[LINUX]] and [n for n, _, _ in lab["machines"][MAC]] == [BUILD[MAC]] + unit_suites(MAC) + [LAB_APP[MAC]],
+        ([n for n, _, _ in lab["machines"][LINUX]] == [LAB_IMAGE_JOB, LAB_HELPER_JOB, BUILD[LINUX], LAB_APP[LINUX]] and [n for n, _, _ in lab["machines"][MAC]] == unit_suites(MAC) + [BUILD[MAC], LAB_APP[MAC]],
          "a lab platform adds the lab image and the helper job first on the box; `suites: []` plays no suite on that machine"),
         ({n: v for n, v, _ in lab["machines"][MAC]}[LAB_APP[MAC]]
          == {"APPCI_TIER": "targeted", "APPCI_CASES": "lab_raw_key_arrival.*", "APPCI_FAKE_MODEL": "1", "APPCI_LAB_MATRIX": LAB_PLAT_MATRIX}
