@@ -713,6 +713,16 @@ def main():
     man = json.loads(results_scrub.scrub(json.dumps(man)))
     json.dump(man, open(os.path.join(d, "manifest.json"), "w"), indent=1)
     rebuild(a.out)
+    try:
+        # owner 2026-11-12 (bands for all): the perf / memory bands follow the history; the ratchet only lowers an upper bound, a rise is printed as WOULD LOOSEN
+        import perf_bands
+        bands_path = os.path.join(a.out, "bands.json")
+        new_bands, loosen = perf_bands.generate(a.out, perf_bands.load_bands(bands_path))
+        for line in loosen:
+            print(line)
+        open(bands_path, "w", encoding="utf-8").write(perf_bands.dump(new_bands))
+    except Exception as e:                                # a band problem must not lose the collected run
+        print("WARNING: bands.json not regenerated: %s" % str(e)[:200], file=sys.stderr)
     print("%s: %.2f MB" % (d, dir_size(d) / 1e6))
     if dir_size(d) > WARN_BYTES:
         print("WARNING: still over 5 MB", file=sys.stderr)
