@@ -83,7 +83,7 @@ the file reads again once its key is back. Until then the affected keys show
 as not set; entering one again saves it with the key available now. The log
 names which stored item could not be opened and why, never its contents.
 
-Downgrade limit: versions before 0.1.18 cannot read the fallback files this
+Downgrade limit: versions before 0.2.0 cannot read the fallback files this
 version writes. After going back to an older version on a machine with no
 keyring, stored credentials show as not set (the files stay on disk and read
 again after upgrading).

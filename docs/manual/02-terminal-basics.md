@@ -276,7 +276,7 @@ disable them**, and `EmacsBindingsSettings` is not one: it is a Linux-only
 record of whether you dismissed a banner. That banner ("did you intend
 `ctrl-A`/`ctrl-E` to move the cursor?", offering *Yes, use Emacs-style
 bindings* / *No, keep IDE bindings*) belonged to the old Linux defaults; since
-v0.1.18 `ctrl-A` / `ctrl-E` move the cursor by default and it is shown only
+v0.2.0 `ctrl-A` / `ctrl-E` move the cursor by default and it is shown only
 with `PHOSPHOR_READLINE_INPUT_KEYS=0`.
 
 The always-available emacs keys in the input editor:
@@ -295,7 +295,7 @@ The always-available emacs keys in the input editor:
 | `shift-ctrl-B`/`F`/`P`/`N`/`A`/`E` | Selecting variants *(macOS)* | `shift-meta-B` / `shift-meta-F` | Select word left / right |
 
 `ctrl-A`, `ctrl-E` and `ctrl-Y` are readline's keys on every platform. On Linux
-and Windows that is the default since v0.1.18: before it `ctrl-A` selected
+and Windows that is the default since v0.2.0: before it `ctrl-A` selected
 everything, `ctrl-E` did nothing and `ctrl-Y` deleted to the start of the line.
 **Select All is `ctrl-shift-A` on Linux and Windows** (`cmd-A` on macOS, as
 always), and "delete to the start of the line" (`editor_view:delete_all_left`)

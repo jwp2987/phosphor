@@ -33,7 +33,7 @@ LatRun "r18ba|ps-afterresize-key" 0 520 "zqxjkvwpyz" 20 $o "{END}{BACKSPACE 30}"
 # --- (3) copy then paste immediately (#1307)
 Set-Clipboard "OLDTEXT-STALE"
 Keys "NEWTEXT123"; Start-Sleep -Milliseconds 400
-Keys "^+a"; Start-Sleep -Milliseconds 200   # select all: Ctrl-Shift-A since v0.1.18 (#2079; Ctrl-A is the start of the line)
+Keys "^+a"; Start-Sleep -Milliseconds 200   # select all: Ctrl-Shift-A since v0.2.0 (#2079; Ctrl-A is the start of the line)
 Keys "^+c^+v"
 Start-Sleep -Milliseconds 800
 Shot G_copypaste

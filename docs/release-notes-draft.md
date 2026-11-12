@@ -6,14 +6,14 @@ user has to know that a commit subject does not say. Whoever cuts the release pa
 section for that version above the generated list and empties it here. Add a line when a change
 needs one; keep each to what the user sees and what to do.
 
-## v0.1.18 (not released)
+## v0.2.0 (not released; was planned as v0.1.18)
 
 ### Known limits
 
 - **Linux, no keyring: stored credentials do not survive a downgrade.** From this version the
   encrypted fallback files for stored credentials (API keys, MCP tokens, the proxy password) are
   sealed with a key that belongs to your install instead of one built into the program (#1932).
-  Versions before 0.1.18 cannot read them: after going back to an older version, a machine with
+  Versions before 0.2.0 cannot read them: after going back to an older version, a machine with
   no Secret Service keyring shows those credentials as not set. Nothing is deleted, and they
   read again after upgrading. Machines with a working keyring are not affected.
 

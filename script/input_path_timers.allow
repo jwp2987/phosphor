@@ -117,7 +117,7 @@ app/src/terminal/view.rs	DEBOUNCE_PERIOD	debounces link detection (find-link) af
 app/src/terminal/view.rs	SLOW_BOOTSTRAP_BANNER_AUTO_DISMISS_DURATION	auto-dismisses the slow-bootstrap banner; notice only
 app/src/terminal/view.rs	win_prompt_notice_observe	ONE quiet timer that only shows the 'may be waiting for input -- Take over' notice on Windows; never hands the command over or writes a byte (#1882, #1796)
 
-# PENDING-CONVERSION (must be gone before v0.1.18)
+# PENDING-CONVERSION (must be gone before v0.2.0)
 # Timers that break the rule (write, release, route, commit or re-ask on a clock). The default run
 # warns for each; `--strict` (release tier) fails on any. Delete a line when its timer is gone.
 

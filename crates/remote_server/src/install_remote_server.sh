@@ -5,7 +5,7 @@
 #
 # setup.rs replaces these placeholders at runtime:
 #   {install_dir}           - e.g. ~/.phosphor/remote-server
-#   {helper_file_name}      - e.g. phosphor-remote-v0.1.18 (the file this run installs)
+#   {helper_file_name}      - e.g. phosphor-remote-v0.2.0 (the file this run installs)
 #   {helper_current_link}   - name of the symlink pointed at the verified helper
 #   {one_version_binaries}  - base names the one-version cleanup manages
 #   {daemon_version_hash}   - short hash of the helper version (daemon file names)
