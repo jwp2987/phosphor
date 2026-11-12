@@ -498,22 +498,67 @@ pub fn conpty_enter_hold_from(env: Option<&str>, when_unset: bool) -> bool {
     }
 }
 
+/// #2186: `PHOSPHOR_SSH_ESCAPE_CR_RULE=0` restores the #1793 proof-based rule for the `\r` ahead of
+/// an ssh escape (the remote line proven empty by a report, nothing written since). Unset or any
+/// other value: the line-start rule (`\r` unless the last byte written to the pty was a newline
+/// and the remote line cannot hold the user's bytes).
+pub const SSH_ESCAPE_CR_RULE_ENV: &str = "PHOSPHOR_SSH_ESCAPE_CR_RULE";
+
+/// Whether the line-start rule (not the old proof rule) is on, from the env.
+fn ssh_escape_cr_rule_env_enabled() -> bool {
+    std::env::var(SSH_ESCAPE_CR_RULE_ENV).map_or(true, |value| value.trim() != "0")
+}
+
 /// #1793: how many writes `PtyController` has handed the pty's event loop (every input message:
 /// user keys, commands, the hand-off's requests, agent and setup writes). Shared without a lock
 /// between the controller, which counts, and the hand-off, which compares it with the count it
 /// recorded at an event, to tell that nothing has reached the pty since.
 #[derive(Clone, Debug, Default)]
-pub struct PtyWriteCount(Arc<AtomicU64>);
+pub struct PtyWriteCount {
+    writes: Arc<AtomicU64>,
+    /// #2186: the last byte the app wrote to the pty was `\r` or `\n`. ssh honours `~` only as
+    /// the first byte after a `\r` or `\n` it read from the tty, and every byte ssh reads is a
+    /// byte the app wrote (the user's own keys included: the app writes them), so this is exactly
+    /// whether ssh is at its line start. Unknown (a new session) reads as `false`.
+    tail_is_newline: Arc<AtomicBool>,
+}
 
 impl PtyWriteCount {
-    /// One write was handed to the pty's event loop.
+    /// One write was handed to the pty's event loop (its bytes not described: the tail is left
+    /// as it was; production code uses [`Self::note_write_bytes`]).
     pub fn note_write(&self) {
-        self.0.fetch_add(1, Ordering::Relaxed);
+        self.writes.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// One write of `bytes` was handed to the pty's event loop: counted, and the tail follows its
+    /// last byte (an empty write changes nothing).
+    pub fn note_write_bytes(&self, bytes: &[u8]) {
+        self.note_write();
+        self.note_tail(bytes);
+    }
+
+    /// Bytes the app wrote or queued for the pty that are not a counted write of their own
+    /// (a terminal-query reply the event loop queues): only the tail follows them.
+    pub fn note_tail(&self, bytes: &[u8]) {
+        if let Some(last) = bytes.last() {
+            self.tail_is_newline
+                .store(matches!(last, b'\r' | b'\n'), Ordering::Relaxed);
+        }
+    }
+
+    /// Whether the last byte the app wrote to the pty was `\r` or `\n`.
+    pub fn tail_is_newline(&self) -> bool {
+        self.tail_is_newline.load(Ordering::Relaxed)
+    }
+
+    /// A new session: nothing is known about what ssh last read.
+    pub fn reset_tail(&self) {
+        self.tail_is_newline.store(false, Ordering::Relaxed);
     }
 
     /// Writes counted so far.
     pub fn get(&self) -> u64 {
-        self.0.load(Ordering::Relaxed)
+        self.writes.load(Ordering::Relaxed)
     }
 }
 
@@ -531,8 +576,11 @@ pub enum SshEscapeLineStart {
     /// stays at its line start after an escape it consumed (OpenSSH `process_escapes` does not
     /// update `last_was_cr` for one), so no `\r` is needed.
     AlreadyAtLineStart,
-    /// The remote line is not proven empty: the escape is written as typed, without `\r`, as
-    /// before #1793. The reason is logged.
+    /// #2186: the last byte the app wrote to the pty was `\r` or `\n`, so ssh is at its line start
+    /// and reads the escape as typed; no `\r` is added.
+    TailIsNewline,
+    /// The escape is written as typed, without `\r`, as before #1793: the remote line may hold
+    /// the user's bytes (under the old proof rule: is not proven empty). The reason is logged.
     Skipped(&'static str),
 }
 
@@ -1116,6 +1164,9 @@ pub struct TypeaheadHandoff {
     /// #1793: the write count right after an ssh escape this pane wrote at ssh's line start. While
     /// the count is still this, ssh's last input was that escape, which it consumed.
     ssh_line_start_at_writes: Option<u64>,
+    /// #2186: the escape `\r` rule this pane uses, overriding `PHOSPHOR_SSH_ESCAPE_CR_RULE`:
+    /// `Some(false)` is the old proof-based rule. Kept across a session's end like the env switch.
+    ssh_escape_cr_rule_override: Option<bool>,
 }
 
 /// #1615: an Enter the hand-off delivered to the pty although a line was unanswered, because the
@@ -1393,7 +1444,18 @@ impl TypeaheadHandoff {
             self.ssh_line_start_at_writes = Some(writes.saturating_add(1));
             return SshEscapeLineStart::AlreadyAtLineStart;
         }
-        if let Some(reason) = self.ssh_escape_cr_blocker(writes) {
+        let line_start_rule = self.ssh_escape_cr_line_start_rule();
+        if line_start_rule && self.pty_writes.tail_is_newline() {
+            // #2186: ssh read a newline last, so it is at its line start; the escape alone does.
+            self.ssh_line_start_at_writes = Some(writes.saturating_add(1));
+            return SshEscapeLineStart::TailIsNewline;
+        }
+        let blocker = if line_start_rule {
+            self.ssh_escape_cr_blocker_line_start()
+        } else {
+            self.ssh_escape_cr_blocker(writes)
+        };
+        if let Some(reason) = blocker {
             return SshEscapeLineStart::Skipped(reason);
         }
         // A bare Enter's line (`on_command_written` for an empty command): nothing queued ahead,
@@ -1412,7 +1474,51 @@ impl TypeaheadHandoff {
         SshEscapeLineStart::AddCr
     }
 
-    /// Why the remote line is not proven empty for [`Self::ssh_escape_line_start`], if it is not.
+    /// #2186: whether the line-start rule is on for this pane (see [`SSH_ESCAPE_CR_RULE_ENV`]).
+    fn ssh_escape_cr_line_start_rule(&self) -> bool {
+        self.ssh_escape_cr_rule_override
+            .unwrap_or_else(ssh_escape_cr_rule_env_enabled)
+    }
+
+    /// #2186: chooses the escape `\r` rule for this pane, overriding the env (`false` is the old
+    /// proof-based rule). Tests.
+    pub fn set_ssh_escape_cr_line_start_rule(&mut self, on: bool) {
+        self.ssh_escape_cr_rule_override = Some(on);
+    }
+
+    /// #2186: why a `\r` ahead of the escape could submit the user's bytes or reach a program,
+    /// if it could. ssh is not at its line start (the last byte written was not a newline), so
+    /// the `\r` is what makes the escape count; it is withheld only where the remote line may hold
+    /// the user's own bytes (adopted or not), or bytes are still on their way to it.
+    fn ssh_escape_cr_blocker_line_start(&self) -> Option<&'static str> {
+        match self.state {
+            HandoffState::EditorOwned => {}
+            HandoffState::PtyOwned {
+                wrote_user_bytes: true,
+                ..
+            } => return Some("pty_owned_user_bytes"),
+            HandoffState::PtyOwned { .. } => {}
+            // A request is out because the shell's line may hold bytes the user typed ahead
+            // (the hand-off only asks when user bytes were written or after an interrupt): a CR
+            // could run them as a partial line, so the escape goes unprefixed, as with any
+            // possibly typed line. (#2186's nu failure was EditorOwned with no request out.)
+            HandoffState::AwaitingReport => return Some("awaiting_report"),
+            HandoffState::HoldAfterEnter { .. } => return Some("hold_after_enter"),
+        }
+        if self.untracked_line_bytes {
+            return Some("untracked_line_bytes");
+        }
+        if self.young_hold_queued || self.prompt_hold_queued || self.deferred_gate.is_some() {
+            return Some("keys_held");
+        }
+        if self.writes_in_flight > 0 {
+            return Some("writes_in_flight");
+        }
+        None
+    }
+
+    /// The #1793 rule (the kill switch's): why the remote line is not proven empty for
+    /// [`Self::ssh_escape_line_start`], if it is not.
     fn ssh_escape_cr_blocker(&self, writes: u64) -> Option<&'static str> {
         match self.state {
             HandoffState::EditorOwned => {}
@@ -4924,7 +5030,13 @@ impl TypeaheadHandoff {
             deferred_gate_seq: self.deferred_gate_seq,
             young_hold_ends: mem::take(&mut self.young_hold_ends),
             // #1793: the controller keeps counting into the same cell.
-            pty_writes: self.pty_writes.clone(),
+            pty_writes: {
+                // #2186: a new session knows nothing of what ssh last read.
+                self.pty_writes.reset_tail();
+                self.pty_writes.clone()
+            },
+            // #2186: the rule switch is the pane's, not the session's.
+            ssh_escape_cr_rule_override: self.ssh_escape_cr_rule_override,
             // #2052: the kill switch is the pane's, not the session's.
             reader_marker_off: self.reader_marker_off,
             // #2040: the pane's log guard reads this same cell; the reader ended with the session.

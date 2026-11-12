@@ -14257,8 +14257,9 @@ impl TerminalView {
     }
 
     /// #1793: whether the #1638 ssh escape about to be written gets a `\r` ahead of it (see
-    /// [`SshEscapeLineStart`]), logged either way. Beyond the hand-off's own proof that the remote
-    /// line is empty (`TypeaheadHandoff::ssh_escape_line_start`), the `\r` needs the pane queue to
+    /// [`SshEscapeLineStart`]), logged either way. Beyond the hand-off's own rule (#2186: ssh is
+    /// not at its line start and the remote line cannot hold the user's bytes;
+    /// `TypeaheadHandoff::ssh_escape_line_start`), the `\r` needs the pane queue to
     /// hold no keys (they would be written first, into the line the `\r` submits) and the shell,
     /// not a program or the agent, to own the line.
     fn ssh_escape_line_start(&self) -> SshEscapeLineStart {
@@ -14290,6 +14291,11 @@ impl TerminalView {
             SshEscapeLineStart::AlreadyAtLineStart => {
                 warpui::input_order::log_hop("ssh_escape_cr", || {
                     "skipped=after_own_escape".to_owned()
+                });
+            }
+            SshEscapeLineStart::TailIsNewline => {
+                warpui::input_order::log_hop("ssh_escape_cr", || {
+                    "skipped=tail_is_newline".to_owned()
                 });
             }
             SshEscapeLineStart::Skipped(reason) => {

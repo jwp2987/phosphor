@@ -235,3 +235,19 @@ def r27_batch_exec_log_lines_are_counted_and_named_in_the_row_note():
     assert CL.batch_exec_note("") .endswith("none")
     assert "batch_exec_note(" in _body("cases_lab.py", "c_chips")
     assert "remote_server::backend=debug" in _src("app.py")
+
+
+@check
+def r27_ssh_drop_has_the_cleared_line_escape_arm_on_every_lab_shell():
+    """#2186: `ssh_drop_reconnect` has the `escape_after_cleared_line` arm (type `ls`, erase it, `~.`: the session ends, nothing runs, nu logs
+    `hop=ssh_escape_cr added`) in both the same-machine case and the lab case, and the lab matrix has fish next to bash, zsh and nu"""
+    import cases  # noqa: F401
+    src_a, src_l = _src("cases_coverage_a.py"), _src("cases_lab.py")
+    assert src_a.count('"escape_after_cleared_line"') >= 3 and src_l.count('"escape_after_cleared_line"') == 1
+    body = _body("cases_coverage_a.py", "ssh_drop_body")
+    for need in ('ctx.be.type("ls", 40)', 'ctx.be.key("BackSpace")', 'ctx.be.type("~.", 40)', "hop=ssh_escape_cr", '"added" in h', "ctx.cmds_since(mark)"):
+        assert need in body, need
+    names = {c["name"] for c in cases.CASES}
+    for sh in ("bash", "zsh", "fish", "nu"):
+        for lat in ("lan", "150"):
+            assert "lab_ssh_drop_reconnect.%s.%s.nohelper" % (sh, lat) in names, (sh, lat)

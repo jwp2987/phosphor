@@ -19200,13 +19200,25 @@ fn handoff_after_an_answered_empty_report(
     input: &ViewHandle<Input>,
     after_command: bool,
 ) {
+    handoff_after_an_answered_empty_report_with_rule(app, input, after_command, true);
+}
+
+/// [`handoff_after_an_answered_empty_report`] under the `\r` rule of #2186 (`line_start_rule`) or
+/// the old proof-based rule (`PHOSPHOR_SSH_ESCAPE_CR_RULE=0`).
+fn handoff_after_an_answered_empty_report_with_rule(
+    app: &App,
+    input: &ViewHandle<Input>,
+    after_command: bool,
+    line_start_rule: bool,
+) {
     input.read(app, |input, _| {
         let mut model = input.model.lock();
         let mut handoff = model.typeahead_handoff_mut();
+        handoff.set_ssh_escape_cr_line_start_rule(line_start_rule);
         let pty = handoff.pty_write_count();
         if after_command {
             handoff.on_command_written();
-            pty.note_write();
+            pty.note_write_bytes(b"echo hi\r");
             handoff.note_written_command_text("echo hi");
             handoff.note_preexec_command("echo hi");
             let _ = handoff.on_preexec(false);
@@ -19214,7 +19226,7 @@ fn handoff_after_an_answered_empty_report(
             assert!(handoff.try_commit_at_prompt());
         }
         handoff.on_legacy_request_written();
-        pty.note_write();
+        pty.note_write_bytes(b"\x1bi");
         handoff.on_report_parsed();
         let _ = handoff.on_report();
     });
@@ -19271,12 +19283,12 @@ fn test_ssh_escape_on_a_proven_empty_remote_line_goes_out_behind_a_carriage_retu
     }
 }
 
-/// #1793: the `\r` is never added where it could submit remote text: with user bytes the hand-off
-/// did not adopt in the shell's line, with a request still outstanding, or with anything written to
-/// the pty since the report. The escape then goes out as typed, as before.
+/// #2186: under the line-start rule only the user's own bytes in the remote line withhold the `\r`.
+/// A request still out (nu never answers the last one), or any other write behind the last newline
+/// (a terminal-query reply), does not: ssh last read those bytes, not a newline.
 #[test]
-fn test_ssh_escape_gets_no_carriage_return_unless_the_remote_line_is_proven_empty() {
-    for blocker in ["untracked", "outstanding", "written"] {
+fn test_ssh_escape_cr_rule_skips_only_for_user_bytes() {
+    for blocker in ["untracked", "outstanding", "written", "reply"] {
         App::test((), move |mut app| async move {
             let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
             initialize_app(&mut app);
@@ -19288,8 +19300,69 @@ fn test_ssh_escape_gets_no_carriage_return_unless_the_remote_line_is_proven_empt
                 let mut handoff = model.typeahead_handoff_mut();
                 match blocker {
                     "untracked" => handoff.note_untracked_line_bytes(),
+                    "outstanding" => {
+                        handoff.on_legacy_request_written();
+                        handoff.pty_write_count().note_write_bytes(b"\x1bi");
+                    }
+                    "written" => handoff.pty_write_count().note_write_bytes(b"x\r\x1bi"),
+                    _ => handoff.pty_write_count().note_tail(b"\x1b[24;1R"),
+                }
+            });
+            type_keys_for_ssh_escape_test(&mut app, &editor, &["~", "."]);
+            let expected: &[u8] = if blocker == "untracked" {
+                b"~."
+            } else {
+                b"\r~."
+            };
+            assert_eq!(
+                *writes.borrow(),
+                vec![expected.to_vec()],
+                "{blocker}: `\\r` only when no user bytes may be in the remote line"
+            );
+        });
+    }
+}
+
+/// #2186: the escape typed right after a newline went to the pty goes out alone.
+#[test]
+fn test_ssh_escape_right_after_a_newline_goes_out_alone() {
+    App::test((), move |mut app| async move {
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        initialize_app(&mut app);
+        let (input, editor, writes) =
+            pane_for_ssh_escape_test(&mut app, true, SHELL_INPUT_FOR_SSH_ESCAPE_TEST).await;
+        handoff_after_an_answered_empty_report(&app, &input, true);
+        input.read(&app, |input, _| {
+            let mut model = input.model.lock();
+            model
+                .typeahead_handoff_mut()
+                .pty_write_count()
+                .note_write_bytes(b"\r");
+        });
+        type_keys_for_ssh_escape_test(&mut app, &editor, &["~", "."]);
+        assert_eq!(*writes.borrow(), vec![b"~.".to_vec()]);
+    });
+}
+
+/// #1793 (the rule `PHOSPHOR_SSH_ESCAPE_CR_RULE=0` restores): the `\r` is never added where it could submit remote text: with user bytes the hand-off
+/// did not adopt in the shell's line, with a request still outstanding, or with anything written to
+/// the pty since the report. The escape then goes out as typed, as before.
+#[test]
+fn test_ssh_escape_old_rule_gets_no_carriage_return_unless_the_remote_line_is_proven_empty() {
+    for blocker in ["untracked", "outstanding", "written"] {
+        App::test((), move |mut app| async move {
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            initialize_app(&mut app);
+            let (input, editor, writes) =
+                pane_for_ssh_escape_test(&mut app, true, SHELL_INPUT_FOR_SSH_ESCAPE_TEST).await;
+            handoff_after_an_answered_empty_report_with_rule(&app, &input, true, false);
+            input.read(&app, |input, _| {
+                let mut model = input.model.lock();
+                let mut handoff = model.typeahead_handoff_mut();
+                match blocker {
+                    "untracked" => handoff.note_untracked_line_bytes(),
                     "outstanding" => handoff.on_legacy_request_written(),
-                    _ => handoff.pty_write_count().note_write(),
+                    _ => handoff.pty_write_count().note_write_bytes(b"x"),
                 }
             });
             type_keys_for_ssh_escape_test(&mut app, &editor, &["~", "."]);
@@ -19328,7 +19401,7 @@ fn test_enter_then_ssh_escape_right_after_connect_adds_no_second_carriage_return
             let mut handoff = model.typeahead_handoff_mut();
             handoff.on_command_written();
             handoff.note_written_command_text("");
-            handoff.pty_write_count().note_write();
+            handoff.pty_write_count().note_write_bytes(b"\r");
         });
 
         type_keys_for_ssh_escape_test(&mut app, &editor, &["~", "."]);
