@@ -6123,7 +6123,7 @@ fn the_staged_ssh_shim_announces_a_session_the_app_bootstraps() {
     assert!(shim.contains("\\\"raw_bootstrap\\\": false"));
     assert!(shim.contains("\\\"single_connection\\\": false"));
     for shell in ["fish", "nu"] {
-        assert!(super::input_queue::ssh_remote_command_bootstraps(shell));
+        assert!(crate::terminal::input_queue::ssh_phase::ssh_remote_command_bootstraps(shell));
     }
 }
 
