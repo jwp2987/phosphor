@@ -1037,6 +1037,9 @@ def parse_depth_probe(tokens, tok):
     return None
 
 
+from logclean import DIFF_CONT_PREFIXES, LOG_LINE_START_RE, app_log_clean, log_hop_rx  # noqa: E402,F401  (r27 loganchors)
+
+
 class LogOffset(int):
     """a byte offset into the app log that also carries the identity of the file it was measured in (log_file_ident), so a reader can find
     that file again after the app's in-session rotation renamed it to <log>.in_session.N (r18u28). Behaves as the plain int everywhere else."""
@@ -1679,7 +1682,7 @@ class Ctx:
         out, seen = [], False
         for f in parts:
             try:
-                txt = open(f, errors="replace").read()
+                txt = app_log_clean(open(f, errors="replace").read())
             except OSError:
                 continue
             for m in re.finditer(r'input_order typed_characters text="((?:[^"\\]|\\.)*)" t=(\d+(?:\.\d+)?)', txt):
@@ -1712,7 +1715,7 @@ class Ctx:
         lines = []
         for f in parts:
             try:
-                lines += open(f, errors="replace").read().splitlines()
+                lines += app_log_clean(open(f, errors="replace").read()).splitlines()
             except OSError:
                 continue
         return lines
@@ -1733,7 +1736,7 @@ class Ctx:
         out, seen = [], False
         for f in parts:
             try:
-                txt = open(f, errors="replace").read()
+                txt = app_log_clean(open(f, errors="replace").read())
             except OSError:
                 continue
             for m in PTY_WRITE_BYTES_RE.finditer(txt):
@@ -1757,7 +1760,7 @@ class Ctx:
         lines = []
         for f in parts:
             try:
-                lines += open(f, errors="replace").read().splitlines()
+                lines += app_log_clean(open(f, errors="replace").read()).splitlines()
             except OSError:
                 continue
         return lines
@@ -1806,7 +1809,7 @@ class Ctx:
         out = []
         for f in parts:
             try:
-                for l in open(f, errors="replace").read().splitlines():
+                for l in app_log_clean(open(f, errors="replace").read()).splitlines():
                     if rx.search(l):
                         m = re.search(r" t=(\d+(?:\.\d+)?)", l)
                         t = float(m.group(1)) / 1000.0 if m else None
@@ -1831,7 +1834,7 @@ class Ctx:
         out, last = [], None
         for f in parts:
             try:
-                txt = open(f, errors="replace").read()
+                txt = app_log_clean(open(f, errors="replace").read())
             except OSError:
                 continue
             for l in txt.splitlines():
@@ -2071,10 +2074,10 @@ class Ctx:
             if getattr(off, "ident", None) is not None and self.log_path:
                 rotated = log_text_since(self.log_path, off)
                 if rotated is not None:
-                    return rotated
+                    return app_log_clean(rotated)
             with open(self.log_path, "rb") as f:
                 f.seek(off)
-                return f.read().decode(errors="replace")
+                return app_log_clean(f.read().decode(errors="replace"))
         except Exception:
             return ""
 
@@ -2090,10 +2093,10 @@ class Ctx:
         last = None
         for f in parts:
             try:
-                txt = open(f, errors="replace").read()
+                txt = app_log_clean(open(f, errors="replace").read())
             except OSError:
                 continue
-            for m in re.finditer(r"hop=view_mode mode=(agent|terminal)\b", txt):
+            for m in VIEW_MODE_RE.finditer(app_log_clean(txt)):
                 last = m.group(1)
         return last
 
@@ -2107,7 +2110,7 @@ class Ctx:
         rows = []
         for f in parts:
             try:
-                rows += view_mode_rows(open(f, errors="replace").read())
+                rows += view_mode_rows(app_log_clean(open(f, errors="replace").read()))
             except OSError:
                 continue
         return rows
@@ -7040,12 +7043,12 @@ def file_viewer_opened(log):
     return FILE_PANE_OPENED in log
 
 
-VIEW_MODE_RE = re.compile(r"hop=view_mode mode=(agent|terminal)\b(?: pane=(\S+))?")       # app/src/ai/blocklist/agent_view/controller.rs view_mode_detail
+VIEW_MODE_RE = log_hop_rx(r"(?:input_order )?hop=view_mode mode=(agent|terminal)\b(?: pane=(\S+))?")       # app/src/ai/blocklist/agent_view/controller.rs view_mode_detail
 
 
 def view_mode_rows(text):
     """pure: [(mode, pane id or None)] of the `hop=view_mode mode=... pane=...` lines of an app-log excerpt, in order"""
-    return [(m.group(1), m.group(2)) for m in VIEW_MODE_RE.finditer(text or "")]
+    return [(m.group(1), m.group(2)) for m in VIEW_MODE_RE.finditer(app_log_clean(text))]
 
 
 def view_mode_verdict(rows, own_pane):

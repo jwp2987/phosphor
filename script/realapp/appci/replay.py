@@ -109,9 +109,10 @@ def error_lines(log_text, allow=ERROR_ALLOW_DEFAULT, extra_allow=()):
     return [l.strip()[:240] for l in log_text.splitlines() if ERR_LINE_RE.search(l) and not any(p.search(l) for p in pats)]
 
 
-ENTER_RE = re.compile(r'hop=enter_begin\b[^\n]*?\bbuffer=("(?:[^"\\]|\\.)*"|<\d+ chars>) input_type=(\w+)')
-VIEW_RE = re.compile(r"hop=view_mode mode=(agent|terminal)\b")
-ROUTE_RE = re.compile(r"hop=ctrl_c_route route=(\w+)")
+_LOG_START = r"^\d{4}-\d\d-\d\dT\S+ \[\w+\] (?:\S+ )?"        # a real app-log line's start (timestamp, [LEVEL], optional target): a diff body that echoes a log line never matches
+ENTER_RE = re.compile(_LOG_START + r'hop=enter_begin\b[^\n]*?\bbuffer=("(?:[^"\\]|\\.)*"|<\d+ chars>) input_type=(\w+)', re.M)
+VIEW_RE = re.compile(_LOG_START + r"hop=view_mode mode=(agent|terminal)\b", re.M)
+ROUTE_RE = re.compile(_LOG_START + r"hop=ctrl_c_route route=(\w+)", re.M)
 
 
 def agent_hops(log_text):

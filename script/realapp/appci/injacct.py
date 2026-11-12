@@ -37,6 +37,7 @@ import glob
 import re
 
 from backend import is_modifier
+from logclean import app_log_clean
 
 # Round 21 (#2146): the key's name is everything up to ` ctrl=`. Until then it was read as `(\S+)\b`, and a quoted punctuation key has no word
 # boundary after it (`key="." ctrl=...`): the line did not match. A key that types something was still counted by its `typed_characters` line (same
@@ -70,7 +71,7 @@ def app_keys(log_path, t_from, t_to):
                        key=lambda f: int(f.rsplit(".", 1)[1]) if f.rsplit(".", 1)[1].isdigit() else -1, reverse=True) + [gp]
         for f in parts:
             try:
-                txt = open(f, errors="replace").read()
+                txt = app_log_clean(open(f, errors="replace").read())
             except OSError:
                 continue
             for m in _LINE.finditer(txt):
@@ -98,7 +99,7 @@ def app_enter_hops(log_path, t_from, t_to):
     n = 0
     for f in parts:
         try:
-            txt = open(f, errors="replace").read()
+            txt = app_log_clean(open(f, errors="replace").read())
         except OSError:
             continue
         for m in _HOP_ENTER.finditer(txt):
@@ -127,7 +128,7 @@ def app_trace(log_path, t_from, t_to):
     for gi, gp in enumerate(groups):
         for f in _files(gp):
             try:
-                txt = open(f, errors="replace").read()
+                txt = app_log_clean(open(f, errors="replace").read())
             except OSError:
                 continue
             for m in _KEYBOUND.finditer(txt):

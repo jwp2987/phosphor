@@ -2533,7 +2533,10 @@ impl CodeReviewView {
             }
             Err(e) => {
                 if ChannelState::enable_debug_features() {
-                    log::error!("Failed to retrieve diff state for single file: {e}. Retrying...");
+                    log::error!(
+                        "Failed to retrieve diff state for single file: {}. Retrying...",
+                        remote_server::shellcmd::git::git_error_for_log(&e.to_string())
+                    );
                 }
 
                 send_telemetry_from_ctx!(

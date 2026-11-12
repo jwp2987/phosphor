@@ -259,9 +259,9 @@ def pointer_link_click_follows_a_moved_block_r21():
     finally:
         U._hook_word, P.hover = real_hook, real_hover
     # what a click that opened nothing did instead
-    went = P.click_went_elsewhere("x input_order hop=view_mode mode=agent pane=1496 t=1\n", "terminal")
+    went = P.click_went_elsewhere("2026-11-12T19:35:37Z [DEBUG] input_order hop=view_mode mode=agent pane=1496 t=1\n", "terminal")
     assert went and "agent view" in went
-    assert P.click_went_elsewhere("x hop=view_mode mode=agent pane=1 t=1\n", "agent") is None and P.click_went_elsewhere("nothing\n", "terminal") is None
+    assert P.click_went_elsewhere("2026-11-12T19:35:37Z [DEBUG] hop=view_mode mode=agent pane=1 t=1\n", "agent") is None and P.click_went_elsewhere("nothing\n", "terminal") is None
     import inspect
     src = inspect.getsource(P.links_play)
     assert src.count("aim(ctx, m, ") == 2 and "m.click(found[" not in src, "every link click goes where the text is now, never where it was first found"

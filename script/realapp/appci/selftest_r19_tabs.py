@@ -143,7 +143,7 @@ def r19_view_mode_of_the_pass_own_pane():
     or all panes agreeing: the log answers. Panes disagreeing: 'other' (the screen decides). The own pane leaving agent view still says terminal."""
     import types
     import cases
-    rows = cases.view_mode_rows("a hop=view_mode mode=agent pane=7 t=1\nb hop=view_mode mode=terminal pane=9 t=2\nc hop=view_mode mode=agent\n")
+    rows = cases.view_mode_rows("{0}hop=view_mode mode=agent pane=7 t=1\n{0}hop=view_mode mode=terminal pane=9 t=2\n{0}hop=view_mode mode=agent\n".format("2026-11-12T19:35:37Z [DEBUG] "))
     assert rows == [("agent", "7"), ("terminal", "9"), ("agent", None)]
     V = cases.view_mode_verdict
     assert V([], "7") is None and V([("agent", "7")], None) == "agent" and V([("agent", "7"), ("terminal", "9")], None) == "terminal"

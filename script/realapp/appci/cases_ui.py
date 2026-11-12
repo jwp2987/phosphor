@@ -1192,7 +1192,7 @@ def keyring_launch_verdicts(facts, variant, first_frame_max_ms):
 
 def _app_log(ctx):
     try:
-        return open(ctx.log_path, errors="replace").read() if ctx.log_path else ""
+        return C.app_log_clean(open(ctx.log_path, errors="replace").read()) if ctx.log_path else ""
     except OSError:
         return ""
 

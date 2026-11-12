@@ -218,23 +218,33 @@ def path_open_verdict(new_calls, abs_path, line_tok_seen, first_tok_seen):
     return None, "nothing opened: no call to the desktop opener and the file's text is not on screen"
 
 
+FOCUS_HOP_RE = C.log_hop_rx(r"(?:input_order )?hop=(kh_focus_editor|kh_focus_input|kh_focus_terminal_view)\b[^\n]*?\bself_focused=(true|false)")
+
+
 def pane_focus_state(log_text):
-    """pure (r27, r25a macOS): who has the keyboard according to the app log's focus hops. The LAST of `hop=kh_focus_editor` (a code pane) and
-    `hop=kh_focus_input` / `hop=kh_focus_terminal_view` (the shell pane) decides -> 'editor' | 'shell' | None (no hop at all)."""
+    """pure (r27): who has the keyboard according to the app log's focus hops, as a NOTE only (a pane's close is never proved by it). Only a hop
+    with `self_focused=true` counts: `self_focused=false` is a view LOSING focus (r27a macOS: the code pane had the keyboard and the lost-focus
+    hops of the input and the terminal view read as 'shell'). kh_focus_editor / kh_focus_input / kh_focus_terminal_view are the TERMINAL INPUT
+    editor's and the shell views' hops; the code pane logs none -> 'editor' (the input editor) | 'shell' | None (no gained-focus hop)."""
     state = None
-    for m in re.finditer(r"hop=(kh_focus_editor|kh_focus_input|kh_focus_terminal_view)\b", log_text or ""):
-        state = "editor" if m.group(1) == "kh_focus_editor" else "shell"
+    for m in FOCUS_HOP_RE.finditer(C.app_log_clean(log_text)):
+        if m.group(2) == "true":
+            state = "editor" if m.group(1) == "kh_focus_editor" else "shell"
     return state
 
 
-def close_code_pane_verdict(pane_state, closed_state, close_key):
-    """pure (r27): after an in-app code pane took a path click, was it closed and does a local shell pane have the keyboard? -> (ok, text).
-    pane_state = pane_focus_state(log since the click), closed_state = pane_focus_state(log since the close key), close_key = the close-pane key."""
+def close_code_pane_verdict(close_key, marker_still_drawn, screen_readable):
+    """pure (r27): after an in-app code pane took a path click and the close-pane key was pressed, is the pane CLOSED? -> (ok, text). The proof is
+    the screen, not a focus hop (the code pane logs none): the pane's marker text (the clicked line / the file's first line) is no longer drawn,
+    read by a screen reader that works. Without that proof nothing is typed after the links."""
     if not close_key:
         return False, "the in-app code pane has the keyboard and this platform has no close-pane key (APPCI_KEY_CLOSE empty): the pane was left open and nothing was typed after the links"
-    if closed_state != "shell":
-        return False, ("the close-pane key %r was pressed but the app log does not show the shell pane taking the keyboard back (last focus hop: %s): "
-                       "nothing was typed after the links" % (close_key, closed_state or "none"))
+    if not screen_readable:
+        return False, ("the close-pane key %r was pressed but no screen reader works here, so the pane's absence cannot be proved: "
+                       "nothing was typed after the links" % close_key)
+    if marker_still_drawn:
+        return False, ("the close-pane key %r was pressed but the code pane's text (%s) is still on screen: the pane is not closed, "
+                       "nothing was typed after the links" % (close_key, ", ".join(sorted(marker_still_drawn))))
     return True, ""
 
 
@@ -645,13 +655,13 @@ def moved_since(ctx, token, row, since):
     return None if now[1:3] == row[1:3] else (now[1] - row[1], now[2] - row[2])
 
 
-VIEW_MODE_RE = re.compile(r"hop=view_mode mode=(\w+)")
+VIEW_MODE_RE = C.log_hop_rx(r"(?:input_order )?hop=view_mode mode=(\w+)")
 
 
 def click_went_elsewhere(log_text, mode):
     """pure: what the app log since a click that opened nothing says the click did instead, or None. A terminal-mode pane that entered the agent
     view right after the click took the click on something that starts an agent conversation (a suggested prompt), not on the printed text."""
-    modes = VIEW_MODE_RE.findall(log_text or "")
+    modes = VIEW_MODE_RE.findall(C.app_log_clean(log_text))
     if mode == "terminal" and "agent" in modes:
         return ("the pane entered the agent view after the click (hop=view_mode mode=agent): the click landed on something that starts an agent "
                 "conversation, not on the printed path")
@@ -753,16 +763,18 @@ def links_play(ctx, r, m, calls, fx, tok, front_changed=None):
     if how == "pane" and err is None:
         # r27 (r25a macOS): the in-app code pane took the keyboard; close it and prove the shell has it back before anything is typed
         st = pane_focus_state(ctx.log_since(off))
-        r.note("the path opened in an in-app code pane at line %d (the line's text %r is drawn; last focus hop in the app log: %s)" % (fx["line_no"], t_line, st or "none"))
-        if st == "editor":
-            off2 = ctx.log_size()
-            if R.CLOSE_PANE:
-                ctx.be.key(R.CLOSE_PANE)
-                time.sleep(1.0)
-            ok, why = close_code_pane_verdict(st, pane_focus_state(ctx.log_since(off2)), R.CLOSE_PANE)
-            if not ok:
-                r.check(False, why)
-                return "pane_open"
+        r.note("the path opened in an in-app code pane at line %d (the line's text %r is drawn; last gained-focus hop in the app log: %s; "
+               "the pane is closed by the close-pane key whatever the hops say)" % (fx["line_no"], t_line, st or "none"))
+        off2 = ctx.log_size()
+        if R.CLOSE_PANE:
+            ctx.be.key(R.CLOSE_PANE)
+            time.sleep(1.0)
+        have_ocr = U.have_word_ocr(ctx)
+        still = locate_many(ctx, r, "lc_pane_closed", (t_line, t_first), off2) if R.CLOSE_PANE and have_ocr else {}
+        ok, why = close_code_pane_verdict(R.CLOSE_PANE, still, have_ocr)
+        if not ok:
+            r.check(False, why)
+            return "pane_open"
     return how
 
 
