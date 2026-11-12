@@ -312,6 +312,21 @@ impl EditorPasteHold {
             .is_some_and(|queue| queue.has_editor_paste_reading())
     }
 
+    /// Some key typed behind a paste (or behind any gate) has NOT been applied yet: the paste's
+    /// read, a key waiting in the replay list, an entry or gate still on the queue (a key waiting
+    /// for the display map included), or an operation waiting for the queue (#2193).
+    /// [`Self::has_pending`] is only the paste's READ and goes false the moment the paste lands,
+    /// while the keys held behind it (a Backspace waiting for the display map) apply in a LATER
+    /// turn; whoever needs "everything typed is in the buffer" (a test, a hand-over) waits for
+    /// this to be false. Mid-drain (the queue is borrowed) it answers true.
+    pub fn has_unapplied_keys(&self) -> bool {
+        let queue = self.pane_queue.borrow();
+        self.replay_pending()
+            || self.sequencer_pending()
+            || queue.has_deferred()
+            || queue.try_peek().is_none_or(|held| !held.is_idle())
+    }
+
     /// A paste begun with [`Self::begin`] is pending, whichever path the input uses. The input's
     /// own pastes are on the queue; a plain editor's paste (search box, settings field) reads
     /// off the UI thread on the sequencer (#1380) and holds the keys typed behind it here.
