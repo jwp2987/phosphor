@@ -556,6 +556,28 @@ class ChannelWatch:
         return data
 
 
+# #2156: the no-helper side-call batch logs one "exec done" line per batched exec (generation, producers) and one "shell exec:" line per exec of any kind
+# (remote_server::backend::shell, at debug; app.py's RUST_LOG enables remote_server::backend).
+BATCH_EXEC_RE = re.compile(r'git batch: exec done generation=(\d+) ok=(true|false) producers=\[([^\]\n]*)\]')
+SHELL_EXEC_RE = re.compile(r"shell exec: producer=(\w+)")
+
+
+def batch_exec_report(log_text):
+    """pure: ([(generation, ok, [producer names])] of the batched execs, {producer: n} of every 'shell exec:' line) in an app-log excerpt"""
+    batches = [(int(g), ok == "true", re.findall(r'"([^"]+)"', names)) for g, ok, names in BATCH_EXEC_RE.findall(log_text or "")]
+    execs = {}
+    for name in SHELL_EXEC_RE.findall(log_text or ""):
+        execs[name] = execs.get(name, 0) + 1
+    return batches, execs
+
+
+def batch_exec_note(log_text):
+    """pure: the row-note text naming what each exec was for, so a channel count above the limit says which producers opened them"""
+    batches, execs = batch_exec_report(log_text)
+    parts = ["batched exec #%d (%s): %s" % (g, "ok" if ok else "FAILED", "+".join(p) or "?") for g, ok, p in batches]
+    return "; ".join(parts + ["shell exec lines by producer: %s" % (", ".join("%s=%d" % kv for kv in sorted(execs.items())) or "none")])
+
+
 HOOK_ROUTE_ANY = re.compile(r"hop=backend_route family=")
 
 
@@ -902,6 +924,7 @@ def c_chips(ctx, r, arm):
     prompts = max(1, ctx.remote.prompts() - p0)
     watch.stop(r)
     calls = L.count_starts(lab.sshd_since(size0)["data"])["command"]
+    r.note("side-call producers (#2156): " + batch_exec_note(ctx.log_since(off)))
     r.metric("side_calls", calls)
     r.metric("prompts", prompts)
     r.check(calls <= prompts, "%d side-call exec channels for %d prompt(s): the app must batch to at most one per prompt" % (calls, prompts))

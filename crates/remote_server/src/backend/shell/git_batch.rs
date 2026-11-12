@@ -41,6 +41,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -66,6 +67,44 @@ pub(super) const JOIN_WINDOW: Duration = Duration::from_millis(100);
 
 /// A generation older than this is forgotten (it only holds memory by then).
 const KEEP: Duration = Duration::from_secs(10);
+
+/// With prompt keying on, a generation of the current prompt is joined by every producer for at
+/// most this long after it opened (a producer later than this is a different question: an event
+/// the manager never announced may have changed the repo). A generation still in flight is
+/// always joined, however long its exec takes.
+const PROMPT_MAX_AGE: Duration = Duration::from_secs(2);
+
+/// Whether the generation is keyed on the prompt counter (see [`GitBatchStore::begin_prompt`]):
+/// everything but `PHOSPHOR_SHELL_BATCH_PROMPT=0`, which brings back the pure 100 ms window.
+/// Read once.
+pub(super) fn prompt_keying_enabled() -> bool {
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| {
+        std::env::var("PHOSPHOR_SHELL_BATCH_PROMPT").map_or(true, |v| v.trim() != "0")
+    })
+}
+
+/// The key two spellings of one directory share: runs of `/` collapse, `.` components and a
+/// trailing `/` go. No filesystem access (a symlink is not resolved: a spelling that differs by
+/// more than this is a different key and costs its own exec, as before).
+pub(super) fn join_key(path: &str) -> String {
+    if path.contains('\\') || path.contains("..") {
+        return path.to_owned();
+    }
+    let absolute = path.starts_with('/');
+    let parts: Vec<&str> = path
+        .split('/')
+        .filter(|c| !c.is_empty() && *c != ".")
+        .collect();
+    let joined = parts.join("/");
+    if absolute {
+        format!("/{joined}")
+    } else if joined.is_empty() {
+        ".".to_owned()
+    } else {
+        joined
+    }
+}
 
 /// Whether batching is on: everything but `PHOSPHOR_SHELL_BATCH_GIT=0`. Read once.
 pub(super) fn batching_enabled() -> bool {
@@ -110,6 +149,12 @@ type Fetched = Shared<BoxFuture<'static, Option<Arc<Prefetched>>>>;
 
 struct Generation {
     opened: Instant,
+    /// The prompt counter value the generation was started under.
+    prompt: u64,
+    /// Its number, for the debug lines.
+    id: u64,
+    /// Who asked for it, in order (the starter first), for the debug lines.
+    producers: Arc<Mutex<Vec<&'static str>>>,
     fut: Fetched,
 }
 
@@ -118,6 +163,12 @@ struct Generation {
 pub struct GitBatchStore {
     repos: Mutex<HashMap<String, Generation>>,
     join_window: Duration,
+    prompt_max_age: Duration,
+    /// Whether the prompt counter keys the generations (see [`prompt_keying_enabled`]).
+    prompt_keyed: bool,
+    /// Bumped once per prompt by the manager ([`Self::begin_prompt`]); 0 until the first one.
+    prompt: AtomicU64,
+    next_id: AtomicU64,
     tree_caps: TreeCaps,
 }
 
@@ -132,6 +183,10 @@ impl GitBatchStore {
         Self {
             repos: Mutex::default(),
             join_window,
+            prompt_max_age: PROMPT_MAX_AGE,
+            prompt_keyed: prompt_keying_enabled(),
+            prompt: AtomicU64::new(0),
+            next_id: AtomicU64::new(1),
             tree_caps: TreeCaps::DEFAULT,
         }
     }
@@ -142,6 +197,27 @@ impl GitBatchStore {
         self
     }
 
+    /// The same store with prompt keying forced on or off (tests).
+    #[cfg(test)]
+    pub(super) fn with_prompt_keying(mut self, on: bool) -> Self {
+        self.prompt_keyed = on;
+        self
+    }
+
+    /// The same store with another prompt-generation age limit (tests).
+    #[cfg(test)]
+    pub(super) fn with_prompt_max_age(mut self, age: Duration) -> Self {
+        self.prompt_max_age = age;
+        self
+    }
+
+    /// A new prompt (or user refresh) started for this host: no producer of it may join an
+    /// answer read for the previous one. Every producer of this prompt, however late it asks and
+    /// however it spells the repo path, then joins the ONE exec the first of them starts.
+    pub fn begin_prompt(&self) {
+        self.prompt.fetch_add(1, Ordering::SeqCst);
+    }
+
     /// Forgets every generation: a write just happened (or is about to), so no later request may
     /// join an answer read before it.
     pub(super) fn invalidate(&self) {
@@ -150,34 +226,60 @@ impl GitBatchStore {
 
     /// The answers for `repo_path`: those of the generation a producer of this refresh already
     /// started, else a new one (one exec). `None`: no prefetch, every call takes its own exec.
+    /// `producer` names the caller in the debug lines.
     pub(in crate::backend) async fn get(
         &self,
         backend: &ShellBackend,
         runner: &ShellGitRunner,
         repo_path: &str,
+        producer: &'static str,
     ) -> Option<Arc<Prefetched>> {
+        let key = join_key(repo_path);
+        let prompt = self.prompt.load(Ordering::SeqCst);
         let fut = {
             let mut repos = self.repos.lock().unwrap_or_else(|e| e.into_inner());
             repos.retain(|_, g| g.opened.elapsed() < KEEP);
             let joined = repos
-                .get(repo_path)
-                .filter(|g| g.opened.elapsed() < self.join_window)
-                .map(|g| g.fut.clone());
+                .get(&key)
+                .filter(|g| self.joinable(g, prompt))
+                .map(|g| {
+                    g.producers
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .push(producer);
+                    log::debug!(
+                        "git batch: producer={producer} joins generation={} (prompt={prompt}) \
+                         path={repo_path}",
+                        g.id
+                    );
+                    g.fut.clone()
+                });
             match joined {
                 Some(fut) => fut,
                 None => {
+                    let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+                    let producers = Arc::new(Mutex::new(vec![producer]));
+                    log::debug!(
+                        "git batch: exec started generation={id} prompt={prompt} \
+                         producer={producer} path={repo_path}"
+                    );
                     let fut: Fetched = fetch(
                         backend.clone(),
                         runner.clone(),
                         repo_path.to_owned(),
                         self.tree_caps,
+                        id,
+                        Arc::clone(&producers),
                     )
                     .boxed()
                     .shared();
                     repos.insert(
-                        repo_path.to_owned(),
+                        key,
                         Generation {
                             opened: Instant::now(),
+                            prompt,
+                            id,
+                            producers,
                             fut: fut.clone(),
                         },
                     );
@@ -187,6 +289,21 @@ impl GitBatchStore {
         };
         fut.await
     }
+
+    /// Whether a request under prompt counter `prompt` may join `g`.
+    fn joinable(&self, g: &Generation, prompt: u64) -> bool {
+        let age = g.opened.elapsed();
+        if age < self.join_window {
+            // Started together (the pre-#2156 rule), unless the manager announced a new prompt
+            // in between.
+            return !self.prompt_keyed || g.prompt == prompt;
+        }
+        // Prompt keying: every producer of the same announced prompt, whenever it asks.
+        self.prompt_keyed
+            && prompt > 0
+            && g.prompt == prompt
+            && (age < self.prompt_max_age || g.fut.peek().is_none())
+    }
 }
 
 async fn fetch(
@@ -194,6 +311,8 @@ async fn fetch(
     runner: ShellGitRunner,
     repo: String,
     caps: TreeCaps,
+    id: u64,
+    producers: Arc<Mutex<Vec<&'static str>>>,
 ) -> Option<Arc<Prefetched>> {
     let script = match build_script(&runner, &repo)
         .and_then(|script| add_tree_sections(script, backend.shell_kind(), &repo, caps))
@@ -204,7 +323,13 @@ async fn fetch(
             return None;
         }
     };
-    match backend.run_script(&script).await {
+    let result = backend.run_script(&script).await;
+    log::debug!(
+        "git batch: exec done generation={id} ok={} producers={:?} path={repo}",
+        result.is_ok(),
+        producers.lock().unwrap_or_else(|e| e.into_inner())
+    );
+    match result {
         Ok(frame) => {
             let mut prefetched = assemble(&frame);
             prefetched.tree = tree_frame(&frame, caps);

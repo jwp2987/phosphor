@@ -2196,6 +2196,19 @@ impl RemoteServerManager {
         ctx: &mut ModelContext<Self>,
     ) {
         use crate::backend::refresh::{PrecmdPolicy, RefreshCoordinator, RefreshDecision};
+        // A new prompt (or an explicit refresh) is a new generation of the no-helper side-call
+        // batch (#2156): every producer of this one, the chips and the tree refresh alike, then
+        // joins the single exec the first of them starts. Before the emit below, so none of them
+        // can ask under the previous prompt's number.
+        if matches!(
+            event,
+            crate::backend::refresh::RemoteRefreshEvent::Precmd { .. }
+                | crate::backend::refresh::RemoteRefreshEvent::UserAction
+        ) {
+            self.router
+                .git_batch_for(&self.host_for_session_or_shell_mode(session_id))
+                .begin_prompt();
+        }
         // The git-state models (diff, chips) decide for themselves whether they are shell-backed.
         ctx.emit(RemoteServerManagerEvent::ShellRefresh {
             host_id: self.host_for_session_or_shell_mode(session_id),
