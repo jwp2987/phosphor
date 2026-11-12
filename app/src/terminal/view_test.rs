@@ -31526,6 +31526,52 @@ fn an_inline_editor_paste_then_an_immediate_enter_are_queued_in_order() {
     })
 }
 
+/// #2175: typing into the focused agent editor returns the view to the bottom after a scroll up,
+/// as typing does in terminal mode; an edit that is not user typing leaves the scroll alone.
+#[test]
+fn typing_in_agent_view_returns_to_bottom() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            {
+                let mut model = view.model.lock();
+                for _ in 0..100 {
+                    model.simulate_block("ls", "foo");
+                }
+            }
+            enter_agent_view_for_navigation(view, ctx);
+            assert!(view.is_vertically_scrollable(ctx));
+            view.scroll(1.0.into_lines(), ctx);
+            assert!(matches!(
+                view.scroll_position(),
+                ScrollPosition::FixedAtPosition { .. }
+            ));
+
+            // A programmatic edit does not move the view.
+            view.input
+                .update(ctx, |input, ctx| input.system_insert("x", ctx));
+        });
+        // Editor events are delivered once the update above has finished.
+        terminal.update(&mut app, |view, ctx| {
+            assert!(matches!(
+                view.scroll_position(),
+                ScrollPosition::FixedAtPosition { .. }
+            ));
+
+            // A typed character does.
+            let editor = view.input.read(ctx, |input, _| input.editor().clone());
+            editor.update(ctx, |editor, ctx| editor.user_insert("e", ctx));
+        });
+        terminal.read(&app, |view, _| {
+            assert_eq!(
+                view.scroll_position(),
+                ScrollPosition::FollowsBottomOfMostRecentBlock
+            );
+        });
+    })
+}
+
 /// #1440: with the pty reader inside the model's lock (parsing), the helpers a key calls decide
 /// from the published facts or leave their work for after the parse, and none of them waits. The
 /// lock is held by another thread for up to three seconds; every call must be through long before.

@@ -1216,6 +1216,9 @@ pub enum InputEmptyStateChangeReason {
 
 pub enum Event {
     AutosuggestionAccepted,
+    /// The user typed into the focused agent-view editor: the terminal view returns the block
+    /// list to the bottom, as typing does in terminal mode (#2175).
+    UserTypedInAgentView,
     /// Enter on an empty input while an agent approval card awaits the user's decision: the
     /// terminal view focuses the card, so a second Enter (its Run binding) approves it (#1180).
     /// Enter never approves from the input itself.
@@ -10745,6 +10748,14 @@ impl Input {
                     EditOrigin::UserTyped | EditOrigin::UserInitiated
                 ) {
                     self.model.lock().set_is_input_dirty(true);
+                }
+
+                // #2175: typing in the agent editor returns the view to the bottom; programmatic
+                // edits (anything but user-typed characters) leave the scroll alone.
+                if *edit_origin == EditOrigin::UserTyped
+                    && self.agent_view_controller.as_ref(ctx).is_active()
+                {
+                    ctx.emit(Event::UserTypedInAgentView);
                 }
 
                 // `@`-context attachments are a cache of the `@ref` text in this buffer, and
