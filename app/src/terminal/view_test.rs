@@ -31544,6 +31544,9 @@ fn typing_in_agent_view_returns_to_bottom() {
             for _ in 0..100 {
                 simulate_user_shell_block_in_conversation(view, conversation_id, "ls");
             }
+        });
+        // The blocks settle (their layout follows the bottom) before the user scrolls.
+        terminal.update(&mut app, |view, ctx| {
             assert!(view.is_vertically_scrollable(ctx));
             view.scroll(1.0.into_lines(), ctx);
             assert!(matches!(
