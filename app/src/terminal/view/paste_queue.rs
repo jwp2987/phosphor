@@ -160,6 +160,9 @@ pub(super) struct PasteQueueState {
     /// never the enclosing arrival's thread-local. Passive at delivery: it never takes over an
     /// agent-run command.
     pub(super) delivering_synced: bool,
+    /// The entry being delivered is a typed key the ssh gate held (#2181): inserted into the editor
+    /// it is judged for the line-start ssh escape like a typed key.
+    pub(super) delivering_held_typed: bool,
     /// The hand-off held the entry being delivered; the host answers `Requeue` with this.
     requeue_request: Option<RequeueRequest>,
     /// What goes back to the front of the queue after a `Requeue` when the entry delivered is not
@@ -223,6 +226,7 @@ impl PasteQueueState {
             requeueable_delivery: false,
             delivering: false,
             delivering_synced: false,
+            delivering_held_typed: false,
             requeue_request: None,
             requeue_replacement: None,
             prompt_hold_waiting_told: None,

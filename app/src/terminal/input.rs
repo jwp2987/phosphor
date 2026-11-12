@@ -2219,6 +2219,10 @@ pub struct Input {
     /// If true, will submit the command in the editor to the shell upon receiving the
     /// precmd message.
     has_pending_command: bool,
+    /// #2181: set by [`Self::system_insert_held`] just before it inserts keys the ssh gate held, and
+    /// taken by the next `Edited` event: those bytes are the user's typed keys released late, so the
+    /// line-start ssh escape rule applies to them as it does to a typed key.
+    held_release_edit: bool,
     /// F6 (#1594): the editor was made read-only by `show_pending_command_after_give_up`.
     pending_command_shown_read_only: bool,
     /// #1558: the pending command is an Enter the shell could not take yet (its first Precmd had
@@ -4292,6 +4296,7 @@ impl Input {
             debounce_input_background_tx,
             debounce_ai_query_prediction_tx,
             has_pending_command: false,
+            held_release_edit: false,
             pending_command_shown_read_only: false,
             held_unready_enter: false,
             given_up_unready_line: None,
@@ -7164,9 +7169,14 @@ impl Input {
     fn ssh_escape_typed_at_line_start(
         &self,
         edit_origin: &EditOrigin,
+        held_release: bool,
         ctx: &AppContext,
     ) -> Option<[u8; 2]> {
-        if *edit_origin != EditOrigin::UserTyped {
+        // #2181: keys the ssh gate held and released as editor text are typed keys that arrived
+        // late (`system_insert_held`); the same rule applies to them.
+        let typed = *edit_origin == EditOrigin::UserTyped
+            || (held_release && *edit_origin == EditOrigin::UserInitiated);
+        if !typed {
             return None;
         }
         let editor = self.editor.as_ref(ctx);
@@ -7185,7 +7195,12 @@ impl Input {
             });
             None
         };
-        if editor.get_last_action(ctx) != Some(PlainTextEditorViewAction::InsertChar) {
+        let expected_action = if held_release {
+            PlainTextEditorViewAction::SystemInsert
+        } else {
+            PlainTextEditorViewAction::InsertChar
+        };
+        if editor.get_last_action(ctx) != Some(expected_action) {
             return refuse("not_insert_char");
         }
         let ai_input = self.ai_input_model.as_ref(ctx);
@@ -10721,10 +10736,13 @@ impl Input {
 
         match event {
             EditorEvent::Edited(edit_origin) => {
+                let held_release = std::mem::take(&mut self.held_release_edit);
                 // #1638: `~X` at the start of an empty line of a managed ssh session is ssh's
                 // escape, not editor text. Decided by the second key, never by a timer: until it
                 // arrives the `~` stays in the editor.
-                if let Some(bytes) = self.ssh_escape_typed_at_line_start(edit_origin, ctx) {
+                if let Some(bytes) =
+                    self.ssh_escape_typed_at_line_start(edit_origin, held_release, ctx)
+                {
                     warpui::input_order::log_hop("ssh_escape_to_pty", || {
                         format!("char={:?}", bytes[1] as char)
                     });
@@ -14605,6 +14623,25 @@ impl Input {
         if self.defer_programmatic_edit(enter_queue::DeferredEdit::Insert(text.to_owned()), ctx) {
             return true;
         }
+        self.insert_internal(text, EditOrigin::UserInitiated, ctx)
+    }
+
+    /// #2181: [`Self::system_insert`] for typed keys the ssh gate held and released as editor
+    /// text. They are the user's keys that arrived late, so an ssh escape (`~.`) among them at the
+    /// start of the line is applied exactly as it is for typed keys (see
+    /// `ssh_escape_typed_at_line_start`); everything else about the insert is unchanged.
+    pub fn system_insert_held(&mut self, text: &str, ctx: &mut ViewContext<Self>) -> bool {
+        if text.is_empty() {
+            return self.system_insert(text, ctx);
+        }
+        // Ordered with the keys the pane queue holds for the editor (#1434): a deferred insert is
+        // applied later as an ordinary system insert, never as an escape.
+        if self.defer_programmatic_edit(enter_queue::DeferredEdit::Insert(text.to_owned()), ctx) {
+            return true;
+        }
+        self.held_release_edit = true;
+        // Not reset here: the editor's `Edited` event is delivered after this update returns,
+        // and its handler takes the mark (every `Edited` handled clears it).
         self.insert_internal(text, EditOrigin::UserInitiated, ctx)
     }
 
