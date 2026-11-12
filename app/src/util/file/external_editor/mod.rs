@@ -305,6 +305,16 @@ pub fn open_file_path_with_editor(
     }
 }
 
+/// macOS: true when the system-default open of `full_path` would come straight back to this
+/// app as a line-less `file://` URL (#2176), so the caller should open in-app to keep the line.
+#[cfg(target_os = "macos")]
+pub fn system_default_would_lose_line(
+    line_column_number: Option<LineAndColumnArg>,
+    full_path: &std::path::Path,
+) -> bool {
+    mac::system_default_would_lose_line(line_column_number, full_path)
+}
+
 /// Open `full_path` in the platform's default application for it *only if* that application
 /// is a known [`Editor`]; returns whether it was opened. Never hands the file to the OS
 /// handler. Used for launchable text under the system-default editor choice (#681): the

@@ -375,6 +375,27 @@ pub fn open_in_default_editor_only(
         .is_some_and(|editor| editor.open(line_column_number, full_path, ctx))
 }
 
+/// Pure decision (#2176): should a system-default open of a file, requested at a specific line,
+/// be handled in-app instead? True when a line was requested and the file's macOS default app is
+/// this app family -- macOS would hand the bare path back to us as a `file://` URL with no line,
+/// so the line would be lost. Any other default app keeps the external hand-off.
+pub fn should_open_in_app_to_keep_line(
+    has_line: bool,
+    default_app_bundle_id: Option<&str>,
+) -> bool {
+    has_line && default_app_bundle_id.is_some_and(is_zap_bundle)
+}
+
+/// Whether opening `full_path` at `line_column_number` via the system default would round-trip
+/// through this app and lose the line (#2176); see [`should_open_in_app_to_keep_line`].
+pub fn system_default_would_lose_line(
+    line_column_number: Option<LineAndColumnArg>,
+    full_path: &Path,
+) -> bool {
+    line_column_number.is_some()
+        && should_open_in_app_to_keep_line(true, default_app_to_open_path(full_path).as_deref())
+}
+
 fn is_zap_bundle(bundle_id: &str) -> bool {
     AppId::parse(bundle_id)
         .map(|id| {
