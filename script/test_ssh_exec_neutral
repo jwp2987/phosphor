@@ -1,0 +1,61 @@
+#!/usr/bin/env python3
+"""#2180: the ssh exec-channel string must survive any login shell.
+
+sshd runs the exec-channel command through the remote LOGIN shell. The app sends only
+`sh -s` (remote_server::ssh::NEUTRAL_EXEC_COMMAND) and the script on stdin, wrapped as
+`{ <script>\\n} </dev/null\\n` (neutral_exec_script). This runs that exact pair through every
+locally installed shell (`<shell> -c 'sh -s'`) and checks that the inner POSIX script ran with
+the right cwd/env, that a missing binary gives 127, and that the script's stdin is /dev/null.
+Absent shells are skipped. nu 0.116 lives in the lab image, not here.
+"""
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+
+CHANNEL = "sh -s"
+
+
+def neutral(script):
+    return "{ " + script + "\n} </dev/null\n"
+
+
+def run(shell, script):
+    return subprocess.run(
+        [shell, "-c", CHANNEL], input=neutral(script).encode(),
+        capture_output=True, timeout=30)
+
+
+def main():
+    work = tempfile.mkdtemp(prefix="exec neutral it's ", dir=os.environ.get("TMPDIR") or ".")
+    shells = [s for s in ("bash", "zsh", "fish", "nu", "dash", "sh") if shutil.which(s)]
+    failures = 0
+    for shell in shells:
+        cases = {
+            "cwd+env+&&": ("export A='it'\"'\"'s' B=2; cd '" + work.replace("'", "'\"'\"'") +
+                           "' && pwd && printf '%s %s\\n' \"$A\" \"$B\"",
+                           0, [work, "it's 2"]),
+            "exit status": ("exit 7", 7, []),
+            "missing binary": ("/nonexistent/phosphor-remote --version", 127, []),
+            "stdin is null": ("cat; echo after", 0, ["after"]),
+            "for/done": ("for i in 1 2; do printf $i; done; echo", 0, ["12"]),
+        }
+        for name, (script, code, want) in cases.items():
+            r = run(shell, script)
+            out = r.stdout.decode().splitlines()
+            ok = r.returncode == code and all(w in out for w in want)
+            print(f"{'ok  ' if ok else 'FAIL'} {shell:5} {name}")
+            if not ok:
+                failures += 1
+                print("  rc", r.returncode, "stdout", out, "stderr", r.stderr.decode()[:300])
+    shutil.rmtree(work, ignore_errors=True)
+    if not shells:
+        print("no shells found")
+        return 1
+    print("skipped:", [s for s in ("bash", "zsh", "fish", "nu") if s not in shells])
+    return 1 if failures else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

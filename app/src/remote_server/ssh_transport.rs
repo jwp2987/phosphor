@@ -857,7 +857,8 @@ impl RemoteTransport for SshTransport {
             .await
             {
                 // `{binary} --version` exiting 0 means it exists and runs.
-                // 126/127 means missing or not executable; any other
+                // 126/127 means missing or not executable (the check runs under `sh -s`, so
+                // a nu or fish login shell cannot change the code, #2180); any other
                 // nonzero exit is treated as a real check failure.
                 Ok(output) => match output.status.code() {
                     Some(0) => {
