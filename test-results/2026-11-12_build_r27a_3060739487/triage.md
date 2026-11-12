@@ -10,3 +10,14 @@ Linux and macOS green (3/3 each). Windows: test-windows 1/11961 FAIL test_slow_c
 
 ## Bands
 The collect would have widened 9 bands; 7 were a formula artifact (every value inside the band, a few far-apart points inflate median + 3 MAD; e.g. macOS ssh Enter IMPROVED to -4.97 ms yet asked 5.17 -> 14.71). perf_bands now never widens a band whose window values are all inside it. 2 real widenings held for the owner: windows/agent/latency_enter 35.1 -> 39.54 (n=2), windows/agent@gitbash/latency_enter#app 1.75 -> 2.37 (n=2). Also found: latency_enter_ssh's record name did not match its band (rows read 'no band yet'); renamed, and a self-test now checks every record name against bands.json.
+
+## Unit failures by test (results guard)
+- terminal::input::tests::test_slow_clipboard_read_does_not_block_and_keys_follow_the_paste #2193
+- ai::blocklist::agent_fuzz::matrix::pairs_question::on #2194
+- ai::blocklist::agent_fuzz::matrix::pairs_question::off #2194
+- context_chips::current_prompt::tests::test_chips_rerun_when_the_blocks_session_registers #2194
+- context_chips::current_prompt::tests::test_unchanged_chip_refetch_does_not_respawn_on_click_command #2194
+- workspace::view::tests::test_closing_a_code_pane_drops_its_editor_and_buffer #2194
+- workspace::view::tests::test_closing_a_code_pane_releases_a_retained_editors_heavy_state #2194
+- workspace::view::tests::test_code_editor_entry_points_refuse_a_file_past_the_size_limit #2194
+- workspace::view::tests::test_reopening_a_file_whose_code_pane_was_moved_away_still_opens_it #2194
