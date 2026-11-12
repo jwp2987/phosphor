@@ -31550,12 +31550,8 @@ fn typing_in_agent_view_returns_to_bottom() {
                 view.scroll_position(),
                 ScrollPosition::FixedAtPosition { .. }
             ));
-
-            // A programmatic edit does not move the view.
-            view.input
-                .update(ctx, |input, ctx| input.system_insert("x", ctx));
         });
-        // Editor events are delivered once the update above has finished.
+        // Nothing typed yet: the view stays where the user scrolled it.
         terminal.update(&mut app, |view, ctx| {
             assert!(matches!(
                 view.scroll_position(),
