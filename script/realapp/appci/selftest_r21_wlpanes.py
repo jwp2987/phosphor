@@ -188,7 +188,7 @@ def r21_scroll_keys_position_agent_view_judges():
     must fail; the app strings and behaviours the agent arm rests on are read from the Rust sources."""
     import cases_r14_w1a as W
     S = W.skp_stream_state
-    assert S("terminal", 12, 6) == "drawn" and S("agent", 12, 1) == "drawn"
+    assert S("terminal", 12, 6) == "drawn" and S("agent", 12, 4) == "drawn" and S("agent", 12, 1) == "agent_hidden"      # r27: one stale line is not drawn output
     assert S("agent", 12, 0) == "agent_hidden" and S("terminal", 12, 0) == "missing"
     assert S("agent", 3, 0) == "too_early" and S("terminal", 0, 0) == "too_early"
     assert W.skp_top_keys("terminal", "ctrl+up") == ["ctrl+up", "Home"] and W.skp_top_keys("agent", "ctrl+up") == ["shift+Home"]

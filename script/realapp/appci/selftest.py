@@ -9405,5 +9405,7 @@ if __name__ == "__main__":
     sys.exit(main())
 import selftest_r26_wintests  # noqa: E402  (r24a Windows test faults: enters_agent on the routing tables, md fixture fits the viewer, pane-shell identity, #2025 row; own file)
 CHECKS.extend(selftest_r26_wintests.CHECKS)
+import selftest_r27_mactests  # noqa: E402  (r25a macOS test faults: in-app code pane after the path click, stale agent line is not a drawn stream; own file)
+CHECKS.extend(selftest_r27_mactests.CHECKS)
 import selftest_r27_editormeasure  # noqa: E402  (#2185 editor_memory_7mb: heap prime, median open cost, per-cycle notes; own file)
 CHECKS.extend(selftest_r27_editormeasure.CHECKS)
