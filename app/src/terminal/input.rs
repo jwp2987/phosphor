@@ -408,34 +408,6 @@ fn skip_redundant_completion_notify_enabled() -> bool {
     })
 }
 
-/// `PHOSPHOR_DEFER_SUBMIT_INPUT_RESET=0` restores running the post-submit input reset before the
-/// command's write (#2184). Under test it is on, as in the app; a test can turn it off.
-fn submit_input_reset_deferred_enabled() -> bool {
-    #[cfg(test)]
-    {
-        return DEFER_SUBMIT_INPUT_RESET_FOR_TEST.with(|cell| cell.get());
-    }
-    #[cfg(not(test))]
-    {
-        static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        *ENABLED.get_or_init(|| {
-            !std::env::var("PHOSPHOR_DEFER_SUBMIT_INPUT_RESET").is_ok_and(|value| value == "0")
-        })
-    }
-}
-
-#[cfg(test)]
-thread_local! {
-    static DEFER_SUBMIT_INPUT_RESET_FOR_TEST: std::cell::Cell<bool> =
-        const { std::cell::Cell::new(true) };
-}
-
-/// The input reset a submit left for after the command's write (#2184).
-struct PendingSubmitInputReset {
-    reset_config: bool,
-    submitted_at: Instant,
-}
-
 /// Whether a completion result with nothing to show (no result, or no suggestions) needs
 /// `Input` re-rendered (#1995, owner decision 2026-11-11). With completions as you type such a
 /// result comes back for nearly every typed character; while no menu is up it changes nothing
@@ -2504,8 +2476,6 @@ pub struct Input {
     /// The waiting Enter is being run right now (#1016): its own `input_enter` is the submit, not
     /// an Enter typed behind a pending replay, so it must not queue itself.
     running_deferred_enter: bool,
-    /// #2184: the post-submit input reset waiting to run right after the command's write.
-    pending_submit_input_reset: Option<PendingSubmitInputReset>,
     /// A Tab (`CompletionsTrigger::Keybinding`) pressed while the shell's line report is pending
     /// waits for it (#1659): the editor holds only the fragment typed since, and the report lands
     /// in front of it. It runs on the merged line when the report is in.
@@ -4415,7 +4385,6 @@ impl Input {
             handoff_report_anchor_pending: None,
             handoff_report_anchor: None,
             running_deferred_enter: false,
-            pending_submit_input_reset: None,
             tab_waits_for_report: false,
             announce_report_tab_settled: false,
             ssh_handover_enter_guard: None,
@@ -10725,8 +10694,6 @@ impl Input {
     /// `warp::input_order` debug target only: `hop=kh_edit_sync us=N` per edit, so a Mac run can
     /// say how much of key->paint is spent here versus in the render of the views it dirties.
     fn handle_editor_event(&mut self, event: &EditorEvent, ctx: &mut ViewContext<Self>) {
-        // #2184: a typed key sees the config the submit reset.
-        self.flush_pending_submit_input_reset(ctx);
         let started = (warpui::input_order::enabled() && matches!(event, EditorEvent::Edited(_)))
             .then(Instant::now);
         self.handle_editor_event_inner(event, ctx);
@@ -15007,7 +14974,6 @@ impl Input {
     /// is an active and long running command; in such a state, the enter keypress should be
     /// handled by the ongoing process corresponding to the active/long running command.
     pub(crate) fn input_enter(&mut self, ctx: &mut ViewContext<Self>) {
-        self.flush_pending_submit_input_reset(ctx);
         if self.hold_back_enter_after_ssh_handover(ctx) {
             return;
         }
@@ -15446,23 +15412,44 @@ impl Input {
             self.last_enter_submitted_shell_command = true;
             self.record_misroute_memory(&command, SubmitRoute::Shell, route_reason, ctx);
 
-            let reset_config = FeatureFlag::AgentMode.is_enabled()
-                && AISettings::as_ref(ctx).is_ai_autodetection_enabled(ctx);
-            // #2184: the reset's subscribers cost ~0.7 ms in agent mode, and the queued
-            // ExecuteCommand effect only reaches the pty after this method returns. Run the reset
-            // right after that write instead (same turn, or at the latest before the next key).
-            if submit_input_reset_deferred_enabled() {
-                self.pending_submit_input_reset = Some(PendingSubmitInputReset {
-                    reset_config,
-                    submitted_at: submit_started,
+            if FeatureFlag::AgentMode.is_enabled()
+                && AISettings::as_ref(ctx).is_ai_autodetection_enabled(ctx)
+            {
+                self.ai_input_model.update(ctx, |input, ctx| {
+                    input.abort_in_progress_detection();
+
+                    // The default input state after executing a shell command is Shell mode with
+                    // autodetection enabled.
+                    input.set_input_config_for_classic_mode(
+                        InputConfig {
+                            input_type: InputType::Shell,
+                            is_locked: true,
+                        }
+                        .unlocked_if_autodetection_enabled(false, ctx),
+                        ctx,
+                    );
                 });
-                warpui::input_order::log_hop("submit_input_reset_deferred", String::new);
-                ctx.spawn(async {}, |me, _, ctx| {
-                    me.flush_pending_submit_input_reset(ctx);
-                });
-            } else {
-                self.run_submit_input_reset(reset_config, ctx);
             }
+
+            // Cancel actively streaming conversations if we're able to run the command.
+            // This is possible in persistent input mode.
+            self.ai_controller.update(ctx, |controller, ctx| {
+                let active_conversation_id = BlocklistAIHistoryModel::as_ref(ctx)
+                    .active_conversation(self.terminal_view_id)
+                    .filter(|conversation| conversation.status().is_in_progress())
+                    .map(|conversation| conversation.id());
+                if let Some(active_conversation_id) = active_conversation_id {
+                    controller.cancel_conversation_progress(
+                        active_conversation_id,
+                        CancellationReason::UserCommandExecuted,
+                        ctx,
+                    );
+                }
+            });
+
+            self.ai_input_model.update(ctx, |model, ctx| {
+                model.handle_input_buffer_submitted(ctx);
+            });
 
             if SyncedInputState::as_ref(ctx).is_syncing_any_inputs(ctx.window_id()) {
                 ctx.emit(Event::SyncInput(SyncInputType::RanCommand));
@@ -15492,71 +15479,11 @@ impl Input {
         }
     }
 
-    /// The post-submit input reset, in the order a submit always had: reset to the default
-    /// config (autodetection on), cancel a streaming conversation, tell the model the buffer was
-    /// submitted.
-    fn run_submit_input_reset(&mut self, reset_config: bool, ctx: &mut ViewContext<Self>) {
-        if reset_config {
-            self.ai_input_model.update(ctx, |input, ctx| {
-                input.abort_in_progress_detection();
-
-                // The default input state after executing a shell command is Shell mode with
-                // autodetection enabled.
-                input.set_input_config_for_classic_mode(
-                    InputConfig {
-                        input_type: InputType::Shell,
-                        is_locked: true,
-                    }
-                    .unlocked_if_autodetection_enabled(false, ctx),
-                    ctx,
-                );
-            });
-        }
-
-        // Cancel actively streaming conversations if we're able to run the command.
-        // This is possible in persistent input mode.
-        self.ai_controller.update(ctx, |controller, ctx| {
-            let active_conversation_id = BlocklistAIHistoryModel::as_ref(ctx)
-                .active_conversation(self.terminal_view_id)
-                .filter(|conversation| conversation.status().is_in_progress())
-                .map(|conversation| conversation.id());
-            if let Some(active_conversation_id) = active_conversation_id {
-                controller.cancel_conversation_progress(
-                    active_conversation_id,
-                    CancellationReason::UserCommandExecuted,
-                    ctx,
-                );
-            }
-        });
-
-        self.ai_input_model.update(ctx, |model, ctx| {
-            model.handle_input_buffer_submitted(ctx);
-        });
-    }
-
-    /// Runs the post-submit input reset a submit deferred until after the command's write
-    /// (#2184). Called from the turn right after the submit, and before anything that reads or
-    /// changes the input config: the next Enter, every editor event (a typed key), the
-    /// shell-forced Enter's restore.
-    pub(crate) fn flush_pending_submit_input_reset(&mut self, ctx: &mut ViewContext<Self>) {
-        let Some(pending) = self.pending_submit_input_reset.take() else {
-            return;
-        };
-        self.run_submit_input_reset(pending.reset_config, ctx);
-        warpui::input_order::log_hop("submit_input_reset_done", || {
-            format!(
-                "since_submit_ms={:.2}",
-                pending.submitted_at.elapsed().as_secs_f64() * 1000.
-            )
-        });
-    }
-
     /// Runs Enter as a shell command: for this one submit the input is locked to shell, in
     /// Universal input as in Classic, so natural-language detection cannot send text the user
     /// typed as shell lines to the agent (`FeatureFlag::TypeaheadHandoff`). The previous input
     /// configuration is restored afterwards. Returns whether a shell command was submitted.
     pub(crate) fn input_enter_as_shell_command(&mut self, ctx: &mut ViewContext<Self>) -> bool {
-        self.flush_pending_submit_input_reset(ctx);
         let previous_config = self.ai_input_model.as_ref(ctx).input_config();
         let is_buffer_empty = self.editor.as_ref(ctx).is_empty(ctx);
         self.ai_input_model.update(ctx, |input_model, ctx| {
@@ -15572,9 +15499,6 @@ impl Input {
         self.last_enter_submitted_shell_command = false;
         self.input_enter(ctx);
         let submitted = self.last_enter_submitted_shell_command;
-        // The restore below must come after the submit's reset, as it does when the reset is not
-        // deferred.
-        self.flush_pending_submit_input_reset(ctx);
         self.ai_input_model.update(ctx, |input_model, ctx| {
             input_model.set_input_config(previous_config, is_buffer_empty, ctx);
         });
@@ -19050,9 +18974,6 @@ impl TypedActionView for Input {
     }
 
     fn handle_action(&mut self, action: &InputAction, ctx: &mut ViewContext<Self>) {
-        // #2184: any input action (a mode toggle bound to a key, for one) sees the config the
-        // last submit reset, never a reset that lands after it.
-        self.flush_pending_submit_input_reset(ctx);
         match action {
             InputAction::FocusInputBox => self.focus_input_box(ctx),
             InputAction::Up => self.editor_up(ctx),
