@@ -704,6 +704,17 @@ impl InputQueue {
         self.entries.len()
     }
 
+    /// #2182: whether an entry is queued whose destination is not provably the input editor
+    /// ([`intrinsic_destination`] is not `Editor`): pty bytes, held input, a pty paste, and every
+    /// entry whose destination is only decided when it drains (text, Enter, a control key, a
+    /// signal), which may still reach the shell's line. Editor keys and editor pastes never do,
+    /// so they are not what the app's own in-band command has to wait for.
+    pub fn holds_entry_not_bound_for_editor(&self) -> bool {
+        self.entries
+            .iter()
+            .any(|entry| intrinsic_destination(&entry.kind) != Some(Destination::Editor))
+    }
+
     #[cfg(any(test, feature = "dev-support"))]
     pub fn queued_ids(&self) -> impl Iterator<Item = EntryId> + '_ {
         self.entries.iter().map(|entry| entry.id)

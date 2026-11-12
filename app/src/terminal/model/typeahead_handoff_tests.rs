@@ -192,16 +192,134 @@ fn no_request_unless_the_lifecycle_is_at_the_prompt() {
     );
 }
 
+/// A shell that cannot report its line: with nothing typed in its line the editor takes over
+/// without a request. With typed bytes in the line (#2197) it does NOT: this test asserted
+/// `Committed` for that case until r29, which is the key loss of #2197 (the rest of the line
+/// went to the editor and its command write killed the part in the shell).
 #[test]
 fn shell_without_input_reporting_commits_instead_of_requesting() {
     let mut handoff = after_submit();
-    type_and_flush(&mut handoff, b"x");
     handoff.on_precmd();
     assert_eq!(
         handoff.on_line_editor_active(true, false),
         ActiveDecision::Committed
     );
     assert_eq!(handoff.state(), &HandoffState::EditorOwned);
+
+    let mut handoff = after_submit();
+    type_and_flush(&mut handoff, b"x");
+    handoff.on_precmd();
+    assert_eq!(
+        handoff.on_line_editor_active(true, false),
+        ActiveDecision::Drain,
+        "no request is possible and the line holds a typed byte: the pty keeps it"
+    );
+    assert!(handoff.is_pty_owned());
+    assert!(handoff.routes_keys_to_pty());
+}
+
+/// #2197 (r29 A3): the shell has no report binding (bash before 4.0, macOS `/bin/bash` 3.2). `ec`
+/// was typed into the pty before the prompt was seen; the prompt arrives and the line editor
+/// becomes active. Input is NOT handed to the editor over the two bytes in the shell's line: the
+/// rest of the line (`ho hi`, Enter) follows them to the pty in typed order, so the shell's line
+/// is `echo hi` and nothing is killed. The prompt after that line hands input back.
+#[test]
+fn a_typed_line_in_a_shell_without_a_report_binding_stays_with_the_pty_until_its_enter() {
+    // The command was not the hand-off's (such a shell never engages it): the keys typed into
+    // it are adopted, as the view does for any key written to a command it does not own.
+    let mut handoff = TypeaheadHandoff::default();
+    assert!(handoff.adopt_untracked_typeahead());
+    let mut shell_line: Vec<u8> = Vec::new();
+    for key in [&b"e"[..], b"c"] {
+        assert_eq!(
+            type_and_flush(&mut handoff, key),
+            UserBytesRoute::WriteCounted
+        );
+        shell_line.extend_from_slice(key);
+    }
+    handoff.on_precmd();
+    // The stream is applied: nothing is in flight that could make the Enter below a young one.
+    handoff.age_last_activity_for_test();
+    assert!(
+        !handoff.try_commit_at_prompt(),
+        "typed bytes are in the shell's line"
+    );
+    for _ in 0..2 {
+        // The activation, and any retry of it: the decision is the same every time.
+        assert_eq!(
+            handoff.on_line_editor_active(true, false),
+            ActiveDecision::Drain
+        );
+        assert!(handoff.is_pty_owned(), "the pty keeps the line");
+        assert!(handoff.routes_keys_to_pty());
+        assert!(handoff.wants_terminal_focus());
+        assert!(!handoff.editor_owns_input());
+    }
+    assert!(
+        handoff.holds_queued_writes(),
+        "a queued command's kill prefix must not wipe the typed line"
+    );
+    assert!(handoff.shell_line_may_hold_typed_text());
+
+    // The rest of the line and its Enter: every key goes to the pty, none is held or split off.
+    for key in [&b"h"[..], b"o", b" ", b"h", b"i", b"\r"] {
+        assert_eq!(
+            handoff.peek_user_bytes_route(key, true, Instant::now()),
+            UserBytesRoute::WriteCounted,
+            "{key:?}"
+        );
+        assert_eq!(
+            type_and_flush(&mut handoff, key),
+            UserBytesRoute::WriteCounted,
+            "{key:?}"
+        );
+        shell_line.extend_from_slice(key);
+    }
+    assert_eq!(shell_line, b"echo hi\r", "the shell's line, nothing killed");
+    assert!(!handoff.young_hold_queued());
+    assert!(
+        !handoff.shell_line_may_hold_typed_text(),
+        "the Enter ended it"
+    );
+    assert!(handoff.has_unanswered_lines());
+
+    // The line's prompt: nothing typed is left in the shell's line, the editor takes input.
+    handoff.on_precmd();
+    assert!(handoff.try_commit_at_prompt());
+    assert_eq!(handoff.state(), &HandoffState::EditorOwned);
+}
+
+/// #2197 (r29 A3): the other line boundaries. ^U and ^C leave nothing typed in the line, so the
+/// next decision hands input to the editor as for any empty line.
+#[test]
+fn a_line_kill_or_interrupt_ends_the_typed_line_a_shell_without_a_binding_kept() {
+    for boundary in [0x15u8, 0x03] {
+        let mut handoff = TypeaheadHandoff::default();
+        assert!(handoff.adopt_untracked_typeahead());
+        type_and_flush(&mut handoff, b"ec");
+        handoff.on_precmd();
+        handoff.age_last_activity_for_test();
+        assert_eq!(
+            handoff.on_line_editor_active(true, false),
+            ActiveDecision::Drain
+        );
+        assert!(handoff.is_pty_owned());
+        assert_eq!(
+            type_and_flush(&mut handoff, &[boundary]),
+            UserBytesRoute::WriteCounted,
+            "{boundary:#x} goes to the pty, where the line is"
+        );
+        assert!(
+            !handoff.shell_line_may_hold_typed_text(),
+            "{boundary:#x} ended the line"
+        );
+        assert_eq!(
+            handoff.on_line_editor_active(true, false),
+            ActiveDecision::Committed,
+            "{boundary:#x}: an empty line, the editor takes input"
+        );
+        assert_eq!(handoff.state(), &HandoffState::EditorOwned);
+    }
 }
 
 /// #2187: keys in the shell's line wait for a proven line editor; an empty line, or input the
@@ -213,10 +331,16 @@ fn a_typed_line_awaits_a_proven_editor_only_while_it_sits_in_the_shells_line() {
     type_and_flush(&mut handoff, b"x");
     handoff.on_precmd();
     assert!(handoff.typed_line_awaits_proven_editor());
-    // Once the editor owns input the line is not in the shell.
+    // No request is possible (r29 A3, #2197): the line stays in the shell and the pty keeps it.
     assert_eq!(
         handoff.on_line_editor_active(true, false),
-        ActiveDecision::Committed
+        ActiveDecision::Drain
+    );
+    assert!(handoff.typed_line_awaits_proven_editor());
+    // The request collects the line; from then on it is not in the shell.
+    assert_eq!(
+        handoff.on_line_editor_active(true, true),
+        ActiveDecision::SendRequest
     );
     assert!(!handoff.typed_line_awaits_proven_editor());
 }
@@ -662,8 +786,11 @@ fn ctrl_d_reaches_the_pty_only_when_something_reads_it() {
 
 #[test]
 fn given_back_keys_apply_line_edits_and_drop_escape_sequences() {
-    // Arrow keys (CSI, SS3) and a cursor-key report with parameters are dropped whole.
-    assert_eq!(text_for_editor(b"ls\x1b[D -l\x1bOA"), "ls -l");
+    // Left moves the line editor's cursor, so what is typed after it lands in front of the `s`
+    // (#2199; this asserted "ls -l" until r29: the motion was dropped and the text appended, which
+    // is text the user did not type). Up (SS3 A) recalls history: unknown here, dropped whole, and
+    // so is a cursor key with a modifier.
+    assert_eq!(text_for_editor(b"ls\x1b[D -l\x1bOA"), "l -ls");
     assert_eq!(text_for_editor("é\x1b[1;5C".as_bytes()), "é");
     // An OSC sequence, terminated by BEL or by ST.
     assert_eq!(text_for_editor(b"a\x1b]0;title\x07b\x1b]0;t\x1b\\c"), "abc");
@@ -3668,13 +3795,15 @@ fn an_expired_timer_cannot_release_a_later_queued_hold() {
 
 #[test]
 fn a_queued_young_hold_does_not_outlive_the_state_it_was_made_in() {
-    // An uncounted command's kill prefix ends the line the Enter belongs to.
+    // An uncounted command's kill prefix ends the line the Enter belongs to: the hold is over.
+    // Its keys are NOT void (#2198; this asserted `Dropped` until r29, and the view discarded
+    // them): they follow the command to the pty in typed order.
     let (mut handoff, id) = queued_young_hold();
     handoff.on_uncounted_command_written();
     assert!(!handoff.has_young_hold());
     assert_eq!(
         handoff.take_young_hold_ends(),
-        vec![(id, YoungHoldEnd::Dropped)]
+        vec![(id, YoungHoldEnd::FollowCommand)]
     );
 
     // A state that cannot own a hold ends it before the next key is queued behind it.
@@ -7795,4 +7924,195 @@ fn released_held_keys_keep_queued_writes_held_until_a_request_covers_them() {
         handoff.holds_queued_writes(),
         "the shell's line holds the released byte"
     );
+}
+
+// ---- r29: held keys are never discarded (#2198), hand-back keeps cursor motion (#2199) ----------
+
+/// #2198 (r29 A4): a held young Enter and the keys behind it hold every queued write of the
+/// app's, so no command is written ahead of them; the kill switch of the in-band wait does not
+/// turn that off. Shown behind the request, where nothing else holds queued writes (the line was
+/// asked for, the pty no longer owns input): only the hold does, until the report ends it.
+#[test]
+fn a_queued_young_hold_holds_queued_writes_with_and_without_the_inband_switch() {
+    for switch_on in [true, false] {
+        let (mut handoff, _) = queued_young_hold();
+        handoff.set_inband_wait_for_keys_enabled(switch_on);
+        handoff.on_precmd();
+        assert_eq!(
+            handoff.on_line_editor_active(true, true),
+            ActiveDecision::SendRequest
+        );
+        assert_eq!(handoff.state(), &HandoffState::AwaitingReport);
+        assert!(!handoff.view_holds_keys(), "nothing published by a view");
+        assert!(handoff.young_hold_queued());
+        assert!(
+            handoff.holds_queued_writes(),
+            "switch_on={switch_on}: nothing of the app's is written over a held Enter"
+        );
+        // The hold ends by its own event, the report; from then on it holds nothing.
+        assert_eq!(
+            handoff.on_report(),
+            ReportDisposition::InsertThenSubmitYoung
+        );
+        assert!(!handoff.young_hold_queued());
+        assert!(!handoff.holds_queued_writes(), "switch_on={switch_on}");
+    }
+}
+
+/// #2198 (r29 A4), both causes of the loss at the hand-off: a command the hand-off does not own
+/// (an in-band command; an agent or queued-panel command, whose `before_write_fn` makes the same
+/// call) is written while a young Enter is held with keys behind it. The hold's end is
+/// `FollowCommand`, never `Dropped`: the view writes the Enter and the keys behind it, in typed
+/// order, behind the command, and they are counted as the lines and bytes they are.
+#[test]
+fn a_young_enter_and_the_keys_behind_it_survive_an_uncounted_command_in_order() {
+    for cause in ["in_band_command", "held_agent_command"] {
+        let (mut handoff, id) = queued_young_hold();
+        // What the view's queue holds behind the gate: the Enter, then the keys typed after it.
+        let held: Vec<Vec<u8>> = vec![b"\r".to_vec(), b"l".to_vec(), b"s".to_vec()];
+        handoff.on_uncounted_command_written();
+        assert!(!handoff.young_hold_queued(), "{cause}: the hold is over");
+        let ends = handoff.take_young_hold_ends();
+        assert_eq!(
+            ends,
+            vec![(id, YoungHoldEnd::FollowCommand)],
+            "{cause}: the keys follow the command"
+        );
+        assert!(
+            !ends.iter().any(|(_, end)| *end == YoungHoldEnd::Dropped),
+            "{cause}: nothing is discarded"
+        );
+        // Until the view has written them nothing is decided over a line that looks shorter
+        // than it will be.
+        assert!(
+            matches!(
+                handoff.on_line_editor_active(true, true),
+                ActiveDecision::Wait { .. }
+            ),
+            "{cause}"
+        );
+        // The view writes them as one ordered run and reports it.
+        let written = held.concat();
+        assert_eq!(written, b"\rls", "{cause}: typed order");
+        handoff.count_followed_young_hold(id, &written);
+        assert_eq!(
+            handoff.state(),
+            &HandoffState::PtyOwned {
+                wrote_user_bytes: true,
+                // The editor's command, the uncounted command, the held Enter.
+                enters_written: 3,
+                precmds_seen: 0,
+            },
+            "{cause}"
+        );
+        assert_eq!(handoff.writes_in_flight(), 1, "{cause}");
+        assert_eq!(handoff.expire_queued_young_hold(id), YoungHoldExpiry::Gone);
+    }
+}
+
+/// #2198 (r29 A4): while the request is out and the Enter is held behind it (`AwaitingReport`),
+/// an uncounted command does not touch the hold: the request is ahead of the command in the tty,
+/// so its report still runs the held Enter in the editor with the keys typed after it behind it.
+/// (It used to record `Dropped` here too.)
+#[test]
+fn an_uncounted_command_behind_the_request_does_not_discard_a_held_enter() {
+    let (mut handoff, id) = queued_young_hold();
+    handoff.on_precmd();
+    assert_eq!(
+        handoff.on_line_editor_active(true, true),
+        ActiveDecision::SendRequest
+    );
+    assert!(handoff.young_hold_queued());
+    handoff.on_uncounted_command_written();
+    assert!(handoff.young_hold_queued(), "the hold stays");
+    assert!(handoff.take_young_hold_ends().is_empty(), "nothing ended");
+    assert_eq!(
+        handoff.on_report(),
+        ReportDisposition::InsertThenSubmitYoung
+    );
+    let gate = handoff
+        .deferred_gate()
+        .expect("the report made a deferred Enter");
+    assert_eq!(
+        handoff.take_young_hold_ends(),
+        vec![(
+            id,
+            YoungHoldEnd::SubmitOnReport {
+                deferred_gate: gate
+            }
+        )]
+    );
+}
+
+/// #2199 (r29 A6): cursor motion in keys handed back to the editor is applied, in typed order,
+/// as the shell's line editor applies it. `ab`, Left, `X` is `aXb` (it came back as `abX`).
+#[test]
+fn handed_back_keys_keep_cursor_motion() {
+    // Left, in its CSI and SS3 forms and as ^B.
+    assert_eq!(text_for_editor(b"ab\x1b[DX"), "aXb");
+    assert_eq!(text_for_editor(b"ab\x1bODX"), "aXb");
+    assert_eq!(text_for_editor(b"ab\x02X"), "aXb");
+    // Right, and both clamped at the ends of the line.
+    assert_eq!(text_for_editor(b"abc\x1b[D\x1b[D\x1b[CX"), "abXc");
+    assert_eq!(text_for_editor(b"abc\x02\x02\x06X"), "abXc");
+    assert_eq!(text_for_editor(b"ab\x1b[D\x1b[D\x1b[D\x1b[DX"), "Xab");
+    assert_eq!(text_for_editor(b"ab\x1b[C\x1b[CX"), "abX");
+    // Home and End keys.
+    assert_eq!(text_for_editor(b"bc\x1b[Ha\x1b[Fd"), "abcd");
+    assert_eq!(text_for_editor(b"bc\x1bOHa\x1bOFd"), "abcd");
+    assert_eq!(text_for_editor(b"bc\x1b[1~a\x1b[4~d"), "abcd");
+    // Backspace and Delete act at the cursor.
+    assert_eq!(text_for_editor(b"abc\x1b[D\x7f"), "ac");
+    assert_eq!(text_for_editor(b"abc\x1b[D\x1b[D\x1b[3~"), "ac");
+    assert_eq!(text_for_editor(b"abc\x1b[3~"), "abc", "nothing under it");
+    // Multi-byte characters are one cursor step each.
+    assert_eq!(text_for_editor("éü\x1b[Dx".as_bytes()), "éxü");
+    // Motion never leaves the line being typed, and Enter takes the whole line wherever the
+    // cursor is.
+    assert_eq!(text_for_editor(b"one\rtwo\x01\x02X"), "one\nXtwo");
+    assert_eq!(text_for_editor(b"ab\x1b[D\rc"), "ab\nc");
+    // The cursor the line editor is left with.
+    assert_eq!(
+        line_for_editor(b"ab\x1b[DX"),
+        HandedBackLine {
+            text: "aXb".to_owned(),
+            cursor_back: 1,
+        }
+    );
+    assert_eq!(line_for_editor(b"abc").cursor_back, 0);
+    assert_eq!(line_for_editor(b"abc\x01").cursor_back, 3);
+    assert_eq!(line_for_editor(b"abc\x01\x05").cursor_back, 0);
+}
+
+/// #2199 (r29 A6): ^A, ^E and ^K are applied (they were dropped), and ^U / ^W act at the cursor.
+#[test]
+fn handed_back_keys_apply_ctrl_a_ctrl_e_and_ctrl_k() {
+    // ^A: what is typed next goes to the start of the line.
+    assert_eq!(text_for_editor(b"bc\x01a"), "abc");
+    assert_eq!(text_for_editor(b"world\x01hello "), "hello world");
+    // ^E: back to the end.
+    assert_eq!(text_for_editor(b"bc\x01a\x05d"), "abcd");
+    // ^K: from the cursor to the end of the line.
+    assert_eq!(text_for_editor(b"abcd\x1b[D\x1b[D\x0b"), "ab");
+    assert_eq!(text_for_editor(b"abcd\x01\x0b"), "");
+    assert_eq!(
+        text_for_editor(b"abcd\x0b"),
+        "abcd",
+        "nothing after the cursor"
+    );
+    assert_eq!(text_for_editor(b"rm -rf x\x01\x0becho ok"), "echo ok");
+    // ^K only kills the line being typed.
+    assert_eq!(text_for_editor(b"one\rtwo\x01\x0b"), "one\n");
+    // ^U: from the cursor back to the start of the line; ^W: the word before the cursor.
+    assert_eq!(text_for_editor(b"abcd\x1b[D\x15"), "d");
+    assert_eq!(
+        text_for_editor(b"git commit now\x1b[D\x1b[D\x1b[D\x17"),
+        "git now"
+    );
+    // ^D deletes the character under the cursor, as Delete does.
+    assert_eq!(text_for_editor(b"abc\x01\x04"), "bc");
+    // A hand-back that is only motion inserts nothing.
+    assert!(!forces_shell_submit(&text_for_editor(
+        b"\x01\x05\x1b[D\x0b"
+    )));
 }

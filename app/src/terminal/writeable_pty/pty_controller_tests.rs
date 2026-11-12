@@ -3318,6 +3318,497 @@ mod typeahead_handoff {
             });
         });
     }
+
+    // ---- r29: #2182 follow-ups (A1, A2) and held keys are never discarded (#2198, A4) ----------
+
+    use crate::terminal::input_queue::{
+        DeliverOutcome, DestFacts, Destination, DiscardReason, EditorKeyPayload, EntryKind,
+        FollowUps, GateKind, GateSpec, GateToken, Host, InputEntry, Origin, PaneQueue,
+    };
+
+    /// A host for the pane's queue that records what it is handed, in order.
+    #[derive(Default)]
+    struct RecordingHost {
+        delivered: Vec<(&'static str, Destination)>,
+        discarded: usize,
+    }
+
+    impl Host for RecordingHost {
+        fn facts(&self) -> DestFacts {
+            DestFacts {
+                pty_takes_input: true,
+                input_box_visible: true,
+                pty_open: true,
+                ..DestFacts::default()
+            }
+        }
+
+        fn deliver(
+            &mut self,
+            entry: &InputEntry,
+            dest: Destination,
+            _follow: &mut FollowUps,
+        ) -> DeliverOutcome {
+            self.delivered.push((entry.kind.tag(), dest));
+            DeliverOutcome::Delivered
+        }
+
+        fn discarded(&mut self, _entry: &InputEntry, _why: DiscardReason) {
+            self.discarded += 1;
+        }
+
+        fn arm_give_up(&mut self, _token: GateToken, _kind: GateKind, _after: Duration) {}
+
+        fn warn(&mut self, _line: &str) {}
+    }
+
+    /// The pane's queue of a harness, publishing its held fact to the harness's hand-off as the
+    /// terminal view wires it.
+    fn pane_queue(harness: &Harness) -> PaneQueue {
+        let pane = PaneQueue::new();
+        pane.set_keys_held_sink(Some(
+            harness.model.lock().typeahead_handoff().view_keys_cell(),
+        ));
+        pane
+    }
+
+    fn editor_key(key: crate::editor::HeldPasteKey) -> EntryKind {
+        EntryKind::EditorKey(EditorKeyPayload::new(key))
+    }
+
+    /// #2182 (r29 A1): a Tab in a remote session opened the `RemoteTabCompletion` gate and the
+    /// user typed on (`x`, Enter) in the input editor: editor keys, held behind the gate. The
+    /// completer's own in-band listing is NOT held by them (it was: the listing waited for the
+    /// keys that waited for the listing, and the gate's net ran the uncompleted line). It goes
+    /// out at once; the answer then releases the keys in typed order, so the Enter runs the
+    /// completed line.
+    #[test]
+    fn editor_keys_behind_a_remote_tab_gate_do_not_hold_the_completers_inband_command() {
+        App::test((), |mut app| async move {
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            let harness = harness(&mut app);
+            let pane = pane_queue(&harness);
+            let mut host = RecordingHost::default();
+            {
+                let mut queue = pane.lock();
+                queue.open_gate(&mut host, GateSpec::new(GateKind::RemoteTabCompletion, 1));
+                queue.offer_with_origin(
+                    &mut host,
+                    editor_key(crate::editor::HeldPasteKey::Text("x".to_owned())),
+                    Origin::Editor,
+                );
+                queue.offer_with_origin(
+                    &mut host,
+                    editor_key(crate::editor::HeldPasteKey::Action(
+                        crate::editor::EditorAction::Enter,
+                    )),
+                    Origin::Editor,
+                );
+                assert_eq!(queue.queued_len(), 2, "both keys wait for the completion");
+            }
+            assert!(host.delivered.is_empty());
+            assert!(
+                !harness.model.lock().typeahead_handoff().view_holds_keys(),
+                "keys bound for the editor are not published as held"
+            );
+
+            let cancel_rx = queue_in_band(&mut app, &harness, "ls -1ap", "id-tab");
+            assert_eq!(
+                written(&harness),
+                vec![bytes_to_execute_command("ls -1ap", SHELL, false)],
+                "the completer's listing goes out while the keys wait for its answer"
+            );
+            assert!(cancel_rx.try_recv().is_err(), "not cancelled");
+            harness.controller.read(&app, |controller, _| {
+                assert!(!controller.in_band_wait_armed);
+                assert!(!controller.handoff_request_waiting);
+            });
+
+            // The answer: the keys are applied to the completed line in typed order.
+            assert!(
+                pane.lock()
+                    .on_gate_event(&mut host, GateKind::RemoteTabCompletion, 1)
+            );
+            assert_eq!(
+                host.delivered,
+                vec![
+                    ("editor_key", Destination::Editor),
+                    ("editor_key", Destination::Editor)
+                ]
+            );
+            assert_eq!(host.discarded, 0);
+        });
+    }
+
+    /// #2182 (r29 A1): the wait of #2182 itself is kept for every key that may still reach the
+    /// shell's line. A destination-free text entry behind the same gate holds the in-band
+    /// command (its kill prefix would wipe the line that text is about to be typed into); the
+    /// release of the key writes the command, once.
+    #[test]
+    fn a_destination_free_key_behind_a_gate_still_holds_an_inband_command() {
+        App::test((), |mut app| async move {
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            let harness = harness(&mut app);
+            let pane = pane_queue(&harness);
+            let mut host = RecordingHost::default();
+            {
+                let mut queue = pane.lock();
+                queue.open_gate(&mut host, GateSpec::new(GateKind::RemoteTabCompletion, 1));
+                queue.offer(&mut host, EntryKind::Text("y".to_owned()));
+            }
+            assert!(harness.model.lock().typeahead_handoff().view_holds_keys());
+
+            let cancel_rx = queue_in_band(&mut app, &harness, "echo in-band", "id-text");
+            assert!(
+                written(&harness).is_empty(),
+                "a key that may reach the shell's line holds the in-band command"
+            );
+            harness.controller.read(&app, |controller, _| {
+                assert!(controller.in_band_wait_armed);
+                assert!(controller.handoff_request_waiting);
+                assert!(controller.in_band_wait_set_waiting);
+            });
+
+            assert!(
+                pane.lock()
+                    .on_gate_event(&mut host, GateKind::RemoteTabCompletion, 1)
+            );
+            assert_eq!(host.delivered.len(), 1, "the key is delivered, not dropped");
+            assert_eq!(host.discarded, 0);
+            assert!(!harness.model.lock().typeahead_handoff().view_holds_keys());
+            Timer::after(Duration::from_millis(50)).await;
+            assert_eq!(
+                written(&harness),
+                vec![bytes_to_execute_command("echo in-band", SHELL, false)]
+            );
+            assert!(cancel_rx.try_recv().is_err());
+        });
+    }
+
+    /// #2182 (r29 A2): the in-band wait marks the waiting it set, and the end of a wait whose
+    /// command is dropped takes back exactly that: a cancel and the give-up both leave no
+    /// `handoff_request_waiting` behind with nothing to wait for.
+    #[test]
+    fn a_dropped_inband_wait_takes_back_the_waiting_it_set() {
+        App::test((), |mut app| async move {
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+
+            // Cancelled by its requester.
+            let harness = harness(&mut app);
+            let cell = harness.model.lock().typeahead_handoff().view_keys_cell();
+            cell.publish(true);
+            let _cancel_rx = queue_in_band(&mut app, &harness, "echo in-band", "id-c");
+            harness.controller.update(&mut app, |controller, _| {
+                assert!(controller.handoff_request_waiting);
+                assert!(controller.in_band_wait_set_waiting);
+                assert!(controller.in_band_wait_armed);
+                controller.cancel_in_band_command("id-c");
+                assert!(controller.pending_writes.is_empty());
+                assert!(
+                    !controller.handoff_request_waiting,
+                    "nothing waits any more: the waiting the wait set is gone with it"
+                );
+                assert!(!controller.in_band_wait_set_waiting);
+                assert!(!controller.in_band_wait_armed);
+            });
+            assert!(written(&harness).is_empty());
+            assert!(cell.is_held(), "the keys are untouched");
+
+            // Given up on.
+            let harness = harness_with(&mut app, zsh_session_info());
+            let cell = harness.model.lock().typeahead_handoff().view_keys_cell();
+            cell.publish(true);
+            let cancel_rx = queue_in_band(&mut app, &harness, "echo in-band", "id-g");
+            harness.controller.update(&mut app, |controller, ctx| {
+                assert!(controller.in_band_wait_set_waiting);
+                let generation = controller.in_band_wait_generation;
+                controller.give_up_in_band_wait(generation, ctx);
+                assert!(!controller.handoff_request_waiting);
+                assert!(!controller.in_band_wait_set_waiting);
+                assert!(!controller.in_band_wait_armed);
+            });
+            assert_eq!(
+                cancel_rx
+                    .try_recv()
+                    .expect("the requester is told")
+                    .command_id,
+                "id-g"
+            );
+        });
+    }
+
+    /// #2182 (r29 A2): `handoff_request_waiting` is shared. Once another owner has written it (a
+    /// parked decision, #2187; `ActiveDecision::Wait`; a held command) the end of an in-band wait
+    /// does not clear it: their wait is still on.
+    #[test]
+    fn a_dropped_inband_wait_never_clears_a_waiting_another_owner_set() {
+        App::test((), |mut app| async move {
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            let harness = harness(&mut app);
+            let cell = harness.model.lock().typeahead_handoff().view_keys_cell();
+            cell.publish(true);
+            let _first = queue_in_band(&mut app, &harness, "echo one", "id-1");
+            let _second = queue_in_band(&mut app, &harness, "echo two", "id-2");
+            harness.controller.update(&mut app, |controller, _| {
+                assert!(controller.in_band_wait_set_waiting);
+                assert_eq!(controller.pending_writes.len(), 2);
+                // The front command is cancelled while another in-band command is behind it:
+                // that one waits for the same keys, so the waiting stays.
+                controller.cancel_in_band_command("id-1");
+                assert_eq!(controller.pending_writes.len(), 1);
+                assert!(controller.handoff_request_waiting);
+                assert!(controller.in_band_wait_set_waiting);
+
+                // A request decision now has to wait as well (what the #2187 park and
+                // `ActiveDecision::Wait` do): the flag is theirs from here on.
+                controller.set_handoff_request_waiting(true);
+                assert!(!controller.in_band_wait_set_waiting);
+                controller.cancel_in_band_command("id-2");
+                assert!(controller.pending_writes.is_empty());
+                assert!(
+                    controller.handoff_request_waiting,
+                    "the decision's waiting is not the in-band wait's to clear"
+                );
+            });
+            assert!(written(&harness).is_empty());
+        });
+    }
+
+    /// r29 A2: a command held behind the user's line empties the queued writes; the requester of
+    /// an in-band command that was queued is told it will not run (it only saw its channel
+    /// close before), and the wait that command was in is over.
+    #[test]
+    fn holding_a_command_tells_the_requesters_of_the_inband_commands_it_drops() {
+        App::test((), |mut app| async move {
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            let harness = harness(&mut app);
+            let cell = harness.model.lock().typeahead_handoff().view_keys_cell();
+            cell.publish(true);
+            let cancel_rx = queue_in_band(&mut app, &harness, "echo in-band", "id-h");
+            assert!(written(&harness).is_empty());
+            assert!(cancel_rx.try_recv().is_err(), "still queued");
+
+            // The queued-prompts panel fires while the view holds the user's keys: its command
+            // is held, and the queue it replaces is emptied.
+            fire_queued_command(&mut app, &harness);
+            assert_eq!(
+                cancel_rx
+                    .try_recv()
+                    .expect("the requester is told")
+                    .command_id,
+                "id-h"
+            );
+            assert!(
+                !written(&harness).contains(&bytes_to_execute_command(
+                    "echo in-band",
+                    SHELL,
+                    false
+                )),
+                "the dropped in-band command is never written"
+            );
+            harness.controller.read(&app, |controller, _| {
+                assert!(!controller.in_band_wait_armed, "its wait is over");
+                assert!(!controller.in_band_wait_set_waiting);
+                assert!(controller.in_band_cancels.is_empty());
+            });
+        });
+    }
+
+    /// The state of #2198: `frob` was typed into the pty while a command ran, the command's
+    /// prompt was seen, and the Enter of `frob` is held as a young Enter (its keys are in the
+    /// view's queue; the hand-off keeps the marker). Returns the hold's id.
+    fn young_enter_held_after_a_command(app: &mut App, harness: &Harness) -> u64 {
+        submit(app, harness, "sleep 1");
+        user_types(app, harness, b"frob");
+        shell_runs_a_command(&harness.model, "sleep 1");
+        let mut model = harness.model.lock();
+        let mut handoff = model.typeahead_handoff_mut();
+        handoff.stream_undrained_for_test();
+        assert_eq!(handoff.on_user_bytes(b"\r"), UserBytesRoute::Held);
+        handoff.take_young_hold_started().expect("a hold started")
+    }
+
+    /// #2198 (r29 A4), the agent / queued-panel cause: a command held behind the user's line was
+    /// written as soon as the request had gone out, with the young Enter still held behind that
+    /// request; its `before_write_fn` told the hand-off, which ended the hold as `Dropped`, and
+    /// the view discarded the Enter and every key typed after it. Now the command stays queued
+    /// while the hold is live. The report runs the held Enter (the user's line), the keys typed
+    /// behind it follow that command, and only then, at the prompt after them, is the held
+    /// command written: nothing dropped, typed order kept.
+    #[test]
+    fn a_held_command_waits_for_a_young_enter_and_the_keys_behind_it() {
+        App::test((), |mut app| async move {
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            let harness = harness(&mut app);
+            let hold = young_enter_held_after_a_command(&mut app, &harness);
+            fire_queued_command(&mut app, &harness);
+
+            // The request that covers `frob` goes out; the held command does not.
+            line_editor_becomes_active(&mut app, &harness);
+            let queued = bytes_to_execute_command("queued", SHELL, false);
+            assert_eq!(written(&harness).last(), Some(&REQUEST.to_vec()));
+            assert!(
+                !written(&harness).contains(&queued),
+                "nothing of the app's is written over a held Enter"
+            );
+            let gate = {
+                let mut model = harness.model.lock();
+                let mut handoff = model.typeahead_handoff_mut();
+                assert!(handoff.young_hold_queued(), "the hold is intact");
+                assert!(
+                    handoff.take_young_hold_ends().is_empty(),
+                    "no end was recorded: nothing is discarded"
+                );
+                // The report: the held Enter runs in the editor, the keys behind it wait for it.
+                assert_eq!(
+                    handoff.on_report(),
+                    ReportDisposition::InsertThenSubmitYoung
+                );
+                let gate = handoff.deferred_gate().expect("a deferred Enter");
+                assert_eq!(
+                    handoff.take_young_hold_ends(),
+                    vec![(
+                        hold,
+                        YoungHoldEnd::SubmitOnReport {
+                            deferred_gate: gate
+                        }
+                    )]
+                );
+                gate
+            };
+
+            // The Enter submits the reported line; the keys typed behind it (`ls`, Enter)
+            // follow it, as the view writes them.
+            submit(&mut app, &harness, "frob");
+            {
+                let mut model = harness.model.lock();
+                let mut handoff = model.typeahead_handoff_mut();
+                assert_eq!(
+                    handoff.take_young_hold_ends(),
+                    vec![(gate, YoungHoldEnd::FollowCommand)]
+                );
+                handoff.count_followed_young_hold(gate, b"ls\r");
+            }
+            harness.controller.update(&mut app, |controller, ctx| {
+                controller.write_handoff_user_bytes(Cow::Borrowed(&b"ls\r"[..]), ctx)
+            });
+            assert!(!written(&harness).contains(&queued));
+
+            // The shell runs both lines; the held command goes out at the prompt after them.
+            for command in ["frob", "ls"] {
+                assert!(!written(&harness).contains(&queued), "before {command}");
+                shell_runs_a_command(&harness.model, command);
+                line_editor_becomes_active(&mut app, &harness);
+            }
+            let written = written(&harness);
+            let position = |needle: &[u8]| written.iter().position(|bytes| bytes == needle);
+            let line = bytes_to_execute_command("frob", SHELL, false);
+            let request_at = position(REQUEST.as_slice()).expect("the request");
+            let line_at = position(line.as_slice()).expect("the user's line ran");
+            let keys_at =
+                position(b"ls\r".as_slice()).expect("the keys behind the Enter were written");
+            let queued_at =
+                position(queued.as_slice()).expect("the held command was written in the end");
+            assert!(
+                request_at < line_at && line_at < keys_at && keys_at < queued_at,
+                "typed order, then the app's command: {written:?}"
+            );
+            assert_eq!(
+                written.iter().filter(|bytes| **bytes == queued).count(),
+                1,
+                "the held command is written exactly once"
+            );
+        });
+    }
+
+    /// #2198 (r29 A4), the in-band cause: with the request out and a young Enter held behind
+    /// it, nothing but the hold says "wait" (the pty no longer owns input, the view published
+    /// nothing here). The app's in-band command waits for the hold and is written once the
+    /// report has ended it. The hold is never ended by the command, so no key is discarded.
+    #[test]
+    fn an_inband_command_waits_for_a_young_enter_held_behind_the_request() {
+        App::test((), |mut app| async move {
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            let harness = harness(&mut app);
+            let hold = young_enter_held_after_a_command(&mut app, &harness);
+            line_editor_becomes_active(&mut app, &harness);
+            assert_eq!(written(&harness).last(), Some(&REQUEST.to_vec()));
+            assert_eq!(
+                harness.model.lock().typeahead_handoff().state(),
+                &HandoffState::AwaitingReport
+            );
+
+            let in_band = bytes_to_execute_command("echo in-band", SHELL, false);
+            let cancel_rx = queue_in_band(&mut app, &harness, "echo in-band", "id-y");
+            assert!(
+                !written(&harness).contains(&in_band),
+                "the in-band command waits for the held Enter"
+            );
+            {
+                let mut model = harness.model.lock();
+                let mut handoff = model.typeahead_handoff_mut();
+                assert!(handoff.young_hold_queued());
+                assert!(handoff.take_young_hold_ends().is_empty());
+                assert_eq!(
+                    handoff.on_report(),
+                    ReportDisposition::InsertThenSubmitYoung
+                );
+                let ends = handoff.take_young_hold_ends();
+                assert_eq!(ends.len(), 1);
+                assert_eq!(ends[0].0, hold);
+                assert!(matches!(ends[0].1, YoungHoldEnd::SubmitOnReport { .. }));
+            }
+            // The hold has ended: the decision the view asks for lets the command out.
+            harness.controller.update(&mut app, |controller, ctx| {
+                controller.retry_typeahead_handoff_request(ctx)
+            });
+            let written = written(&harness);
+            assert_eq!(
+                written.iter().filter(|bytes| **bytes == in_band).count(),
+                1,
+                "written once, after the hold: {written:?}"
+            );
+            assert!(cancel_rx.try_recv().is_err());
+        });
+    }
+
+    /// #2198 (r29 A4): with the kill switch of the in-band wait the command is written over the
+    /// held Enter, as before #2182; even then the hold is not ended as `Dropped`: behind the
+    /// request it stays, and the report runs the Enter.
+    #[test]
+    fn the_inband_kill_switch_never_discards_a_held_young_enter() {
+        App::test((), |mut app| async move {
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            let harness = harness(&mut app);
+            let hold = young_enter_held_after_a_command(&mut app, &harness);
+            line_editor_becomes_active(&mut app, &harness);
+            assert_eq!(written(&harness).last(), Some(&REQUEST.to_vec()));
+            harness
+                .model
+                .lock()
+                .typeahead_handoff_mut()
+                .set_inband_wait_for_keys_enabled(false);
+
+            queue_in_band(&mut app, &harness, "echo in-band", "id-k2");
+            assert_eq!(
+                written(&harness).last(),
+                Some(&bytes_to_execute_command("echo in-band", SHELL, false)),
+                "the switch writes the command at once"
+            );
+            let mut model = harness.model.lock();
+            let mut handoff = model.typeahead_handoff_mut();
+            assert!(handoff.young_hold_queued(), "the hold is intact");
+            assert!(handoff.take_young_hold_ends().is_empty(), "nothing dropped");
+            assert_eq!(
+                handoff.on_report(),
+                ReportDisposition::InsertThenSubmitYoung
+            );
+            let ends = handoff.take_young_hold_ends();
+            assert_eq!(ends.len(), 1);
+            assert_eq!(ends[0].0, hold);
+            assert!(matches!(ends[0].1, YoungHoldEnd::SubmitOnReport { .. }));
+        });
+    }
 }
 
 /// `PHOSPHOR_LINE_EDITOR_READING_ACTIVATES=0` keeps the 50 ms activation timer (#1401).

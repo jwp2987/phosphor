@@ -492,6 +492,13 @@ pub struct PtyController<T: EventLoopSender> {
     /// armed for `in_band_wait_generation`.
     in_band_wait_armed: bool,
     in_band_wait_generation: u64,
+    /// #2182 (r29 A2): `handoff_request_waiting` is set, and ONLY the in-band wait set it
+    /// ([`Self::in_band_front_waits_for_keys`]). The shared flag also carries a parked decision
+    /// (#2187), `ActiveDecision::Wait` and a held command; whenever one of those writes it
+    /// ([`Self::set_handoff_request_waiting`]) this bit goes off, so the end of an in-band wait
+    /// whose command was dropped (cancelled, cleared, given up) takes back exactly the waiting
+    /// it set and never theirs.
+    in_band_wait_set_waiting: bool,
     /// Typeahead hand-off: a command from the editor was written or queued while one was held,
     /// so `is_user_command_executing` belongs to it and dropping the held one must leave it.
     handoff_command_written_since_hold: bool,
@@ -887,6 +894,7 @@ impl<T: EventLoopSender> PtyController<T> {
             in_band_cancels: Default::default(),
             in_band_wait_armed: false,
             in_band_wait_generation: 0,
+            in_band_wait_set_waiting: false,
             handoff_command_written_since_hold: false,
             paced_write_queue: VecDeque::new(),
             paced_write_generation: 0,
@@ -897,6 +905,75 @@ impl<T: EventLoopSender> PtyController<T> {
             setup_jobs_live: Default::default(),
             #[cfg(test)]
             shutdown_requested: false,
+        }
+    }
+
+    /// Writes the shared `handoff_request_waiting` flag for one of its owners other than the
+    /// in-band wait (a request decision, a parked decision, a held command, the pass that found
+    /// nothing held). From here on the flag is theirs: the in-band wait's own mark goes off, so
+    /// the end of that wait cannot clear a waiting it did not set (#2182, r29 A2).
+    fn set_handoff_request_waiting(&mut self, waiting: bool) {
+        self.handoff_request_waiting = waiting;
+        self.in_band_wait_set_waiting = false;
+    }
+
+    /// The in-band wait is over without its command having been written (it was cancelled,
+    /// cleared with the queue, or given up on): the give-up timer armed for it is void, and the
+    /// waiting it set, if it alone set it, is taken back. A waiting another owner set since (the
+    /// #2187 park, `ActiveDecision::Wait`, a held command) is left alone (#2182, r29 A2).
+    fn end_in_band_wait(&mut self) {
+        if self.in_band_wait_armed {
+            self.in_band_wait_armed = false;
+            self.in_band_wait_generation = self.in_band_wait_generation.wrapping_add(1);
+        }
+        if std::mem::take(&mut self.in_band_wait_set_waiting) {
+            self.handoff_request_waiting = false;
+        }
+    }
+
+    /// Whether the next queued write is an in-band command.
+    fn front_is_in_band_command(&self) -> bool {
+        matches!(
+            self.pending_writes.front(),
+            Some(PtyWrite::Command {
+                in_band_command_id: Some(_),
+                ..
+            })
+        )
+    }
+
+    /// Empties `pending_writes` and tells the requester of every in-band command that was in it
+    /// that the command will not run, as the give-up of the in-band wait does (cf0aea183). The
+    /// senders are taken BEFORE the commands are dropped: a queued command holds the only strong
+    /// copy of its sender, so afterwards the requester would only see its channel close.
+    fn clear_pending_writes_cancelling_in_band(&mut self) {
+        let command_ids: Vec<String> = self
+            .pending_writes
+            .iter()
+            .filter_map(|write| match write {
+                PtyWrite::Command {
+                    in_band_command_id: Some(command_id),
+                    ..
+                } => Some(command_id.clone()),
+                _ => None,
+            })
+            .collect();
+        let mut cancelled: Vec<(String, Sender<InBandCommandCancelledEvent>)> = Vec::new();
+        for command_id in command_ids {
+            if let Some(cancel_tx) = self
+                .in_band_cancels
+                .remove(&command_id)
+                .and_then(|cancel| cancel.upgrade())
+            {
+                cancelled.push((command_id, cancel_tx));
+            }
+        }
+        self.pending_writes.clear();
+        self.end_in_band_wait();
+        for (command_id, cancel_tx) in cancelled {
+            if let Err(err) = block_on(cancel_tx.send(InBandCommandCancelledEvent { command_id })) {
+                log::warn!("Pty Controller failed to cancel in band command: {err:?}");
+            }
         }
     }
 
@@ -948,7 +1025,7 @@ impl<T: EventLoopSender> PtyController<T> {
                 "reason=typed_line_awaits_proof".to_owned()
             });
             self.handoff_parked_for_proof = true;
-            self.handoff_request_waiting = true;
+            self.set_handoff_request_waiting(true);
             self.execute_next_queued_write(ctx);
             return;
         }
@@ -972,7 +1049,7 @@ impl<T: EventLoopSender> PtyController<T> {
         self.announce_young_hold_end(ctx);
         match decision {
             ActiveDecision::Legacy if !is_retry => {
-                self.handoff_request_waiting = false;
+                self.set_handoff_request_waiting(false);
                 if let Some(bytes) = input_reporting_seq {
                     // #1089: its report covers user bytes the hand-off did not adopt.
                     self.handoff.write().on_legacy_request_written();
@@ -1002,19 +1079,19 @@ impl<T: EventLoopSender> PtyController<T> {
                 {
                     // A command held behind untracked user bytes stays held until a request
                     // behind them is written; its kill prefix would destroy them unreported.
-                    self.handoff_request_waiting = true;
+                    self.set_handoff_request_waiting(true);
                     return;
                 }
-                self.handoff_request_waiting = false;
+                self.set_handoff_request_waiting(false);
                 self.execute_next_queued_write(ctx);
             }
             ActiveDecision::Committed => {
-                self.handoff_request_waiting = false;
+                self.set_handoff_request_waiting(false);
                 self.execute_next_queued_write(ctx);
                 ctx.emit(PtyControllerEvent::TypeaheadHandoffChanged);
             }
             ActiveDecision::SendRequest => {
-                self.handoff_request_waiting = false;
+                self.set_handoff_request_waiting(false);
                 if let Some(bytes) = input_reporting_seq {
                     self.pending_writes.push_front(PtyWrite::Bytes {
                         bytes: Cow::Owned(bytes.to_vec()),
@@ -1026,14 +1103,14 @@ impl<T: EventLoopSender> PtyController<T> {
             ActiveDecision::DrainAndWait {
                 activity_generation,
             } => {
-                self.handoff_request_waiting = false;
+                self.set_handoff_request_waiting(false);
                 self.execute_next_queued_write(ctx);
                 self.arm_typeahead_handoff_stale_count_reset(activity_generation, ctx);
             }
             ActiveDecision::Wait {
                 activity_generation,
             } => {
-                self.handoff_request_waiting = true;
+                self.set_handoff_request_waiting(true);
                 self.arm_typeahead_handoff_stale_count_reset(activity_generation, ctx);
             }
         }
@@ -1428,6 +1505,13 @@ impl<T: EventLoopSender> PtyController<T> {
                  in_band_command_id, ..
              } if in_band_command_id.as_deref() == Some(command_id))
         });
+        // #2182 (r29 A2): with no in-band command left at the front nothing waits for the keys
+        // any more, so the waiting that wait set goes with it (it used to stay set with nothing
+        // to wait for). Another in-band command at the front keeps it: its own wait is the same
+        // wait, and the next pass re-arms the timer.
+        if !self.front_is_in_band_command() {
+            self.end_in_band_wait();
+        }
     }
 
     /// Queues an in-band command to be written to the PTY, either immediately, or when the line
@@ -1793,9 +1877,12 @@ impl<T: EventLoopSender> PtyController<T> {
             {
                 return;
             }
-            self.handoff_request_waiting = false;
+            self.set_handoff_request_waiting(false);
         }
         if self.handoff_holds_front_command() {
+            return;
+        }
+        if self.young_hold_holds_front_command() {
             return;
         }
         if self.in_band_front_waits_for_keys(ctx) {
@@ -1834,6 +1921,9 @@ impl<T: EventLoopSender> PtyController<T> {
                         .lock()
                         .typeahead_handoff_mut()
                         .set_held_agent_command(None);
+                    // #2198: its `before_write_fn` told the hand-off; an end it recorded for a
+                    // young hold is the view's to apply now.
+                    self.announce_young_hold_end(ctx);
                 } else {
                     log::warn!(
                         "A command held behind the user's typeahead could not start when it was \
@@ -1891,7 +1981,11 @@ impl<T: EventLoopSender> PtyController<T> {
             }
             return false;
         }
-        self.handoff_request_waiting = true;
+        if !self.handoff_request_waiting {
+            // Its own waiting, marked as such: only this wait's end takes it back (r29 A2).
+            self.handoff_request_waiting = true;
+            self.in_band_wait_set_waiting = true;
+        }
         if !self.in_band_wait_armed {
             self.in_band_wait_armed = true;
             self.in_band_wait_generation = self.in_band_wait_generation.wrapping_add(1);
@@ -1934,6 +2028,9 @@ impl<T: EventLoopSender> PtyController<T> {
             .remove(&command_id)
             .and_then(|cancel| cancel.upgrade());
         self.pending_writes.pop_front();
+        // #2182 (r29 A2): the wait is over; the waiting it set (and only that) goes with it. The
+        // pass below sets it again if the next write is another in-band command that waits.
+        self.end_in_band_wait();
         if let Some(cancel_tx) = cancel_tx {
             if let Err(err) = block_on(cancel_tx.send(InBandCommandCancelledEvent { command_id })) {
                 log::warn!("Pty Controller failed to cancel in band command: {err:?}");
@@ -2597,6 +2694,9 @@ impl<T: EventLoopSender> PtyController<T> {
         } else {
             self.pending_writes.clear();
         }
+        // #2182 (r29 A2): an in-band command that waited for the user's keys went with the
+        // queue: its wait is over, and the waiting it set (only that) with it.
+        self.end_in_band_wait();
         self.is_user_command_executing = true;
 
         // Send the write to the PTY event loop.
@@ -2625,7 +2725,7 @@ impl<T: EventLoopSender> PtyController<T> {
             }
         }
         if engages_typeahead_handoff {
-            self.handoff_request_waiting = false;
+            self.set_handoff_request_waiting(false);
             ctx.emit(PtyControllerEvent::TypeaheadHandoffChanged);
         }
         self.announce_young_hold_end(ctx);
@@ -2724,9 +2824,19 @@ impl<T: EventLoopSender> PtyController<T> {
         // Only a command whose start would be accepted right now is held. Anything else (a block
         // already started or running) takes the normal path, so it is coalesced or rejected
         // exactly as without the hand-off.
-        !engages_typeahead_handoff
-            && model.typeahead_handoff().holds_queued_writes()
-            && model.is_at_prompt_for_typeahead_request()
+        if engages_typeahead_handoff || !model.typeahead_handoff().holds_queued_writes() {
+            return false;
+        }
+        if model.is_at_prompt_for_typeahead_request() {
+            return true;
+        }
+        // #2198: a young Enter is held (typed right after a command finished, its prompt not
+        // seen yet) with the keys behind it. "At the prompt" is exactly what is not known in
+        // that moment, and a command accepted then was written over the held keys, which were
+        // discarded. It is held like one at the prompt, until the hold has ended; only while no
+        // block is started (a running command still rejects the start, as before).
+        let young_hold_queued = model.typeahead_handoff().young_hold_queued();
+        young_hold_queued && !model.block_list().active_block().started()
     }
 
     /// Queues a command behind the user's unreported line. Its block is started only when it is
@@ -2763,7 +2873,9 @@ impl<T: EventLoopSender> PtyController<T> {
             .set_held_agent_command(held_agent_command);
         self.handoff_command_written_since_hold = false;
         let terminal_model = self.terminal_model.clone();
-        self.pending_writes.clear();
+        // The queued in-band commands go; their requesters are told (r29 A2), as the give-up of
+        // the in-band wait tells its requester.
+        self.clear_pending_writes_cancelling_in_band();
         self.is_user_command_executing = true;
         self.pending_writes.push_back(PtyWrite::Command {
             command: command.to_owned(),
@@ -2784,7 +2896,7 @@ impl<T: EventLoopSender> PtyController<T> {
             })),
         });
         self.handoff_held_command_pending = true;
-        self.handoff_request_waiting = true;
+        self.set_handoff_request_waiting(true);
         self.retry_typeahead_handoff_request(ctx);
     }
 
@@ -2812,6 +2924,56 @@ impl<T: EventLoopSender> PtyController<T> {
             .lock()
             .typeahead_handoff_mut()
             .set_held_agent_command(None);
+    }
+
+    /// #2198: whether the next queued write is an agent / queued-panel command held behind the
+    /// user's line (the one kind of command that is not in-band and carries a `before_write_fn`)
+    /// while a young Enter is held with the keys typed behind it. Written now it would land
+    /// ahead of keys typed before it, its kill prefix would wipe the line the held Enter belongs
+    /// to, and telling the hand-off of it used to end the hold by DISCARDING the keys. It waits
+    /// instead, wherever the shell is (not only at the prompt), and nothing is dropped or
+    /// reordered: the keys leave the hold by its own end and the command follows.
+    ///
+    /// Why waiting and not "end the hold as typeahead": the command would still be written
+    /// first, so the user's Enter would run after the app's command and without the line the
+    /// kill prefix removed. Only keeping the command back keeps the typed order.
+    ///
+    /// No new hold or timer: it is the queued write staying in `pending_writes`, as it does for
+    /// every other reason. It is released by the events that end the hold: the view applies the
+    /// end, which empties its queue (the pane's queue wakes this controller) and writes the keys
+    /// through `write_handoff_user_bytes` (which decides again while `handoff_request_waiting`
+    /// is set). The hold's own net (2 s / 10 s, in the view) bounds it.
+    ///
+    /// An in-band command waits for the same hold in [`Self::in_band_front_waits_for_keys`]
+    /// (the hold is part of `TypeaheadHandoff::holds_queued_writes`), where its wait has its
+    /// give-up. With that wait's kill switch (`PHOSPHOR_INBAND_WAIT_FOR_KEYS=0`) it is written
+    /// over the hold as before #2182, and the keys then follow it in typed order instead of
+    /// being discarded (`TypeaheadHandoff::on_uncounted_command_written`).
+    fn young_hold_holds_front_command(&mut self) -> bool {
+        let front_is_app_command = FeatureFlag::TypeaheadHandoff.is_enabled()
+            && matches!(
+                self.pending_writes.front(),
+                Some(PtyWrite::Command {
+                    in_band_command_id: None,
+                    before_write_fn: Some(_),
+                    ..
+                })
+            );
+        if !front_is_app_command
+            || !self
+                .terminal_model
+                .lock()
+                .typeahead_handoff()
+                .young_hold_queued()
+        {
+            return false;
+        }
+        warpui::input_order::log_hop("app_command_waits_for_young_hold", String::new);
+        if !self.handoff_request_waiting {
+            // The keys' own write decides again once the hold has ended.
+            self.set_handoff_request_waiting(true);
+        }
+        true
     }
 
     /// Typeahead hand-off: whether the next queued write is a command that starts its own block

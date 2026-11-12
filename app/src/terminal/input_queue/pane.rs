@@ -33,8 +33,8 @@ use std::rc::Rc;
 use crate::terminal::model::typeahead_handoff::ViewKeysHeld;
 
 use super::{
-    EntryId, EntryKind, GateKind, GateSpec, GateToken, InputQueue, Origin, PaneRouteState,
-    QueueFacts, Stamp,
+    Destination, EntryId, EntryKind, GateKind, GateSpec, GateToken, InputQueue, Origin,
+    PaneRouteState, QueueFacts, Stamp, intrinsic_destination,
 };
 
 /// Paste ids owned by the input editor have this bit set; the pty's do not. One counter hands out
@@ -179,6 +179,50 @@ pub enum SshDropThen {
     GiveUpToPty,
 }
 
+impl Deferred {
+    /// #2182: whether this waiting operation counts as "the view holds keys" for the pty
+    /// controller's in-band wait. A deferred offer is judged by its entry, exactly as a queued
+    /// one ([`InputQueue::holds_entry_not_bound_for_editor`]): an editor key or an editor paste
+    /// can only reach the editor. Every other operation counts as held: it may carry, release or
+    /// re-route keys for the pty, and what it does is only known once it has run.
+    fn may_hold_keys_not_bound_for_editor(&self) -> bool {
+        match self {
+            Deferred::Offer { kind, .. } | Deferred::OfferGated { kind, .. } => {
+                intrinsic_destination(kind) != Some(Destination::Editor)
+            }
+            Deferred::OpenGate(_)
+            | Deferred::GateEvent { .. }
+            | Deferred::GiveUpCap(_)
+            | Deferred::PasteRead { .. }
+            | Deferred::ReleasePromptHold { .. }
+            | Deferred::VoidPromptHold { .. }
+            | Deferred::ReleaseYoungHoldKeys { .. }
+            | Deferred::ApplyYoungHoldEnds
+            | Deferred::Poke
+            | Deferred::FocusChanged
+            | Deferred::FlushProgrammaticEdits
+            | Deferred::TakeGateKeys { .. }
+            | Deferred::TakePowershellKeys { .. }
+            | Deferred::VoidEnterGate { .. }
+            | Deferred::GiveUpGateKeysToPty { .. }
+            | Deferred::DropSshGate { .. } => true,
+        }
+    }
+}
+
+/// #2182: the fact the pane publishes to [`ViewKeysHeld`]: the queue holds an entry, or the
+/// mailbox an operation, that is not provably bound for the input editor. Keys that can only
+/// reach the editor (held behind a `RemoteTabCompletion` gate, say) are not in the way of the
+/// app's own in-band command: its kill prefix cannot touch them and no write can overtake them.
+/// Publishing them as held made the completer's own in-band listing wait for the keys that were
+/// waiting for the completer.
+fn holds_keys_not_bound_for_editor(queue: &InputQueue, deferred: &VecDeque<Deferred>) -> bool {
+    queue.holds_entry_not_bound_for_editor()
+        || deferred
+            .iter()
+            .any(Deferred::may_hold_keys_not_bound_for_editor)
+}
+
 /// Whether paste `id` belongs to the input editor.
 pub fn is_editor_paste_id(id: u64) -> bool {
     id & EDITOR_PASTE_BIT != 0
@@ -241,9 +285,11 @@ impl PaneQueue {
         Rc::ptr_eq(&self.inner, &other.inner)
     }
 
-    /// #2182: where this queue publishes whether it holds user keys (entries queued, or an
-    /// operation waiting for the queue), every time an operation on it ends. The keys stay in the
-    /// queue; the cell only tells the pty controller to wait with the app's own in-band command.
+    /// #2182: where this queue publishes whether it holds user keys that are not provably bound
+    /// for the input editor (entries queued, or an operation waiting for the queue; see
+    /// [`holds_keys_not_bound_for_editor`]), every time an operation on it ends. The keys stay in
+    /// the queue; the cell only tells the pty controller to wait with the app's own in-band
+    /// command.
     pub fn set_keys_held_sink(&self, sink: Option<ViewKeysHeld>) {
         *self.inner.keys_held.borrow_mut() = sink;
     }
@@ -257,7 +303,10 @@ impl PaneQueue {
         let Ok(queue) = self.inner.queue.try_borrow() else {
             return;
         };
-        sink.publish(queue.queued_len() > 0 || !self.inner.deferred.borrow().is_empty());
+        sink.publish(holds_keys_not_bound_for_editor(
+            &queue,
+            &self.inner.deferred.borrow(),
+        ));
     }
 
     /// The view holds (or stops holding) the keys typed during an ssh connect.
@@ -301,9 +350,11 @@ impl PaneQueue {
     /// Records `op` for the next time the queue is free and wakes the view to apply it. Always
     /// available (it never touches the queue itself), so a busy branch can call it.
     pub fn defer(&self, op: Deferred) {
+        // #2182: an operation waits for the queue: keys may be behind it. An editor key's offer
+        // changes nothing: it can only reach the editor.
+        let holds_keys = op.may_hold_keys_not_bound_for_editor();
         self.inner.deferred.borrow_mut().push_back(op);
-        // #2182: an operation waits for the queue: keys may be behind it.
-        if let Some(sink) = self.inner.keys_held.borrow().as_ref() {
+        if holds_keys && let Some(sink) = self.inner.keys_held.borrow().as_ref() {
             sink.publish(true);
         }
         self.poke_defer_waker();
@@ -340,9 +391,15 @@ impl PaneQueue {
 
     /// Puts an operation back at the FRONT (it could not run yet; order is kept).
     pub fn unpop_deferred(&self, op: Deferred) {
+        let holds_keys = op.may_hold_keys_not_bound_for_editor();
         self.inner.deferred.borrow_mut().push_front(op);
-        if let Some(sink) = self.inner.keys_held.borrow().as_ref() {
-            sink.publish(true);
+        if holds_keys {
+            if let Some(sink) = self.inner.keys_held.borrow().as_ref() {
+                sink.publish(true);
+            }
+        } else {
+            // An editor key's offer went back: the fact is whatever the rest says.
+            self.refresh_keys_held();
         }
     }
 
@@ -471,7 +528,10 @@ impl Drop for QueueGuard<'_> {
         self.route_state.note_epoch(self.guard.focus_epoch());
         // #2182: whether the view holds user keys now, for the pty controller's in-band wait.
         if let Some(sink) = self.keys_held.borrow().as_ref() {
-            sink.publish(self.guard.queued_len() > 0 || !self.deferred.borrow().is_empty());
+            sink.publish(holds_keys_not_bound_for_editor(
+                &self.guard,
+                &self.deferred.borrow(),
+            ));
         }
         self.draining.set(false);
     }

@@ -2667,3 +2667,169 @@ fn remote_tab_gate_ctrl_c_discards_the_held_keys_and_the_enter() {
     );
     assert!(q.is_idle(), "the gate is gone");
 }
+
+// ---- what the pane publishes as "the view holds keys" (#2182, r29 A1) --------------------------
+
+fn editor_text_key(s: &str) -> EntryKind {
+    EntryKind::EditorKey(EditorKeyPayload::new(HeldPasteKey::Text(s.to_owned())))
+}
+
+fn editor_enter_key() -> EntryKind {
+    EntryKind::EditorKey(EditorKeyPayload::new(HeldPasteKey::Action(
+        crate::editor::EditorAction::Enter,
+    )))
+}
+
+/// #2182 (r29 A1): keys that can only reach the input editor, held behind a remote Tab's gate,
+/// are not published as held: the completer's own in-band listing must not wait for the keys
+/// that wait for the completer. A key whose destination is only decided when it drains (typed
+/// text with no form, an Enter, a signal) or that is the pty's is still published, so the kill
+/// prefix of an in-band command cannot wipe the line it is about to reach.
+#[test]
+fn only_keys_not_bound_for_the_editor_are_published_as_held() {
+    use crate::terminal::model::typeahead_handoff::ViewKeysHeld;
+
+    let cell = ViewKeysHeld::default();
+    let pane = PaneQueue::new();
+    pane.set_keys_held_sink(Some(cell.clone()));
+    let mut h = MockHost::new();
+    {
+        let mut guard = pane.lock();
+        guard.open_gate(&mut h, GateSpec::new(GateKind::RemoteTabCompletion, 1));
+        guard.offer_with_origin(&mut h, editor_text_key("x"), Origin::Editor);
+        guard.offer_with_origin(&mut h, editor_enter_key(), Origin::Editor);
+        guard.offer_with_origin(&mut h, editor_text_key("ls"), Origin::Editor);
+        assert_eq!(guard.queued_len(), 3, "the gate holds every key");
+        assert!(!guard.holds_entry_not_bound_for_editor());
+    }
+    assert!(
+        !cell.is_held(),
+        "editor keys behind the remote Tab gate do not hold an in-band command"
+    );
+
+    // A destination-free text entry behind the same gate may still reach the shell's line.
+    let text_id = pane.lock().offer(&mut h, text("y"));
+    assert!(cell.is_held(), "a destination-free entry is published");
+    assert!(pane.peek().holds_entry_not_bound_for_editor());
+
+    // The completion is answered: everything is delivered, in typed order, and nothing is held.
+    assert!(
+        pane.lock()
+            .on_gate_event(&mut h, GateKind::RemoteTabCompletion, 1)
+    );
+    assert_eq!(
+        h.delivered.iter().map(|d| d.tag).collect::<Vec<_>>(),
+        vec!["editor_key", "editor_key", "editor_key", "text"]
+    );
+    assert_eq!(h.delivered.last().map(|d| d.id), Some(text_id));
+    assert!(!cell.is_held());
+
+    // Each form that is not an editor key or an editor paste is published on its own.
+    let editor_paste = pane.next_paste_id(PasteOwner::Editor);
+    let pty_paste = pane.next_paste_id(PasteOwner::Pty);
+    let held: [(EntryKind, bool); 9] = [
+        (text("a"), true),
+        (EntryKind::Enter, true),
+        (EntryKind::Control("\u{1}"), true),
+        (EntryKind::Seq("\u{1b}[D"), true),
+        (pty_bytes(b"p"), true),
+        (
+            EntryKind::Held {
+                class: HELD_TYPED,
+                text: "h".to_owned(),
+            },
+            true,
+        ),
+        (
+            EntryKind::Paste {
+                paste_id: pty_paste,
+                payload: Some(b"v".to_vec()),
+            },
+            true,
+        ),
+        (
+            EntryKind::Paste {
+                paste_id: editor_paste,
+                payload: Some(b"v".to_vec()),
+            },
+            false,
+        ),
+        (editor_text_key("e"), false),
+    ];
+    for (kind, published) in held {
+        let cell = ViewKeysHeld::default();
+        let pane = PaneQueue::new();
+        pane.set_keys_held_sink(Some(cell.clone()));
+        let mut h = MockHost::new();
+        let tag = kind.tag();
+        {
+            let mut guard = pane.lock();
+            guard.open_gate(&mut h, GateSpec::new(GateKind::RemoteTabCompletion, 7));
+            guard.offer(&mut h, kind);
+        }
+        assert_eq!(cell.is_held(), published, "{tag}");
+    }
+}
+
+/// #2182 (r29 A1): the mailbox is judged the same way. A deferred offer of an editor key is not
+/// published; a deferred offer of anything else is, and so is every other waiting operation
+/// (what it does to pty keys is only known once it has run).
+#[test]
+fn deferred_operations_are_published_as_held_by_what_they_may_carry() {
+    use crate::terminal::model::typeahead_handoff::ViewKeysHeld;
+
+    let cell = ViewKeysHeld::default();
+    let pane = PaneQueue::new();
+    pane.set_keys_held_sink(Some(cell.clone()));
+
+    pane.defer(Deferred::Offer {
+        kind: editor_text_key("x"),
+        origin: Origin::Editor,
+        stamp: pane.stamp_now(),
+    });
+    pane.defer(Deferred::OfferGated {
+        kind: editor_enter_key(),
+        spec: GateSpec::new(GateKind::RemoteTabCompletion, 1),
+    });
+    assert!(pane.has_deferred());
+    assert!(!cell.is_held(), "deferred editor keys are not published");
+
+    pane.defer(Deferred::Offer {
+        kind: text("y"),
+        origin: Origin::Editor,
+        stamp: pane.stamp_now(),
+    });
+    assert!(cell.is_held(), "a deferred destination-free offer is");
+
+    // Popping the two editor offers leaves the text offer: still held. Popping it ends that.
+    assert!(matches!(pane.pop_deferred(), Some(Deferred::Offer { .. })));
+    assert!(matches!(
+        pane.pop_deferred(),
+        Some(Deferred::OfferGated { .. })
+    ));
+    assert!(cell.is_held());
+    let text_offer = pane.pop_deferred().expect("the text offer");
+    assert!(!cell.is_held());
+    // Put back (it could not run yet): held again.
+    pane.unpop_deferred(text_offer);
+    assert!(cell.is_held());
+    assert!(pane.pop_deferred().is_some());
+    assert!(!cell.is_held());
+
+    // Any other operation counts as held, whatever it turns out to do.
+    for op in [
+        Deferred::Poke,
+        Deferred::FocusChanged,
+        Deferred::ApplyYoungHoldEnds,
+        Deferred::GateEvent {
+            kind: GateKind::RemoteTabCompletion,
+            key: 1,
+        },
+        Deferred::OpenGate(GateSpec::new(GateKind::RemoteTabCompletion, 2)),
+    ] {
+        pane.defer(op);
+        assert!(cell.is_held());
+        assert!(pane.pop_deferred().is_some());
+        assert!(!cell.is_held());
+    }
+}

@@ -3041,6 +3041,12 @@ impl TypeaheadHandoff {
             // #2182: keys the view holds are not in the line yet, but a write ahead of them
             // would destroy the line they are typed into or run before them.
             || self.view_holds_keys()
+            // #2198: a held young Enter and the keys behind it are typed input that has not
+            // gone anywhere yet. A command the app writes now would land ahead of them and
+            // its kill prefix would wipe the line the Enter belongs to, so it waits for the
+            // hold's own end (the report, a Preexec, the barrier, a command of the user's, a
+            // signal, the hold's net). The hand-off's own fact: no kill switch turns it off.
+            || self.young_hold_queued
     }
 
     /// Whether the shell's line may hold typed text right now (#1562): keys were delivered to
@@ -3433,6 +3439,16 @@ impl TypeaheadHandoff {
     /// in-band command) was written while the pty owns input. Its Enter is counted, so its
     /// precmd does not make lines the user queued ahead of it look answered. Its kill prefix and
     /// Enter end whatever line it lands on.
+    ///
+    /// #2198: a held young Enter and the keys behind it are never discarded here. The
+    /// controller keeps such a command queued while the hold is live
+    /// ([`Self::holds_queued_writes`]), so this is normally reached with no hold. When it is
+    /// reached with one all the same (`PHOSPHOR_INBAND_WAIT_FOR_KEYS=0` lets an in-band command
+    /// out over held keys), the keys follow the command to the pty in typed order, as they
+    /// follow a command of the user's ([`YoungHoldEnd::FollowCommand`]); they used to be told
+    /// [`YoungHoldEnd::Dropped`] and the view threw them away. Behind an outstanding request
+    /// (`AwaitingReport`) the hold is left as it is: the request is ahead of this command in the
+    /// tty, so its report still brings the line back and runs the held Enter in the editor.
     pub fn on_uncounted_command_written(&mut self) {
         if self.enter_window_may_open() {
             self.enter_window_since = Some(Instant::now());
@@ -3440,8 +3456,17 @@ impl TypeaheadHandoff {
         self.forget_untracked_line_bytes();
         // #1574: its kill prefix ends a line delivered bytes were in.
         self.committed_delivery = false;
-        // Its kill prefix ends the line a held Enter belongs to.
-        self.drop_young_hold();
+        // Its kill prefix ends the line a held Enter belongs to: the hold is over, its keys
+        // are not.
+        if self.state != HandoffState::AwaitingReport && mem::take(&mut self.young_hold_queued) {
+            let id = self.young_hold_id;
+            self.young_hold_evidence = None;
+            self.young_hold_follow_pending = Some(id);
+            self.young_hold_ends.push((id, YoungHoldEnd::FollowCommand));
+            warpui::input_order::log_hop("young_hold_end", || {
+                format!("why=uncounted_command hold_id={id}")
+            });
+        }
         self.young_line = false;
         if let HandoffState::PtyOwned {
             wrote_user_bytes,
@@ -3845,6 +3870,23 @@ impl TypeaheadHandoff {
                                 format!("why=no_request_binding hold_id={}", self.young_hold_id)
                             });
                         }
+                        return ActiveDecision::Drain;
+                    }
+                    if wrote_user_bytes {
+                        // #2197: keys the user typed are in the shell's line and nothing can
+                        // ask the shell for them (no report binding: bash before 4.0, such as
+                        // macOS /bin/bash 3.2; or a line editor not proven to be reading).
+                        // Handing input to the editor here split the line: the rest of it went
+                        // to the editor, whose command write killed the part in the shell
+                        // (`ec` + `ho hi` ran `ho hi`). The pty stays the owner, so the rest of
+                        // the line follows the part already there, in typed order, until a line
+                        // boundary (Enter, ^C, ^U) leaves nothing typed in the line; the prompt
+                        // after it hands input back as for any empty line. Queued writes whose
+                        // kill prefix would wipe the line stay held meanwhile
+                        // ([`Self::holds_queued_writes`]). No timer is involved.
+                        warpui::input_order::log_hop("handoff_commit_deferred_typed_line", || {
+                            format!("enters={enters_written} precmds={precmds_seen}")
+                        });
                         return ActiveDecision::Drain;
                     }
                     self.interrupt_barrier = false;
@@ -5310,48 +5352,153 @@ pub fn forces_shell_submit(text: &str) -> bool {
     !text.is_empty()
 }
 
-/// The text of keys handed back to the editor, as the shell's line editor would have left it:
-/// Backspace (DEL, ^H) erases a character, ^U the line, ^W a word; Enter (`\r`, `\n`) becomes
-/// a newline and Tab stays, so a multi-line paste survives; well-formed escape sequences (CSI,
-/// SS3, OSC, as sent by arrow and function keys) are dropped whole; any other control character
-/// is dropped, and a lone ESC is dropped without taking the character after it.
+/// What the shell's line editor would hold after the keys in a hand-back
+/// ([`line_for_editor`]).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct HandedBackLine {
+    /// The text, as the keys left it.
+    pub text: String,
+    /// How many characters lie between the line editor's cursor and the end of `text` (0: the
+    /// cursor is at the end, where an insert into the input editor leaves it).
+    pub cursor_back: usize,
+}
+
+/// A cursor or deletion key of the line editor that an escape sequence stands for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LineKey {
+    Left,
+    Right,
+    Home,
+    End,
+    DeleteForward,
+}
+
+/// The text of keys handed back to the editor, as the shell's line editor would have left it
+/// ([`line_for_editor`], without the cursor).
 pub fn text_for_editor(bytes: &[u8]) -> String {
+    line_for_editor(bytes).text
+}
+
+/// The keys handed back to the editor, applied as the shell's line editor (emacs mode, the
+/// default of readline, zle, fish and PSReadLine) would have applied them, in typed order, with
+/// its cursor (#2199): a character is inserted AT the cursor; Left / Right (`ESC [ D`, `ESC [ C`,
+/// their SS3 forms, ^B, ^F) and Home / End (`ESC [ H`, `ESC [ F`, `ESC [ 1 ~`, `ESC [ 4 ~`, ^A,
+/// ^E) move it within the line; Backspace (DEL, ^H) erases the character before it, Delete
+/// (`ESC [ 3 ~`, ^D) the one under it, ^K to the end of the line, ^U back to the start of the
+/// line, ^W the word before it. Enter (`\r`, `\n`) ends the line whole, wherever the cursor is,
+/// and becomes a newline; Tab stays, so a multi-line paste survives.
+///
+/// Before #2199 the motions were dropped and everything was appended: `ab`, Left, `X` came back
+/// as `abX` (the shell held `aXb`), and ^A / ^E / ^K did nothing: text the user did not type.
+///
+/// What cannot be known here is still dropped whole, as before: every other well-formed escape
+/// sequence (Up / Down recall history, function keys, a cursor key with a modifier, OSC), any
+/// other control character, and a lone ESC (without taking the character after it).
+pub fn line_for_editor(bytes: &[u8]) -> HandedBackLine {
     let text = String::from_utf8_lossy(bytes);
     let chars: Vec<char> = text.chars().collect();
-    let mut out = String::with_capacity(text.len());
+    // The line editor only ever edits the last line: an Enter ends the one before it.
+    let mut out: Vec<char> = Vec::with_capacity(chars.len());
+    let mut line_start = 0usize;
+    let mut cursor = 0usize;
     let mut i = 0;
     while i < chars.len() {
         let ch = chars[i];
         i += 1;
-        match ch {
+        let key = match ch {
+            '\u{1b}' => {
+                let after = skip_escape_sequence(&chars, i);
+                let key = line_key_of_escape(&chars[i..after]);
+                i = after;
+                key
+            }
+            '\u{1}' => Some(LineKey::Home),
+            '\u{5}' => Some(LineKey::End),
+            '\u{2}' => Some(LineKey::Left),
+            '\u{6}' => Some(LineKey::Right),
+            '\u{4}' => Some(LineKey::DeleteForward),
             // Backspace erases within the current line only, as the line editor would.
             '\u{7f}' | '\u{8}' => {
-                if !out.ends_with('\n') {
-                    out.pop();
+                if cursor > line_start {
+                    cursor -= 1;
+                    out.remove(cursor);
                 }
+                None
             }
-            // ^U: back to the start of the line.
+            // ^U: from the cursor back to the start of the line.
             '\u{15}' => {
-                let line_start = out.rfind('\n').map_or(0, |index| index + 1);
-                out.truncate(line_start);
+                drop(out.drain(line_start..cursor));
+                cursor = line_start;
+                None
             }
-            // ^W: trailing whitespace, then the word before it.
+            // ^K: from the cursor to the end of the line.
+            '\u{b}' => {
+                out.truncate(cursor);
+                None
+            }
+            // ^W: the whitespace before the cursor, then the word before that.
             '\u{17}' => {
-                while out.ends_with(|last: char| last == ' ' || last == '\t') {
-                    out.pop();
+                while cursor > line_start && matches!(out[cursor - 1], ' ' | '\t') {
+                    cursor -= 1;
+                    out.remove(cursor);
                 }
-                while out.chars().last().is_some_and(|last| !last.is_whitespace()) {
-                    out.pop();
+                while cursor > line_start && !out[cursor - 1].is_whitespace() {
+                    cursor -= 1;
+                    out.remove(cursor);
+                }
+                None
+            }
+            // Enter takes the whole line, wherever the cursor is.
+            '\r' | '\n' => {
+                out.push('\n');
+                line_start = out.len();
+                cursor = line_start;
+                None
+            }
+            '\t' => {
+                out.insert(cursor, '\t');
+                cursor += 1;
+                None
+            }
+            ch if ch.is_control() => None,
+            ch => {
+                out.insert(cursor, ch);
+                cursor += 1;
+                None
+            }
+        };
+        match key {
+            Some(LineKey::Left) => cursor = cursor.max(line_start + 1) - 1,
+            Some(LineKey::Right) => cursor = (cursor + 1).min(out.len()),
+            Some(LineKey::Home) => cursor = line_start,
+            Some(LineKey::End) => cursor = out.len(),
+            Some(LineKey::DeleteForward) => {
+                if cursor < out.len() {
+                    out.remove(cursor);
                 }
             }
-            '\r' | '\n' => out.push('\n'),
-            '\t' => out.push('\t'),
-            '\u{1b}' => i = skip_escape_sequence(&chars, i),
-            ch if ch.is_control() => {}
-            ch => out.push(ch),
+            None => {}
         }
     }
-    out
+    HandedBackLine {
+        cursor_back: out.len() - cursor,
+        text: out.into_iter().collect(),
+    }
+}
+
+/// The line-editor key a well-formed escape sequence stands for, if it is one of the cursor keys
+/// [`line_for_editor`] applies. `sequence` is what follows the ESC, as
+/// [`skip_escape_sequence`] delimited it (empty for a lone ESC). Only the unmodified forms: a
+/// cursor key with a modifier (`ESC [ 1 ; 5 D`) is bound differently from shell to shell.
+fn line_key_of_escape(sequence: &[char]) -> Option<LineKey> {
+    match sequence {
+        ['[', 'D'] | ['O', 'D'] => Some(LineKey::Left),
+        ['[', 'C'] | ['O', 'C'] => Some(LineKey::Right),
+        ['[', 'H'] | ['O', 'H'] | ['[', '1', '~'] | ['[', '7', '~'] => Some(LineKey::Home),
+        ['[', 'F'] | ['O', 'F'] | ['[', '4', '~'] | ['[', '8', '~'] => Some(LineKey::End),
+        ['[', '3', '~'] => Some(LineKey::DeleteForward),
+        _ => None,
+    }
 }
 
 /// Given `chars[start]` is the character after an ESC, returns the index after a well-formed
