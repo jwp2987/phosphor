@@ -409,7 +409,7 @@ fn skip_redundant_completion_notify_enabled() -> bool {
 }
 
 /// `PHOSPHOR_DEFER_SUBMIT_INPUT_RESET=0` restores running the post-submit input reset before the
-/// command's write (#2184). Under test the switch is off unless a test turns it on.
+/// command's write (#2184). Under test it is on, as in the app; a test can turn it off.
 fn submit_input_reset_deferred_enabled() -> bool {
     #[cfg(test)]
     {
@@ -427,7 +427,7 @@ fn submit_input_reset_deferred_enabled() -> bool {
 #[cfg(test)]
 thread_local! {
     static DEFER_SUBMIT_INPUT_RESET_FOR_TEST: std::cell::Cell<bool> =
-        const { std::cell::Cell::new(false) };
+        const { std::cell::Cell::new(true) };
 }
 
 /// The input reset a submit left for after the command's write (#2184).
@@ -19050,6 +19050,9 @@ impl TypedActionView for Input {
     }
 
     fn handle_action(&mut self, action: &InputAction, ctx: &mut ViewContext<Self>) {
+        // #2184: any input action (a mode toggle bound to a key, for one) sees the config the
+        // last submit reset, never a reset that lands after it.
+        self.flush_pending_submit_input_reset(ctx);
         match action {
             InputAction::FocusInputBox => self.focus_input_box(ctx),
             InputAction::Up => self.editor_up(ctx),
