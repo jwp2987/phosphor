@@ -94,3 +94,14 @@ def r30_zsh_hook_logs_no_empty_c_line_2213():
     assert len(pre) == 1 and "[[ -n $c ]] && print -r" in pre[0], pre
     # bash: the first prompt only adopts the history number, so it cannot log an empty first line
     assert 'if [ -n "$__pa_first" ]; then __pa_n=$n' in P.BASHRC
+
+
+@check
+def selftest_main_guard_is_last_2214():
+    # #2214: every line after `if __name__ == "__main__":` in selftest.py is dead under `python3 selftest.py` (the CI form); r26-r30 registered there and never ran
+    import ast
+    tree = ast.parse(open(os.path.join(HERE, "selftest.py"), encoding="utf-8").read())
+    last = tree.body[-1]
+    assert isinstance(last, ast.If) and "__name__" in ast.unparse(last.test), "selftest.py: the __main__ guard is not the last statement"
+    guards = [n for n in tree.body if isinstance(n, ast.If) and "__name__" in ast.unparse(n.test)]
+    assert len(guards) == 1, "selftest.py has %d __main__ guards" % len(guards)
