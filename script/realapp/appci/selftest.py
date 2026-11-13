@@ -331,6 +331,42 @@ def profile_rec_log():
 
 
 @check
+def history_idents_per_run_2204():
+    """#2204: the ident of a history_survives_restart round comes from ctx.ptok (unseeded, unique per run) and the PowerShell history file is
+    judged from the lines this round added; a prior run's identical lines are not 'typed more than once', a real duplicate write still is"""
+    import inspect
+    import cases_r14_state as S
+    src = inspect.getsource(S.history_round)
+    assert "ctx.ptok(" in src and 'rid = "hs" + ctx.tok(' not in src, "the idents must not come from the seeded ctx.tok"
+    assert "hist_lines(ctx)[hist_base:]" in src
+    old = ["Add-Content x hs1abcq1", "hs1abcq1 again"]               # three earlier runs on a persistent history file
+    now = ["echo hsNEWq1 a", "echo hsNEWq2 b"]
+    assert S.count_in((old * 3 + now)[len(old) * 3:], "hsNEWq1") == 1
+    assert S.count_in(old * 3 + now, "hs1abcq1") > 1                  # what the whole-file count used to read
+    assert S.count_in(now + now[:1], "hsNEWq1") == 2                  # a duplicate write inside this round is still caught
+
+
+@check
+def routing_dark_recorder_2205():
+    """#2205: empty rec.log + the app's `enter: Shell` decision + a UserCommand pty write = went to the shell (not the pre-decision input_type=AI);
+    the same without a write = lost; a recorder that logged nothing for the whole case is HARNESS: recorder dark, not an app loss"""
+    log = ('2026-11-13T04:06:03Z [DEBUG] input_order hop=enter_begin deferred=false buffer="ls -la" input_type=AI t=1\n'
+           '2026-11-13T04:06:03Z [DEBUG] enter: Shell by command-shape (#808/#1203) (PlainTerminal, head "ls", 6 bytes)\n'
+           '2026-11-13T04:06:03Z [DEBUG] input_order hop=pty_write_bytes class=UserCommand wrote=20 of_job=20 bytes="\\x10\\x1b[200~ls -la\\x1b[201~\\n" t=2\n'
+           '2026-11-13T04:06:03Z [DEBUG] input_order hop=preexec_received signal=preexec t=3\n')
+    rows = [dict(route=m.group(1)) for m in ca.ROUTE_RE.finditer(log)]
+    assert rows == [dict(route="Shell")]
+    assert ca.wrote_to_shell(log, "ls -la") and not ca.wrote_to_shell(log, "git status")
+    assert ca.classify_dest(False, rows, ca.enter_begin_types(log), ca.wrote_to_shell(log, "ls -la")) == "shell"
+    nolog = "\n".join(l for l in log.splitlines() if "pty_write_bytes" not in l and "preexec" not in l)
+    assert ca.classify_dest(False, rows, ca.enter_begin_types(nolog), ca.wrote_to_shell(nolog, "ls -la")) == "lost", "no write: lost, never 'went to agent' by the AI begin type"
+    ag = [dict(route="Agent")]
+    assert ca.classify_dest(False, ag, ["Shell"], False) == "agent"
+    assert ca.wrote_to_shell('hop=pty_write_bytes class=UserCommand wrote=9 bytes="echo \\"a\\"" t=1', 'echo "a"')
+    assert ca.recorder_dark(0, 5) and not ca.recorder_dark(2, 5) and not ca.recorder_dark(0, 0) and not ca.recorder_dark(0, None)
+
+
+@check
 def routing_classification():
     ag = [dict(route="Agent")]
     sh = [dict(route="Shell")]
