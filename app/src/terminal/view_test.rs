@@ -34171,15 +34171,27 @@ fn stuck_turn_command() -> crate::ai::agent::AIAgentActionType {
     }
 }
 
-/// Pumps the foreground executor until `done` holds (or gives up), then returns `done`'s value.
+/// Pumps the foreground executor until `done` holds (or the deadline passes), then returns
+/// `done`'s value. The wait is bounded by wall-clock time, not by a count of yields (#2212): a
+/// fixed count measures how many turns the executor got, which on a loaded runner is not enough
+/// for the hops that resolve the state (a batch's preprocess future, the turn watch's
+/// ready-future hops, a cancel). It returns the moment `done` holds, so the fast case is
+/// unchanged; a state that never arrives still fails, after the deadline, with the caller's
+/// message.
 async fn pump_until(app: &App, done: impl Fn(&App) -> bool) -> bool {
-    for _ in 0..64 {
+    const DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
+    let started = std::time::Instant::now();
+    loop {
         if done(app) {
             return true;
         }
+        if started.elapsed() >= DEADLINE {
+            return done(app);
+        }
         futures_lite::future::yield_now().await;
+        // Let other threads (background executor, timers) make progress between turns.
+        std::thread::sleep(std::time::Duration::from_micros(200));
     }
-    done(app)
 }
 
 /// The #1799 turn: the model returned `run_shell_command` (held for approval) and then
