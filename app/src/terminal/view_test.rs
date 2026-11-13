@@ -31235,8 +31235,10 @@ fn the_report_of_a_young_hold_leaves_the_keys_behind_the_enter_held() {
     });
 }
 
-/// A hold that ended (here: an uncounted command took the line) is dropped with its keys, and a
-/// key typed after that is not swallowed by the gate -- whether or not the end was applied yet.
+/// A hold that ended (here: an uncounted command took the line) gives its keys up IN ORDER (#2198,
+/// owner rule: held keys are never discarded -- they used to be dropped with the hold), and a key
+/// typed after that follows them and is not swallowed by the gate -- whether or not the end was
+/// applied yet.
 #[test]
 fn a_key_after_a_young_hold_ended_is_not_swallowed() {
     for drained_first in [false, true] {
@@ -31262,8 +31264,8 @@ fn a_key_after_a_young_hold_ended_is_not_swallowed() {
             });
             assert_eq!(
                 *pty_writes.borrow(),
-                vec![b"y".to_vec()],
-                "drained_first={drained_first}: the held Enter and key are void"
+                vec![b"\rx".to_vec(), b"y".to_vec()],
+                "drained_first={drained_first}: the held Enter and key, then the key typed after"
             );
         });
     }
