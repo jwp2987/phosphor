@@ -19843,21 +19843,86 @@ fn test_a_reported_tilde_with_an_enter_deferred_behind_it_stays_the_typed_line()
     }
 }
 
-/// #2203 (T4), through the view: the Enter of a young line is deferred behind the report; the
-/// report completes the line and its detection is requested (the parse starts); then passes that
-/// carry no detection follow inside the debounce window, as the input model's own event queues
-/// them: one runs before the parse lands, one is the last item the debounce keeps. In AI mode
-/// those passes killed the parse and dropped the detection, no verdict ever came, and 2 s later
-/// the backstop handed the line back with the keys typed behind it (and the next Enter was eaten
-/// by the guard). The request sticks: the verdict lands and the Enter runs the completed line,
-/// once, well before the backstop, with no hand-back.
+/// A decorated shell line of `words` six-character words: `echo <prefix>0000 ... >> out.txt`. The
+/// completer parse is roughly quadratic in the word count (#1174), so the count sets how long
+/// the parse runs.
+fn long_echo_line(prefix: &str, words: usize) -> String {
+    let mut line = String::from("echo");
+    for index in 0..words {
+        line.push_str(&format!(" {prefix}{index:04}"));
+    }
+    line.push_str(" >> out.txt");
+    line
+}
+
+/// Types `line` into an input whose type is autodetected and returns how long its verdict took,
+/// undisturbed: the edit's debounce (10 ms), then its parse, then the rules.
+async fn undisturbed_verdict_ms(app: &mut App, input: &ViewHandle<Input>, line: &str) -> u128 {
+    let requested = |app: &App| {
+        input.read(app, |input, ctx| {
+            input
+                .ai_input_model()
+                .as_ref(ctx)
+                .is_detection_requested_for(line)
+        })
+    };
+    input.update(app, |input, ctx| {
+        input.clear_buffer_and_reset_undo_stack(ctx);
+        input.user_insert(line, ctx);
+    });
+    let started = std::time::Instant::now();
+    assert!(
+        requested(&*app),
+        "test setup: a typed line asks for its verdict"
+    );
+    for _ in 0..5000 {
+        if !requested(&*app) {
+            break;
+        }
+        warpui::r#async::Timer::after(Duration::from_millis(1)).await;
+    }
+    assert!(
+        !requested(&*app),
+        "test setup: an undisturbed verdict lands"
+    );
+    started.elapsed().as_millis()
+}
+
+/// #2203 (T4), the r29a Windows trace (`gitbash_typeahead_reps`, rep tr13) through the view, in
+/// its order:
+///
+/// 1. `xt` is in the editor, the head of the line is in the shell's line, the prompt's request is
+///    out; Enter is deferred behind the report, and the keys typed next are held behind it.
+/// 2. The stale verdict for `xt` flips the input to AI. The input model's event queues a pass
+///    that carries no detection into the 10 ms debounce.
+/// 3. Inside that window the report completes the line. Its detection is requested and a parse
+///    starts; the insert's own `Edited` event runs its pass at once (the insert's cursor fix
+///    leaves `CursorChanged`, a short-circuit action), so nothing with detection is queued behind
+///    the pass of step 2.
+/// 4. The debounce delivers the pass of step 2. In AI mode a pass with nothing to do ends in
+///    `cancel_decorations_job()`: the parse that owed the verdict is cancelled and nothing asks
+///    again. No verdict, the 2 s backstop, the line handed back with every key typed behind it.
+///
+/// In the trace the pass of step 4 arrived right behind the parse's start (the UI thread was
+/// late on the debounce timer), which no test can arrange for a 34-byte line: its parse is done,
+/// on a background thread, microseconds after it starts, and a cancel after that is a no-op.
+/// (That is why the first version of this test passed before the fix: it ran its passes in a
+/// later update, the parse had finished, and its result was delivered.) Here the parse is held
+/// open the honest way, by a line long enough that it outlasts the debounce: the length is
+/// measured on this machine first, with a line of the same shape. The cancelled job is then the
+/// same job, cancelled by the same pass, at the same place.
+///
+/// With the request sticking, the pass of step 4 carries the detection: the verdict lands and the
+/// Enter runs the completed line once, well inside the backstop, with no hand-back; the keys
+/// typed behind it are neither written before it nor put into the editor, and follow its command
+/// to the pty in typed order.
 #[test]
 fn test_a_deferred_young_enter_runs_the_reported_line_after_passes_without_detection() {
     use crate::terminal::input::decorations::InputBackgroundJobOptions;
     use crate::terminal::model::typeahead_handoff::{ActiveDecision, UserBytesRoute};
 
-    const REPORTED: &str = "echo hello world >> out.t";
     const TYPED: &str = "xt";
+    const HELD_KEYS: &[u8] = b"pwd\r";
 
     App::test((), |mut app| async move {
         let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
@@ -19875,18 +19940,32 @@ fn test_a_deferred_young_enter_runs_the_reported_line_after_passes_without_detec
             add_window_with_bootstrapped_terminal(&mut app, None, Some(session_info)).await;
         simulate_directory_for_completion(session_id, &terminal, &mut app, "~");
         let input = terminal.read(&app, |terminal, _| terminal.input().clone());
-        let submits = Rc::new(RefCell::new(Vec::<String>::new()));
+        let editor = input.read(&app, |input, _| input.editor().clone());
+        let queue = editor.read(&app, |editor, _| editor.paste_hold().queue());
+
+        // Everything that reaches the pty, in order: byte writes, and each command the view hands
+        // the pty controller, as its text and the `\r` that runs it.
+        let pty: Rc<RefCell<Vec<Vec<u8>>>> = Rc::new(RefCell::new(Vec::new()));
+        let agent_queries = Rc::new(RefCell::new(0usize));
         {
-            let submits = submits.clone();
+            let pty = pty.clone();
+            let agent_queries = agent_queries.clone();
             app.update(|ctx| {
-                ctx.subscribe_to_view(&input, move |_, event: &super::Event, _| match event {
-                    super::Event::ExecuteCommand(event) => {
-                        submits.borrow_mut().push(event.command.clone())
+                ctx.subscribe_to_view(&terminal, move |_, event, _| match event {
+                    crate::terminal::view::Event::WriteBytesToPty { bytes }
+                    | crate::terminal::view::Event::WriteHandoffUserBytesToPty { bytes } => {
+                        pty.borrow_mut().push(bytes.to_vec());
                     }
-                    super::Event::ExecuteAIQuery => {
-                        submits.borrow_mut().push("<agent query>".to_owned())
+                    crate::terminal::view::Event::ExecuteCommand(event) => {
+                        pty.borrow_mut()
+                            .push(format!("{}\r", event.command).into_bytes());
                     }
                     _ => {}
+                });
+                ctx.subscribe_to_view(&input, move |_, event: &super::Event, _| {
+                    if let super::Event::ExecuteAIQuery = event {
+                        *agent_queries.borrow_mut() += 1;
+                    }
                 });
             });
         }
@@ -19894,16 +19973,49 @@ fn test_a_deferred_young_enter_runs_the_reported_line_after_passes_without_detec
             input_type: InputType::AI,
             is_locked: false,
         };
+        input.update(&mut app, |input, ctx| {
+            input.ai_input_model().update(ctx, |ai_input, ctx| {
+                ai_input.set_input_config(ai_unlocked, true /* is_input_buffer_empty */, ctx);
+            });
+        });
+        warpui::r#async::Timer::after(Duration::from_millis(400)).await;
 
-        // The head of the line was typed right after a command (a young line) and is in the
-        // shell's line; the prompt's request is out.
+        // A line whose parse outlasts the debounce on this machine, and stays far under the young
+        // Enter's 250 ms compute cap: the first of these that takes 50 ms from edit to verdict
+        // (10 ms of it the debounce). Each step is about 2.25 times the parse of the one before.
+        let mut words = 0;
+        let mut verdict_ms = 0;
+        for candidate in [40, 60, 90, 135, 200, 300, 450, 560] {
+            words = candidate;
+            verdict_ms =
+                undisturbed_verdict_ms(&mut app, &input, &long_echo_line("ca", candidate)).await;
+            if verdict_ms >= 50 {
+                break;
+            }
+        }
+        assert!(
+            (35..=200).contains(&verdict_ms),
+            "test setup: no line under the parse cap takes this machine's parse past the 10 ms \
+             debounce and stays under the 250 ms compute cap ({words} words: {verdict_ms} ms \
+             from edit to verdict); the race cannot be held open here"
+        );
+        let line = long_echo_line("tb", words);
+        let reported = &line[..line.len() - TYPED.len()];
+        assert!(line.ends_with(TYPED), "test setup");
+        input.update(&mut app, |input, ctx| {
+            input.clear_buffer_and_reset_undo_stack(ctx)
+        });
+        warpui::r#async::Timer::after(Duration::from_millis(100)).await;
+
+        // 1. The head of the line was typed right after a command (a young line) and is in the
+        // shell's line; the prompt's request is out; `xt` lands in the editor.
         input.read(&app, |input, _| {
             let mut model = input.model.lock();
             let mut handoff = model.typeahead_handoff_mut();
             handoff.on_command_written();
             handoff.stream_undrained_for_test();
             assert_eq!(
-                handoff.on_user_bytes(REPORTED.as_bytes()),
+                handoff.on_user_bytes(reported.as_bytes()),
                 UserBytesRoute::WriteCounted
             );
             handoff.on_user_write_flushed();
@@ -19914,30 +20026,47 @@ fn test_a_deferred_young_enter_runs_the_reported_line_after_passes_without_detec
                 "test setup: the prompt's request"
             );
         });
-        // The rest of the line lands in the editor; its own (stale) verdict comes and goes, and
-        // leaves the input in AI mode, unlocked.
         input.update(&mut app, |input, ctx| {
             input.clear_buffer_and_reset_undo_stack(ctx);
             input.user_insert(TYPED, ctx);
         });
-        warpui::r#async::Timer::after(Duration::from_millis(400)).await;
-        input.update(&mut app, |input, ctx| {
-            input.ai_input_model().update(ctx, |ai_input, ctx| {
-                ai_input.set_input_config(ai_unlocked, false /* is_input_buffer_empty */, ctx);
-            });
-        });
+        // The verdict of `xt` itself, and every pass its edit queued.
         warpui::r#async::Timer::after(Duration::from_millis(400)).await;
         input.update(&mut app, |input, ctx| input.input_enter(ctx));
         assert!(
             enter_is_deferred_behind_the_report(&app, &input),
             "test setup: the Enter waits for the report"
         );
-        assert!(submits.borrow().is_empty(), "test setup: nothing ran yet");
+        terminal.update(&mut app, |view, ctx| {
+            view.write_user_bytes_for_test(&HELD_KEYS[..3], ctx);
+            view.write_user_bytes_for_test(&HELD_KEYS[3..], ctx);
+        });
+        assert!(
+            pty.borrow().is_empty(),
+            "test setup: nothing ran, and the keys typed behind the Enter are held: {:?}",
+            pty.borrow()
+        );
+        assert!(
+            queue.peek().queued_len() > 0,
+            "test setup: the keys typed behind the Enter wait in the pane queue"
+        );
 
-        // The report completes the line; the Enter now waits for the line's verdict.
-        deliver_shell_report(&mut app, &terminal, &input, REPORTED);
-        let line = format!("{REPORTED}{TYPED}");
+        // 2. The stale verdict flips the input to AI; the model's event queues a pass without
+        // detection (queued here as that subscription queues it, so the test does not depend on
+        // which type `xt` was given above).
         input.update(&mut app, |input, ctx| {
+            input.ai_input_model().update(ctx, |ai_input, ctx| {
+                ai_input.set_input_config(ai_unlocked, false /* is_input_buffer_empty */, ctx);
+            });
+            input.queue_input_background_job(
+                InputBackgroundJobOptions::default().with_command_decoration(),
+                ctx,
+            );
+        });
+
+        // 3. The report, inside the debounce window of that pass.
+        deliver_shell_report(&mut app, &terminal, &input, reported);
+        input.read(&app, |input, ctx| {
             assert_eq!(
                 input.buffer_text(ctx),
                 line,
@@ -19945,42 +20074,75 @@ fn test_a_deferred_young_enter_runs_the_reported_line_after_passes_without_detec
             );
             assert!(
                 input.ai_input_model().as_ref(ctx).is_ai_input_enabled(),
-                "test setup: still an AI-mode input"
+                "test setup: an AI-mode input"
             );
             assert!(
                 input.detection_pending_for_buffer(ctx),
                 "test setup: the young line's Enter waits for its verdict"
             );
-            // The passes without detection: one before the parse lands, one queued last.
-            let decoration_only = InputBackgroundJobOptions::default().with_command_decoration();
-            input.run_input_background_jobs(decoration_only, ctx);
-            input.queue_input_background_job(decoration_only, ctx);
+            assert!(
+                input.editor().as_ref(ctx).get_last_action(ctx)
+                    == Some(PlainTextEditorViewAction::CursorChanged),
+                "test setup: the insert's cursor fix is the last action, so the insert's own \
+                 `Edited` event ran its pass at once and queued none"
+            );
         });
+        assert!(
+            pty.borrow().is_empty() && *agent_queries.borrow() == 0,
+            "test setup: the Enter did not run on the report; it waits for the verdict: {:?}",
+            pty.borrow()
+        );
 
-        // Well inside the 2 s backstop.
+        // 4. The debounce delivers the pass of step 2 while the parse is in flight. The Enter
+        // must run on the verdict, well inside the 2 s backstop.
         for _ in 0..300 {
-            if !submits.borrow().is_empty() {
+            if !pty.borrow().is_empty() || *agent_queries.borrow() > 0 {
                 break;
             }
             warpui::r#async::Timer::after(Duration::from_millis(5)).await;
         }
-        let ran = submits.borrow().clone();
+        let submitted = format!("{line}\r").into_bytes();
         assert_eq!(
-            ran.len(),
-            1,
-            "the deferred Enter ran the completed line once, on its verdict, before the \
-             backstop: {ran:?}"
+            *pty.borrow(),
+            vec![submitted.clone()],
+            "the deferred Enter ran the completed line once, as a shell command, on its \
+             verdict and before the backstop; nothing typed behind it was written before it \
+             (agent queries: {})",
+            agent_queries.borrow()
         );
-        assert!(
-            ran[0] == line || ran[0] == "<agent query>",
-            "the whole line was submitted: {ran:?}"
-        );
-        input.read(&app, |input, _| {
+        input.read(&app, |input, ctx| {
             assert!(
                 !input.ssh_handover_enter_guard_armed(),
                 "no hand-back, so no guard that eats the next Enter"
             );
+            assert!(
+                !input.buffer_text(ctx).contains("pwd"),
+                "the keys typed behind the Enter were not put into the editor"
+            );
         });
+        assert!(
+            queue.peek().queued_len() > 0,
+            "the keys typed behind the Enter still wait for its command to be written"
+        );
+
+        // The pty controller writes the command (what `PtyController::write_command` tells the
+        // hand-off); the next hand-off event the view handles applies the end it recorded: the
+        // held keys follow the command, in typed order, once.
+        input.read(&app, |input, _| {
+            let mut model = input.model.lock();
+            let mut handoff = model.typeahead_handoff_mut();
+            handoff.on_command_written();
+            handoff.note_written_command_text(&line);
+        });
+        terminal.update(&mut app, |view, ctx| {
+            view.handle_typeahead_report_for_test(ctx)
+        });
+        assert_eq!(
+            pty.borrow().concat(),
+            [submitted.as_slice(), HELD_KEYS].concat(),
+            "the keys typed behind the Enter follow its command, in typed order, once"
+        );
+        assert_eq!(pty.borrow().len(), 2, "one write behind the command");
     });
 }
 
