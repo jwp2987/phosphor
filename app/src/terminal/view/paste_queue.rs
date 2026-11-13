@@ -1621,7 +1621,16 @@ impl TerminalView {
             let mut host = PtyQueueHost::new(self, ctx);
             (kind, guard.close_gate_taking(&mut host, kind, hold_id))
         };
-        let chunks = if kind == GateKind::HandoffReport && end == YoungHoldEnd::FollowCommand {
+        // #2207 (review F2): the hold made for a reported ssh escape holds the keys typed behind
+        // a deferred Enter, editor-typed ones among them. Written out, they are ALL the pty's, in
+        // typed order: handed to the editor instead, `pwd`, Enter would be applied (and
+        // submitted) there at once, ahead of the hold's own Enter.
+        let escape_hold_written =
+            matches!(end, YoungHoldEnd::Typeahead | YoungHoldEnd::FollowCommand)
+                && self.handoff.read().is_escape_hold(hold_id);
+        let chunks = if escape_hold_written
+            || (kind == GateKind::HandoffReport && end == YoungHoldEnd::FollowCommand)
+        {
             self.pty_bytes_of_taken_entries(entries, ctx)
         } else {
             self.bytes_of_taken_entries(entries, ctx)
@@ -1696,7 +1705,10 @@ impl TerminalView {
             return false;
         }
         queue.try_peek().is_some_and(|queue| {
-            queue.has_gate(GateKind::HandoffReport, gate)
+            // Review F5: the hold adds one entry (the Enter); at the cap that entry would push
+            // out the newest held key.
+            queue.queued_len() < queue.max_entries()
+                && queue.has_gate(GateKind::HandoffReport, gate)
                 && queue
                     .gates()
                     .iter()

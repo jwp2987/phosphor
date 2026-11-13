@@ -1437,6 +1437,10 @@ pub enum HandoffInsert {
     /// The report and the one character the editor held are ssh's escape `~X` (#1638): the editor
     /// is empty and the view writes these two bytes to the pty.
     SshEscape([u8; 2]),
+    /// #2207, set by the view only (the editor never returns it): as [`Self::SshEscape`], and
+    /// the Enter that was deferred behind the report is placed: it waits, with the keys typed
+    /// behind it, for the next prompt event. The caller must not finish that Enter itself.
+    SshEscapeHeld([u8; 2]),
 }
 
 /// One piece of input the user typed after an Enter that is waiting for a classification verdict

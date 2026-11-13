@@ -1626,16 +1626,30 @@ impl TypeaheadHandoff {
         self.refuse_deferred_enter_hold_for_test = true;
     }
 
-    /// #2207: whether `hold_id` is the hold made for a reported ssh escape. (Stub of the
-    /// tests-first commit: never.)
-    pub fn is_escape_hold(&self, _hold_id: u64) -> bool {
-        false
+    /// #2207: whether `hold_id` is the young hold made for a reported ssh escape
+    /// ([`Self::hold_deferred_enter_for_next_prompt`]). Still true after the session ended: the
+    /// view asks when it applies the end that exit recorded (review F2: every key of that hold,
+    /// an editor-typed one too, is written to the pty in typed order).
+    pub fn is_escape_hold(&self, hold_id: u64) -> bool {
+        self.escape_hold_id == Some(hold_id)
     }
 
-    /// #2207: ends the escape's hold where the editor took input back. (Stub of the tests-first
-    /// commit: never.)
+    /// #2207 (review F4): ends the escape's hold at the edge where input left the pty's
+    /// ownership with it still queued (the editor took over at the local prompt after `~.`): its
+    /// Enter and keys are written now ([`Self::end_unowned_young_hold`]), before a command
+    /// written later could get in front of them. The view calls this on every hand-off change.
+    /// Any other young hold keeps its lazy stale check. Returns whether the hold ended.
     pub fn end_escape_hold_if_unowned(&mut self) -> bool {
-        false
+        if !self.young_hold_queued
+            || self.escape_hold_id != Some(self.young_hold_id)
+            || matches!(
+                self.state,
+                HandoffState::PtyOwned { .. } | HandoffState::AwaitingReport
+            )
+        {
+            return false;
+        }
+        self.end_unowned_young_hold()
     }
 
     /// Ends a young hold the state no longer owns (the session ended, or the state left
@@ -5311,6 +5325,9 @@ impl TypeaheadHandoff {
         *self = Self {
             tracks_view_precmds: self.tracks_view_precmds,
             young_hold_id: self.young_hold_id,
+            // #2207: the view still asks whether the hold whose end is recorded above was the
+            // escape's.
+            escape_hold_id: self.escape_hold_id,
             deferred_gate_seq: self.deferred_gate_seq,
             young_hold_ends: mem::take(&mut self.young_hold_ends),
             // #2182: the pane's queue keeps publishing into the same cell; the switch is the pane's.

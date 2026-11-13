@@ -477,6 +477,27 @@ event instead, in typed order, the Enter first:
   and for `.foo` + Enter, the report is text as before, in typed order.
 - Log: `ssh_escape_enter_held_for_prompt`, `ssh_escape_enter_held`,
   `young_hold_end why=ssh_escape_session_gone`.
+- Review round (r30b):
+  - not for `~C` with an Enter deferred behind it: `~C` opens ssh's own `ssh>`
+    command line, no prompt event follows, and only the hold's cap would end
+    it (a timer as the hand-over). It stays text, as before;
+  - every key of this hold is the pty's when it is written out, an
+    editor-typed one too (`pty_bytes_of_taken_entries`): handed to the editor,
+    `pwd`, Enter would be submitted there ahead of the hold's own Enter;
+  - the hold ends at the EDGE where input leaves the pty's ownership
+    (`end_escape_hold_if_unowned`, called from
+    `handle_typeahead_handoff_changed`), so its Enter and keys are written
+    before a command written later, not into that command's stdin;
+  - the transition adds one queue entry (the Enter); with the queue at its cap
+    it is not made (text, as before);
+  - `HandoffInsert::SshEscapeHeld` is the only outcome that tells the report
+    handler the deferred Enter is placed; after a plain `SshEscape` the
+    deferred Enter is finished as after any report;
+  - a report judged as the escape is forgotten by the model
+    (`forget_report_judged_as_ssh_escape`): it was not inserted, and the next
+    report event of the line otherwise replaced the first character of the
+    buffer with its `~` again (a stray `~` in the local editor after the
+    session ended).
 
 **The legacy report path is judged too (#2208).** A report that answers no
 hand-off request (`ReportDisposition::InsertLegacy`, `handle_typeahead_event`)
