@@ -1225,6 +1225,9 @@ pub struct TypeaheadHandoff {
     /// ([`TypeaheadHandoff::end_unowned_young_hold`]). Hold ids only grow, so a stale id names
     /// no later hold.
     escape_hold_id: Option<u64>,
+    /// Test seam: see [`TypeaheadHandoff::refuse_deferred_enter_hold_for_test`].
+    #[cfg(test)]
+    refuse_deferred_enter_hold_for_test: bool,
 }
 
 /// #1615: an Enter the hand-off delivered to the pty although a line was unanswered, because the
@@ -1578,6 +1581,10 @@ impl TypeaheadHandoff {
         if !self.deferred_enter_could_wait_for_next_prompt() {
             return None;
         }
+        #[cfg(test)]
+        if self.refuse_deferred_enter_hold_for_test {
+            return None;
+        }
         let gate = self.deferred_gate.take()?;
         // A bare Enter's line, as `ssh_escape_line_start` makes it for `AddCr`.
         self.keys_follow_editor = false;
@@ -1610,6 +1617,25 @@ impl TypeaheadHandoff {
             )
         });
         Some((gate, self.young_hold_id))
+    }
+
+    /// Test seam (#2207 review F3): the next [`Self::hold_deferred_enter_for_next_prompt`] is
+    /// refused although [`Self::deferred_enter_could_wait_for_next_prompt`] said yes.
+    #[cfg(test)]
+    pub(crate) fn refuse_deferred_enter_hold_for_test(&mut self) {
+        self.refuse_deferred_enter_hold_for_test = true;
+    }
+
+    /// #2207: whether `hold_id` is the hold made for a reported ssh escape. (Stub of the
+    /// tests-first commit: never.)
+    pub fn is_escape_hold(&self, _hold_id: u64) -> bool {
+        false
+    }
+
+    /// #2207: ends the escape's hold where the editor took input back. (Stub of the tests-first
+    /// commit: never.)
+    pub fn end_escape_hold_if_unowned(&mut self) -> bool {
+        false
     }
 
     /// Ends a young hold the state no longer owns (the session ended, or the state left

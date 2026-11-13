@@ -19983,10 +19983,12 @@ fn test_a_deferred_young_enter_runs_the_reported_line_after_passes_without_detec
 
         // A line whose parse outlasts the debounce on this machine, and stays far under the young
         // Enter's 250 ms compute cap: the first of these that takes 50 ms from edit to verdict
-        // (10 ms of it the debounce). Each step is about 2.25 times the parse of the one before.
+        // (10 ms of it the debounce). Each step is about 1.6 times the parse of the one before, so
+        // the line chosen stays well under 120 ms: with a restart and a loaded machine that is
+        // still far from the cap.
         let mut words = 0;
         let mut verdict_ms = 0;
-        for candidate in [40, 60, 90, 135, 200, 300, 450, 560] {
+        for candidate in [40, 50, 63, 79, 99, 124, 155, 194, 243, 304, 380, 475, 560] {
             words = candidate;
             verdict_ms =
                 undisturbed_verdict_ms(&mut app, &input, &long_echo_line("ca", candidate)).await;
@@ -19995,7 +19997,7 @@ fn test_a_deferred_young_enter_runs_the_reported_line_after_passes_without_detec
             }
         }
         assert!(
-            (35..=200).contains(&verdict_ms),
+            (35..=120).contains(&verdict_ms),
             "test setup: no line under the parse cap takes this machine's parse past the 10 ms \
              debounce and stays under the 250 ms compute cap ({words} words: {verdict_ms} ms \
              from edit to verdict); the race cannot be held open here"
@@ -21520,6 +21522,28 @@ fn held_pty_bytes(
     (bytes, queue.gates().len() == 1 && queue.has_gate_kind(kind))
 }
 
+/// How the #2207 fixture is varied.
+#[derive(Clone, Copy)]
+struct DeferredEscapeCase {
+    /// The escape character typed into the editor behind the raw `~`.
+    escape: &'static str,
+    /// `pwd` typed behind the deferred Enter goes into the EDITOR (held as editor keys) instead
+    /// of being typed with the terminal focused (held as pty bytes); its Enter is typed with the
+    /// terminal focused either way.
+    keys_into_editor: bool,
+    /// The pane queue is full with the held keys: one more entry does not fit.
+    queue_full: bool,
+    /// The view refuses to turn the deferred Enter into the hold (review F3).
+    refuse_hold: bool,
+}
+
+const DEFERRED_ESCAPE: DeferredEscapeCase = DeferredEscapeCase {
+    escape: ".",
+    keys_into_editor: false,
+    queue_full: false,
+    refuse_hold: false,
+};
+
 /// #2207 fixture: Enter, `~` before the remote prompt (raw to ssh, at its line start), the
 /// prompt's request, then `.` and an Enter in the editor (deferred behind the report) and `pwd`,
 /// Enter typed behind it (held behind the deferred Enter's gate), then the report `~`.
@@ -21531,26 +21555,217 @@ async fn reported_escape_with_an_enter_deferred_behind_it(
     ViewHandle<EditorView>,
     Rc<RefCell<Vec<Vec<u8>>>>,
 ) {
+    reported_escape_with_an_enter_deferred_behind_it_as(app, DEFERRED_ESCAPE).await
+}
+
+/// [`reported_escape_with_an_enter_deferred_behind_it`], varied by `case`.
+async fn reported_escape_with_an_enter_deferred_behind_it_as(
+    app: &mut App,
+    case: DeferredEscapeCase,
+) -> (
+    ViewHandle<TerminalView>,
+    ViewHandle<Input>,
+    ViewHandle<EditorView>,
+    Rc<RefCell<Vec<Vec<u8>>>>,
+) {
     let (terminal, input, editor, writes) =
         pane_and_terminal_for_ssh_escape_test(app, true, SHELL_INPUT_FOR_SSH_ESCAPE_TEST).await;
     type_raw_before_the_prompt_then_request(app, &terminal, &input, &[b"~"]);
-    type_keys_for_ssh_escape_test(app, &editor, &["."]);
+    type_keys_for_ssh_escape_test(app, &editor, &[case.escape]);
     input.update(app, |input, ctx| input.input_enter(ctx));
     assert!(
         enter_is_deferred_behind_the_report(app, &input),
         "test setup: the Enter waits for the report"
     );
-    terminal.update(app, |view, ctx| {
-        view.write_user_bytes_for_test(b"pwd", ctx);
-        view.write_user_bytes_for_test(b"\r", ctx);
-    });
+    if case.keys_into_editor {
+        type_keys_for_ssh_escape_test(app, &editor, &["p", "w", "d"]);
+        terminal.update(app, |view, ctx| {
+            view.write_user_bytes_for_test(b"\r", ctx);
+        });
+        input.read(app, |input, ctx| {
+            assert_eq!(
+                input.buffer_text(ctx),
+                case.escape,
+                "test setup: the keys typed into the editor behind the Enter are held, not applied"
+            );
+        });
+    } else {
+        terminal.update(app, |view, ctx| {
+            view.write_user_bytes_for_test(b"pwd", ctx);
+            view.write_user_bytes_for_test(b"\r", ctx);
+        });
+    }
     assert_eq!(
         *writes.borrow(),
         vec![b"~".to_vec()],
         "test setup: only the raw `~` reached the pty; the keys behind the Enter are held"
     );
+    let queue = editor.read(app, |editor, _| editor.paste_hold().queue());
+    assert!(
+        queue.peek().queued_len() > 0,
+        "test setup: the keys behind the Enter wait in the pane queue"
+    );
+    if case.queue_full {
+        let held = queue.peek().queued_len();
+        queue
+            .try_lock()
+            .expect("test setup: the queue is free")
+            .set_max_entries(held);
+    }
+    if case.refuse_hold {
+        input.read(app, |input, _| {
+            input
+                .model
+                .lock()
+                .typeahead_handoff_mut()
+                .refuse_deferred_enter_hold_for_test();
+        });
+    }
     deliver_shell_report(app, &terminal, &input, "~");
     (terminal, input, editor, writes)
+}
+
+/// The fallback every refused #2207 case keeps: the report is text, no escape bytes reach the
+/// pty, and the line `~X` is whole, in the editor or submitted as typed.
+fn assert_reported_tilde_stayed_text(
+    app: &App,
+    input: &ViewHandle<Input>,
+    writes: &Rc<RefCell<Vec<Vec<u8>>>>,
+    escape: &str,
+    why: &str,
+) {
+    let line = format!("~{escape}");
+    let written = writes.borrow().clone();
+    let escape_bytes = format!("\r{line}").into_bytes();
+    assert!(
+        !written
+            .iter()
+            .any(|write| *write == escape_bytes || write.as_slice() == line.as_bytes()),
+        "{why}: no escape is written: {written:?}"
+    );
+    let buffer = input.read(app, |input, ctx| input.buffer_text(ctx));
+    let submitted = format!("{line}\r").into_bytes();
+    assert!(
+        buffer.starts_with(&line) || written.contains(&submitted),
+        "{why}: the line is whole and in typed order (buffer {buffer:?}, written {written:?})"
+    );
+}
+
+/// #2207 (review F1): `~C` opens ssh's own `ssh>` command line. No prompt event follows it, so an
+/// Enter held "for the next prompt" would only ever be ended by the hold's 10 s cap: a timer as
+/// the hand-over. With an Enter deferred behind the report, `~C` is not the escape: text, as
+/// before, in typed order.
+#[test]
+fn test_a_reported_tilde_c_with_an_enter_deferred_behind_it_stays_text() {
+    App::test((), move |mut app| async move {
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        initialize_app(&mut app);
+        let case = DeferredEscapeCase {
+            escape: "C",
+            ..DEFERRED_ESCAPE
+        };
+        let (_terminal, input, _editor, writes) =
+            reported_escape_with_an_enter_deferred_behind_it_as(&mut app, case).await;
+        warpui::r#async::Timer::after(Duration::from_millis(250)).await;
+        assert_reported_tilde_stayed_text(&app, &input, &writes, "C", "`~C` + Enter");
+    });
+}
+
+/// #2207 (review F5): turning the deferred Enter into the hold adds one entry (the Enter) to the
+/// pane queue. With the queue full that entry would push out the newest held key, so the
+/// transition is not made: text, as before, nothing dropped.
+#[test]
+fn test_a_reported_ssh_escape_with_a_full_queue_behind_the_deferred_enter_stays_text() {
+    App::test((), move |mut app| async move {
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        initialize_app(&mut app);
+        let case = DeferredEscapeCase {
+            queue_full: true,
+            ..DEFERRED_ESCAPE
+        };
+        let (_terminal, input, _editor, writes) =
+            reported_escape_with_an_enter_deferred_behind_it_as(&mut app, case).await;
+        warpui::r#async::Timer::after(Duration::from_millis(250)).await;
+        assert_reported_tilde_stayed_text(&app, &input, &writes, ".", "a full queue");
+    });
+}
+
+/// #2207 (review F3): the editor judged the line as the escape, but the deferred Enter could not
+/// be turned into the hold after all. The escape is then written by the ordinary escape path,
+/// and the deferred Enter must still be finished as after any report: it used to be skipped and
+/// left deferred (its submit due, nothing to run it) until the gate's leak net, which does not
+/// run it either.
+#[test]
+fn test_a_reported_ssh_escape_whose_hold_is_refused_still_finishes_the_deferred_enter() {
+    use crate::terminal::model::typeahead_handoff::HandoffState;
+    App::test((), move |mut app| async move {
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        initialize_app(&mut app);
+        let case = DeferredEscapeCase {
+            refuse_hold: true,
+            ..DEFERRED_ESCAPE
+        };
+        let (_terminal, input, _editor, writes) =
+            reported_escape_with_an_enter_deferred_behind_it_as(&mut app, case).await;
+        warpui::r#async::Timer::after(Duration::from_millis(250)).await;
+        // Finished: its submit is no longer due, or the bare Enter it had become was submitted
+        // (the test pane has no pty controller to take the command and move the state on).
+        let submit_still_due =
+            handoff_state(&app, &input) == HandoffState::HoldAfterEnter { released: true };
+        let bare_enter_submitted = writes.borrow().contains(&b"\r".to_vec());
+        assert!(
+            !submit_still_due || bare_enter_submitted,
+            "the deferred Enter was finished, not left with its submit due: {:?}",
+            writes.borrow()
+        );
+    });
+}
+
+/// #2207 (review F2): the keys typed behind the deferred Enter went into the EDITOR and are held
+/// as editor keys. When the escape's hold is written out (here: ssh is gone) they are the hold's
+/// keys like any other: written to the pty in typed order behind the Enter, not applied to the
+/// local editor (where `pwd`, Enter would be submitted from the editor, ahead of the Enter typed
+/// before them).
+#[test]
+fn test_editor_keys_behind_a_reported_ssh_escape_are_written_in_order_when_ssh_is_gone() {
+    App::test((), move |mut app| async move {
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        initialize_app(&mut app);
+        let case = DeferredEscapeCase {
+            keys_into_editor: true,
+            ..DEFERRED_ESCAPE
+        };
+        let (terminal, input, editor, writes) =
+            reported_escape_with_an_enter_deferred_behind_it_as(&mut app, case).await;
+        warpui::r#async::Timer::after(Duration::from_millis(250)).await;
+        assert_eq!(
+            *writes.borrow(),
+            vec![b"~".to_vec(), b"\r~.".to_vec()],
+            "test setup: the escape went out alone"
+        );
+        input.read(&app, |input, _| {
+            input.model.lock().typeahead_handoff_mut().reset_on_exit();
+        });
+        terminal.update(&mut app, |view, ctx| {
+            view.handle_typeahead_report_for_test(ctx)
+        });
+        assert_eq!(
+            writes.borrow().concat(),
+            b"~\r~.\rpwd\r".to_vec(),
+            "the Enter, then the keys typed into the editor behind it, are written in typed \
+             order, once: {:?}",
+            writes.borrow()
+        );
+        input.read(&app, |input, ctx| {
+            assert_eq!(
+                input.buffer_text(ctx),
+                "",
+                "nothing was applied to the editor"
+            );
+        });
+        let queue = editor.read(&app, |editor, _| editor.paste_hold().queue());
+        assert!(queue.peek().is_idle(), "nothing is left held");
+    });
 }
 
 /// #2207: `~` raw, then `.` and an Enter in the editor before the report (and keys typed behind

@@ -8375,3 +8375,54 @@ fn other_young_holds_are_still_dropped_when_their_session_goes() {
         );
     }
 }
+
+/// #2207 (review F4): the hold made for a reported ssh escape ends at the EDGE where the editor
+/// takes input back (the local prompt after `~.`), not lazily at the next key: its Enter and keys
+/// are written then, before any command written later. An ordinary young hold is not ended there
+/// (its stale check stays where it was).
+#[test]
+fn the_escape_hold_ends_at_the_edge_where_the_editor_takes_input_back() {
+    let (mut handoff, _pty, _gate) = deferred_enter_behind_a_reported_tilde();
+    let (_, hold_id) = handoff
+        .hold_deferred_enter_for_next_prompt(*b"~.")
+        .expect("the deferred Enter waits for the next prompt");
+    assert!(handoff.is_escape_hold(hold_id));
+    assert!(
+        !handoff.end_escape_hold_if_unowned(),
+        "the pty owns input: the hold waits for its prompt"
+    );
+    assert!(handoff.take_young_hold_ends().is_empty());
+    handoff.force_editor_owned_for_test();
+    assert!(handoff.end_escape_hold_if_unowned());
+    assert_eq!(
+        handoff.take_young_hold_ends(),
+        vec![(hold_id, YoungHoldEnd::Typeahead)],
+        "written in typed order at the edge"
+    );
+    assert!(!handoff.end_escape_hold_if_unowned(), "once");
+
+    let mut handoff = young_after_submit();
+    type_and_flush(&mut handoff, b"abc");
+    let (id, _) = hold_young_enter(&mut handoff, b"\r");
+    assert!(!handoff.is_escape_hold(id));
+    handoff.force_editor_owned_for_test();
+    assert!(!handoff.end_escape_hold_if_unowned());
+    assert!(
+        handoff.take_young_hold_ends().is_empty(),
+        "an ordinary young hold is not ended at the edge"
+    );
+}
+
+/// #2207 (review F2): the view must still know the escape's hold when it applies the end the
+/// session's exit recorded (it writes that hold's editor-typed keys to the pty too), so the tag
+/// survives `reset_on_exit`.
+#[test]
+fn the_escape_hold_is_still_known_after_its_session_ended() {
+    let (mut handoff, _pty, _gate) = deferred_enter_behind_a_reported_tilde();
+    let (_, hold_id) = handoff
+        .hold_deferred_enter_for_next_prompt(*b"~.")
+        .expect("the deferred Enter waits for the next prompt");
+    handoff.reset_on_exit();
+    assert!(handoff.is_escape_hold(hold_id));
+    assert!(!handoff.is_escape_hold(hold_id.wrapping_add(1)));
+}
