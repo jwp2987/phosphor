@@ -401,9 +401,9 @@ escape through the same writer as the typed one (`TerminalView::write_ssh_escape
   reported as `~` too and stays text;
 - an escape written now reaches ssh at its line start
   (`TypeaheadHandoff::ssh_escape_would_reach_line_start`, the rule of
-  `ssh_escape_line_start` without its bookkeeping). It does not while an Enter is
-  deferred with keys behind its gate: there the report stays text and the Enter
-  runs the line as typed, in order (see "not done" below);
+  `ssh_escape_line_start` without its bookkeeping), or, with an Enter deferred
+  behind the report, that Enter and the keys behind it can wait for the next
+  prompt so the escape goes out alone (#2207, below);
 - every condition of the typed rule: a managed ssh session, not a shared-session
   viewer, and not an input locked to the agent. The lock is read BEFORE the
   #1574 switch that makes a reported line a shell line, so an agent view or a
@@ -442,14 +442,41 @@ deliver it; not reached with the switch on), `handoff_insert ... judged=ssh_esca
 then `ssh_escape_to_pty char='.' by=report`, `ssh_escape_refused ... why=report_*`,
 `enter_guard_line_break`. Counts and reasons only, never the line.
 
-**Not done.** `~` raw, then `.` and an Enter in the editor before the report:
-the design review asked for `\r~.` to be written at once and the Enter with the
-keys behind it to wait for the next prompt event. No existing transition moves a
-deferred Enter's gate to "wait for the next prompt", and writing the escape
-while that gate is live is what the escape path already refuses
-(`hold_after_enter`). That sub-case keeps the behaviour before this change (the
-line `~.` runs as typed, in order, nothing lost) until that transition is
-designed (#2207).
+**The escape with an Enter deferred behind it (#2207).** `~` raw, then `.` and
+an Enter in the editor before the report (keys typed after that Enter are held
+behind its `HandoffReport` gate). ssh gets `\r~.` at once and ALONE: OpenSSH
+drops the rest of what it read together with `~.` / `~&`, so the Enter and the
+keys behind it must not go out in the same run. They wait for the next prompt
+event instead, in typed order, the Enter first:
+
+- `TypeaheadHandoff::hold_deferred_enter_for_next_prompt` is the one new
+  transition, into states that exist: the `\r~X` is counted as
+  `ssh_escape_line_start`'s `AddCr` counts it (the pty owns input, a bare
+  Enter's line, one write in flight) and the deferred Enter becomes a queued
+  young hold with evidence `PrecmdMaybeInFlight`.
+- The view (`hold_deferred_enter_behind_ssh_escape`) takes the entries behind
+  the deferred gate, queues the Enter under a `PromptSeen` gate and the entries
+  behind it again, under one lock of the queue, and emits `\r~X` straight to the
+  pty (through the queue it would wait behind the gate it must go ahead of).
+- Ends: the young hold's own. The next prompt's request and report run the
+  Enter in the editor with the keys behind it (the remote shell after `~?`, the
+  local shell after `~.`); a command written; no request possible. Net: that
+  gate's cap (the 10 s give-up, which writes in typed order). No new state,
+  gate kind or timer.
+- Never dropped (owner decision 2026-11-13). Where any other young hold's keys
+  are void (`YoungHoldEnd::Dropped`: the session ended, or the state left
+  `PtyOwned` / `AwaitingReport` with the hold queued, or a command was written
+  from another state), THIS hold's Enter and keys are written in typed order to
+  whatever owns input now (`YoungHoldEnd::Typeahead`,
+  `end_unowned_young_hold`), as a plain terminal delivers what was typed after
+  ssh exits. A Ctrl-C still drops it, as the tty flushes typeahead on an
+  interrupt. Other young holds are unchanged.
+- Only when the deferral is the one thing in the way
+  (`deferred_enter_could_wait_for_next_prompt`, and in the view: the deferred
+  gate is the only gate in the pane queue and no signal is held). Otherwise,
+  and for `.foo` + Enter, the report is text as before, in typed order.
+- Log: `ssh_escape_enter_held_for_prompt`, `ssh_escape_enter_held`,
+  `young_hold_end why=ssh_escape_session_gone`.
 
 **The legacy report path is judged too (#2208).** A report that answers no
 hand-off request (`ReportDisposition::InsertLegacy`, `handle_typeahead_event`)
