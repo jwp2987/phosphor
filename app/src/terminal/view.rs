@@ -15069,6 +15069,11 @@ impl TerminalView {
 
             return;
         };
+        // #2208: the editor judges the line this report finishes, as it does on the hand-off
+        // path, and that judgement reads the model (the shared-session check): the report is
+        // copied out and the model lock released before the editor is called.
+        let typeahead = typeahead.to_owned();
+        drop(model);
 
         // We don't insert typeahead into the input buffer when it was entered during an
         // agent-requested command - the agent is going to follow-up immediately after the
@@ -15079,10 +15084,35 @@ impl TerminalView {
             #[cfg(feature = "integration_tests")]
             log::info!("Writing typeahead to input editor: {typeahead}");
 
-            self.input.update(ctx, |input, ctx| {
-                input.insert_typeahead_text(num_typeahead_chars_inserted, typeahead, ctx);
+            let facts = self.take_report_line_facts();
+            let outcome = self.input.update(ctx, |input, ctx| {
+                input.insert_legacy_reported_line(
+                    num_typeahead_chars_inserted,
+                    &typeahead,
+                    facts,
+                    ctx,
+                )
             });
             ctx.notify();
+            if let HandoffInsert::SshEscape(bytes) = outcome {
+                // The line was ssh's escape (`~` raw at ssh's line start, its escape character
+                // in the editor): written at once, as the typed escape is.
+                self.write_ssh_escape(bytes, ctx);
+            }
+        }
+    }
+
+    /// #2202: what the view knows about the local ssh client for the report it is about to hand
+    /// the editor ([`ReportLineFacts`]). The fact about the raw `~` is this report's: it is taken
+    /// (whatever the report holds), so it never outlives the line it was typed on. Whether an
+    /// escape would reach ssh's line start is only asked for a report that can be the escape's
+    /// `~`. With the hand-off off nothing is ever recorded and both are false.
+    fn take_report_line_facts(&mut self) -> ReportLineFacts {
+        let tilde_at_ssh_line_start = self.handoff.write().take_raw_tilde_at_ssh_line_start();
+        ReportLineFacts {
+            tilde_at_ssh_line_start,
+            escape_reaches_ssh_line_start: tilde_at_ssh_line_start
+                && self.report_escape_reaches_ssh_line_start(),
         }
     }
 
@@ -15689,17 +15719,10 @@ impl TerminalView {
             .map(|(typeahead, num_typeahead_chars_inserted)| {
                 (typeahead.to_owned(), num_typeahead_chars_inserted)
             });
-        // #2202: the fact about the raw `~` is for this report: taken whether or not the report
-        // holds text, so it never outlives the line it was typed on.
-        let tilde_at_ssh_line_start = self.handoff.write().take_raw_tilde_at_ssh_line_start();
+        // Taken whether or not the report holds text (see `take_report_line_facts`).
+        let facts = self.take_report_line_facts();
         let Some((typeahead, num_typeahead_chars_inserted)) = typeahead else {
             return HandoffInsert::Inserted;
-        };
-        let facts = ReportLineFacts {
-            tilde_at_ssh_line_start,
-            // Only asked for a report that can be the escape's `~`.
-            escape_reaches_ssh_line_start: tilde_at_ssh_line_start
-                && self.report_escape_reaches_ssh_line_start(),
         };
         let inserted = self.input.update(ctx, |input, ctx| {
             input.insert_reported_line(num_typeahead_chars_inserted, &typeahead, facts, ctx)

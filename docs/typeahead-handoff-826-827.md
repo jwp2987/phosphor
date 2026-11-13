@@ -449,5 +449,16 @@ deferred Enter's gate to "wait for the next prompt", and writing the escape
 while that gate is live is what the escape path already refuses
 (`hold_after_enter`). That sub-case keeps the behaviour before this change (the
 line `~.` runs as typed, in order, nothing lost) until that transition is
-designed. The legacy report path (`insert_typeahead_text`) is not judged either:
-it answers no hand-off request.
+designed (#2207).
+
+**The legacy report path is judged too (#2208).** A report that answers no
+hand-off request (`ReportDisposition::InsertLegacy`, `handle_typeahead_event`)
+finishes the user's line as well. The view copies the report out and releases
+the model lock (the judge's shared-session check reads the model; holding the
+lock across the insert was the reason this path was left out), takes the same
+facts (`take_report_line_facts`) and calls `Input::insert_legacy_reported_line`,
+which runs the same `judge_reported_line`; the escape goes out through
+`write_ssh_escape`. `insert_typeahead_text` is the unjudged wrapper (no facts).
+With the typeahead hand-off off no fact is ever recorded, so that routing is
+exactly as before. Log: `typeahead_insert judged=ssh_escape`, then
+`ssh_escape_to_pty ... by=legacy_report`.

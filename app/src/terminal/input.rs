@@ -9355,27 +9355,52 @@ impl Input {
         self.system_insert(content, ctx);
     }
 
+    /// [`Self::insert_legacy_reported_line`] for a report that is only ever text (no facts about
+    /// the local ssh client).
     pub fn insert_typeahead_text(
         &mut self,
         num_typeahead_chars_inserted: CharOffset,
         typeahead: &str,
         ctx: &mut ViewContext<Self>,
     ) {
-        warpui::profiling::zone!("typeahead_insert");
-        self.replace_typeahead_prefix(num_typeahead_chars_inserted, typeahead, ctx);
-        self.note_typeahead_inserted(typeahead, ctx);
+        self.insert_legacy_reported_line(
+            num_typeahead_chars_inserted,
+            typeahead,
+            ReportLineFacts::default(),
+            ctx,
+        );
     }
 
-    /// #2208: [`Self::insert_typeahead_text`] with what the view knows about the shell's line.
-    /// (Stub of the tests-first commit: the facts are not judged yet.)
+    /// Inserts a report that answers no hand-off request at the front of the buffer. #2208: it
+    /// finishes the user's line all the same, so the line is judged first, as on the hand-off
+    /// path ([`Self::insert_reported_line`]): `~` in front of the one escape character the editor
+    /// holds, with the view's `facts`, is ssh's escape; the editor is emptied and the two bytes
+    /// are returned for the view to write. Never [`HandoffInsert::Refused`]: this path has no
+    /// #1569 refusal. The caller must not hold the model lock (the judge reads the model).
     pub fn insert_legacy_reported_line(
         &mut self,
         num_typeahead_chars_inserted: CharOffset,
         typeahead: &str,
-        _facts: ReportLineFacts,
+        facts: ReportLineFacts,
         ctx: &mut ViewContext<Self>,
     ) -> HandoffInsert {
-        self.insert_typeahead_text(num_typeahead_chars_inserted, typeahead, ctx);
+        warpui::profiling::zone!("typeahead_insert");
+        if let Some(bytes) = self.judge_reported_line(
+            typeahead,
+            num_typeahead_chars_inserted.as_usize(),
+            false,
+            facts,
+            ctx,
+        ) {
+            warpui::input_order::log_hop("typeahead_insert", || "judged=ssh_escape".to_owned());
+            warpui::input_order::log_hop("ssh_escape_to_pty", || {
+                format!("char={:?} by=legacy_report", bytes[1] as char)
+            });
+            self.clear_buffer_and_reset_undo_stack(ctx);
+            return HandoffInsert::SshEscape(bytes);
+        }
+        self.replace_typeahead_prefix(num_typeahead_chars_inserted, typeahead, ctx);
+        self.note_typeahead_inserted(typeahead, ctx);
         HandoffInsert::Inserted
     }
 
