@@ -162,4 +162,4 @@ def r30_fish_bootstrap_answers_the_in_band_exchange_2196():
     mod = _src("crates", "warp_terminal", "src", "shell", "mod.rs")
     assert "matches!(self, ShellType::Zsh | ShellType::Bash | ShellType::Fish)" in mod
     doc = _src("docs", "design", "r10-remote.md")
-    assert "#2196" in doc and "nu stays on the completer" in doc and "--ide-complete" in doc
+    assert "#2196" in doc and "nu stays on the app's completer" in doc and "--ide-complete" in doc
