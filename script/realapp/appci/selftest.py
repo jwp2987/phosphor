@@ -9453,6 +9453,8 @@ import selftest_r27_recallorder  # noqa: E402  (#2107 history_up_recall long-his
 CHECKS.extend(selftest_r27_recallorder.CHECKS)
 import selftest_r27_remotetabenter  # noqa: E402  (#2188 lab_tab_remote_dir fast Enter: received-line verdict, the app's remote_tab_wait note, kill switch name; own file)
 CHECKS.extend(selftest_r27_remotetabenter.CHECKS)
+import selftest_r29_labharness2  # noqa: E402  (r29a lab harness: Tab -> insert as a band, chips channels per prompt the app ran, branch evidence, lan helper takeover; own file)
+CHECKS.extend(selftest_r29_labharness2.CHECKS)
 import selftest_r27_loganchors  # noqa: E402  (r27 loganchors: hop patterns anchored at a real log line, diff-body echo, focus-lost hops, the pane path always closes; own file)
 CHECKS.extend(selftest_r27_loganchors.CHECKS)
 import selftest_r28_ctrlcnu  # noqa: E402  (#2187 lab_ctrl_c_no_esc_i waits out the burst's own second prompt cycle; own file)

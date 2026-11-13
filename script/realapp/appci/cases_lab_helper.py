@@ -381,17 +381,18 @@ reg("helper_scp_fallback", c_scp_fallback, shells=("bash",), lat=("lan",), helpe
 def drive_repo(ctx, r, arm, fx):
     """cd into the git fixture on the remote and give the chip / listing / branch work time to run; returns (prompts, branch seen on screen or None when no OCR)"""
     p0 = ctx.remote.prompts()
+    off = ctx.log_size()
     ctx.be.type("cd %s" % fx["dir"], CL.type_pace(ctx), enter=True)
-    seen, txt = False, None
+    seen, txt = None, None
     for i in range(6):
         time.sleep(1.0 + 2 * CL.rtt_s(arm))
         txt = ctx.ocr("lab_fam_%d" % i)
-        if txt is None or fx["branch"] in txt:
-            seen = txt is not None
+        seen, how = CL.branch_evidence(txt, fx["branch"], ctx.log_since(off))
+        if seen is not False:          # on screen / in the app log's chip value, or no OCR and no log line: nothing more to wait for
             break
     ctx.be.type("ls", CL.type_pace(ctx), enter=True)
     settle(ctx, arm)
-    return max(1, ctx.remote.prompts() - p0), (seen if txt is not None else None)
+    return CL.chip_prompt_count(ctx.remote.prompts() - p0, ctx.log_since(off)), seen
 
 
 DRIVERS = {"run_command": drive_repo, "git_read": drive_repo, "fs_basic": drive_repo}          # capability -> scripted app driver; a family without one gets NO generic case (#2068)
