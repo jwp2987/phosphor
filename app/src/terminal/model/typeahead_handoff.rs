@@ -1214,6 +1214,11 @@ pub struct TypeaheadHandoff {
     /// #2186: the escape `\r` rule this pane uses, overriding `PHOSPHOR_SSH_ESCAPE_CR_RULE`:
     /// `Some(false)` is the old proof-based rule. Kept across a session's end like the env switch.
     ssh_escape_cr_rule_override: Option<bool>,
+    /// #2202: the last user key that went to the pty raw was a lone `~` written right after a
+    /// newline, so ssh read it at its line start ([`TypeaheadHandoff::note_raw_user_write`]). Void
+    /// at any other raw key, a command written, a new session, and once the report of the line is
+    /// judged.
+    raw_tilde_at_ssh_line_start: bool,
 }
 
 /// #1615: an Enter the hand-off delivered to the pty although a line was unanswered, because the
@@ -1494,19 +1499,38 @@ impl TypeaheadHandoff {
         self.pty_writes.clone()
     }
 
-    /// #2202: a user key went to the pty raw. (Stub of the tests-first commit: nothing is noted.)
-    pub fn note_raw_user_write(&mut self, _bytes: &[u8]) {}
-
-    /// #2202: whether the last raw user key was a lone `~` at ssh's line start, once. (Stub of the
-    /// tests-first commit: never.)
-    pub fn take_raw_tilde_at_ssh_line_start(&mut self) -> bool {
-        false
+    /// #2202: the view routed a user key to the pty (not held): `bytes` are what ssh reads next.
+    /// Remembers whether they are a lone `~` written right after a newline, which is when ssh
+    /// reads `~` at its line start (#2186: every byte ssh reads is a byte the app wrote). Any
+    /// other key written ends the fact: `a`, Backspace, `~` leaves `~` in the remote line, but
+    /// ssh never saw it at a line start (review A4).
+    pub fn note_raw_user_write(&mut self, bytes: &[u8]) {
+        self.raw_tilde_at_ssh_line_start = bytes == b"~" && self.pty_writes.tail_is_newline();
     }
 
-    /// #2202: whether an ssh escape written now would reach ssh at its line start. (Stub of the
-    /// tests-first commit: never.)
+    /// #2202: whether the last user key that went to the pty raw was a lone `~` read by ssh at its
+    /// line start ([`Self::note_raw_user_write`]). Taken once, by the report of that line: the
+    /// `~` is editor text or ssh's escape from then on.
+    pub fn take_raw_tilde_at_ssh_line_start(&mut self) -> bool {
+        mem::take(&mut self.raw_tilde_at_ssh_line_start)
+    }
+
+    /// #2202: whether an ssh escape written now would reach ssh at its line start: alone (ssh
+    /// read a newline or its own escape last) or behind the `\r` that
+    /// [`Self::ssh_escape_line_start`] would add. The same rule as that function, without its
+    /// bookkeeping; `false` exactly where it answers [`SshEscapeLineStart::Skipped`] (an Enter
+    /// deferred with its gate live, keys held, user bytes possibly in the remote line), where the
+    /// two bytes would land in the remote line as text instead.
     pub fn ssh_escape_would_reach_line_start(&self) -> bool {
-        false
+        let writes = self.pty_writes.get();
+        if self.ssh_line_start_at_writes == Some(writes) {
+            return true;
+        }
+        if self.ssh_escape_cr_line_start_rule() {
+            self.pty_writes.tail_is_newline() || self.ssh_escape_cr_blocker_line_start().is_none()
+        } else {
+            self.ssh_escape_cr_blocker(writes).is_none()
+        }
     }
 
     /// #1793: whether the #1638 ssh escape path writes a `\r` ahead of the escape so ssh reads it
@@ -3302,6 +3326,8 @@ impl TypeaheadHandoff {
     pub fn on_command_written(&mut self) {
         self.end_keys_follow_editor("command_written");
         self.forget_untracked_line_bytes();
+        // #2202: the command's own newline starts a new line for ssh; a `~` before it was text.
+        self.raw_tilde_at_ssh_line_start = false;
         // #1574: the command's kill prefix and Enter end whatever line it lands on.
         self.committed_delivery = false;
         self.interrupt_barrier = false;
@@ -3407,6 +3433,8 @@ impl TypeaheadHandoff {
         if bytes.is_empty() {
             return;
         }
+        // #2202: keys written behind a command are not a lone `~` at ssh's line start.
+        self.raw_tilde_at_ssh_line_start = false;
         if let HandoffState::PtyOwned {
             wrote_user_bytes,
             enters_written,
