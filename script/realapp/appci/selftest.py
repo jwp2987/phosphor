@@ -9499,3 +9499,5 @@ import selftest_r28_tabscleanup  # noqa: E402  (r28: tab cleanup retries lost cl
 CHECKS.extend(selftest_r28_tabscleanup.CHECKS)
 import selftest_r29_harness  # noqa: E402  (r29: mode_proof landing screen is not the agent header; link case palette close; own file)
 CHECKS.extend(selftest_r29_harness.CHECKS)
+import selftest_r30_remotetab  # noqa: E402  (r30, #2196: the zshc lab user (zsh WITH compinit), the in-band answer the case judges per shell, the Tab press time from the injector, the fish bootstrap answer; own file)
+CHECKS.extend(selftest_r30_remotetab.CHECKS)

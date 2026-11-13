@@ -632,7 +632,7 @@ git status`";
 
 /// #1801 reviews: the app writes `^Y` and frames only to a shell whose bootstrap advertised the
 /// framed protocol (M2), and for bash only from a known version the bootstrap binds the keys in.
-/// zsh and bash only; fish and the others never.
+/// zsh, bash and (#2196) fish; PowerShell and nu never.
 ///
 /// #1969 changed one expectation here on purpose: bash 3.2 (macOS `/bin/bash`) now answers the
 /// exchange (its hook hands bytes back through a readline macro, having no `READLINE_LINE`), so
@@ -703,7 +703,30 @@ fn native_shell_completions_need_the_advertised_protocol_and_bash_3_2() {
         !Shell::new(ShellType::Zsh, None, None, Default::default(), None)
             .supports_native_shell_completions()
     );
-    for shell_type in [ShellType::Fish, ShellType::PowerShell, ShellType::Nu] {
+    // #2196: fish answers the exchange too (its bootstrap binds ^Y and answers with `complete -C`),
+    // and only when it advertised the protocol; PowerShell and nu have no hook and never do.
+    assert!(Shell::new(
+        ShellType::Fish,
+        None,
+        advertised(),
+        Default::default(),
+        None
+    )
+    .supports_native_shell_completions());
+    assert!(
+        !Shell::new(ShellType::Fish, None, None, Default::default(), None)
+            .supports_native_shell_completions(),
+        "a fish that did not advertise the protocol never gets ^Y"
+    );
+    assert!(!Shell::new(
+        ShellType::Fish,
+        None,
+        Some(HashSet::from(["vi_mode".to_owned()])),
+        Default::default(),
+        None
+    )
+    .supports_native_shell_completions());
+    for shell_type in [ShellType::PowerShell, ShellType::Nu] {
         assert!(
             !Shell::new(shell_type, None, advertised(), Default::default(), None)
                 .supports_native_shell_completions()

@@ -23,7 +23,11 @@ whose Bootstrapped hook advertised `!phosphor_nc_frames_v1` in its shell options
 This runs the REAL assembled bootstraps (the way `app/src/terminal/bootstrap.rs` builds them, as
 `test_bash_bootstrap_nounset` and `test_zsh_bootstrap_strict_options` do), so their own bind lines
 are what is exercised. Needs only python3 and the shells (no cargo); a missing shell is SKIPPED.
-fish is not exercised: the app never sends fish ^Y and its bootstrap has no handler.
+fish (#2196) has its own, smaller set of checks (`run_fish`): its hook reads the frame with one
+external `sh` (fish's own `read` runs the line editor), so the cases that depend on a hook reading
+raw bytes one by one (a frame cut in pieces, ESC classification) are bash and zsh only; every
+case that matters to the app (candidates, descriptions, the cancel and the stale frame, a command
+behind the frame, the give-up, a late frame, no hooks sent) runs on fish too.
 
 WHAT IT CHECKS, per shell (PHOSPHOR_NC_DEADLINE=5 keeps the hook's own deadline short)
   * the Bootstrapped hook advertises the protocol;
@@ -250,7 +254,8 @@ def make_lab(base):
     lab = os.path.join(base, "lab")
     for d in ("projects", "proto", "dir", "other"):
         os.makedirs(os.path.join(lab, d))
-    for f in ("dir/file1", "dir/fig"):
+    os.makedirs(os.path.join(lab, "sp ace"))
+    for f in ("dir/file1", "dir/fig", "sp ace/a b"):
         open(os.path.join(lab, f), "w").close()
     return lab
 
@@ -686,32 +691,187 @@ def run_zsh_no_compsys(base, lab):
         sh.close()
 
 
+DESCRIPTION_RE = re.compile(rb"\x1b\]9280;D\?description;([^\x07]*)\x07")
+
+
+def start_fish(base, lab):
+    """The REAL assembled fish bootstrap (fish_init_shell.sh + fish.sh, as test_fish_bootstrap) in an interactive fish in `lab`."""
+    fish = shutil.which("fish")
+    with open(os.path.join(BOOTSTRAP, "fish_init_shell.sh")) as f:
+        init = assemble(f.read())
+    with open(os.path.join(BOOTSTRAP, "fish.sh")) as f:
+        body = assemble(f.read())
+    script = os.path.join(base, "boot.fish")
+    with open(script, "w") as f:
+        f.write((init + "\n" + body + "\n").replace("@@WARP_SESSION_ID@@", "4242").replace("@@USING_CON_PTY_BOOLEAN@@", "false"))
+    home = os.path.join(base, "home")
+    os.makedirs(home, exist_ok=True)
+    env = {
+        "HOME": home, "XDG_CONFIG_HOME": os.path.join(base, "cfg"), "XDG_DATA_HOME": os.path.join(base, "data"),
+        "USER": os.environ.get("USER", "user"), "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
+        "TERM": "xterm-256color", "LANG": "C.UTF-8", "WARP_IS_LOCAL_SHELL_SESSION": "1", "PHOSPHOR_NC_DEADLINE": "5",
+    }
+    sh = Pty([fish, "--no-config", "-i"], env, lab)
+    sh.drain(1.5)
+    sh.write((f"source {shlex.quote(script)}; builtin echo boot(math 20+22)done\r").encode())
+    return sh
+
+
+def fish_command():
+    """A fish command whose OUTPUT proves it ran: (text, output to expect)."""
+    counter[0] += 1
+    n = counter[0]
+    return ("echo ran-(math %d+1)" % (n - 1), b"ran-%d" % n)
+
+
+def run_fish(base, lab):
+    """#2196: fish answers the in-band exchange with `complete -C`, so a Tab on a remote fish without the helper costs the exchange's own round trips
+    instead of the completer's several."""
+    if not shutil.which("fish"):
+        skipped.append("fish: not installed")
+        return
+    shell = "fish"
+    sh = start_fish(base, lab)
+    try:
+        if not wait_bootstrapped(sh, shell):
+            return
+        sh.drain(0.5)
+        got = complete(sh, shell, "cd pro")
+        if got is not None:
+            check(shell, "cd pro offers projects/ and proto/", {"projects/", "proto/"} <= set(got), f"(got {got})")
+            check(shell, "cd pro offers no file", "other/" not in got, f"(got {got})")
+        got = complete(sh, shell, "cat dir/fi")
+        if got is not None:
+            check(shell, "cat dir/fi offers the whole token dir/file1", "dir/file1" in got and "dir/fig" in got, f"(got {got})")
+        got = complete(sh, shell, "echo a;ec")
+        if got is not None:
+            check(shell, "echo a;ec keeps the token's a; lead", bool(got) and all(c.startswith("a;") for c in got) and "a;echo" in got, f"(got {got[:10]})")
+        got = complete(sh, shell, "cat sp")
+        if got is not None:
+            check(shell, "a name with a space is offered escaped, as fish inserts it", got == ["sp\\ ace/"], f"(got {got})")
+        token = ask(sh, shell, "descriptions")
+        if token is not None:
+            sh.write(frame(token, "ls --color=al"))
+            out = sh.read_until(rb"\x1b\]9280;B\x07")
+            check(shell, "an option comes with its description (OSC 9280;D?description)",
+                  b"--color=always" in out and DESCRIPTION_RE.search(out) is not None and b"Use colors" in out, f"(got {out[-200:]!r})")
+
+        # A command behind the frame (same write, and 5 ms later) runs.
+        for gap, label in ((None, "same write"), (0.005, "5 ms later")):
+            text, want = fish_command()
+            got = complete(sh, shell, "cd pro", after=app_command(text), gap=gap)
+            check(shell, f"answers with a command behind the frame ({label})", got is not None and "projects/" in got, f"(got {got})")
+            expect_runs(sh, shell, f"a command behind the frame ({label}) runs", want)
+
+        # ^Y, the cancel frame and a command in ONE batch, before the hook has even started.
+        text, want = fish_command()
+        sh.write(b"\x19" + CANCEL + app_command(text))
+        out = sh.read_until(re.escape(want))
+        check(shell, "^Y + cancel + command in one batch: no candidates, the command runs", want in out and CANDIDATE_RE.search(out) is None, f"(got {out[-200:]!r})")
+
+        if ask(sh, shell, "cancel") is not None:
+            text, want = fish_command()
+            sh.write(CANCEL + app_command(text))
+            out = sh.read_until(re.escape(want))
+            check(shell, "the cancel frame ends the exchange with no candidates", CANDIDATE_RE.search(out) is None, f"(got {out[-200:]!r})")
+            check(shell, "the command after the cancel frame runs", want in out, f"(got {out[-200:]!r})")
+
+        token = ask(sh, shell, "stale token")
+        if token is not None:
+            text, want = fish_command()
+            sh.write(frame(b"999" + token, "cd pro") + app_command(text))
+            out = sh.read_until(re.escape(want))
+            check(shell, "a frame with another token is ignored (no candidates)", CANDIDATE_RE.search(out) is None, f"(got {out[-200:]!r})")
+            check(shell, "the command after a stale frame runs", want in out, f"(got {out[-200:]!r})")
+
+        # A terminal reply (a DA report) between ^Y and the frame is dropped; the frame is answered.
+        token = ask(sh, shell, "DA reply")
+        if token is not None:
+            sh.write(b"\x1b[?62;22c" + frame(token, "cd pro"))
+            got = sh.read_until(rb"\x1b\]9280;B\x07")
+            check(shell, "a DA reply before the frame is dropped; the frame is answered", b"projects/" in got, f"(got {got[-200:]!r})")
+            text, want = fish_command()
+            sh.write(app_command(text))
+            expect_runs(sh, shell, "a DA reply leaves the line clean: the next command runs", want)
+
+        # A SIGWINCH while the hook waits: a lost answer is fine, a lost key is not.
+        if ask(sh, shell, "resize") is not None:
+            os.kill(sh.pid, signal.SIGWINCH)
+            time.sleep(0.2)
+            text, want = fish_command()
+            sh.write(CANCEL + app_command(text))
+            expect_runs(sh, shell, "a SIGWINCH during the hook loses no key: the command after it runs", want)
+
+        # The give-up: nothing arrives, the hook ends by itself (PHOSPHOR_NC_DEADLINE=5), writes nothing, the next raw command runs.
+        if ask(sh, shell, "give-up") is not None:
+            sh.drain(5.6)
+            text, want = fish_command()
+            sh.write(text.encode() + b"\r")
+            expect_runs(sh, shell, "after the hook's own deadline the next raw command runs", want)
+
+        # A frame landing at the prompt after the give-up is dropped; the command behind it runs.
+        token = ask(sh, shell, "late frame")
+        if token is not None:
+            sh.drain(5.6)
+            text, want = fish_command()
+            sh.write(frame(token, "cd pro") + app_command(text))
+            expect_runs(sh, shell, "a frame landing at the prompt is dropped; the command behind it runs", want)
+
+        # The exchange is not a command: no Preexec, CommandFinished or Precmd hook, and the next real command announces itself exactly once.
+        sh.drain(0.5)
+        before = {h: len(sh.hooks(h)) for h in ("Preexec", "CommandFinished", "Precmd")}
+        got = complete(sh, shell, "cd pro")
+        sh.write(RS + b"-:" + US)
+        sh.drain(1.0)
+        after = {h: len(sh.hooks(h)) for h in before}
+        check(shell, "the exchange and a frame at the prompt send no Preexec / CommandFinished / Precmd hook", got is not None and after == before, f"(before {before}, after {after})")
+        text, want = fish_command()
+        sh.write(app_command(text))
+        expect_runs(sh, shell, "(hooks) the command after the exchange runs", want)
+        sh.drain(1.0)
+        after = {h: len(sh.hooks(h)) for h in before}
+        check(shell, "the next real command sends exactly one Preexec, CommandFinished and Precmd", all(after[h] == before[h] + 1 for h in before), f"(before {before}, after {after})")
+
+        # The exchange is quick: no slow path in the shell.
+        t0 = time.time()
+        got = complete(sh, shell, "cd pro")
+        took = time.time() - t0
+        check(shell, "answers well inside a second", got is not None and took < 1.0, f"(took {took:.2f}s, got {got})")
+        text, want = fish_command()
+        sh.write(app_command(text))
+        expect_runs(sh, shell, "the shell runs a command at the end", want)
+    finally:
+        sh.close()
+
+
 def main():
     import argparse
     ap = argparse.ArgumentParser(description="the in-band native-completions exchange in the real bash and zsh bootstraps")
     ap.add_argument("--bash", help="the bash to run (default: the first on PATH)")
     ap.add_argument("--bash-image", action="append", default=[], help="also run bash from this container image (repeatable)")
-    ap.add_argument("--only-bash", action="store_true", help="skip zsh")
+    ap.add_argument("--only-bash", action="store_true", help="skip zsh and fish")
+    ap.add_argument("--only-fish", action="store_true", help="run only fish (#2196)")
     a = ap.parse_args()
     with tempfile.TemporaryDirectory(prefix="phx-native-") as base:
         lab = make_lab(base)
-        runners = [(lambda b, l: run_bash(b, l, bash=a.bash), "bash")]
+        runners = [] if a.only_fish else [(lambda b, l: run_bash(b, l, bash=a.bash), "bash")]
         # macOS: the system /bin/bash is 3.2 and is what a remote Mac usually runs; check it as
         # well when the bash on PATH is another one (Homebrew's).
         first = shutil.which("bash")
-        if sys.platform == "darwin" and not a.bash and os.path.exists("/bin/bash") and first and os.path.realpath(first) != "/bin/bash":
+        if sys.platform == "darwin" and not a.bash and not a.only_fish and os.path.exists("/bin/bash") and first and os.path.realpath(first) != "/bin/bash":
             runners.append((lambda b, l: run_bash(b, l, bash="/bin/bash"), "bash-system"))
         images = a.bash_image or os.environ.get("PHOSPHOR_NC_BASH_IMAGES", "").split()
         for n, image in enumerate(images):
             runners.append((lambda b, l, image=image: run_bash(b, l, image=image), "bash-image-%d" % n))
-        if not a.only_bash:
+        if not a.only_bash and not a.only_fish:
             runners.append((run_zsh, "zsh"))
             runners.append((run_zsh_no_compsys, "zsh-no-compinit"))
+        if not a.only_bash:
+            runners.append((run_fish, "fish"))
         for runner, name in runners:
             sub = os.path.join(base, name)
             os.makedirs(sub)
             runner(sub, lab)
-    print("NOTE fish: not exercised; the app never sends fish ^Y (ShellType::supports_native_shell_completions)")
     for shell in skipped:
         print(f"SKIPPED {shell}")
     if failures:
