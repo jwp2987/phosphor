@@ -1,0 +1,290 @@
+1794534395.0588541031	64530	sh -c 'echo pT1_p49ytln9:$PPID >> ~/.app
+1794534404.1310029030	64530	zsh -c 'zmodload zsh/datetime; trap "pri
+1794534407.5320320129	64530	zsh -c 'zmodload zsh/datetime; trap "pri
+1794534410.9148581028	64530	zsh -c 'zmodload zsh/datetime; trap "pri
+1794534414.3727619648	64530	zsh -c 'zmodload zsh/datetime; trap "pri
+1794534417.8375360966	64530	zsh -c 'zmodload zsh/datetime; trap "pri
+1794534421.2019550800	64530	zsh -c 'zmodload zsh/datetime; trap "pri
+1794534424.6640319824	64530	zsh -c 'zmodload zsh/datetime; trap "pri
+1794534428.0845739841	64530	zsh -c 'zmodload zsh/datetime; trap "pri
+1794534431.5222189426	64530	zsh -c 'zmodload zsh/datetime; trap "pri
+1794534434.8855199814	64530	zsh -c 'zmodload zsh/datetime; trap "pri
+1794534438.2522649765	64530	zsh -c 'zmodload zsh/datetime; trap "pri
+1794534441.6782729626	64530	zsh -c 'zmodload zsh/datetime; trap "pri
+1794534445.0835649967	64530	zsh -c 'zmodload zsh/datetime; trap "pri
+1794534448.5441529751	64530	zsh -c 'zmodload zsh/datetime; trap "pri
+1794534451.9145870209	64530	zsh -c 'zmodload zsh/datetime; trap "pri
+1794534455.3309910297	64530	zsh -c 'zmodload zsh/datetime; trap "pri
+1794534458.7772359848	64530	zsh -c 'zmodload zsh/datetime; trap "pri
+1794534462.1900279522	64530	zsh -c 'zmodload zsh/datetime; trap "pri
+1794534465.5759780407	64530	zsh -c 'zmodload zsh/datetime; trap "pri
+1794534468.9840669632	64530	zsh -c 'zmodload zsh/datetime; trap "pri
+1794534472.3755359650	64530	zsh -c 'zmodload zsh/datetime; trap "pri
+1794534475.8010571003	64530	zsh -c 'zmodload zsh/datetime; trap "pri
+1794534479.2382130623	64530	zsh -c 'zmodload zsh/datetime; trap "pri
+1794534482.6380200386	64530	zsh -c 'zmodload zsh/datetime; trap "pri
+1794534485.9985799789	64530	zsh -c 'zmodload zsh/datetime; trap "pri
+1794534489.4480450153	64530	zsh -c 'zmodload zsh/datetime; trap "pri
+1794534492.7932729721	64530	zsh -c 'zmodload zsh/datetime; trap "pri
+1794534496.1639630795	64530	zsh -c 'zmodload zsh/datetime; trap "pri
+1794534499.5013220310	64530	zsh -c 'zmodload zsh/datetime; trap "pri
+1794534502.9081280231	64530	zsh -c 'zmodload zsh/datetime; trap "pri
+1794534506.3633298874	64530	zsh -c 'zmodload zsh/datetime; trap "pri
+1794534509.7369210720	64530	zsh -c 'zmodload zsh/datetime; trap "pri
+1794534513.1557230949	64530	zsh -c 'zmodload zsh/datetime; trap "pri
+1794534516.6494789124	64530	ps -o comm= -p $$ > .appci_shell
+1794534650.1985430717	64530	zsh -c 'zmodload zsh/datetime; trap "pri
+1794534653.6354160309	64530	zsh -c 'zmodload zsh/datetime; trap "pri
+1794534657.0723230839	64530	zsh -c 'zmodload zsh/datetime; trap "pri
+1794534660.5345079899	64530	zsh -c 'zmodload zsh/datetime; trap "pri
+1794534663.9902999401	64530	zsh -c 'zmodload zsh/datetime; trap "pri
+1794534667.4528069496	64530	zsh -c 'zmodload zsh/datetime; trap "pri
+1794534670.9158470631	64530	zsh -c 'zmodload zsh/datetime; trap "pri
+1794534674.3829460144	64530	zsh -c 'zmodload zsh/datetime; trap "pri
+1794534677.8653509617	64530	zsh -c 'zmodload zsh/datetime; trap "pri
+1794534717.2567150593	64530	zsh -c 'zmodload zsh/datetime; trap "pri
+1794534720.7366309166	64530	zsh -c 'zmodload zsh/datetime; trap "pri
+1794534724.2415580750	64530	zsh -c 'zmodload zsh/datetime; trap "pri
+1794534727.7313868999	64530	zsh -c 'zmodload zsh/datetime; trap "pri
+1794534731.1970310211	64530	zsh -c 'zmodload zsh/datetime; trap "pri
+1794534734.6790881157	64530	zsh -c 'zmodload zsh/datetime; trap "pri
+1794534763.2831959724	64530	zsh -c 'zmodload zsh/datetime; trap "pri
+1794534766.7183980942	64530	zsh -c 'zmodload zsh/datetime; trap "pri
+1794534770.1808459759	64530	zsh -c 'zmodload zsh/datetime; trap "pri
+1794534773.6392331123	64530	zsh -c 'zmodload zsh/datetime; trap "pri
+1794534777.0773959160	64530	zsh -c 'zmodload zsh/datetime; trap "pri
+1794534780.5459859371	64530	zsh -c 'zmodload zsh/datetime; trap "pri
+1794534809.4771249294	64530	zsh -c 'zmodload zsh/datetime; trap "pri
+1794534812.9474570751	64530	zsh -c 'zmodload zsh/datetime; trap "pri
+1794534816.3963310719	64530	zsh -c 'zmodload zsh/datetime; trap "pri
+1794534819.8591079712	64530	zsh -c 'zmodload zsh/datetime; trap "pri
+1794534823.3080079556	64530	zsh -c 'zmodload zsh/datetime; trap "pri
+1794534826.7688388824	64530	zsh -c 'zmodload zsh/datetime; trap "pri
+1794534855.4326829910	64530	zsh -c 'zmodload zsh/datetime; trap "pri
+1794534858.8449959755	64530	zsh -c 'zmodload zsh/datetime; trap "pri
+1794534862.3407530785	64530	zsh -c 'zmodload zsh/datetime; trap "pri
+1794534865.8315489292	64530	zsh -c 'zmodload zsh/datetime; trap "pri
+1794534869.2555921078	64530	zsh -c 'zmodload zsh/datetime; trap "pri
+1794534872.7219400406	64530	zsh -c 'zmodload zsh/datetime; trap "pri
+1794534901.6410470009	64530	zsh -c 'zmodload zsh/datetime; trap "pri
+1794534905.1235721111	64530	zsh -c 'zmodload zsh/datetime; trap "pri
+1794534908.6172389984	64530	zsh -c 'zmodload zsh/datetime; trap "pri
+1794534912.1159839630	64530	zsh -c 'zmodload zsh/datetime; trap "pri
+1794534915.5706501007	64530	zsh -c 'zmodload zsh/datetime; trap "pri
+1794534919.0920269489	64530	zsh -c 'zmodload zsh/datetime; trap "pri
+1794534950.0166580677	64530	cat > cd.txt
+1794534953.2351438999	64530	echo done1 >> cd.txt
+1794534954.8604629040	64530	echo L$SHLVL >> cd2.txt
+1794534955.1404531002	64530	bash
+1794534960.2006819248	64530	echo L$SHLVL >> cd2.txt
+1794534966.2255170345	64530	export ENV=$HOME/w/lab_ps1_empty.rc
+1794534967.0252408981	64530	dash
+1794534979.9658949375	64530	sh -c 'echo pT5_9txd75a5:$PPID >> ~/.app
+1794534980.6902000904	64530	echo back_T6_4yng >> lab_ps1.txt
+1794534981.0835061073	64530	unset ENV
+1794534983.1034688950	64530	sh -c 'echo pT7_y3s9p6ci:$PPID >> ~/.app
+1794534987.2272770405	64530	bash --rcfile ~/w/lab_clear.rc
+1794535000.4143970013	64530	sh -c 'echo pT11_mvgao121:$PPID >> ~/.ap
+1794535001.1635479927	64530	echo back_T12_rogu >> lab_clear.txt
+1794535002.9060769081	64530	sh -c 'echo pT13_7m6nddzm:$PPID >> ~/.ap
+1794535014.4738619328	64530	zmodload zsh/datetime; print -r -- $EPOC
+1794535016.7723500729	64530	zmodload zsh/datetime; print -r -- $EPOC
+1794535018.9865930080	64530	zmodload zsh/datetime; print -r -- $EPOC
+1794535021.2300090790	64530	zmodload zsh/datetime; print -r -- $EPOC
+1794535023.5792980194	64530	zmodload zsh/datetime; print -r -- $EPOC
+1794535025.8739070892	64530	zmodload zsh/datetime; print -r -- $EPOC
+1794535028.1252140999	64530	zmodload zsh/datetime; print -r -- $EPOC
+1794535030.4147720337	64530	zmodload zsh/datetime; print -r -- $EPOC
+1794535032.6808109283	64530	zmodload zsh/datetime; print -r -- $EPOC
+1794535060.1031670570	64530	zmodload zsh/datetime; print -r -- $EPOC
+1794535062.3315958977	64530	zmodload zsh/datetime; print -r -- $EPOC
+1794535064.6353969574	64530	zmodload zsh/datetime; print -r -- $EPOC
+1794535066.9047269821	64530	zmodload zsh/datetime; print -r -- $EPOC
+1794535069.1500918865	64530	zmodload zsh/datetime; print -r -- $EPOC
+1794535071.4106619358	64530	zmodload zsh/datetime; print -r -- $EPOC
+1794535091.7440419197	64530	zmodload zsh/datetime; print -r -- $EPOC
+1794535094.0397469997	64530	zmodload zsh/datetime; print -r -- $EPOC
+1794535096.2800149918	64530	zmodload zsh/datetime; print -r -- $EPOC
+1794535098.5285260677	64530	zmodload zsh/datetime; print -r -- $EPOC
+1794535100.8197340965	64530	zmodload zsh/datetime; print -r -- $EPOC
+1794535103.0715339184	64530	zmodload zsh/datetime; print -r -- $EPOC
+1794535123.5648651123	64530	zmodload zsh/datetime; print -r -- $EPOC
+1794535125.8698389530	64530	zmodload zsh/datetime; print -r -- $EPOC
+1794535128.1069428921	64530	zmodload zsh/datetime; print -r -- $EPOC
+1794535130.3947079182	64530	zmodload zsh/datetime; print -r -- $EPOC
+1794535132.6280069351	64530	zmodload zsh/datetime; print -r -- $EPOC
+1794535134.8747489452	64530	zmodload zsh/datetime; print -r -- $EPOC
+1794535155.4594850540	64530	zmodload zsh/datetime; print -r -- $EPOC
+1794535157.7115480900	64530	zmodload zsh/datetime; print -r -- $EPOC
+1794535159.9647250175	64530	zmodload zsh/datetime; print -r -- $EPOC
+1794535162.2611799240	64530	zmodload zsh/datetime; print -r -- $EPOC
+1794535164.5586431026	64530	zmodload zsh/datetime; print -r -- $EPOC
+1794535166.7895460129	64530	zmodload zsh/datetime; print -r -- $EPOC
+1794535187.4121079445	64530	zmodload zsh/datetime; print -r -- $EPOC
+1794535189.7203199863	64530	zmodload zsh/datetime; print -r -- $EPOC
+1794535192.0112400055	64530	zmodload zsh/datetime; print -r -- $EPOC
+1794535194.2660350800	64530	zmodload zsh/datetime; print -r -- $EPOC
+1794535196.5167241096	64530	zmodload zsh/datetime; print -r -- $EPOC
+1794535198.7701959610	64530	zmodload zsh/datetime; print -r -- $EPOC
+1794535219.2299709320	64530	zmodload zsh/datetime; print -r -- $EPOC
+1794535221.4940800667	64530	zmodload zsh/datetime; print -r -- $EPOC
+1794535223.7436549664	64530	zmodload zsh/datetime; print -r -- $EPOC
+1794535226.0506589413	64530	zmodload zsh/datetime; print -r -- $EPOC
+1794535228.2885808945	64530	zmodload zsh/datetime; print -r -- $EPOC
+1794535230.6328420639	64530	zmodload zsh/datetime; print -r -- $EPOC
+1794535251.2538950443	64530	zmodload zsh/datetime; print -r -- $EPOC
+1794535253.4929690361	64530	zmodload zsh/datetime; print -r -- $EPOC
+1794535255.7125349045	64530	zmodload zsh/datetime; print -r -- $EPOC
+1794535257.9643030167	64530	zmodload zsh/datetime; print -r -- $EPOC
+1794535260.2033009529	64530	zmodload zsh/datetime; print -r -- $EPOC
+1794535262.5772619247	64530	zmodload zsh/datetime; print -r -- $EPOC
+1794535283.1244978905	64530	zmodload zsh/datetime; print -r -- $EPOC
+1794535285.3518900871	64530	zmodload zsh/datetime; print -r -- $EPOC
+1794535287.6305201054	64530	zmodload zsh/datetime; print -r -- $EPOC
+1794535289.9143989086	64530	zmodload zsh/datetime; print -r -- $EPOC
+1794535292.2139210701	64530	zmodload zsh/datetime; print -r -- $EPOC
+1794535294.4645988941	64530	zmodload zsh/datetime; print -r -- $EPOC
+1794535314.9628350735	64530	zmodload zsh/datetime; print -r -- $EPOC
+1794535317.2612559795	64530	zmodload zsh/datetime; print -r -- $EPOC
+1794535319.5559179783	64530	zmodload zsh/datetime; print -r -- $EPOC
+1794535321.8693850040	64530	zmodload zsh/datetime; print -r -- $EPOC
+1794535324.1748189926	64530	zmodload zsh/datetime; print -r -- $EPOC
+1794535326.4725289345	64530	zmodload zsh/datetime; print -r -- $EPOC
+1794535346.9992699623	64530	zmodload zsh/datetime; print -r -- $EPOC
+1794535349.1875989437	64530	zmodload zsh/datetime; print -r -- $EPOC
+1794535351.4545800686	64530	zmodload zsh/datetime; print -r -- $EPOC
+1794535353.7546930313	64530	zmodload zsh/datetime; print -r -- $EPOC
+1794535356.0047791004	64530	zmodload zsh/datetime; print -r -- $EPOC
+1794535358.3123109341	64530	zmodload zsh/datetime; print -r -- $EPOC
+1794535378.7013669014	64530	zmodload zsh/datetime; print -r -- $EPOC
+1794535380.9206340313	64530	zmodload zsh/datetime; print -r -- $EPOC
+1794535383.2881929874	64530	zmodload zsh/datetime; print -r -- $EPOC
+1794535385.5362610817	64530	zmodload zsh/datetime; print -r -- $EPOC
+1794535387.7893090248	64530	zmodload zsh/datetime; print -r -- $EPOC
+1794535390.0964229107	64530	zmodload zsh/datetime; print -r -- $EPOC
+1794535410.8515219688	64530	unset zle_bracketed_paste; echo M3_$((${
+1794535413.9321188927	64530	zmodload zsh/datetime; print -r -- $EPOC
+1794535416.1804499626	64530	zmodload zsh/datetime; print -r -- $EPOC
+1794535418.4353408813	64530	zmodload zsh/datetime; print -r -- $EPOC
+1794535420.6702439785	64530	zmodload zsh/datetime; print -r -- $EPOC
+1794535422.9254350662	64530	zmodload zsh/datetime; print -r -- $EPOC
+1794535425.2001030445	64530	zmodload zsh/datetime; print -r -- $EPOC
+1794535427.4583969116	64530	zmodload zsh/datetime; print -r -- $EPOC
+1794535429.7316761017	64530	zmodload zsh/datetime; print -r -- $EPOC
+1794535432.0288920403	64530	zmodload zsh/datetime; print -r -- $EPOC
+1794535434.2831380367	64530	zmodload zsh/datetime; print -r -- $EPOC
+1794535436.5882511139	64530	zmodload zsh/datetime; print -r -- $EPOC
+1794535438.8923060894	64530	zmodload zsh/datetime; print -r -- $EPOC
+1794535441.2009739876	64530	zmodload zsh/datetime; print -r -- $EPOC
+1794535443.5877490044	64530	zmodload zsh/datetime; print -r -- $EPOC
+1794535445.8893740177	64530	zmodload zsh/datetime; print -r -- $EPOC
+1794535448.1325299740	64530	zmodload zsh/datetime; print -r -- $EPOC
+1794535450.4039359093	64530	zmodload zsh/datetime; print -r -- $EPOC
+1794535452.7136859894	64530	zmodload zsh/datetime; print -r -- $EPOC
+1794535455.0365400314	64530	zmodload zsh/datetime; print -r -- $EPOC
+1794535457.3756349087	64530	zmodload zsh/datetime; print -r -- $EPOC
+1794535459.7249879837	64530	zmodload zsh/datetime; print -r -- $EPOC
+1794535461.9614388943	64530	zmodload zsh/datetime; print -r -- $EPOC
+1794535464.2689669132	64530	zmodload zsh/datetime; print -r -- $EPOC
+1794535466.6174790859	64530	zmodload zsh/datetime; print -r -- $EPOC
+1794535468.9172449112	64530	zmodload zsh/datetime; print -r -- $EPOC
+1794535471.2628529072	64530	zmodload zsh/datetime; print -r -- $EPOC
+1794535473.5027630329	64530	zmodload zsh/datetime; print -r -- $EPOC
+1794535475.8405590057	64530	zmodload zsh/datetime; print -r -- $EPOC
+1794535478.1773540974	64530	zmodload zsh/datetime; print -r -- $EPOC
+1794535480.4333031178	64530	zmodload zsh/datetime; print -r -- $EPOC
+1794535482.7388210297	64530	zmodload zsh/datetime; print -r -- $EPOC
+1794535485.0300660133	64530	zmodload zsh/datetime; print -r -- $EPOC
+1794535487.3390190601	64530	zmodload zsh/datetime; print -r -- $EPOC
+1794535489.3251318932	64530	zle_bracketed_paste=( $'\e[?2004h' $'\e[
+1794535504.0321440697	64530	cat > /dev/null
+1794536427.2095119953	64530	ls -la
+1794536428.6411790848	64530	git status
+1794536430.2955429554	64530	grep foo foo.txt
+1794536432.0092170238	64530	echo hello world
+1794536433.2954339981	64530	pwd
+1794536434.7747991085	64530	cat foo.txt
+1794536436.1404900551	64530	wc -l foo.txt
+1794536437.5313739777	64530	uname -a
+1794536438.8046710491	64530	ls the
+1794536440.1169528961	64530	date
+1794536442.2551789284	64530	print -r -- $EPOCHREALTIME > lat_0
+1794536443.6712069511	64530	notacmd_x $HOME/x
+1794536445.4925730228	64530	xyz_nocmd > out_nc.txt
+1794536447.3389139175	64530	foo_nocmd --bar | grep x
+1794536489.0258030891	64530	find the bug in main.rs
+1794536502.7046649456	64530	what is 5 > 3
+1794536517.9702570438	64530	ssh fake
+1794536528.1705698967	64530	echo wT17_1gggexnv >> ~/.appci_where
+1794536529.1782040596	64530	sh -c 'echo pT18_xaejjdk3:$PPID >> ~/.ap
+1794536533.9309680462	64530	ssh fake
+1794536548.2983779907	64530	echo wT24_43g15o83 >> ~/.appci_where
+1794536549.3053040504	64530	sh -c 'echo pT25_5b8xzse6:$PPID >> ~/.ap
+1794536576.3974530697	64530	sh -c 'echo pT26_x68lbqif:$PPID >> ~/.ap
+1794536580.9644300938	64530	ssh fake
+1794536946.3777439594	73992	echo t29_0mqgq6n1 >> hu.txt
+1794536947.6907839775	73992	echo t30_bobzjck2 >> hu.txt
+1794536948.7461779118	73992	echo t31_618o72o7 >> hu.txt
+1794536949.4862229824	73992	echo t30_bobzjck2 >> hu.txt
+1794536950.9613749981	73992	echo t30_bobzjck2 >> hu_e.txt
+1794536952.6130740643	73992	echo t32_bzu1dtin >> hu.txt
+1794536958.6829230785	73992	sh -c 'echo pT33_odetko4l:$PPID >> ~/.ap
+1794536960.0878300667	73992	ssh fake
+1794536968.4237411022	73992	echo wT39_82ucosfx >> ~/.appci_where
+1794536969.7808539867	73992	echo t40_ikk8nr >> ca_local_ssh_drop_esc
+1794536970.1917788982	73992	ssh fake
+1794536978.8538069725	73992	echo t47_kh2kpk >> ca_local_ssh_drop_esc
+1794536979.2290010452	73992	ssh fake
+1794536981.4481530190	73992	echo wT48_cuap9b4d >> ~/.appci_where
+1794536983.4177238941	73992	echo t49_1y8s9q >> ca_local_ssh_drop_esc
+1794536983.8079140186	73992	ssh fake
+1794536985.8131580353	73992	echo wT50_xfyzy4tx >> ~/.appci_where
+1794536986.8361148834	73992	echo t51_ugnucb >> ca_local_ssh_drop_esc
+1794536987.1996641159	73992	ssh fake
+1794536997.4317920208	73992	echo wT57_e27nzuha >> ~/.appci_where
+1794536998.6413099766	73992	echo t58_pzer9e >> ca_local_ssh_drop_esc
+1794536999.0221500397	73992	ssh fake
+1794537010.7843329906	73992	echo t65_vkq5b0 >> ca_local_ssh_drop_esc
+1794537011.1539309025	73992	ssh fake
+1794537019.2032508850	73992	echo wT71_m40m0rls >> ~/.appci_where
+1794537020.2863459587	73992	echo t72_6yljq1 >> ca_local_ssh_drop_kil
+1794537020.6682410240	73992	ssh fake
+1794537029.3980069160	73992	echo t79_nlsj8m >> ca_local_ssh_drop_kil
+1794537030.8295910358	73992	echo wT80_kggiqgtp >> ~/.appci_where
+1794537031.9102149010	73992	sh -c 'echo pT81_mueulmcn:$PPID >> ~/.ap
+1794537039.1761779785	73992	cat skp_lines.txt
+1794537043.7001190186	73992	(sleep 1; while read -r l; do [ -e skp_s
+1794537067.9422099590	73992	echo t82_0hnynsgb >> skp_eff.txt
+1794537071.2218720913	73992	sh -c 'echo pT83_t4fai4f1:$PPID >> ~/.ap
+1794537079.5495960712	73992	cat lc_t84_e6xt16.txt
+1794537126.5320580006	98138	sh -c 'echo pT93_gi033i7k:$PPID >> ~/.ap
+1794537160.1504909992	98138	echo edd_replace1 >> edd_replace_probe.t
+1794537181.8130600452	98138	echo edd_external1 >> edd_external_probe
+1794537183.3659739494	98138	sh -c 'echo pT100_4c77gxts:$PPID >> ~/.a
+1794537197.3913741112	98138	sh -c 'echo pT101_2llvxl79:$PPID >> ~/.a
+1794537198.8836820126	98138	sh -c 'echo pT102_ronf5onb:$PPID >> ~/.a
+1794537600.7001929283	1259	sh -c 'echo pT103_pqlxai2w:$PPID >> ~/.a
+1794537603.7881529331	1259	pwd >> /Users/<user>/builds/CR7LvsOfu
+1794537605.1453459263	1259	echo vt2pnuyatx3 $$ >> tp_tabs.txt
+1794537608.9822700024	1519	cd /Users/<user>/builds/CR7LvsOfu/0/w
+1794537609.6829140186	1519	echo vt2pnwam23x $$ >> ../tp_tabs.txt
+1794537614.0121059418	1678	cd /Users/<user>/builds/CR7LvsOfu/0/w
+1794537615.1394419670	1678	echo vt2pnx7td3d $$ >> ../tp_tabs.txt
+1794537619.5291728973	1844	cd /Users/<user>/builds/CR7LvsOfu/0/w
+1794537620.5106689930	1844	echo vt2pnynuw4t $$ >> ../tp_tabs.txt
+1794537626.9917569160	1678	pwd >> /Users/<user>/builds/CR7LvsOfu
+1794537633.7531259060	1678	pwd >> /Users/<user>/builds/CR7LvsOfu
+1794537636.6174221039	1519	pwd >> /Users/<user>/builds/CR7LvsOfu
+1794537642.2022581100	1519	pwd >> /Users/<user>/builds/CR7LvsOfu
+1794537653.1695389748	1519	pwd >> /Users/<user>/builds/CR7LvsOfu
+1794537657.4507489204	1678	pwd >> /Users/<user>/builds/CR7LvsOfu
+1794537662.2497699261	1259	pwd >> /Users/<user>/builds/CR7LvsOfu
+1794537667.0737259388	1259	pwd >> /Users/<user>/builds/CR7LvsOfu
+1794537668.0740211010	1259	echo t108_7kii2xtzph >> r_tp_after.txt
+1794537668.8251519203	1259	echo t109_tegozu5glc >> r_tp_after.txt
+1794537669.6752049923	1259	echo t110_bnc572vrhl >> r_tp_after.txt
+1794537698.9980049133	1259	sh -c 'echo pT111_tgrsdr0u:$PPID >> ~/.a
+1794537760.5604500771	2806	echo ngs2 >> ngs_probe.txt
+1794537771.6091129780	3217	sh -c 'echo pT113_kqvba492:$PPID >> ~/.a
+1794537818.0620000362	4286	echo kbrt114_ykops3 >> kbr_b_ctrl_r.txt
+1794537835.1426470280	4667	echo kbrt115_n2qv5h >> kbr_c_ctrl_r.txt

@@ -1,0 +1,1031 @@
+2026-11-13T05:49:02Z [DEBUG] input_order hop=keydown_keybound dispatch_seq=17013 key="c" ctrl=true alt=false shift=false cmd=false step=6 action_type=warp::editor::view::EditorAction t=1794548942244.467
+2026-11-13T05:49:02Z [DEBUG] input_order hop=frame_drawn total_ms=4.6 acquire_ms=0.0 present_ms=0.1 t=1794548942252.089
+2026-11-13T05:49:02Z [DEBUG] input_order hop=keydown_keybound dispatch_seq=17014 key="u" ctrl=true alt=false shift=false cmd=false step=6 action_type=warp::editor::view::EditorAction t=1794548942497.165
+2026-11-13T05:49:02Z [DEBUG] input_order hop=frame_drawn total_ms=6.1 acquire_ms=0.0 present_ms=0.2 t=1794548942505.756
+2026-11-13T05:49:02Z [DEBUG] input_order hop=kh_pane_key seq=16688 seq=16688 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794548942652.191
+2026-11-13T05:49:02Z [DEBUG] input_order hop=kh_editor_action seq=16688 kind=insert focused=true hold_active=false buffer_chars=0 buffer="" t=1794548942652.225
+2026-11-13T05:49:02Z [DEBUG] input_order hop=notify_cause view=Input cause=agent::rerender_agent_input_if_facts_changed t=1794548942652.681
+2026-11-13T05:49:02Z [DEBUG] input_order hop=notify_cause view=Input cause=handle_editor_event_inner_6 t=1794548942652.997
+2026-11-13T05:49:02Z [DEBUG] input_order hop=kh_edit_sync seq=16688 us=2902 t=1794548942655.806
+2026-11-13T05:49:02Z [DEBUG] input_order hop=notify_cause view=Input cause=agent::rerender_agent_input_if_facts_changed t=1794548942655.929
+2026-11-13T05:49:02Z [DEBUG] input_order hop=key_frame layout=true t=1794548942659.347
+2026-11-13T05:49:02Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=4 mounted=26 render_ms=0.29 layout_ms=0.74 after_layout_ms=0.07 paint_ms=0.84 hover_ms=0.16 total_ms=2.52 layout_top=Terminal:0.27,EditorView:0.25,Workspace:0.09 paint_top=Terminal:0.40,Workspace:0.17,EditorView:0.07 t=1794548942659.866
+2026-11-13T05:49:02Z [DEBUG] input_order hop=frame_drawn total_ms=5.3 acquire_ms=0.0 present_ms=0.2 t=1794548942662.568
+2026-11-13T05:49:02Z [DEBUG] input_order hop=kh_pane_key seq=16689 seq=16689 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794548942665.944
+2026-11-13T05:49:02Z [DEBUG] input_order hop=kh_editor_action seq=16689 kind=insert focused=true hold_active=false buffer_chars=2 buffer="[]" t=1794548942665.964
+2026-11-13T05:49:02Z [DEBUG] input_order hop=kh_edit_sync seq=16689 us=1838 t=1794548942668.065
+2026-11-13T05:49:02Z [DEBUG] input_order hop=key_frame layout=true t=1794548942672.534
+2026-11-13T05:49:02Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=1 mounted=26 render_ms=0.14 layout_ms=0.96 after_layout_ms=0.09 paint_ms=1.03 hover_ms=0.16 total_ms=2.89 layout_top=Terminal:0.36,EditorView:0.34,Workspace:0.09 paint_top=Terminal:0.43,Workspace:0.28,EditorView:0.10 t=1794548942673.102
+2026-11-13T05:49:02Z [DEBUG] input_order hop=frame_drawn total_ms=12.5 acquire_ms=7.2 present_ms=0.1 t=1794548942682.613
+2026-11-13T05:49:02Z [DEBUG] input_order hop=kh_pane_key seq=16690 seq=16690 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794548942683.728
+2026-11-13T05:49:02Z [DEBUG] input_order hop=kh_editor_action seq=16690 kind=insert focused=true hold_active=false buffer_chars=3 buffer="[D]" t=1794548942683.745
+2026-11-13T05:49:02Z [DEBUG] input_order hop=kh_edit_sync seq=16690 us=1635 t=1794548942685.557
+2026-11-13T05:49:02Z [DEBUG] input_order hop=key_frame layout=true t=1794548942686.973
+2026-11-13T05:49:02Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=1 mounted=26 render_ms=0.04 layout_ms=0.34 after_layout_ms=0.02 paint_ms=0.41 hover_ms=0.07 total_ms=1.09 layout_top=Terminal:0.12,EditorView:0.11,Workspace:0.04 paint_top=Terminal:0.17,Workspace:0.11,EditorView:0.04 t=1794548942687.226
+2026-11-13T05:49:02Z [DEBUG] input_order hop=frame_drawn total_ms=11.3 acquire_ms=7.7 present_ms=0.1 t=1794548942697.424
+2026-11-13T05:49:02Z [DEBUG] input_order hop=kh_pane_key seq=16691 seq=16691 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794548942698.421
+2026-11-13T05:49:02Z [DEBUG] input_order hop=kh_editor_action seq=16691 kind=insert focused=true hold_active=false buffer_chars=4 buffer="[Da]" t=1794548942698.433
+2026-11-13T05:49:02Z [DEBUG] input_order hop=kh_edit_sync seq=16691 us=1548 t=1794548942700.141
+2026-11-13T05:49:02Z [DEBUG] input_order hop=key_frame layout=true t=1794548942701.686
+2026-11-13T05:49:02Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=1 mounted=26 render_ms=0.04 layout_ms=0.35 after_layout_ms=0.03 paint_ms=0.57 hover_ms=0.07 total_ms=1.26 layout_top=Terminal:0.11,EditorView:0.11,Workspace:0.06 paint_top=Terminal:0.35,Workspace:0.08,EditorView:0.04 t=1794548942701.925
+2026-11-13T05:49:02Z [DEBUG] input_order hop=frame_drawn total_ms=11.7 acquire_ms=8.8 present_ms=0.1 t=1794548942712.298
+2026-11-13T05:49:02Z [DEBUG] input_order hop=kh_pane_key seq=16692 seq=16692 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794548942713.130
+2026-11-13T05:49:02Z [DEBUG] input_order hop=kh_editor_action seq=16692 kind=insert focused=true hold_active=false buffer_chars=5 buffer="[Dat]" t=1794548942713.141
+2026-11-13T05:49:02Z [DEBUG] input_order hop=kh_edit_sync seq=16692 us=1391 t=1794548942714.685
+2026-11-13T05:49:02Z [DEBUG] input_order hop=key_frame layout=true t=1794548942715.907
+2026-11-13T05:49:02Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=1 mounted=26 render_ms=0.03 layout_ms=0.30 after_layout_ms=0.03 paint_ms=0.37 hover_ms=0.07 total_ms=0.98 layout_top=Terminal:0.11,EditorView:0.10,Workspace:0.03 paint_top=Terminal:0.15,Workspace:0.07,EditorView:0.04 t=1794548942716.140
+2026-11-13T05:49:02Z [DEBUG] input_order hop=frame_drawn total_ms=10.4 acquire_ms=7.9 present_ms=0.1 t=1794548942725.538
+2026-11-13T05:49:02Z [DEBUG] input_order hop=notify_cause view=Input cause=update_voice_transcription_options t=1794548942726.437
+2026-11-13T05:49:02Z [DEBUG] input_order hop=notify_cause view=Input cause=update_image_context_options t=1794548942726.452
+2026-11-13T05:49:02Z [DEBUG] input_order hop=notify_cause view=Input cause=update_ai_context_menu t=1794548942726.749
+2026-11-13T05:49:02Z [DEBUG] input_order hop=notify_cause view=Input cause=new_11 t=1794548942726.842
+2026-11-13T05:49:02Z [DEBUG] input_order hop=kh_pane_key seq=16693 seq=16693 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794548942730.337
+2026-11-13T05:49:02Z [DEBUG] input_order hop=kh_editor_action seq=16693 kind=insert focused=true hold_active=false buffer_chars=6 buffer="[Date]" t=1794548942730.347
+2026-11-13T05:49:02Z [DEBUG] input_order hop=notify_cause view=Input cause=handle_editor_event_inner_6 t=1794548942730.518
+2026-11-13T05:49:02Z [DEBUG] input_order hop=kh_edit_sync seq=16693 us=1110 t=1794548942731.598
+2026-11-13T05:49:02Z [DEBUG] input_order hop=notify_cause view=Input cause=agent::rerender_agent_input_if_facts_changed t=1794548942731.694
+2026-11-13T05:49:02Z [DEBUG] input_order hop=key_frame layout=true t=1794548942733.713
+2026-11-13T05:49:02Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=10 mounted=26 render_ms=0.61 layout_ms=0.27 after_layout_ms=0.02 paint_ms=0.37 hover_ms=0.06 total_ms=1.53 layout_top=EditorView:0.11,Terminal:0.09,Workspace:0.03 paint_top=Terminal:0.17,Workspace:0.07,Input:0.04 t=1794548942733.935
+2026-11-13T05:49:02Z [DEBUG] input_order hop=frame_drawn total_ms=5.6 acquire_ms=2.6 present_ms=0.1 t=1794548942737.946
+2026-11-13T05:49:02Z [DEBUG] input_order hop=kh_pane_key seq=16694 seq=16694 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794548942738.940
+2026-11-13T05:49:02Z [DEBUG] input_order hop=kh_editor_action seq=16694 kind=insert focused=true hold_active=false buffer_chars=7 buffer="[DateT]" t=1794548942738.955
+2026-11-13T05:49:02Z [DEBUG] input_order hop=kh_edit_sync seq=16694 us=1124 t=1794548942740.286
+2026-11-13T05:49:02Z [DEBUG] input_order hop=key_frame layout=true t=1794548942741.917
+2026-11-13T05:49:02Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=1 mounted=26 render_ms=0.03 layout_ms=0.39 after_layout_ms=0.03 paint_ms=0.50 hover_ms=0.11 total_ms=1.32 layout_top=Terminal:0.15,EditorView:0.13,Workspace:0.04 paint_top=Terminal:0.24,Workspace:0.10,EditorView:0.05 t=1794548942742.264
+2026-11-13T05:49:02Z [DEBUG] input_order hop=frame_drawn total_ms=9.3 acquire_ms=5.3 present_ms=0.1 t=1794548942750.150
+2026-11-13T05:49:02Z [DEBUG] input_order hop=kh_pane_key seq=16695 seq=16695 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794548942752.632
+2026-11-13T05:49:02Z [DEBUG] input_order hop=kh_editor_action seq=16695 kind=insert focused=true hold_active=false buffer_chars=8 buffer="[DateTi]" t=1794548942752.646
+2026-11-13T05:49:02Z [DEBUG] input_order hop=kh_edit_sync seq=16695 us=1386 t=1794548942754.209
+2026-11-13T05:49:02Z [DEBUG] input_order hop=key_frame layout=true t=1794548942755.745
+2026-11-13T05:49:02Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=2 mounted=26 render_ms=0.10 layout_ms=0.36 after_layout_ms=0.03 paint_ms=0.46 hover_ms=0.08 total_ms=1.24 layout_top=EditorView:0.14,Terminal:0.13,Workspace:0.03 paint_top=Terminal:0.22,Workspace:0.09,EditorView:0.05 t=1794548942756.017
+2026-11-13T05:49:02Z [DEBUG] input_order hop=frame_drawn total_ms=5.8 acquire_ms=2.3 present_ms=0.1 t=1794548942760.570
+2026-11-13T05:49:02Z [DEBUG] input_order hop=kh_pane_key seq=16696 seq=16696 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794548942767.991
+2026-11-13T05:49:02Z [DEBUG] input_order hop=kh_editor_action seq=16696 kind=insert focused=true hold_active=false buffer_chars=9 buffer="[DateTim]" t=1794548942768.003
+2026-11-13T05:49:02Z [DEBUG] input_order hop=kh_edit_sync seq=16696 us=1297 t=1794548942769.469
+2026-11-13T05:49:02Z [DEBUG] input_order hop=key_frame layout=true t=1794548942770.580
+2026-11-13T05:49:02Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=1 mounted=26 render_ms=0.03 layout_ms=0.30 after_layout_ms=0.02 paint_ms=0.30 hover_ms=0.06 total_ms=0.91 layout_top=EditorView:0.12,Terminal:0.10,Workspace:0.03 paint_top=Terminal:0.14,Workspace:0.07,EditorView:0.03 t=1794548942770.800
+2026-11-13T05:49:02Z [DEBUG] input_order hop=frame_drawn total_ms=2.2 acquire_ms=0.0 present_ms=0.1 t=1794548942772.044
+2026-11-13T05:49:02Z [DEBUG] input_order hop=kh_pane_key seq=16697 seq=16697 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794548942781.712
+2026-11-13T05:49:02Z [DEBUG] input_order hop=kh_editor_action seq=16697 kind=insert focused=true hold_active=false buffer_chars=10 buffer="[DateTime]" t=1794548942781.724
+2026-11-13T05:49:02Z [DEBUG] input_order hop=kh_edit_sync seq=16697 us=1112 t=1794548942782.975
+2026-11-13T05:49:02Z [DEBUG] input_order hop=key_frame layout=true t=1794548942784.488
+2026-11-13T05:49:02Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=1 mounted=26 render_ms=0.03 layout_ms=0.29 after_layout_ms=0.03 paint_ms=0.30 hover_ms=0.05 total_ms=0.86 layout_top=Terminal:0.12,EditorView:0.10,Workspace:0.03 paint_top=Terminal:0.13,Workspace:0.07,EditorView:0.03 t=1794548942784.691
+2026-11-13T05:49:02Z [DEBUG] input_order hop=frame_drawn total_ms=2.2 acquire_ms=0.0 present_ms=0.1 t=1794548942785.968
+2026-11-13T05:49:02Z [DEBUG] input_order hop=kh_pane_key seq=16698 seq=16698 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794548942795.072
+2026-11-13T05:49:02Z [DEBUG] input_order hop=kh_editor_action seq=16698 kind=insert focused=true hold_active=false buffer_chars=11 buffer="[DateTimeO]" t=1794548942795.085
+2026-11-13T05:49:02Z [DEBUG] input_order hop=kh_edit_sync seq=16698 us=1373 t=1794548942796.624
+2026-11-13T05:49:02Z [DEBUG] input_order hop=key_frame layout=true t=1794548942797.903
+2026-11-13T05:49:02Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=1 mounted=26 render_ms=0.03 layout_ms=0.34 after_layout_ms=0.04 paint_ms=0.38 hover_ms=0.07 total_ms=1.06 layout_top=Terminal:0.14,EditorView:0.11,Workspace:0.03 paint_top=Terminal:0.17,Workspace:0.09,EditorView:0.04 t=1794548942798.136
+2026-11-13T05:49:02Z [DEBUG] input_order hop=frame_drawn total_ms=2.4 acquire_ms=0.0 present_ms=0.1 t=1794548942799.455
+2026-11-13T05:49:02Z [DEBUG] input_order hop=kh_pane_key seq=16699 seq=16699 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794548942810.701
+2026-11-13T05:49:02Z [DEBUG] input_order hop=kh_editor_action seq=16699 kind=insert focused=true hold_active=false buffer_chars=12 buffer="[DateTimeOf]" t=1794548942810.712
+2026-11-13T05:49:02Z [DEBUG] input_order hop=kh_edit_sync seq=16699 us=1371 t=1794548942812.243
+2026-11-13T05:49:02Z [DEBUG] input_order hop=key_frame layout=true t=1794548942813.403
+2026-11-13T05:49:02Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=1 mounted=26 render_ms=0.03 layout_ms=0.30 after_layout_ms=0.03 paint_ms=0.35 hover_ms=0.05 total_ms=0.93 layout_top=EditorView:0.11,Terminal:0.10,Workspace:0.03 paint_top=Terminal:0.15,Workspace:0.09,EditorView:0.04 t=1794548942813.601
+2026-11-13T05:49:02Z [DEBUG] input_order hop=frame_drawn total_ms=2.3 acquire_ms=0.0 present_ms=0.1 t=1794548942814.927
+2026-11-13T05:49:02Z [DEBUG] input_order hop=kh_pane_key seq=16700 seq=16700 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794548942825.330
+2026-11-13T05:49:02Z [DEBUG] input_order hop=kh_editor_action seq=16700 kind=insert focused=true hold_active=false buffer_chars=13 buffer="[DateTimeOff]" t=1794548942825.342
+2026-11-13T05:49:02Z [DEBUG] input_order hop=kh_edit_sync seq=16700 us=1406 t=1794548942826.921
+2026-11-13T05:49:02Z [DEBUG] input_order hop=key_frame layout=true t=1794548942828.162
+2026-11-13T05:49:02Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=1 mounted=26 render_ms=0.03 layout_ms=0.30 after_layout_ms=0.02 paint_ms=0.36 hover_ms=0.06 total_ms=0.96 layout_top=EditorView:0.11,Terminal:0.10,Workspace:0.03 paint_top=Terminal:0.14,Workspace:0.07,EditorView:0.05 t=1794548942828.373
+2026-11-13T05:49:02Z [DEBUG] input_order hop=frame_drawn total_ms=2.3 acquire_ms=0.0 present_ms=0.1 t=1794548942829.725
+2026-11-13T05:49:02Z [DEBUG] input_order hop=kh_pane_key seq=16701 seq=16701 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794548942838.746
+2026-11-13T05:49:02Z [DEBUG] input_order hop=kh_editor_action seq=16701 kind=insert focused=true hold_active=false buffer_chars=14 buffer="[DateTimeOffs]" t=1794548942838.779
+2026-11-13T05:49:02Z [DEBUG] input_order hop=kh_edit_sync seq=16701 us=1743 t=1794548942840.815
+2026-11-13T05:49:02Z [DEBUG] input_order hop=key_frame layout=true t=1794548942842.552
+2026-11-13T05:49:02Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=1 mounted=26 render_ms=0.04 layout_ms=0.48 after_layout_ms=0.03 paint_ms=0.40 hover_ms=0.08 total_ms=1.25 layout_top=Terminal:0.19,EditorView:0.17,Workspace:0.05 paint_top=Terminal:0.18,Workspace:0.09,EditorView:0.04 t=1794548942842.812
+2026-11-13T05:49:02Z [DEBUG] input_order hop=frame_drawn total_ms=2.8 acquire_ms=0.0 present_ms=0.1 t=1794548942844.333
+2026-11-13T05:49:02Z [DEBUG] input_order hop=kh_pane_key seq=16702 seq=16702 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794548942854.618
+2026-11-13T05:49:02Z [DEBUG] input_order hop=kh_editor_action seq=16702 kind=insert focused=true hold_active=false buffer_chars=15 buffer="[DateTimeOffse]" t=1794548942854.634
+2026-11-13T05:49:02Z [DEBUG] input_order hop=kh_edit_sync seq=16702 us=1469 t=1794548942856.323
+2026-11-13T05:49:02Z [DEBUG] input_order hop=key_frame layout=true t=1794548942857.861
+2026-11-13T05:49:02Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=1 mounted=26 render_ms=0.04 layout_ms=0.40 after_layout_ms=0.03 paint_ms=0.44 hover_ms=0.09 total_ms=1.20 layout_top=EditorView:0.14,Terminal:0.13,Workspace:0.04 paint_top=Terminal:0.21,Workspace:0.09,EditorView:0.05 t=1794548942858.141
+2026-11-13T05:49:02Z [DEBUG] input_order hop=frame_drawn total_ms=2.9 acquire_ms=0.0 present_ms=0.1 t=1794548942859.845
+2026-11-13T05:49:02Z [DEBUG] input_order hop=frame_drawn total_ms=13.8 acquire_ms=11.2 present_ms=0.1 t=1794548942874.081
+2026-11-13T05:49:02Z [DEBUG] input_order hop=kh_pane_key seq=16703 seq=16703 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794548942874.630
+2026-11-13T05:49:02Z [DEBUG] input_order hop=kh_editor_action seq=16703 kind=insert focused=true hold_active=false buffer_chars=16 buffer="[DateTimeOffset]" t=1794548942874.643
+2026-11-13T05:49:02Z [DEBUG] input_order hop=key_frame layout=true t=1794548942875.746
+2026-11-13T05:49:02Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=1 mounted=27 render_ms=0.03 layout_ms=0.20 after_layout_ms=0.02 paint_ms=0.32 hover_ms=0.05 total_ms=0.78 layout_top=Terminal:0.09,EditorView:0.04,Workspace:0.03 paint_top=Terminal:0.15,Workspace:0.07,EditorView:0.03 t=1794548942875.939
+2026-11-13T05:49:02Z [DEBUG] input_order hop=frame_drawn total_ms=8.4 acquire_ms=6.3 present_ms=0.1 t=1794548942883.527
+2026-11-13T05:49:02Z [DEBUG] input_order hop=kh_pane_key seq=16704 seq=16704 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794548942885.260
+2026-11-13T05:49:02Z [DEBUG] input_order hop=kh_editor_action seq=16704 kind=insert focused=true hold_active=false buffer_chars=16 buffer="[DateTimeOffset]" t=1794548942885.279
+2026-11-13T05:49:02Z [DEBUG] input_order hop=notify_cause view=Input cause=handle_editor_event_inner_6 t=1794548942885.576
+2026-11-13T05:49:02Z [DEBUG] input_order hop=kh_edit_sync seq=16704 us=81 t=1794548942885.607
+2026-11-13T05:49:02Z [DEBUG] input_order hop=notify_cause view=Input cause=agent::rerender_agent_input_if_facts_changed t=1794548942885.691
+2026-11-13T05:49:02Z [DEBUG] input_order hop=key_frame layout=true t=1794548942888.234
+2026-11-13T05:49:02Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=2 mounted=27 render_ms=0.12 layout_ms=0.68 after_layout_ms=0.03 paint_ms=0.46 hover_ms=0.08 total_ms=1.60 layout_top=EditorView:0.35,Terminal:0.15,Input:0.08 paint_top=Terminal:0.22,Workspace:0.09,EditorView:0.05 t=1794548942888.513
+2026-11-13T05:49:02Z [DEBUG] input_order hop=frame_drawn total_ms=6.1 acquire_ms=2.6 present_ms=0.1 t=1794548942892.936
+2026-11-13T05:49:02Z [DEBUG] input_order hop=kh_pane_key seq=16705 seq=16705 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794548942902.095
+2026-11-13T05:49:02Z [DEBUG] input_order hop=kh_editor_action seq=16705 kind=insert focused=true hold_active=false buffer_chars=17 buffer="[DateTimeOffset]:" t=1794548942902.114
+2026-11-13T05:49:02Z [DEBUG] input_order hop=kh_edit_sync seq=16705 us=52 t=1794548942902.414
+2026-11-13T05:49:02Z [DEBUG] input_order hop=key_frame layout=true t=1794548942904.724
+2026-11-13T05:49:02Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=1 mounted=27 render_ms=0.04 layout_ms=0.73 after_layout_ms=0.03 paint_ms=0.41 hover_ms=0.05 total_ms=1.43 layout_top=EditorView:0.52,Terminal:0.11,Workspace:0.03 paint_top=Terminal:0.22,Workspace:0.07,EditorView:0.04 t=1794548942904.912
+2026-11-13T05:49:02Z [DEBUG] input_order hop=frame_drawn total_ms=2.7 acquire_ms=0.0 present_ms=0.1 t=1794548942906.179
+2026-11-13T05:49:02Z [DEBUG] input_order hop=kh_pane_key seq=16706 seq=16706 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794548942914.725
+2026-11-13T05:49:02Z [DEBUG] input_order hop=kh_editor_action seq=16706 kind=insert focused=true hold_active=false buffer_chars=18 buffer="[DateTimeOffset]::" t=1794548942914.736
+2026-11-13T05:49:02Z [DEBUG] input_order hop=kh_edit_sync seq=16706 us=39 t=1794548942914.935
+2026-11-13T05:49:02Z [DEBUG] input_order hop=key_frame layout=true t=1794548942916.446
+2026-11-13T05:49:02Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=1 mounted=27 render_ms=0.03 layout_ms=0.41 after_layout_ms=0.02 paint_ms=0.30 hover_ms=0.05 total_ms=1.00 layout_top=EditorView:0.22,Terminal:0.11,Workspace:0.03 paint_top=Terminal:0.14,Workspace:0.06,EditorView:0.03 t=1794548942916.654
+2026-11-13T05:49:02Z [DEBUG] input_order hop=frame_drawn total_ms=3.0 acquire_ms=0.0 present_ms=0.1 t=1794548942918.590
+2026-11-13T05:49:02Z [DEBUG] input_order hop=notify_cause view=Input cause=update_voice_transcription_options t=1794548942927.472
+2026-11-13T05:49:02Z [DEBUG] input_order hop=notify_cause view=Input cause=update_image_context_options t=1794548942927.493
+2026-11-13T05:49:02Z [DEBUG] input_order hop=notify_cause view=Input cause=update_ai_context_menu t=1794548942927.888
+2026-11-13T05:49:02Z [DEBUG] input_order hop=notify_cause view=Input cause=new_11 t=1794548942927.973
+2026-11-13T05:49:02Z [DEBUG] input_order hop=kh_pane_key seq=16707 seq=16707 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794548942930.874
+2026-11-13T05:49:02Z [DEBUG] input_order hop=kh_editor_action seq=16707 kind=insert focused=true hold_active=false buffer_chars=19 buffer="[DateTimeOffset]::U" t=1794548942930.888
+2026-11-13T05:49:02Z [DEBUG] input_order hop=notify_cause view=Input cause=handle_editor_event_inner_6 t=1794548942931.184
+2026-11-13T05:49:02Z [DEBUG] input_order hop=kh_edit_sync seq=16707 us=179 t=1794548942931.305
+2026-11-13T05:49:02Z [DEBUG] input_order hop=notify_cause view=Input cause=agent::rerender_agent_input_if_facts_changed t=1794548942931.403
+2026-11-13T05:49:02Z [DEBUG] input_order hop=key_frame layout=true t=1794548942934.155
+2026-11-13T05:49:02Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=10 mounted=27 render_ms=0.77 layout_ms=0.55 after_layout_ms=0.04 paint_ms=0.75 hover_ms=0.12 total_ms=2.51 layout_top=EditorView:0.33,Terminal:0.12,Workspace:0.03 paint_top=Terminal:0.39,Workspace:0.11,EditorView:0.08 t=1794548942934.530
+2026-11-13T05:49:02Z [DEBUG] input_order hop=frame_drawn total_ms=4.5 acquire_ms=0.0 present_ms=0.1 t=1794548942936.454
+2026-11-13T05:49:02Z [DEBUG] input_order hop=kh_pane_key seq=16708 seq=16708 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794548942947.176
+2026-11-13T05:49:02Z [DEBUG] input_order hop=kh_editor_action seq=16708 kind=insert focused=true hold_active=false buffer_chars=20 buffer="[DateTimeOffset]::Ut" t=1794548942947.193
+2026-11-13T05:49:02Z [DEBUG] input_order hop=kh_edit_sync seq=16708 us=127 t=1794548942947.546
+2026-11-13T05:49:02Z [DEBUG] input_order hop=key_frame layout=true t=1794548942949.323
+2026-11-13T05:49:02Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=1 mounted=27 render_ms=0.05 layout_ms=0.59 after_layout_ms=0.03 paint_ms=0.47 hover_ms=0.08 total_ms=1.44 layout_top=EditorView:0.33,Terminal:0.15,Workspace:0.04 paint_top=Terminal:0.22,Workspace:0.09,EditorView:0.05 t=1794548942949.601
+2026-11-13T05:49:02Z [DEBUG] input_order hop=frame_drawn total_ms=3.8 acquire_ms=0.0 present_ms=0.1 t=1794548942951.927
+2026-11-13T05:49:02Z [DEBUG] input_order hop=kh_pane_key seq=16709 seq=16709 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794548942963.386
+2026-11-13T05:49:02Z [DEBUG] input_order hop=kh_editor_action seq=16709 kind=insert focused=true hold_active=false buffer_chars=21 buffer="[DateTimeOffset]::Utc" t=1794548942963.409
+2026-11-13T05:49:02Z [DEBUG] input_order hop=kh_edit_sync seq=16709 us=170 t=1794548942963.882
+2026-11-13T05:49:02Z [DEBUG] input_order hop=key_frame layout=true t=1794548942966.898
+2026-11-13T05:49:02Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=1 mounted=27 render_ms=0.05 layout_ms=0.59 after_layout_ms=0.04 paint_ms=0.48 hover_ms=0.07 total_ms=1.50 layout_top=EditorView:0.35,Terminal:0.14,Workspace:0.04 paint_top=Terminal:0.21,Workspace:0.09,EditorView:0.05 t=1794548942967.131
+2026-11-13T05:49:02Z [DEBUG] input_order hop=frame_drawn total_ms=2.9 acquire_ms=0.0 present_ms=0.1 t=1794548942968.470
+2026-11-13T05:49:02Z [DEBUG] input_order hop=kh_pane_key seq=16710 seq=16710 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794548942978.224
+2026-11-13T05:49:02Z [DEBUG] input_order hop=kh_editor_action seq=16710 kind=insert focused=true hold_active=false buffer_chars=22 buffer="[DateTimeOffset]::UtcN" t=1794548942978.239
+2026-11-13T05:49:02Z [DEBUG] input_order hop=kh_edit_sync seq=16710 us=117 t=1794548942978.580
+2026-11-13T05:49:02Z [DEBUG] input_order hop=key_frame layout=true t=1794548942980.124
+2026-11-13T05:49:02Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=1 mounted=27 render_ms=0.04 layout_ms=0.47 after_layout_ms=0.03 paint_ms=0.34 hover_ms=0.06 total_ms=1.11 layout_top=EditorView:0.28,Terminal:0.12,Workspace:0.03 paint_top=Terminal:0.14,Workspace:0.07,EditorView:0.04 t=1794548942980.328
+2026-11-13T05:49:02Z [DEBUG] input_order hop=frame_drawn total_ms=3.5 acquire_ms=0.0 present_ms=0.1 t=1794548942982.665
+2026-11-13T05:49:02Z [DEBUG] input_order hop=kh_pane_key seq=16711 seq=16711 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794548942991.309
+2026-11-13T05:49:02Z [DEBUG] input_order hop=kh_editor_action seq=16711 kind=insert focused=true hold_active=false buffer_chars=23 buffer="[DateTimeOffset]::UtcNo" t=1794548942991.321
+2026-11-13T05:49:02Z [DEBUG] input_order hop=kh_edit_sync seq=16711 us=77 t=1794548942991.555
+2026-11-13T05:49:02Z [DEBUG] input_order hop=key_frame layout=true t=1794548942992.689
+2026-11-13T05:49:02Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=1 mounted=27 render_ms=0.03 layout_ms=0.38 after_layout_ms=0.02 paint_ms=0.29 hover_ms=0.05 total_ms=0.92 layout_top=EditorView:0.22,Terminal:0.09,Workspace:0.02 paint_top=Terminal:0.13,Workspace:0.06,EditorView:0.03 t=1794548942992.869
+2026-11-13T05:49:02Z [DEBUG] input_order hop=frame_drawn total_ms=2.2 acquire_ms=0.0 present_ms=0.1 t=1794548942994.092
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_pane_key seq=16712 seq=16712 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794548943004.619
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_editor_action seq=16712 kind=insert focused=true hold_active=false buffer_chars=24 buffer="[DateTimeOffset]::UtcNow" t=1794548943004.630
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_edit_sync seq=16712 us=86 t=1794548943004.897
+2026-11-13T05:49:03Z [DEBUG] input_order hop=key_frame layout=true t=1794548943006.041
+2026-11-13T05:49:03Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=1 mounted=27 render_ms=0.03 layout_ms=0.38 after_layout_ms=0.02 paint_ms=0.29 hover_ms=0.05 total_ms=0.94 layout_top=EditorView:0.22,Terminal:0.10,Workspace:0.03 paint_top=Terminal:0.13,Workspace:0.06,EditorView:0.03 t=1794548943006.227
+2026-11-13T05:49:03Z [DEBUG] input_order hop=frame_drawn total_ms=2.2 acquire_ms=0.0 present_ms=0.1 t=1794548943007.502
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_pane_key seq=16713 seq=16713 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794548943018.492
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_editor_action seq=16713 kind=insert focused=true hold_active=false buffer_chars=25 buffer="[DateTimeOffset]::UtcNow." t=1794548943018.524
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_edit_sync seq=16713 us=238 t=1794548943019.179
+2026-11-13T05:49:03Z [DEBUG] input_order hop=key_frame layout=true t=1794548943023.515
+2026-11-13T05:49:03Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=1 mounted=27 render_ms=0.07 layout_ms=1.02 after_layout_ms=0.06 paint_ms=0.94 hover_ms=0.09 total_ms=2.46 layout_top=EditorView:0.64,Terminal:0.23,Workspace:0.05 paint_top=Terminal:0.49,Workspace:0.17,EditorView:0.10 t=1794548943023.775
+2026-11-13T05:49:03Z [DEBUG] input_order hop=frame_drawn total_ms=4.1 acquire_ms=0.0 present_ms=0.1 t=1794548943025.390
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_pane_key seq=16714 seq=16714 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794548943037.075
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_editor_action seq=16714 kind=insert focused=true hold_active=false buffer_chars=26 buffer="[DateTimeOffset]::UtcNow.T" t=1794548943037.088
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_edit_sync seq=16714 us=93 t=1794548943037.346
+2026-11-13T05:49:03Z [DEBUG] input_order hop=key_frame layout=true t=1794548943038.576
+2026-11-13T05:49:03Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=1 mounted=27 render_ms=0.03 layout_ms=0.42 after_layout_ms=0.03 paint_ms=0.34 hover_ms=0.07 total_ms=1.06 layout_top=EditorView:0.25,Terminal:0.10,Workspace:0.03 paint_top=Terminal:0.15,Workspace:0.06,EditorView:0.04 t=1794548943038.796
+2026-11-13T05:49:03Z [DEBUG] input_order hop=frame_drawn total_ms=2.5 acquire_ms=0.0 present_ms=0.1 t=1794548943040.162
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_pane_key seq=16715 seq=16715 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794548943052.617
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_editor_action seq=16715 kind=insert focused=true hold_active=false buffer_chars=27 buffer="[DateTimeOffset]::UtcNow.To" t=1794548943052.663
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_edit_sync seq=16715 us=209 t=1794548943053.285
+2026-11-13T05:49:03Z [DEBUG] input_order hop=key_frame layout=true t=1794548943057.580
+2026-11-13T05:49:03Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=1 mounted=27 render_ms=0.07 layout_ms=1.04 after_layout_ms=0.06 paint_ms=0.80 hover_ms=0.13 total_ms=2.47 layout_top=EditorView:0.61,Terminal:0.25,Workspace:0.07 paint_top=Terminal:0.37,Workspace:0.15,EditorView:0.10 t=1794548943058.017
+2026-11-13T05:49:03Z [DEBUG] input_order hop=frame_drawn total_ms=5.3 acquire_ms=0.0 present_ms=0.1 t=1794548943060.812
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_pane_key seq=16716 seq=16716 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794548943064.562
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_editor_action seq=16716 kind=insert focused=true hold_active=false buffer_chars=28 buffer="[DateTimeOffset]::UtcNow.ToU" t=1794548943064.577
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_edit_sync seq=16716 us=109 t=1794548943064.900
+2026-11-13T05:49:03Z [DEBUG] input_order hop=key_frame layout=true t=1794548943066.500
+2026-11-13T05:49:03Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=1 mounted=27 render_ms=0.04 layout_ms=0.54 after_layout_ms=0.04 paint_ms=0.40 hover_ms=0.07 total_ms=1.30 layout_top=EditorView:0.32,Terminal:0.12,Workspace:0.04 paint_top=Terminal:0.18,Workspace:0.08,EditorView:0.05 t=1794548943066.748
+2026-11-13T05:49:03Z [DEBUG] input_order hop=frame_drawn total_ms=10.6 acquire_ms=7.8 present_ms=0.1 t=1794548943076.010
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_pane_key seq=16717 seq=16717 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794548943077.348
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_editor_action seq=16717 kind=insert focused=true hold_active=false buffer_chars=29 buffer="[DateTimeOffset]::UtcNow.ToUn" t=1794548943077.359
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_edit_sync seq=16717 us=88 t=1794548943077.612
+2026-11-13T05:49:03Z [DEBUG] input_order hop=key_frame layout=true t=1794548943078.794
+2026-11-13T05:49:03Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=1 mounted=27 render_ms=0.03 layout_ms=0.41 after_layout_ms=0.02 paint_ms=0.33 hover_ms=0.05 total_ms=0.99 layout_top=EditorView:0.23,Terminal:0.09,Workspace:0.04 paint_top=Terminal:0.16,Workspace:0.07,EditorView:0.04 t=1794548943078.984
+2026-11-13T05:49:03Z [DEBUG] input_order hop=frame_drawn total_ms=8.1 acquire_ms=5.8 present_ms=0.1 t=1794548943086.060
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_pane_key seq=16718 seq=16718 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794548943094.127
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_editor_action seq=16718 kind=insert focused=true hold_active=false buffer_chars=30 buffer="[DateTimeOffset]::UtcNow.ToUni" t=1794548943094.137
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_edit_sync seq=16718 us=86 t=1794548943094.382
+2026-11-13T05:49:03Z [DEBUG] input_order hop=key_frame layout=true t=1794548943095.512
+2026-11-13T05:49:03Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=1 mounted=27 render_ms=0.03 layout_ms=0.40 after_layout_ms=0.02 paint_ms=0.29 hover_ms=0.05 total_ms=0.95 layout_top=EditorView:0.23,Terminal:0.09,Workspace:0.03 paint_top=Terminal:0.13,Workspace:0.06,EditorView:0.03 t=1794548943095.701
+2026-11-13T05:49:03Z [DEBUG] input_order hop=frame_drawn total_ms=2.1 acquire_ms=0.0 present_ms=0.1 t=1794548943096.871
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_pane_key seq=16719 seq=16719 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794548943107.501
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_editor_action seq=16719 kind=insert focused=true hold_active=false buffer_chars=31 buffer="[DateTimeOffset]::UtcNow.ToUnix" t=1794548943107.512
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_edit_sync seq=16719 us=90 t=1794548943107.774
+2026-11-13T05:49:03Z [DEBUG] input_order hop=key_frame layout=true t=1794548943109.495
+2026-11-13T05:49:03Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=1 mounted=27 render_ms=0.03 layout_ms=0.51 after_layout_ms=0.03 paint_ms=0.41 hover_ms=0.05 total_ms=1.18 layout_top=EditorView:0.34,Terminal:0.09,Workspace:0.04 paint_top=Terminal:0.22,Workspace:0.07,EditorView:0.04 t=1794548943109.679
+2026-11-13T05:49:03Z [DEBUG] input_order hop=frame_drawn total_ms=2.5 acquire_ms=0.0 present_ms=0.1 t=1794548943110.955
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_pane_key seq=16720 seq=16720 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794548943120.425
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_editor_action seq=16720 kind=insert focused=true hold_active=false buffer_chars=32 buffer="[DateTimeOffset]::UtcNow.ToUnixT" t=1794548943120.442
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_edit_sync seq=16720 us=125 t=1794548943120.790
+2026-11-13T05:49:03Z [DEBUG] input_order hop=key_frame layout=true t=1794548943123.051
+2026-11-13T05:49:03Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=1 mounted=27 render_ms=0.04 layout_ms=0.41 after_layout_ms=0.02 paint_ms=0.99 hover_ms=0.06 total_ms=1.72 layout_top=EditorView:0.24,Terminal:0.10,Workspace:0.03 paint_top=AcceptAutosuggestionKeybinding:0.60,Terminal:0.15,EditorView:0.08 t=1794548943123.254
+2026-11-13T05:49:03Z [DEBUG] input_order hop=frame_drawn total_ms=3.0 acquire_ms=0.0 present_ms=0.1 t=1794548943124.472
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_pane_key seq=16721 seq=16721 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794548943133.339
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_editor_action seq=16721 kind=insert focused=true hold_active=false buffer_chars=33 buffer="[DateTimeOffset]::UtcNow.ToUnixTi" t=1794548943133.350
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_edit_sync seq=16721 us=89 t=1794548943133.581
+2026-11-13T05:49:03Z [DEBUG] input_order hop=key_frame layout=true t=1794548943134.785
+2026-11-13T05:49:03Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=1 mounted=27 render_ms=0.03 layout_ms=0.39 after_layout_ms=0.02 paint_ms=0.35 hover_ms=0.05 total_ms=0.99 layout_top=EditorView:0.23,Terminal:0.09,Workspace:0.03 paint_top=Terminal:0.18,Workspace:0.06,EditorView:0.04 t=1794548943134.967
+2026-11-13T05:49:03Z [DEBUG] input_order hop=frame_drawn total_ms=2.3 acquire_ms=0.0 present_ms=0.1 t=1794548943136.210
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_pane_key seq=16722 seq=16722 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794548943146.358
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_editor_action seq=16722 kind=insert focused=true hold_active=false buffer_chars=34 buffer="[DateTimeOffset]::UtcNow.ToUnixTim" t=1794548943146.370
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_edit_sync seq=16722 us=96 t=1794548943146.650
+2026-11-13T05:49:03Z [DEBUG] input_order hop=key_frame layout=true t=1794548943147.894
+2026-11-13T05:49:03Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=1 mounted=27 render_ms=0.03 layout_ms=0.43 after_layout_ms=0.02 paint_ms=0.33 hover_ms=0.06 total_ms=1.04 layout_top=EditorView:0.24,Terminal:0.10,Workspace:0.03 paint_top=Terminal:0.14,Workspace:0.07,EditorView:0.04 t=1794548943148.098
+2026-11-13T05:49:03Z [DEBUG] input_order hop=frame_drawn total_ms=2.4 acquire_ms=0.0 present_ms=0.1 t=1794548943149.413
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_pane_key seq=16723 seq=16723 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794548943160.410
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_editor_action seq=16723 kind=insert focused=true hold_active=false buffer_chars=35 buffer="[DateTimeOffset]::UtcNow.ToUnixTime" t=1794548943160.445
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_edit_sync seq=16723 us=204 t=1794548943161.017
+2026-11-13T05:49:03Z [DEBUG] input_order hop=key_frame layout=true t=1794548943164.181
+2026-11-13T05:49:03Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=1 mounted=27 render_ms=0.05 layout_ms=0.66 after_layout_ms=0.05 paint_ms=0.58 hover_ms=0.09 total_ms=1.68 layout_top=EditorView:0.41,Terminal:0.15,Workspace:0.04 paint_top=Terminal:0.25,Workspace:0.12,EditorView:0.09 t=1794548943164.492
+2026-11-13T05:49:03Z [DEBUG] input_order hop=frame_drawn total_ms=3.7 acquire_ms=0.0 present_ms=0.1 t=1794548943166.511
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_pane_key seq=16724 seq=16724 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794548943177.499
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_editor_action seq=16724 kind=insert focused=true hold_active=false buffer_chars=36 buffer="[DateTimeOffset]::UtcNow.ToUnixTimeM" t=1794548943177.515
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_edit_sync seq=16724 us=115 t=1794548943177.843
+2026-11-13T05:49:03Z [DEBUG] input_order hop=key_frame layout=true t=1794548943179.360
+2026-11-13T05:49:03Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=1 mounted=27 render_ms=0.04 layout_ms=0.50 after_layout_ms=0.03 paint_ms=0.40 hover_ms=0.07 total_ms=1.22 layout_top=EditorView:0.30,Terminal:0.11,Workspace:0.03 paint_top=Terminal:0.18,Workspace:0.09,EditorView:0.05 t=1794548943179.589
+2026-11-13T05:49:03Z [DEBUG] input_order hop=frame_drawn total_ms=2.8 acquire_ms=0.0 present_ms=0.1 t=1794548943181.135
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_pane_key seq=16725 seq=16725 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794548943190.855
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_editor_action seq=16725 kind=insert focused=true hold_active=false buffer_chars=37 buffer="[DateTimeOffset]::UtcNow.ToUnixTimeMi" t=1794548943190.880
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_edit_sync seq=16725 us=163 t=1794548943191.383
+2026-11-13T05:49:03Z [DEBUG] input_order hop=key_frame layout=true t=1794548943194.066
+2026-11-13T05:49:03Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=1 mounted=27 render_ms=0.06 layout_ms=0.90 after_layout_ms=0.05 paint_ms=0.68 hover_ms=0.13 total_ms=2.14 layout_top=EditorView:0.55,Terminal:0.19,Workspace:0.05 paint_top=Terminal:0.32,Workspace:0.13,EditorView:0.09 t=1794548943194.475
+2026-11-13T05:49:03Z [DEBUG] input_order hop=frame_drawn total_ms=4.6 acquire_ms=0.0 present_ms=0.1 t=1794548943196.883
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_pane_key seq=16726 seq=16726 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794548943207.704
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_editor_action seq=16726 kind=insert focused=true hold_active=false buffer_chars=38 buffer="[DateTimeOffset]::UtcNow.ToUnixTimeMil" t=1794548943207.720
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_edit_sync seq=16726 us=146 t=1794548943208.116
+2026-11-13T05:49:03Z [DEBUG] input_order hop=key_frame layout=true t=1794548943209.792
+2026-11-13T05:49:03Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=1 mounted=27 render_ms=0.04 layout_ms=0.57 after_layout_ms=0.03 paint_ms=0.43 hover_ms=0.07 total_ms=1.34 layout_top=EditorView:0.34,Terminal:0.12,Workspace:0.04 paint_top=Terminal:0.19,Workspace:0.08,EditorView:0.05 t=1794548943210.051
+2026-11-13T05:49:03Z [DEBUG] input_order hop=frame_drawn total_ms=3.1 acquire_ms=0.0 present_ms=0.1 t=1794548943211.788
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_pane_key seq=16727 seq=16727 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794548943222.388
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_editor_action seq=16727 kind=insert focused=true hold_active=false buffer_chars=39 buffer="[DateTimeOffset]::UtcNow.ToUnixTimeMill" t=1794548943222.423
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_edit_sync seq=16727 us=213 t=1794548943223.045
+2026-11-13T05:49:03Z [DEBUG] input_order hop=key_frame layout=true t=1794548943226.295
+2026-11-13T05:49:03Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=1 mounted=27 render_ms=0.07 layout_ms=1.17 after_layout_ms=0.07 paint_ms=0.72 hover_ms=0.11 total_ms=2.43 layout_top=EditorView:0.73,Terminal:0.25,Workspace:0.06 paint_top=Terminal:0.29,Workspace:0.16,EditorView:0.10 t=1794548943226.671
+2026-11-13T05:49:03Z [DEBUG] input_order hop=frame_drawn total_ms=4.5 acquire_ms=0.0 present_ms=0.1 t=1794548943228.682
+2026-11-13T05:49:03Z [DEBUG] input_order hop=frame_drawn total_ms=12.2 acquire_ms=8.8 present_ms=0.2 t=1794548943241.696
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_pane_key seq=16728 seq=16728 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794548943242.925
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_editor_action seq=16728 kind=insert focused=true hold_active=false buffer_chars=40 buffer="[DateTimeOffset]::UtcNow.ToUnixTimeMilli" t=1794548943242.953
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_edit_sync seq=16728 us=202 t=1794548943243.534
+2026-11-13T05:49:03Z [DEBUG] input_order hop=key_frame layout=true t=1794548943245.302
+2026-11-13T05:49:03Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=1 mounted=27 render_ms=0.05 layout_ms=0.48 after_layout_ms=0.02 paint_ms=0.40 hover_ms=0.07 total_ms=1.22 layout_top=EditorView:0.29,Terminal:0.10,Workspace:0.03 paint_top=Terminal:0.17,Workspace:0.09,EditorView:0.05 t=1794548943245.543
+2026-11-13T05:49:03Z [DEBUG] input_order hop=frame_drawn total_ms=13.7 acquire_ms=10.9 present_ms=0.1 t=1794548943258.029
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_pane_key seq=16729 seq=16729 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794548943259.635
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_editor_action seq=16729 kind=insert focused=true hold_active=false buffer_chars=41 buffer="[DateTimeOffset]::UtcNow.ToUnixTimeMillis" t=1794548943259.648
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_edit_sync seq=16729 us=96 t=1794548943259.918
+2026-11-13T05:49:03Z [DEBUG] input_order hop=key_frame layout=true t=1794548943261.327
+2026-11-13T05:49:03Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=3 mounted=27 render_ms=0.08 layout_ms=0.46 after_layout_ms=0.03 paint_ms=0.38 hover_ms=0.06 total_ms=1.18 layout_top=EditorView:0.26,Terminal:0.10,Workspace:0.04 paint_top=Terminal:0.16,Workspace:0.07,EditorView:0.05 t=1794548943261.531
+2026-11-13T05:49:03Z [DEBUG] input_order hop=frame_drawn total_ms=8.9 acquire_ms=6.2 present_ms=0.1 t=1794548943269.197
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_pane_key seq=16730 seq=16730 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794548943270.032
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_editor_action seq=16730 kind=insert focused=true hold_active=false buffer_chars=42 buffer="[DateTimeOffset]::UtcNow.ToUnixTimeMillise" t=1794548943270.046
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_edit_sync seq=16730 us=137 t=1794548943270.399
+2026-11-13T05:49:03Z [DEBUG] input_order hop=key_frame layout=true t=1794548943271.963
+2026-11-13T05:49:03Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=1 mounted=27 render_ms=0.04 layout_ms=0.45 after_layout_ms=0.03 paint_ms=0.34 hover_ms=0.06 total_ms=1.11 layout_top=EditorView:0.26,Terminal:0.10,Workspace:0.03 paint_top=Terminal:0.14,Workspace:0.07,EditorView:0.04 t=1794548943272.185
+2026-11-13T05:49:03Z [DEBUG] input_order hop=frame_drawn total_ms=5.4 acquire_ms=3.0 present_ms=0.1 t=1794548943276.487
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_pane_key seq=16731 seq=16731 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794548943283.215
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_editor_action seq=16731 kind=insert focused=true hold_active=false buffer_chars=43 buffer="[DateTimeOffset]::UtcNow.ToUnixTimeMillisec" t=1794548943283.232
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_edit_sync seq=16731 us=99 t=1794548943283.527
+2026-11-13T05:49:03Z [DEBUG] input_order hop=key_frame layout=true t=1794548943284.949
+2026-11-13T05:49:03Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=1 mounted=27 render_ms=0.04 layout_ms=0.48 after_layout_ms=0.03 paint_ms=0.40 hover_ms=0.09 total_ms=1.25 layout_top=EditorView:0.26,Terminal:0.11,Workspace:0.05 paint_top=Terminal:0.19,Workspace:0.07,EditorView:0.05 t=1794548943285.222
+2026-11-13T05:49:03Z [DEBUG] input_order hop=frame_drawn total_ms=2.9 acquire_ms=0.0 present_ms=0.1 t=1794548943286.817
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_pane_key seq=16732 seq=16732 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794548943296.659
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_editor_action seq=16732 kind=insert focused=true hold_active=false buffer_chars=44 buffer="[DateTimeOffset]::UtcNow.ToUnixTimeMilliseco" t=1794548943296.673
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_edit_sync seq=16732 us=120 t=1794548943297.009
+2026-11-13T05:49:03Z [DEBUG] input_order hop=key_frame layout=true t=1794548943298.529
+2026-11-13T05:49:03Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=1 mounted=27 render_ms=0.04 layout_ms=0.52 after_layout_ms=0.03 paint_ms=0.38 hover_ms=0.09 total_ms=1.25 layout_top=EditorView:0.28,Terminal:0.12,Workspace:0.04 paint_top=Terminal:0.17,Workspace:0.07,EditorView:0.05 t=1794548943298.792
+2026-11-13T05:49:03Z [DEBUG] input_order hop=frame_drawn total_ms=3.2 acquire_ms=0.0 present_ms=0.1 t=1794548943300.715
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_pane_key seq=16733 seq=16733 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794548943309.565
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_editor_action seq=16733 kind=insert focused=true hold_active=false buffer_chars=45 buffer="[DateTimeOffset]::UtcNow.ToUnixTimeMillisecon" t=1794548943309.576
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_edit_sync seq=16733 us=88 t=1794548943309.847
+2026-11-13T05:49:03Z [DEBUG] input_order hop=key_frame layout=true t=1794548943311.269
+2026-11-13T05:49:03Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=1 mounted=27 render_ms=0.03 layout_ms=0.50 after_layout_ms=0.03 paint_ms=0.42 hover_ms=0.06 total_ms=1.20 layout_top=EditorView:0.32,Terminal:0.09,Workspace:0.03 paint_top=Terminal:0.22,Workspace:0.07,EditorView:0.05 t=1794548943311.468
+2026-11-13T05:49:03Z [DEBUG] input_order hop=frame_drawn total_ms=2.6 acquire_ms=0.0 present_ms=0.1 t=1794548943312.830
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_pane_key seq=16734 seq=16734 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794548943322.430
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_editor_action seq=16734 kind=insert focused=true hold_active=false buffer_chars=46 buffer="[DateTimeOffset]::UtcNow.ToUnixTimeMillisecond" t=1794548943322.442
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_edit_sync seq=16734 us=92 t=1794548943322.700
+2026-11-13T05:49:03Z [DEBUG] input_order hop=key_frame layout=true t=1794548943323.982
+2026-11-13T05:49:03Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=1 mounted=27 render_ms=0.04 layout_ms=0.42 after_layout_ms=0.03 paint_ms=0.32 hover_ms=0.07 total_ms=1.04 layout_top=EditorView:0.24,Terminal:0.10,Workspace:0.03 paint_top=Terminal:0.14,Workspace:0.06,EditorView:0.04 t=1794548943324.198
+2026-11-13T05:49:03Z [DEBUG] input_order hop=frame_drawn total_ms=2.4 acquire_ms=0.0 present_ms=0.1 t=1794548943325.515
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_pane_key seq=16735 seq=16735 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794548943335.557
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_editor_action seq=16735 kind=insert focused=true hold_active=false buffer_chars=47 buffer="[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds" t=1794548943335.567
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_edit_sync seq=16735 us=43 t=1794548943335.825
+2026-11-13T05:49:03Z [DEBUG] input_order hop=key_frame layout=true t=1794548943337.412
+2026-11-13T05:49:03Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=1 mounted=27 render_ms=0.03 layout_ms=0.41 after_layout_ms=0.03 paint_ms=0.34 hover_ms=0.05 total_ms=1.04 layout_top=EditorView:0.25,Terminal:0.09,Workspace:0.03 paint_top=Terminal:0.14,Workspace:0.08,EditorView:0.05 t=1794548943337.602
+2026-11-13T05:49:03Z [DEBUG] input_order hop=frame_drawn total_ms=2.4 acquire_ms=0.0 present_ms=0.1 t=1794548943338.908
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_pane_key seq=16736 seq=16736 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794548943348.420
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_editor_action seq=16736 kind=insert focused=true hold_active=false buffer_chars=49 buffer="[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()" t=1794548943348.432
+2026-11-13T05:49:03Z [DEBUG] input_order hop=key_frame layout=true t=1794548943349.784
+2026-11-13T05:49:03Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=1 mounted=27 render_ms=0.03 layout_ms=0.21 after_layout_ms=0.02 paint_ms=0.32 hover_ms=0.05 total_ms=0.77 layout_top=Terminal:0.09,EditorView:0.06,Workspace:0.02 paint_top=Terminal:0.14,Workspace:0.07,EditorView:0.04 t=1794548943349.964
+2026-11-13T05:49:03Z [DEBUG] input_order hop=frame_drawn total_ms=2.1 acquire_ms=0.0 present_ms=0.1 t=1794548943351.233
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_pane_key seq=16737 seq=16737 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794548943361.480
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_editor_action seq=16737 kind=insert focused=true hold_active=false buffer_chars=49 buffer="[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()" t=1794548943361.501
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_edit_sync seq=16737 us=150 t=1794548943361.891
+2026-11-13T05:49:03Z [DEBUG] input_order hop=key_frame layout=true t=1794548943363.769
+2026-11-13T05:49:03Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=1 mounted=27 render_ms=0.04 layout_ms=0.59 after_layout_ms=0.05 paint_ms=0.49 hover_ms=0.07 total_ms=1.44 layout_top=EditorView:0.32,Terminal:0.16,Workspace:0.04 paint_top=Terminal:0.20,Workspace:0.11,EditorView:0.07 t=1794548943364.013
+2026-11-13T05:49:03Z [DEBUG] input_order hop=frame_drawn total_ms=3.1 acquire_ms=0.0 present_ms=0.1 t=1794548943365.650
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_pane_key seq=16738 seq=16738 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794548943378.169
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_editor_action seq=16738 kind=insert focused=true hold_active=false buffer_chars=50 buffer="[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() " t=1794548943378.182
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_edit_sync seq=16738 us=116 t=1794548943378.509
+2026-11-13T05:49:03Z [DEBUG] input_order hop=key_frame layout=true t=1794548943380.874
+2026-11-13T05:49:03Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=1 mounted=27 render_ms=0.07 layout_ms=0.63 after_layout_ms=0.03 paint_ms=0.57 hover_ms=0.09 total_ms=1.63 layout_top=EditorView:0.36,Terminal:0.13,Workspace:0.07 paint_top=Terminal:0.27,Workspace:0.10,EditorView:0.07 t=1794548943381.152
+2026-11-13T05:49:03Z [DEBUG] input_order hop=frame_drawn total_ms=3.6 acquire_ms=0.0 present_ms=0.1 t=1794548943383.056
+2026-11-13T05:49:03Z [DEBUG] input_order hop=suggestions_mode from=[closed] to=[completions trigger=AsYouType candidates=3539] t=1794548943393.204
+2026-11-13T05:49:03Z [DEBUG] input_order hop=notify_cause view=Input cause=handle_completion_suggestions_results_3 t=1794548943396.384
+2026-11-13T05:49:03Z [DEBUG] input_order hop=notify_cause view=Input cause=new_10 t=1794548943396.581
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_pane_key seq=16739 seq=16739 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794548943397.617
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_editor_action seq=16739 kind=insert focused=true hold_active=false buffer_chars=51 buffer="[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() |" t=1794548943397.630
+2026-11-13T05:49:03Z [DEBUG] input_order hop=notify_cause view=Input cause=handle_editor_event_inner_6 t=1794548943397.871
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_edit_sync seq=16739 us=134 t=1794548943397.952
+2026-11-13T05:49:03Z [DEBUG] input_order hop=notify_cause view=Input cause=agent::rerender_agent_input_if_facts_changed t=1794548943398.029
+2026-11-13T05:49:03Z [DEBUG] input_order hop=key_frame layout=true t=1794548943401.983
+2026-11-13T05:49:03Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=5 mounted=28 render_ms=0.32 layout_ms=2.65 after_layout_ms=0.05 paint_ms=0.43 hover_ms=0.08 total_ms=3.73 layout_top=InputSuggestions:2.10,EditorView:0.33,Terminal:0.11 paint_top=Terminal:0.17,Workspace:0.07,EditorView:0.05 t=1794548943402.228
+2026-11-13T05:49:03Z [DEBUG] input_order hop=frame_drawn total_ms=5.7 acquire_ms=0.0 present_ms=0.1 t=1794548943404.152
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_pane_key seq=16740 seq=16740 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794548943405.866
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_editor_action seq=16740 kind=insert focused=true hold_active=false buffer_chars=52 buffer="[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() | " t=1794548943405.881
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_edit_sync seq=16740 us=132 t=1794548943406.292
+2026-11-13T05:49:03Z [DEBUG] input_order hop=key_frame layout=true t=1794548943408.288
+2026-11-13T05:49:03Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=1 mounted=28 render_ms=0.04 layout_ms=0.54 after_layout_ms=0.03 paint_ms=0.42 hover_ms=0.06 total_ms=1.25 layout_top=EditorView:0.24,InputSuggestions:0.13,Terminal:0.10 paint_top=Terminal:0.16,Workspace:0.08,EditorView:0.05 t=1794548943408.499
+2026-11-13T05:49:03Z [DEBUG] input_order hop=frame_drawn total_ms=10.2 acquire_ms=7.4 present_ms=0.1 t=1794548943417.384
+2026-11-13T05:49:03Z [DEBUG] input_order hop=suggestions_mode from=[completions trigger=AsYouType candidates=3539] to=[completions trigger=AsYouType candidates=1866] t=1794548943419.089
+2026-11-13T05:49:03Z [DEBUG] input_order hop=notify_cause view=Input cause=handle_completion_suggestions_results_3 t=1794548943420.720
+2026-11-13T05:49:03Z [DEBUG] input_order hop=notify_cause view=Input cause=new_10 t=1794548943420.808
+2026-11-13T05:49:03Z [DEBUG] input_order hop=notify_cause view=Input cause=new_10 t=1794548943420.849
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_pane_key seq=16741 seq=16741 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794548943421.576
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_editor_action seq=16741 kind=insert focused=true hold_active=false buffer_chars=53 buffer="[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() | O" t=1794548943421.587
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_edit_sync seq=16741 us=91 t=1794548943421.861
+2026-11-13T05:49:03Z [DEBUG] input_order hop=key_frame layout=true t=1794548943423.569
+2026-11-13T05:49:03Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=5 mounted=28 render_ms=0.27 layout_ms=0.59 after_layout_ms=0.02 paint_ms=0.37 hover_ms=0.06 total_ms=1.51 layout_top=EditorView:0.25,InputSuggestions:0.18,Terminal:0.08 paint_top=Terminal:0.16,Workspace:0.07,EditorView:0.04 t=1794548943423.795
+2026-11-13T05:49:03Z [DEBUG] input_order hop=frame_drawn total_ms=6.7 acquire_ms=2.4 present_ms=0.1 t=1794548943429.000
+2026-11-13T05:49:03Z [DEBUG] input_order hop=suggestions_mode from=[completions trigger=AsYouType candidates=1866] to=[completions trigger=AsYouType candidates=425] t=1794548943430.570
+2026-11-13T05:49:03Z [DEBUG] input_order hop=notify_cause view=Input cause=handle_completion_suggestions_results_3 t=1794548943432.155
+2026-11-13T05:49:03Z [DEBUG] input_order hop=notify_cause view=Input cause=new_10 t=1794548943432.273
+2026-11-13T05:49:03Z [DEBUG] input_order hop=notify_cause view=Input cause=new_10 t=1794548943432.351
+2026-11-13T05:49:03Z [DEBUG] input_order hop=frame_drawn total_ms=4.4 acquire_ms=0.0 present_ms=0.1 t=1794548943437.107
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_pane_key seq=16742 seq=16742 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794548943437.585
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_editor_action seq=16742 kind=insert focused=true hold_active=false buffer_chars=54 buffer="[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() | Ou" t=1794548943437.596
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_edit_sync seq=16742 us=262 t=1794548943438.191
+2026-11-13T05:49:03Z [DEBUG] input_order hop=key_frame layout=true t=1794548943441.838
+2026-11-13T05:49:03Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=1 mounted=28 render_ms=0.06 layout_ms=1.39 after_layout_ms=0.06 paint_ms=0.88 hover_ms=0.18 total_ms=2.94 layout_top=EditorView:0.81,InputSuggestions:0.20,Terminal:0.20 paint_top=Terminal:0.34,Workspace:0.14,EditorView:0.13 t=1794548943442.350
+2026-11-13T05:49:03Z [DEBUG] input_order hop=frame_drawn total_ms=9.0 acquire_ms=2.9 present_ms=0.1 t=1794548943448.377
+2026-11-13T05:49:03Z [DEBUG] input_order hop=suggestions_mode from=[completions trigger=AsYouType candidates=425] to=[completions trigger=AsYouType candidates=252] t=1794548943449.174
+2026-11-13T05:49:03Z [DEBUG] input_order hop=notify_cause view=Input cause=handle_completion_suggestions_results_3 t=1794548943449.642
+2026-11-13T05:49:03Z [DEBUG] input_order hop=notify_cause view=Input cause=new_10 t=1794548943449.741
+2026-11-13T05:49:03Z [DEBUG] input_order hop=notify_cause view=Input cause=new_10 t=1794548943449.803
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_pane_key seq=16743 seq=16743 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794548943451.064
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_editor_action seq=16743 kind=insert focused=true hold_active=false buffer_chars=55 buffer="[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() | Out" t=1794548943451.079
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_edit_sync seq=16743 us=105 t=1794548943451.417
+2026-11-13T05:49:03Z [DEBUG] input_order hop=key_frame layout=true t=1794548943453.607
+2026-11-13T05:49:03Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=5 mounted=28 render_ms=0.33 layout_ms=0.85 after_layout_ms=0.03 paint_ms=0.39 hover_ms=0.06 total_ms=1.84 layout_top=EditorView:0.35,InputSuggestions:0.32,Terminal:0.09 paint_top=Terminal:0.16,Workspace:0.07,EditorView:0.05 t=1794548943453.811
+2026-11-13T05:49:03Z [DEBUG] input_order hop=frame_drawn total_ms=5.5 acquire_ms=1.6 present_ms=0.1 t=1794548943457.416
+2026-11-13T05:49:03Z [DEBUG] input_order hop=suggestions_mode from=[completions trigger=AsYouType candidates=252] to=[completions trigger=AsYouType candidates=13] t=1794548943457.843
+2026-11-13T05:49:03Z [DEBUG] input_order hop=notify_cause view=Input cause=handle_completion_suggestions_results_3 t=1794548943458.012
+2026-11-13T05:49:03Z [DEBUG] input_order hop=notify_cause view=Input cause=new_10 t=1794548943458.106
+2026-11-13T05:49:03Z [DEBUG] input_order hop=notify_cause view=Input cause=new_10 t=1794548943458.146
+2026-11-13T05:49:03Z [DEBUG] input_order hop=frame_drawn total_ms=8.6 acquire_ms=4.8 present_ms=0.1 t=1794548943466.837
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_pane_key seq=16744 seq=16744 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794548943467.796
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_editor_action seq=16744 kind=insert focused=true hold_active=false buffer_chars=56 buffer="[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() | Out-" t=1794548943467.810
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_edit_sync seq=16744 us=107 t=1794548943468.149
+2026-11-13T05:49:03Z [DEBUG] input_order hop=key_frame layout=true t=1794548943471.300
+2026-11-13T05:49:03Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=1 mounted=28 render_ms=0.05 layout_ms=1.00 after_layout_ms=0.04 paint_ms=0.90 hover_ms=0.13 total_ms=3.28 layout_top=EditorView:0.54,InputSuggestions:0.18,Terminal:0.16 paint_top=Terminal:0.40,Workspace:0.13,EditorView:0.12 t=1794548943472.526
+2026-11-13T05:49:03Z [DEBUG] input_order hop=frame_drawn total_ms=7.0 acquire_ms=2.0 present_ms=0.1 t=1794548943476.218
+2026-11-13T05:49:03Z [DEBUG] input_order hop=suggestions_mode from=[completions trigger=AsYouType candidates=13] to=[completions trigger=AsYouType candidates=2] t=1794548943476.503
+2026-11-13T05:49:03Z [DEBUG] input_order hop=notify_cause view=Input cause=handle_completion_suggestions_results_3 t=1794548943476.551
+2026-11-13T05:49:03Z [DEBUG] input_order hop=notify_cause view=Input cause=new_10 t=1794548943476.622
+2026-11-13T05:49:03Z [DEBUG] input_order hop=notify_cause view=Input cause=new_10 t=1794548943476.667
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_pane_key seq=16745 seq=16745 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794548943477.416
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_editor_action seq=16745 kind=insert focused=true hold_active=false buffer_chars=57 buffer="[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() | Out-F" t=1794548943477.427
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_edit_sync seq=16745 us=109 t=1794548943477.731
+2026-11-13T05:49:03Z [DEBUG] input_order hop=key_frame layout=true t=1794548943479.468
+2026-11-13T05:49:03Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=5 mounted=28 render_ms=0.27 layout_ms=0.53 after_layout_ms=0.02 paint_ms=0.43 hover_ms=0.06 total_ms=1.51 layout_top=EditorView:0.27,InputSuggestions:0.10,Terminal:0.08 paint_top=Terminal:0.18,Workspace:0.08,EditorView:0.05 t=1794548943479.692
+2026-11-13T05:49:03Z [DEBUG] input_order hop=frame_drawn total_ms=7.3 acquire_ms=4.4 present_ms=0.1 t=1794548943485.454
+2026-11-13T05:49:03Z [DEBUG] input_order hop=suggestions_mode from=[completions trigger=AsYouType candidates=2] to=[completions trigger=AsYouType candidates=1] t=1794548943485.602
+2026-11-13T05:49:03Z [DEBUG] input_order hop=notify_cause view=Input cause=handle_completion_suggestions_results_3 t=1794548943485.624
+2026-11-13T05:49:03Z [DEBUG] input_order hop=notify_cause view=Input cause=new_10 t=1794548943485.682
+2026-11-13T05:49:03Z [DEBUG] input_order hop=notify_cause view=Input cause=new_10 t=1794548943485.719
+2026-11-13T05:49:03Z [DEBUG] input_order hop=frame_drawn total_ms=7.6 acquire_ms=5.2 present_ms=0.1 t=1794548943493.591
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_pane_key seq=16746 seq=16746 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794548943494.207
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_editor_action seq=16746 kind=insert focused=true hold_active=false buffer_chars=58 buffer="[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() | Out-Fi" t=1794548943494.219
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_edit_sync seq=16746 us=103 t=1794548943494.508
+2026-11-13T05:49:03Z [DEBUG] input_order hop=key_frame layout=true t=1794548943495.848
+2026-11-13T05:49:03Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=2 mounted=28 render_ms=0.05 layout_ms=0.45 after_layout_ms=0.02 paint_ms=0.32 hover_ms=0.06 total_ms=1.07 layout_top=EditorView:0.25,Terminal:0.09,Workspace:0.03 paint_top=Terminal:0.14,Workspace:0.06,EditorView:0.04 t=1794548943496.053
+2026-11-13T05:49:03Z [DEBUG] input_order hop=frame_drawn total_ms=5.5 acquire_ms=3.1 present_ms=0.1 t=1794548943500.480
+2026-11-13T05:49:03Z [DEBUG] input_order hop=suggestions_mode from=[completions trigger=AsYouType candidates=1] to=[completions trigger=AsYouType candidates=1] t=1794548943500.627
+2026-11-13T05:49:03Z [DEBUG] input_order hop=notify_cause view=Input cause=handle_completion_suggestions_results_3 t=1794548943500.651
+2026-11-13T05:49:03Z [DEBUG] input_order hop=notify_cause view=Input cause=new_10 t=1794548943500.710
+2026-11-13T05:49:03Z [DEBUG] input_order hop=notify_cause view=Input cause=new_10 t=1794548943500.752
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_pane_key seq=16747 seq=16747 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794548943501.274
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_editor_action seq=16747 kind=insert focused=true hold_active=false buffer_chars=59 buffer="[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() | Out-Fil" t=1794548943501.284
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_edit_sync seq=16747 us=86 t=1794548943501.539
+2026-11-13T05:49:03Z [DEBUG] input_order hop=key_frame layout=true t=1794548943502.997
+2026-11-13T05:49:03Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=5 mounted=28 render_ms=0.25 layout_ms=0.44 after_layout_ms=0.02 paint_ms=0.33 hover_ms=0.07 total_ms=1.31 layout_top=EditorView:0.24,Terminal:0.07,InputSuggestions:0.07 paint_top=Terminal:0.15,Workspace:0.06,EditorView:0.04 t=1794548943503.235
+2026-11-13T05:49:03Z [DEBUG] input_order hop=frame_drawn total_ms=6.4 acquire_ms=3.7 present_ms=0.1 t=1794548943508.347
+2026-11-13T05:49:03Z [DEBUG] input_order hop=suggestions_mode from=[completions trigger=AsYouType candidates=1] to=[completions trigger=AsYouType candidates=1] t=1794548943508.525
+2026-11-13T05:49:03Z [DEBUG] input_order hop=notify_cause view=Input cause=handle_completion_suggestions_results_3 t=1794548943508.548
+2026-11-13T05:49:03Z [DEBUG] input_order hop=notify_cause view=Input cause=new_10 t=1794548943508.611
+2026-11-13T05:49:03Z [DEBUG] input_order hop=notify_cause view=Input cause=new_10 t=1794548943508.653
+2026-11-13T05:49:03Z [DEBUG] input_order hop=frame_drawn total_ms=6.5 acquire_ms=4.0 present_ms=0.1 t=1794548943515.398
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_pane_key seq=16748 seq=16748 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794548943515.913
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_editor_action seq=16748 kind=insert focused=true hold_active=false buffer_chars=60 buffer="[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() | Out-File" t=1794548943515.924
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_edit_sync seq=16748 us=116 t=1794548943516.233
+2026-11-13T05:49:03Z [DEBUG] input_order hop=suggestions_mode from=[completions trigger=AsYouType candidates=1] to=[completions trigger=AsYouType candidates=41] t=1794548943517.009
+2026-11-13T05:49:03Z [DEBUG] input_order hop=notify_cause view=Input cause=handle_completion_suggestions_results_3 t=1794548943517.055
+2026-11-13T05:49:03Z [DEBUG] input_order hop=notify_cause view=Input cause=new_10 t=1794548943517.102
+2026-11-13T05:49:03Z [DEBUG] input_order hop=notify_cause view=Input cause=new_10 t=1794548943517.134
+2026-11-13T05:49:03Z [DEBUG] input_order hop=key_frame layout=true t=1794548943519.649
+2026-11-13T05:49:03Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=5 mounted=28 render_ms=0.21 layout_ms=1.48 after_layout_ms=0.04 paint_ms=0.58 hover_ms=0.07 total_ms=2.54 layout_top=EditorView:0.87,InputSuggestions:0.41,Terminal:0.09 paint_top=Terminal:0.29,Workspace:0.07,EditorView:0.06 t=1794548943519.863
+2026-11-13T05:49:03Z [DEBUG] input_order hop=frame_drawn total_ms=6.9 acquire_ms=2.8 present_ms=0.1 t=1794548943524.156
+2026-11-13T05:49:03Z [DEBUG] input_order hop=frame_drawn total_ms=8.1 acquire_ms=5.8 present_ms=0.1 t=1794548943532.641
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_pane_key seq=16749 seq=16749 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794548943533.164
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_editor_action seq=16749 kind=insert focused=true hold_active=false buffer_chars=61 buffer="[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() | Out-File " t=1794548943533.176
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_edit_sync seq=16749 us=110 t=1794548943533.515
+2026-11-13T05:49:03Z [DEBUG] input_order hop=suggestions_mode from=[completions trigger=AsYouType candidates=41] to=[closed] t=1794548943533.852
+2026-11-13T05:49:03Z [DEBUG] input_order hop=notify_cause view=Input cause=handle_completion_suggestions_results_3 t=1794548943533.881
+2026-11-13T05:49:03Z [DEBUG] input_order hop=notify_cause view=Input cause=new_10 t=1794548943533.932
+2026-11-13T05:49:03Z [DEBUG] input_order hop=key_frame layout=true t=1794548943535.422
+2026-11-13T05:49:03Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=4 mounted=27 render_ms=0.21 layout_ms=0.52 after_layout_ms=0.04 paint_ms=0.36 hover_ms=0.06 total_ms=1.36 layout_top=EditorView:0.35,Terminal:0.08,Workspace:0.03 paint_top=Terminal:0.16,Workspace:0.07,EditorView:0.05 t=1794548943535.631
+2026-11-13T05:49:03Z [DEBUG] input_order hop=frame_drawn total_ms=7.8 acquire_ms=5.1 present_ms=0.1 t=1794548943542.068
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_pane_key seq=16750 seq=16750 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794548943547.709
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_editor_action seq=16750 kind=insert focused=true hold_active=false buffer_chars=62 buffer="[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() | Out-File l" t=1794548943547.722
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_edit_sync seq=16750 us=114 t=1794548943548.063
+2026-11-13T05:49:03Z [DEBUG] input_order hop=key_frame layout=true t=1794548943549.411
+2026-11-13T05:49:03Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=1 mounted=27 render_ms=0.03 layout_ms=0.45 after_layout_ms=0.03 paint_ms=0.33 hover_ms=0.05 total_ms=1.05 layout_top=EditorView:0.25,Terminal:0.10,Workspace:0.03 paint_top=Terminal:0.14,Workspace:0.07,EditorView:0.05 t=1794548943549.604
+2026-11-13T05:49:03Z [DEBUG] input_order hop=frame_drawn total_ms=2.3 acquire_ms=0.0 present_ms=0.1 t=1794548943550.802
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_pane_key seq=16751 seq=16751 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794548943560.724
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_editor_action seq=16751 kind=insert focused=true hold_active=false buffer_chars=63 buffer="[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() | Out-File la" t=1794548943560.760
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_edit_sync seq=16751 us=223 t=1794548943561.483
+2026-11-13T05:49:03Z [DEBUG] input_order hop=key_frame layout=true t=1794548943563.139
+2026-11-13T05:49:03Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=1 mounted=27 render_ms=0.04 layout_ms=0.49 after_layout_ms=0.03 paint_ms=0.38 hover_ms=0.07 total_ms=1.19 layout_top=EditorView:0.26,Terminal:0.12,Workspace:0.04 paint_top=Terminal:0.14,Workspace:0.07,EditorView:0.06 t=1794548943563.356
+2026-11-13T05:49:03Z [DEBUG] input_order hop=frame_drawn total_ms=2.6 acquire_ms=0.0 present_ms=0.1 t=1794548943564.750
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_pane_key seq=16752 seq=16752 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794548943573.706
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_editor_action seq=16752 kind=insert focused=true hold_active=false buffer_chars=64 buffer="[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() | Out-File lat" t=1794548943573.719
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_edit_sync seq=16752 us=113 t=1794548943574.074
+2026-11-13T05:49:03Z [DEBUG] input_order hop=key_frame layout=true t=1794548943575.821
+2026-11-13T05:49:03Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=1 mounted=27 render_ms=0.04 layout_ms=0.46 after_layout_ms=0.03 paint_ms=0.33 hover_ms=0.05 total_ms=1.08 layout_top=EditorView:0.29,Terminal:0.10,Workspace:0.03 paint_top=Terminal:0.14,Workspace:0.07,EditorView:0.05 t=1794548943576.027
+2026-11-13T05:49:03Z [DEBUG] input_order hop=frame_drawn total_ms=2.4 acquire_ms=0.0 present_ms=0.1 t=1794548943577.363
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_pane_key seq=16753 seq=16753 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794548943586.831
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_editor_action seq=16753 kind=insert focused=true hold_active=false buffer_chars=65 buffer="[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() | Out-File lat_" t=1794548943586.843
+2026-11-13T05:49:03Z [DEBUG] input_order hop=notify_cause view=Input cause=handle_editor_event_inner_6 t=1794548943587.088
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_edit_sync seq=16753 us=1337 t=1794548943588.392
+2026-11-13T05:49:03Z [DEBUG] input_order hop=notify_cause view=Input cause=agent::rerender_agent_input_if_facts_changed t=1794548943588.492
+2026-11-13T05:49:03Z [DEBUG] input_order hop=key_frame layout=true t=1794548943590.065
+2026-11-13T05:49:03Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=2 mounted=26 render_ms=0.13 layout_ms=0.51 after_layout_ms=0.03 paint_ms=0.34 hover_ms=0.06 total_ms=1.24 layout_top=EditorView:0.29,Terminal:0.13,Workspace:0.03 paint_top=Terminal:0.14,Workspace:0.07,EditorView:0.05 t=1794548943590.262
+2026-11-13T05:49:03Z [DEBUG] input_order hop=frame_drawn total_ms=2.6 acquire_ms=0.0 present_ms=0.1 t=1794548943591.558
+2026-11-13T05:49:03Z [DEBUG] input_order hop=frame_drawn total_ms=8.0 acquire_ms=4.6 present_ms=0.1 t=1794548943600.146
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_pane_key seq=16754 seq=16754 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794548943601.279
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_editor_action seq=16754 kind=insert focused=true hold_active=false buffer_chars=66 buffer="[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() | Out-File lat_0" t=1794548943601.295
+2026-11-13T05:49:03Z [DEBUG] input_order hop=notify_cause view=Input cause=handle_editor_event_inner_6 t=1794548943601.643
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_edit_sync seq=16754 us=193 t=1794548943601.750
+2026-11-13T05:49:03Z [DEBUG] input_order hop=notify_cause view=Input cause=agent::rerender_agent_input_if_facts_changed t=1794548943601.869
+2026-11-13T05:49:03Z [DEBUG] input_order hop=key_frame layout=true t=1794548943603.315
+2026-11-13T05:49:03Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=2 mounted=27 render_ms=0.11 layout_ms=0.48 after_layout_ms=0.03 paint_ms=0.35 hover_ms=0.06 total_ms=1.20 layout_top=EditorView:0.28,Terminal:0.11,Workspace:0.03 paint_top=Terminal:0.14,Workspace:0.08,EditorView:0.06 t=1794548943603.520
+2026-11-13T05:49:03Z [DEBUG] input_order hop=frame_drawn total_ms=7.6 acquire_ms=5.0 present_ms=0.1 t=1794548943609.891
+2026-11-13T05:49:03Z [DEBUG] input_order hop=suggestions_mode from=[closed] to=[completions trigger=AsYouType candidates=52] t=1794548943610.105
+2026-11-13T05:49:03Z [DEBUG] input_order hop=notify_cause view=Input cause=handle_completion_suggestions_results_3 t=1794548943610.164
+2026-11-13T05:49:03Z [DEBUG] input_order hop=notify_cause view=Input cause=new_10 t=1794548943610.233
+2026-11-13T05:49:03Z [DEBUG] input_order hop=frame_drawn total_ms=6.4 acquire_ms=3.4 present_ms=0.1 t=1794548943617.022
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_pane_key seq=16755 seq=16755 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794548943618.159
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_editor_action seq=16755 kind=insert focused=true hold_active=false buffer_chars=67 buffer="[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() | Out-File lat_0 " t=1794548943618.184
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_edit_sync seq=16755 us=104 t=1794548943618.529
+2026-11-13T05:49:03Z [DEBUG] input_order hop=suggestions_mode from=[completions trigger=AsYouType candidates=52] to=[completions trigger=AsYouType candidates=41] t=1794548943618.927
+2026-11-13T05:49:03Z [DEBUG] input_order hop=notify_cause view=Input cause=handle_completion_suggestions_results_3 t=1794548943619.003
+2026-11-13T05:49:03Z [DEBUG] input_order hop=notify_cause view=Input cause=new_10 t=1794548943619.068
+2026-11-13T05:49:03Z [DEBUG] input_order hop=notify_cause view=Input cause=new_10 t=1794548943619.103
+2026-11-13T05:49:03Z [DEBUG] input_order hop=key_frame layout=true t=1794548943620.647
+2026-11-13T05:49:03Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=5 mounted=28 render_ms=0.27 layout_ms=0.61 after_layout_ms=0.03 paint_ms=0.42 hover_ms=0.07 total_ms=1.58 layout_top=EditorView:0.27,InputSuggestions:0.15,Terminal:0.08 paint_top=Terminal:0.16,Workspace:0.07,EditorView:0.05 t=1794548943620.870
+2026-11-13T05:49:03Z [DEBUG] input_order hop=frame_drawn total_ms=6.0 acquire_ms=2.8 present_ms=0.1 t=1794548943625.277
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_pane_key seq=16756 seq=16756 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794548943632.816
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_editor_action seq=16756 kind=insert focused=true hold_active=false buffer_chars=68 buffer="[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() | Out-File lat_0 -" t=1794548943632.828
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_edit_sync seq=16756 us=103 t=1794548943633.145
+2026-11-13T05:49:03Z [DEBUG] input_order hop=suggestions_mode from=[completions trigger=AsYouType candidates=41] to=[completions trigger=AsYouType candidates=21] t=1794548943633.536
+2026-11-13T05:49:03Z [DEBUG] input_order hop=notify_cause view=Input cause=handle_completion_suggestions_results_3 t=1794548943633.604
+2026-11-13T05:49:03Z [DEBUG] input_order hop=notify_cause view=Input cause=new_10 t=1794548943633.659
+2026-11-13T05:49:03Z [DEBUG] input_order hop=notify_cause view=Input cause=new_10 t=1794548943633.693
+2026-11-13T05:49:03Z [DEBUG] input_order hop=key_frame layout=true t=1794548943637.328
+2026-11-13T05:49:03Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=5 mounted=28 render_ms=0.35 layout_ms=1.60 after_layout_ms=0.04 paint_ms=0.49 hover_ms=0.08 total_ms=2.78 layout_top=InputSuggestions:1.09,EditorView:0.31,Terminal:0.10 paint_top=Terminal:0.20,Workspace:0.09,EditorView:0.07 t=1794548943637.593
+2026-11-13T05:49:03Z [DEBUG] input_order hop=frame_drawn total_ms=4.6 acquire_ms=0.0 present_ms=0.1 t=1794548943639.418
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_pane_key seq=16757 seq=16757 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794548943647.797
+2026-11-13T05:49:03Z [DEBUG] input_order hop=kh_editor_action seq=16757 kind=insert focused=true hold_active=false buffer_chars=69 buffer="[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() | Out-File lat_0 -E" t=1794548943647.811
+=== lat_evidence: 47776 of 48806 matching lines omitted (cap 174763 bytes) ===
+2026-11-13T05:51:04Z [DEBUG] input_order hop=kh_edit_sync seq=22521 us=110 t=1794549064760.743
+2026-11-13T05:51:04Z [DEBUG] input_order hop=key_frame layout=true t=1794549064762.672
+2026-11-13T05:51:04Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=1 mounted=27 render_ms=0.04 layout_ms=0.88 after_layout_ms=0.04 paint_ms=0.45 hover_ms=0.08 total_ms=1.72 layout_top=AcceptAutosuggestionKeybinding:0.42,EditorView:0.20,Terminal:0.14 paint_top=Terminal:0.20,Workspace:0.10,EditorView:0.06 t=1794549064762.943
+2026-11-13T05:51:04Z [DEBUG] input_order hop=frame_drawn total_ms=3.2 acquire_ms=0.0 present_ms=0.1 t=1794549064764.419
+2026-11-13T05:51:04Z [DEBUG] input_order hop=kh_pane_key seq=22522 seq=22522 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794549064773.381
+2026-11-13T05:51:04Z [DEBUG] input_order hop=kh_editor_action seq=22522 kind=insert focused=true hold_active=false buffer_chars=41 buffer="[DateTimeOffset]::UtcNow.ToUnixTimeMillis" t=1794549064773.394
+2026-11-13T05:51:04Z [DEBUG] input_order hop=kh_edit_sync seq=22522 us=105 t=1794549064773.700
+2026-11-13T05:51:04Z [DEBUG] input_order hop=key_frame layout=true t=1794549064775.248
+2026-11-13T05:51:04Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=1 mounted=27 render_ms=0.04 layout_ms=0.54 after_layout_ms=0.04 paint_ms=0.40 hover_ms=0.07 total_ms=1.34 layout_top=EditorView:0.29,Terminal:0.14,Workspace:0.05 paint_top=Terminal:0.19,Workspace:0.08,EditorView:0.05 t=1794549064775.524
+2026-11-13T05:51:04Z [DEBUG] input_order hop=frame_drawn total_ms=2.9 acquire_ms=0.0 present_ms=0.1 t=1794549064777.065
+2026-11-13T05:51:04Z [DEBUG] input_order hop=kh_pane_key seq=22523 seq=22523 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794549064786.466
+2026-11-13T05:51:04Z [DEBUG] input_order hop=kh_editor_action seq=22523 kind=insert focused=true hold_active=false buffer_chars=42 buffer="[DateTimeOffset]::UtcNow.ToUnixTimeMillise" t=1794549064786.490
+2026-11-13T05:51:04Z [DEBUG] input_order hop=kh_edit_sync seq=22523 us=120 t=1794549064786.839
+2026-11-13T05:51:04Z [DEBUG] input_order hop=key_frame layout=true t=1794549064788.546
+2026-11-13T05:51:04Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=1 mounted=27 render_ms=0.05 layout_ms=0.51 after_layout_ms=0.04 paint_ms=0.52 hover_ms=0.08 total_ms=1.42 layout_top=EditorView:0.24,Terminal:0.16,Workspace:0.04 paint_top=Terminal:0.27,Workspace:0.09,EditorView:0.06 t=1794549064788.827
+2026-11-13T05:51:04Z [DEBUG] input_order hop=frame_drawn total_ms=3.1 acquire_ms=0.0 present_ms=0.1 t=1794549064790.515
+2026-11-13T05:51:04Z [DEBUG] input_order hop=kh_pane_key seq=22524 seq=22524 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794549064799.675
+2026-11-13T05:51:04Z [DEBUG] input_order hop=kh_editor_action seq=22524 kind=insert focused=true hold_active=false buffer_chars=43 buffer="[DateTimeOffset]::UtcNow.ToUnixTimeMillisec" t=1794549064799.696
+2026-11-13T05:51:04Z [DEBUG] input_order hop=kh_edit_sync seq=22524 us=145 t=1794549064800.123
+2026-11-13T05:51:04Z [DEBUG] input_order hop=key_frame layout=true t=1794549064802.262
+2026-11-13T05:51:04Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=1 mounted=27 render_ms=0.06 layout_ms=0.60 after_layout_ms=0.04 paint_ms=0.56 hover_ms=0.10 total_ms=1.65 layout_top=EditorView:0.30,Terminal:0.18,Workspace:0.05 paint_top=Terminal:0.28,Workspace:0.11,EditorView:0.07 t=1794549064802.623
+2026-11-13T05:51:04Z [DEBUG] input_order hop=frame_drawn total_ms=3.5 acquire_ms=0.0 present_ms=0.1 t=1794549064804.373
+2026-11-13T05:51:04Z [DEBUG] input_order hop=kh_pane_key seq=22525 seq=22525 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794549064814.451
+2026-11-13T05:51:04Z [DEBUG] input_order hop=kh_editor_action seq=22525 kind=insert focused=true hold_active=false buffer_chars=44 buffer="[DateTimeOffset]::UtcNow.ToUnixTimeMilliseco" t=1794549064814.464
+2026-11-13T05:51:04Z [DEBUG] input_order hop=kh_edit_sync seq=22525 us=121 t=1794549064814.785
+2026-11-13T05:51:04Z [DEBUG] input_order hop=key_frame layout=true t=1794549064816.823
+2026-11-13T05:51:04Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=1 mounted=27 render_ms=0.05 layout_ms=0.51 after_layout_ms=0.05 paint_ms=0.44 hover_ms=0.08 total_ms=1.35 layout_top=EditorView:0.24,Terminal:0.16,Workspace:0.04 paint_top=Terminal:0.20,Workspace:0.09,EditorView:0.05 t=1794549064817.098
+2026-11-13T05:51:04Z [DEBUG] input_order hop=frame_drawn total_ms=3.2 acquire_ms=0.0 present_ms=0.1 t=1794549064818.872
+2026-11-13T05:51:04Z [DEBUG] input_order hop=kh_pane_key seq=22526 seq=22526 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794549064827.830
+2026-11-13T05:51:04Z [DEBUG] input_order hop=kh_editor_action seq=22526 kind=insert focused=true hold_active=false buffer_chars=45 buffer="[DateTimeOffset]::UtcNow.ToUnixTimeMillisecon" t=1794549064827.860
+2026-11-13T05:51:04Z [DEBUG] input_order hop=kh_edit_sync seq=22526 us=227 t=1794549064828.496
+2026-11-13T05:51:04Z [DEBUG] input_order hop=key_frame layout=true t=1794549064831.564
+2026-11-13T05:51:04Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=1 mounted=27 render_ms=0.07 layout_ms=0.82 after_layout_ms=0.05 paint_ms=0.88 hover_ms=0.15 total_ms=2.38 layout_top=EditorView:0.40,Terminal:0.24,Workspace:0.06 paint_top=Terminal:0.47,Workspace:0.15,EditorView:0.11 t=1794549064832.074
+2026-11-13T05:51:04Z [DEBUG] input_order hop=frame_drawn total_ms=5.2 acquire_ms=0.0 present_ms=0.1 t=1794549064834.847
+2026-11-13T05:51:04Z [DEBUG] input_order hop=kh_pane_key seq=22527 seq=22527 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794549064846.523
+2026-11-13T05:51:04Z [DEBUG] input_order hop=kh_editor_action seq=22527 kind=insert focused=true hold_active=false buffer_chars=46 buffer="[DateTimeOffset]::UtcNow.ToUnixTimeMillisecond" t=1794549064846.540
+2026-11-13T05:51:04Z [DEBUG] input_order hop=kh_edit_sync seq=22527 us=119 t=1794549064846.909
+2026-11-13T05:51:04Z [DEBUG] input_order hop=key_frame layout=true t=1794549064848.691
+2026-11-13T05:51:04Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=1 mounted=27 render_ms=0.05 layout_ms=0.52 after_layout_ms=0.04 paint_ms=0.51 hover_ms=0.08 total_ms=1.43 layout_top=EditorView:0.26,Terminal:0.15,Workspace:0.04 paint_top=Terminal:0.25,Workspace:0.09,EditorView:0.06 t=1794549064848.994
+2026-11-13T05:51:04Z [DEBUG] input_order hop=frame_drawn total_ms=3.4 acquire_ms=0.0 present_ms=0.1 t=1794549064850.894
+2026-11-13T05:51:04Z [DEBUG] input_order hop=kh_pane_key seq=22528 seq=22528 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794549064862.156
+2026-11-13T05:51:04Z [DEBUG] input_order hop=kh_editor_action seq=22528 kind=insert focused=true hold_active=false buffer_chars=47 buffer="[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds" t=1794549064862.183
+2026-11-13T05:51:04Z [DEBUG] input_order hop=kh_edit_sync seq=22528 us=51 t=1794549064862.590
+2026-11-13T05:51:04Z [DEBUG] input_order hop=key_frame layout=true t=1794549064865.234
+2026-11-13T05:51:04Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=1 mounted=27 render_ms=0.06 layout_ms=0.69 after_layout_ms=0.09 paint_ms=0.52 hover_ms=0.08 total_ms=1.71 layout_top=EditorView:0.37,Terminal:0.20,Workspace:0.04 paint_top=Terminal:0.25,Workspace:0.10,EditorView:0.07 t=1794549064865.559
+2026-11-13T05:51:04Z [DEBUG] input_order hop=frame_drawn total_ms=4.1 acquire_ms=0.0 present_ms=0.1 t=1794549064867.858
+2026-11-13T05:51:04Z [DEBUG] input_order hop=kh_pane_key seq=22529 seq=22529 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794549064876.691
+2026-11-13T05:51:04Z [DEBUG] input_order hop=kh_editor_action seq=22529 kind=insert focused=true hold_active=false buffer_chars=49 buffer="[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()" t=1794549064876.702
+2026-11-13T05:51:04Z [DEBUG] input_order hop=key_frame layout=true t=1794549064878.547
+2026-11-13T05:51:04Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=1 mounted=27 render_ms=0.04 layout_ms=0.25 after_layout_ms=0.02 paint_ms=0.58 hover_ms=0.06 total_ms=1.15 layout_top=Terminal:0.11,EditorView:0.06,Workspace:0.03 paint_top=Terminal:0.36,Workspace:0.07,EditorView:0.05 t=1794549064878.776
+2026-11-13T05:51:04Z [DEBUG] input_order hop=frame_drawn total_ms=2.6 acquire_ms=0.0 present_ms=0.1 t=1794549064880.149
+2026-11-13T05:51:04Z [DEBUG] input_order hop=kh_pane_key seq=22530 seq=22530 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794549064889.377
+2026-11-13T05:51:04Z [DEBUG] input_order hop=kh_editor_action seq=22530 kind=insert focused=true hold_active=false buffer_chars=49 buffer="[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()" t=1794549064889.390
+2026-11-13T05:51:04Z [DEBUG] input_order hop=kh_edit_sync seq=22530 us=121 t=1794549064889.707
+2026-11-13T05:51:04Z [DEBUG] input_order hop=key_frame layout=true t=1794549064891.737
+2026-11-13T05:51:04Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=1 mounted=27 render_ms=0.04 layout_ms=0.40 after_layout_ms=0.04 paint_ms=0.35 hover_ms=0.06 total_ms=1.05 layout_top=EditorView:0.18,Terminal:0.13,Workspace:0.03 paint_top=Terminal:0.16,Workspace:0.07,EditorView:0.05 t=1794549064891.949
+2026-11-13T05:51:04Z [DEBUG] input_order hop=frame_drawn total_ms=2.4 acquire_ms=0.0 present_ms=0.1 t=1794549064893.246
+2026-11-13T05:51:04Z [DEBUG] input_order hop=kh_pane_key seq=22531 seq=22531 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794549064903.560
+2026-11-13T05:51:04Z [DEBUG] input_order hop=kh_editor_action seq=22531 kind=insert focused=true hold_active=false buffer_chars=50 buffer="[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() " t=1794549064903.583
+2026-11-13T05:51:04Z [DEBUG] input_order hop=kh_edit_sync seq=22531 us=167 t=1794549064904.063
+2026-11-13T05:51:04Z [DEBUG] input_order hop=key_frame layout=true t=1794549064906.593
+2026-11-13T05:51:04Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=1 mounted=27 render_ms=0.04 layout_ms=0.34 after_layout_ms=0.03 paint_ms=0.38 hover_ms=0.06 total_ms=1.03 layout_top=EditorView:0.17,Terminal:0.11,Workspace:0.03 paint_top=Terminal:0.18,Workspace:0.08,EditorView:0.05 t=1794549064906.813
+2026-11-13T05:51:04Z [DEBUG] input_order hop=frame_drawn total_ms=2.9 acquire_ms=0.0 present_ms=0.1 t=1794549064908.662
+2026-11-13T05:51:04Z [DEBUG] input_order hop=kh_pane_key seq=22532 seq=22532 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794549064918.145
+2026-11-13T05:51:04Z [DEBUG] input_order hop=kh_editor_action seq=22532 kind=insert focused=true hold_active=false buffer_chars=51 buffer="[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() |" t=1794549064918.157
+2026-11-13T05:51:04Z [DEBUG] input_order hop=kh_edit_sync seq=22532 us=115 t=1794549064918.509
+2026-11-13T05:51:04Z [DEBUG] input_order hop=key_frame layout=true t=1794549064920.215
+2026-11-13T05:51:04Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=1 mounted=27 render_ms=0.05 layout_ms=0.40 after_layout_ms=0.03 paint_ms=0.42 hover_ms=0.08 total_ms=1.22 layout_top=EditorView:0.18,Terminal:0.13,Workspace:0.04 paint_top=Terminal:0.18,Workspace:0.08,EditorView:0.07 t=1794549064920.489
+2026-11-13T05:51:04Z [DEBUG] input_order hop=frame_drawn total_ms=2.7 acquire_ms=0.0 present_ms=0.1 t=1794549064921.910
+2026-11-13T05:51:04Z [DEBUG] input_order hop=kh_pane_key seq=22533 seq=22533 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794549064931.745
+2026-11-13T05:51:04Z [DEBUG] input_order hop=kh_editor_action seq=22533 kind=insert focused=true hold_active=false buffer_chars=52 buffer="[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() | " t=1794549064931.769
+2026-11-13T05:51:04Z [DEBUG] input_order hop=kh_edit_sync seq=22533 us=109 t=1794549064932.092
+2026-11-13T05:51:04Z [DEBUG] input_order hop=key_frame layout=true t=1794549064933.952
+2026-11-13T05:51:04Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=1 mounted=27 render_ms=0.04 layout_ms=0.39 after_layout_ms=0.03 paint_ms=0.37 hover_ms=0.05 total_ms=1.09 layout_top=EditorView:0.21,Terminal:0.12,Workspace:0.03 paint_top=Terminal:0.18,Workspace:0.07,EditorView:0.05 t=1794549064934.173
+2026-11-13T05:51:04Z [DEBUG] input_order hop=frame_drawn total_ms=2.6 acquire_ms=0.0 present_ms=0.1 t=1794549064935.622
+2026-11-13T05:51:04Z [DEBUG] input_order hop=suggestions_mode from=[closed] to=[completions trigger=AsYouType candidates=1866] t=1794549064943.652
+2026-11-13T05:51:04Z [DEBUG] input_order hop=notify_cause view=Input cause=handle_completion_suggestions_results_3 t=1794549064944.229
+2026-11-13T05:51:04Z [DEBUG] input_order hop=notify_cause view=Input cause=new_10 t=1794549064944.329
+2026-11-13T05:51:04Z [DEBUG] input_order hop=frame_drawn total_ms=2.9 acquire_ms=0.0 present_ms=0.1 t=1794549064947.279
+2026-11-13T05:51:04Z [DEBUG] input_order hop=kh_pane_key seq=22534 seq=22534 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794549064947.860
+2026-11-13T05:51:04Z [DEBUG] input_order hop=kh_editor_action seq=22534 kind=insert focused=true hold_active=false buffer_chars=53 buffer="[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() | O" t=1794549064947.871
+2026-11-13T05:51:04Z [DEBUG] input_order hop=kh_edit_sync seq=22534 us=86 t=1794549064948.133
+2026-11-13T05:51:04Z [DEBUG] input_order hop=key_frame layout=true t=1794549064949.467
+2026-11-13T05:51:04Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=2 mounted=28 render_ms=0.06 layout_ms=0.38 after_layout_ms=0.02 paint_ms=0.36 hover_ms=0.07 total_ms=1.07 layout_top=EditorView:0.16,Terminal:0.09,InputSuggestions:0.05 paint_top=Terminal:0.16,Workspace:0.06,EditorView:0.04 t=1794549064949.712
+2026-11-13T05:51:04Z [DEBUG] input_order hop=frame_drawn total_ms=9.6 acquire_ms=7.0 present_ms=0.1 t=1794549064958.243
+2026-11-13T05:51:04Z [DEBUG] input_order hop=suggestions_mode from=[completions trigger=AsYouType candidates=1866] to=[completions trigger=AsYouType candidates=425] t=1794549064959.040
+2026-11-13T05:51:04Z [DEBUG] input_order hop=notify_cause view=Input cause=handle_completion_suggestions_results_3 t=1794549064959.911
+2026-11-13T05:51:04Z [DEBUG] input_order hop=notify_cause view=Input cause=new_10 t=1794549064959.997
+2026-11-13T05:51:04Z [DEBUG] input_order hop=notify_cause view=Input cause=new_10 t=1794549064960.037
+2026-11-13T05:51:04Z [DEBUG] input_order hop=kh_pane_key seq=22535 seq=22535 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794549064960.589
+2026-11-13T05:51:04Z [DEBUG] input_order hop=kh_editor_action seq=22535 kind=insert focused=true hold_active=false buffer_chars=54 buffer="[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() | Ou" t=1794549064960.604
+2026-11-13T05:51:04Z [DEBUG] input_order hop=kh_edit_sync seq=22535 us=95 t=1794549064960.888
+2026-11-13T05:51:04Z [DEBUG] input_order hop=key_frame layout=true t=1794549064967.833
+2026-11-13T05:51:04Z [DEBUG] input_order hop=ui_item kind=frame ms=6.59 iter=1 layout=true render_ms=0.25 layout_paint_ms=6.34 t=1794549064967.923
+2026-11-13T05:51:04Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=5 mounted=28 render_ms=0.25 layout_ms=5.02 after_layout_ms=0.07 paint_ms=1.11 hover_ms=0.18 total_ms=7.06 layout_top=BlocklistAIStatusBar:4.06,EditorView:0.40,Terminal:0.21 paint_top=Terminal:0.53,Workspace:0.15,InputSuggestions:0.13 t=1794549064968.435
+2026-11-13T05:51:04Z [DEBUG] input_order hop=frame_drawn total_ms=10.4 acquire_ms=0.0 present_ms=0.2 t=1794549064971.690
+2026-11-13T05:51:04Z [DEBUG] input_order hop=suggestions_mode from=[completions trigger=AsYouType candidates=425] to=[completions trigger=AsYouType candidates=252] t=1794549064972.338
+2026-11-13T05:51:04Z [DEBUG] input_order hop=notify_cause view=Input cause=handle_completion_suggestions_results_3 t=1794549064972.637
+2026-11-13T05:51:04Z [DEBUG] input_order hop=notify_cause view=Input cause=new_10 t=1794549064972.709
+2026-11-13T05:51:04Z [DEBUG] input_order hop=notify_cause view=Input cause=new_10 t=1794549064972.750
+2026-11-13T05:51:04Z [DEBUG] input_order hop=kh_pane_key seq=22536 seq=22536 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794549064973.542
+2026-11-13T05:51:04Z [DEBUG] input_order hop=kh_editor_action seq=22536 kind=insert focused=true hold_active=false buffer_chars=55 buffer="[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() | Out" t=1794549064973.554
+2026-11-13T05:51:04Z [DEBUG] input_order hop=kh_edit_sync seq=22536 us=93 t=1794549064973.832
+2026-11-13T05:51:04Z [DEBUG] input_order hop=key_frame layout=true t=1794549064975.388
+2026-11-13T05:51:04Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=5 mounted=28 render_ms=0.27 layout_ms=0.39 after_layout_ms=0.02 paint_ms=0.43 hover_ms=0.07 total_ms=1.39 layout_top=EditorView:0.17,Terminal:0.08,InputSuggestions:0.07 paint_top=Terminal:0.19,Workspace:0.06,InputSuggestions:0.06 t=1794549064975.631
+2026-11-13T05:51:04Z [DEBUG] input_order hop=frame_drawn total_ms=7.3 acquire_ms=4.4 present_ms=0.1 t=1794549064981.526
+2026-11-13T05:51:04Z [DEBUG] input_order hop=suggestions_mode from=[completions trigger=AsYouType candidates=252] to=[completions trigger=AsYouType candidates=13] t=1794549064981.735
+2026-11-13T05:51:04Z [DEBUG] input_order hop=notify_cause view=Input cause=handle_completion_suggestions_results_3 t=1794549064981.882
+2026-11-13T05:51:04Z [DEBUG] input_order hop=notify_cause view=Input cause=new_10 t=1794549064981.943
+2026-11-13T05:51:04Z [DEBUG] input_order hop=notify_cause view=Input cause=new_10 t=1794549064981.983
+2026-11-13T05:51:04Z [DEBUG] input_order hop=frame_drawn total_ms=10.1 acquire_ms=7.2 present_ms=0.1 t=1794549064992.300
+2026-11-13T05:51:04Z [DEBUG] input_order hop=kh_pane_key seq=22537 seq=22537 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794549064993.737
+2026-11-13T05:51:04Z [DEBUG] input_order hop=kh_editor_action seq=22537 kind=insert focused=true hold_active=false buffer_chars=56 buffer="[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() | Out-" t=1794549064993.747
+2026-11-13T05:51:04Z [DEBUG] input_order hop=kh_edit_sync seq=22537 us=97 t=1794549064994.023
+2026-11-13T05:51:04Z [DEBUG] input_order hop=suggestions_mode from=[completions trigger=AsYouType candidates=13] to=[completions trigger=AsYouType candidates=2] t=1794549064994.884
+2026-11-13T05:51:04Z [DEBUG] input_order hop=notify_cause view=Input cause=handle_completion_suggestions_results_3 t=1794549064994.916
+2026-11-13T05:51:04Z [DEBUG] input_order hop=notify_cause view=Input cause=new_10 t=1794549064994.966
+2026-11-13T05:51:04Z [DEBUG] input_order hop=notify_cause view=Input cause=new_10 t=1794549064995.001
+2026-11-13T05:51:04Z [DEBUG] input_order hop=key_frame layout=true t=1794549064996.105
+2026-11-13T05:51:04Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=5 mounted=28 render_ms=0.25 layout_ms=0.35 after_layout_ms=0.02 paint_ms=0.37 hover_ms=0.07 total_ms=1.25 layout_top=EditorView:0.16,Terminal:0.09,InputSuggestions:0.04 paint_top=Terminal:0.18,Workspace:0.06,EditorView:0.04 t=1794549064996.354
+2026-11-13T05:51:05Z [DEBUG] input_order hop=frame_drawn total_ms=7.2 acquire_ms=4.6 present_ms=0.1 t=1794549065002.294
+2026-11-13T05:51:05Z [DEBUG] input_order hop=kh_pane_key seq=22538 seq=22538 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794549065003.149
+2026-11-13T05:51:05Z [DEBUG] input_order hop=kh_editor_action seq=22538 kind=insert focused=true hold_active=false buffer_chars=57 buffer="[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() | Out-F" t=1794549065003.159
+2026-11-13T05:51:05Z [DEBUG] input_order hop=kh_edit_sync seq=22538 us=100 t=1794549065003.488
+2026-11-13T05:51:05Z [DEBUG] input_order hop=key_frame layout=true t=1794549065004.729
+2026-11-13T05:51:05Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=2 mounted=28 render_ms=0.05 layout_ms=0.39 after_layout_ms=0.02 paint_ms=0.36 hover_ms=0.06 total_ms=1.05 layout_top=EditorView:0.17,Terminal:0.12,InputSuggestions:0.03 paint_top=Terminal:0.16,Workspace:0.07,EditorView:0.05 t=1794549065004.945
+2026-11-13T05:51:05Z [DEBUG] input_order hop=frame_drawn total_ms=6.7 acquire_ms=4.3 present_ms=0.1 t=1794549065010.555
+2026-11-13T05:51:05Z [DEBUG] input_order hop=suggestions_mode from=[completions trigger=AsYouType candidates=2] to=[completions trigger=AsYouType candidates=1] t=1794549065010.772
+2026-11-13T05:51:05Z [DEBUG] input_order hop=notify_cause view=Input cause=handle_completion_suggestions_results_3 t=1794549065010.797
+2026-11-13T05:51:05Z [DEBUG] input_order hop=notify_cause view=Input cause=new_10 t=1794549065010.870
+2026-11-13T05:51:05Z [DEBUG] input_order hop=notify_cause view=Input cause=new_10 t=1794549065010.915
+2026-11-13T05:51:05Z [DEBUG] input_order hop=frame_drawn total_ms=8.0 acquire_ms=5.4 present_ms=0.1 t=1794549065019.246
+2026-11-13T05:51:05Z [DEBUG] input_order hop=kh_pane_key seq=22539 seq=22539 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794549065019.882
+2026-11-13T05:51:05Z [DEBUG] input_order hop=kh_editor_action seq=22539 kind=insert focused=true hold_active=false buffer_chars=58 buffer="[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() | Out-Fi" t=1794549065019.894
+2026-11-13T05:51:05Z [DEBUG] input_order hop=kh_edit_sync seq=22539 us=104 t=1794549065020.203
+2026-11-13T05:51:05Z [DEBUG] input_order hop=key_frame layout=true t=1794549065021.526
+2026-11-13T05:51:05Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=2 mounted=28 render_ms=0.05 layout_ms=0.38 after_layout_ms=0.02 paint_ms=0.38 hover_ms=0.07 total_ms=1.07 layout_top=EditorView:0.17,Terminal:0.10,Workspace:0.03 paint_top=Terminal:0.18,Workspace:0.07,EditorView:0.05 t=1794549065021.746
+2026-11-13T05:51:05Z [DEBUG] input_order hop=frame_drawn total_ms=5.7 acquire_ms=3.3 present_ms=0.1 t=1794549065026.362
+2026-11-13T05:51:05Z [DEBUG] input_order hop=suggestions_mode from=[completions trigger=AsYouType candidates=1] to=[completions trigger=AsYouType candidates=1] t=1794549065026.523
+2026-11-13T05:51:05Z [DEBUG] input_order hop=notify_cause view=Input cause=handle_completion_suggestions_results_3 t=1794549065026.546
+2026-11-13T05:51:05Z [DEBUG] input_order hop=notify_cause view=Input cause=new_10 t=1794549065026.610
+2026-11-13T05:51:05Z [DEBUG] input_order hop=notify_cause view=Input cause=new_10 t=1794549065026.655
+2026-11-13T05:51:05Z [DEBUG] input_order hop=frame_drawn total_ms=8.1 acquire_ms=5.7 present_ms=0.1 t=1794549065035.034
+2026-11-13T05:51:05Z [DEBUG] input_order hop=kh_pane_key seq=22540 seq=22540 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794549065035.587
+2026-11-13T05:51:05Z [DEBUG] input_order hop=kh_editor_action seq=22540 kind=insert focused=true hold_active=false buffer_chars=59 buffer="[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() | Out-Fil" t=1794549065035.598
+2026-11-13T05:51:05Z [DEBUG] input_order hop=kh_edit_sync seq=22540 us=95 t=1794549065035.894
+2026-11-13T05:51:05Z [DEBUG] input_order hop=key_frame layout=true t=1794549065037.135
+2026-11-13T05:51:05Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=1 mounted=28 render_ms=0.03 layout_ms=0.37 after_layout_ms=0.02 paint_ms=0.33 hover_ms=0.08 total_ms=1.01 layout_top=EditorView:0.16,Terminal:0.10,InputSuggestions:0.04 paint_top=Terminal:0.15,Workspace:0.06,EditorView:0.04 t=1794549065037.381
+2026-11-13T05:51:05Z [DEBUG] input_order hop=frame_drawn total_ms=6.4 acquire_ms=4.1 present_ms=0.1 t=1794549065042.784
+2026-11-13T05:51:05Z [DEBUG] input_order hop=suggestions_mode from=[completions trigger=AsYouType candidates=1] to=[completions trigger=AsYouType candidates=1] t=1794549065043.078
+2026-11-13T05:51:05Z [DEBUG] input_order hop=notify_cause view=Input cause=handle_completion_suggestions_results_3 t=1794549065043.106
+2026-11-13T05:51:05Z [DEBUG] input_order hop=notify_cause view=Input cause=new_10 t=1794549065043.166
+2026-11-13T05:51:05Z [DEBUG] input_order hop=notify_cause view=Input cause=new_10 t=1794549065043.203
+2026-11-13T05:51:05Z [DEBUG] input_order hop=kh_pane_key seq=22541 seq=22541 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794549065043.760
+2026-11-13T05:51:05Z [DEBUG] input_order hop=kh_editor_action seq=22541 kind=insert focused=true hold_active=false buffer_chars=60 buffer="[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() | Out-File" t=1794549065043.770
+2026-11-13T05:51:05Z [DEBUG] input_order hop=kh_edit_sync seq=22541 us=110 t=1794549065044.052
+2026-11-13T05:51:05Z [DEBUG] input_order hop=suggestions_mode from=[completions trigger=AsYouType candidates=1] to=[completions trigger=AsYouType candidates=41] t=1794549065044.780
+2026-11-13T05:51:05Z [DEBUG] input_order hop=notify_cause view=Input cause=handle_completion_suggestions_results_3 t=1794549065044.813
+2026-11-13T05:51:05Z [DEBUG] input_order hop=notify_cause view=Input cause=new_10 t=1794549065044.850
+2026-11-13T05:51:05Z [DEBUG] input_order hop=notify_cause view=Input cause=new_10 t=1794549065044.878
+2026-11-13T05:51:05Z [DEBUG] input_order hop=key_frame layout=true t=1794549065046.109
+2026-11-13T05:51:05Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=5 mounted=28 render_ms=0.23 layout_ms=0.35 after_layout_ms=0.02 paint_ms=0.42 hover_ms=0.12 total_ms=3.28 layout_top=EditorView:0.15,Terminal:0.08,InputSuggestions:0.06 paint_top=Terminal:0.21,Workspace:0.06,EditorView:0.05 t=1794549065048.380
+2026-11-13T05:51:05Z [DEBUG] input_order hop=frame_drawn total_ms=6.7 acquire_ms=0.9 present_ms=0.1 t=1794549065051.736
+2026-11-13T05:51:05Z [DEBUG] input_order hop=frame_drawn total_ms=7.6 acquire_ms=5.3 present_ms=0.1 t=1794549065059.867
+2026-11-13T05:51:05Z [DEBUG] input_order hop=kh_pane_key seq=22542 seq=22542 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794549065060.354
+2026-11-13T05:51:05Z [DEBUG] input_order hop=kh_editor_action seq=22542 kind=insert focused=true hold_active=false buffer_chars=61 buffer="[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() | Out-File " t=1794549065060.366
+2026-11-13T05:51:05Z [DEBUG] input_order hop=kh_edit_sync seq=22542 us=100 t=1794549065060.685
+2026-11-13T05:51:05Z [DEBUG] input_order hop=suggestions_mode from=[completions trigger=AsYouType candidates=41] to=[closed] t=1794549065060.998
+2026-11-13T05:51:05Z [DEBUG] input_order hop=notify_cause view=Input cause=handle_completion_suggestions_results_3 t=1794549065061.025
+2026-11-13T05:51:05Z [DEBUG] input_order hop=notify_cause view=Input cause=new_10 t=1794549065061.074
+2026-11-13T05:51:05Z [DEBUG] input_order hop=key_frame layout=true t=1794549065062.466
+2026-11-13T05:51:05Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=4 mounted=27 render_ms=0.21 layout_ms=0.40 after_layout_ms=0.02 paint_ms=0.39 hover_ms=0.06 total_ms=1.26 layout_top=EditorView:0.25,Terminal:0.08,Workspace:0.03 paint_top=Terminal:0.22,Workspace:0.06,EditorView:0.05 t=1794549065062.677
+2026-11-13T05:51:05Z [DEBUG] input_order hop=frame_drawn total_ms=7.6 acquire_ms=5.1 present_ms=0.1 t=1794549065068.979
+2026-11-13T05:51:05Z [DEBUG] input_order hop=kh_pane_key seq=22543 seq=22543 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794549065071.309
+2026-11-13T05:51:05Z [DEBUG] input_order hop=kh_editor_action seq=22543 kind=insert focused=true hold_active=false buffer_chars=62 buffer="[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() | Out-File l" t=1794549065071.321
+2026-11-13T05:51:05Z [DEBUG] input_order hop=kh_edit_sync seq=22543 us=90 t=1794549065071.631
+2026-11-13T05:51:05Z [DEBUG] input_order hop=key_frame layout=true t=1794549065072.867
+2026-11-13T05:51:05Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=1 mounted=27 render_ms=0.03 layout_ms=0.46 after_layout_ms=0.02 paint_ms=0.32 hover_ms=0.05 total_ms=1.05 layout_top=EditorView:0.28,Terminal:0.10,Workspace:0.03 paint_top=Terminal:0.16,Workspace:0.06,EditorView:0.04 t=1794549065073.068
+2026-11-13T05:51:05Z [DEBUG] input_order hop=frame_drawn total_ms=4.0 acquire_ms=1.8 present_ms=0.1 t=1794549065076.003
+2026-11-13T05:51:05Z [DEBUG] input_order hop=kh_pane_key seq=22544 seq=22544 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794549065088.424
+2026-11-13T05:51:05Z [DEBUG] input_order hop=kh_editor_action seq=22544 kind=insert focused=true hold_active=false buffer_chars=63 buffer="[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() | Out-File la" t=1794549065088.447
+2026-11-13T05:51:05Z [DEBUG] input_order hop=kh_edit_sync seq=22544 us=109 t=1794549065088.812
+2026-11-13T05:51:05Z [DEBUG] input_order hop=key_frame layout=true t=1794549065090.586
+2026-11-13T05:51:05Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=1 mounted=27 render_ms=0.04 layout_ms=0.61 after_layout_ms=0.03 paint_ms=0.51 hover_ms=0.06 total_ms=1.47 layout_top=EditorView:0.40,Terminal:0.12,Workspace:0.03 paint_top=Terminal:0.29,Workspace:0.07,EditorView:0.06 t=1794549065090.824
+2026-11-13T05:51:05Z [DEBUG] input_order hop=frame_drawn total_ms=3.0 acquire_ms=0.0 present_ms=0.1 t=1794549065092.283
+2026-11-13T05:51:05Z [DEBUG] input_order hop=kh_pane_key seq=22545 seq=22545 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794549065102.175
+2026-11-13T05:51:05Z [DEBUG] input_order hop=kh_editor_action seq=22545 kind=insert focused=true hold_active=false buffer_chars=64 buffer="[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() | Out-File lat" t=1794549065102.194
+2026-11-13T05:51:05Z [DEBUG] input_order hop=kh_edit_sync seq=22545 us=153 t=1794549065102.688
+2026-11-13T05:51:05Z [DEBUG] input_order hop=key_frame layout=true t=1794549065105.013
+2026-11-13T05:51:05Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=1 mounted=27 render_ms=0.04 layout_ms=0.51 after_layout_ms=0.03 paint_ms=0.38 hover_ms=0.06 total_ms=1.20 layout_top=EditorView:0.32,Terminal:0.11,Workspace:0.03 paint_top=Terminal:0.17,Workspace:0.08,EditorView:0.05 t=1794549065105.239
+2026-11-13T05:51:05Z [DEBUG] input_order hop=frame_drawn total_ms=2.8 acquire_ms=0.0 present_ms=0.1 t=1794549065106.819
+2026-11-13T05:51:05Z [DEBUG] input_order hop=kh_pane_key seq=22546 seq=22546 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794549065115.579
+2026-11-13T05:51:05Z [DEBUG] input_order hop=kh_editor_action seq=22546 kind=insert focused=true hold_active=false buffer_chars=65 buffer="[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() | Out-File lat_" t=1794549065115.602
+2026-11-13T05:51:05Z [DEBUG] input_order hop=kh_edit_sync seq=22546 us=228 t=1794549065116.211
+2026-11-13T05:51:05Z [DEBUG] input_order hop=key_frame layout=true t=1794549065118.842
+2026-11-13T05:51:05Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=1 mounted=27 render_ms=0.08 layout_ms=0.80 after_layout_ms=0.04 paint_ms=0.65 hover_ms=0.12 total_ms=2.03 layout_top=EditorView:0.49,Terminal:0.17,Workspace:0.05 paint_top=Terminal:0.32,Workspace:0.12,EditorView:0.09 t=1794549065119.285
+2026-11-13T05:51:05Z [DEBUG] input_order hop=frame_drawn total_ms=6.0 acquire_ms=1.6 present_ms=0.1 t=1794549065123.229
+2026-11-13T05:51:05Z [DEBUG] input_order hop=kh_pane_key seq=22547 seq=22547 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794549065136.195
+2026-11-13T05:51:05Z [DEBUG] input_order hop=kh_editor_action seq=22547 kind=insert focused=true hold_active=false buffer_chars=66 buffer="[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() | Out-File lat_7" t=1794549065136.215
+2026-11-13T05:51:05Z [DEBUG] input_order hop=kh_edit_sync seq=22547 us=187 t=1794549065136.741
+2026-11-13T05:51:05Z [DEBUG] input_order hop=suggestions_mode from=[closed] to=[completions trigger=AsYouType candidates=52] t=1794549065137.455
+2026-11-13T05:51:05Z [DEBUG] input_order hop=notify_cause view=Input cause=handle_completion_suggestions_results_3 t=1794549065137.553
+2026-11-13T05:51:05Z [DEBUG] input_order hop=notify_cause view=Input cause=new_10 t=1794549065137.630
+2026-11-13T05:51:05Z [DEBUG] input_order hop=key_frame layout=true t=1794549065139.465
+2026-11-13T05:51:05Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=5 mounted=28 render_ms=0.32 layout_ms=0.52 after_layout_ms=0.03 paint_ms=0.47 hover_ms=0.08 total_ms=1.60 layout_top=EditorView:0.27,Terminal:0.09,InputSuggestions:0.06 paint_top=Terminal:0.20,EditorView:0.07,Workspace:0.07 t=1794549065139.708
+2026-11-13T05:51:05Z [DEBUG] input_order hop=frame_drawn total_ms=3.3 acquire_ms=0.0 present_ms=0.1 t=1794549065141.342
+2026-11-13T05:51:05Z [DEBUG] input_order hop=kh_pane_key seq=22548 seq=22548 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794549065153.249
+2026-11-13T05:51:05Z [DEBUG] input_order hop=kh_editor_action seq=22548 kind=insert focused=true hold_active=false buffer_chars=67 buffer="[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() | Out-File lat_7 " t=1794549065153.278
+2026-11-13T05:51:05Z [DEBUG] input_order hop=kh_edit_sync seq=22548 us=113 t=1794549065153.634
+2026-11-13T05:51:05Z [DEBUG] input_order hop=suggestions_mode from=[completions trigger=AsYouType candidates=52] to=[completions trigger=AsYouType candidates=41] t=1794549065154.103
+2026-11-13T05:51:05Z [DEBUG] input_order hop=notify_cause view=Input cause=handle_completion_suggestions_results_3 t=1794549065154.186
+2026-11-13T05:51:05Z [DEBUG] input_order hop=notify_cause view=Input cause=new_10 t=1794549065154.239
+2026-11-13T05:51:05Z [DEBUG] input_order hop=notify_cause view=Input cause=new_10 t=1794549065154.291
+2026-11-13T05:51:05Z [DEBUG] input_order hop=key_frame layout=true t=1794549065155.786
+2026-11-13T05:51:05Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=5 mounted=28 render_ms=0.28 layout_ms=0.54 after_layout_ms=0.04 paint_ms=0.45 hover_ms=0.07 total_ms=1.57 layout_top=EditorView:0.28,Terminal:0.09,InputSuggestions:0.07 paint_top=Terminal:0.20,Workspace:0.07,EditorView:0.06 t=1794549065156.026
+2026-11-13T05:51:05Z [DEBUG] input_order hop=frame_drawn total_ms=3.2 acquire_ms=0.0 present_ms=0.1 t=1794549065157.599
+2026-11-13T05:51:05Z [DEBUG] input_order hop=kh_pane_key seq=22549 seq=22549 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794549065171.527
+2026-11-13T05:51:05Z [DEBUG] input_order hop=kh_editor_action seq=22549 kind=insert focused=true hold_active=false buffer_chars=68 buffer="[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() | Out-File lat_7 -" t=1794549065171.540
+2026-11-13T05:51:05Z [DEBUG] input_order hop=kh_edit_sync seq=22549 us=107 t=1794549065171.870
+2026-11-13T05:51:05Z [DEBUG] input_order hop=suggestions_mode from=[completions trigger=AsYouType candidates=41] to=[completions trigger=AsYouType candidates=21] t=1794549065172.290
+2026-11-13T05:51:05Z [DEBUG] input_order hop=notify_cause view=Input cause=handle_completion_suggestions_results_3 t=1794549065172.362
+2026-11-13T05:51:05Z [DEBUG] input_order hop=notify_cause view=Input cause=new_10 t=1794549065172.418
+2026-11-13T05:51:05Z [DEBUG] input_order hop=notify_cause view=Input cause=new_10 t=1794549065172.452
+2026-11-13T05:51:05Z [DEBUG] input_order hop=key_frame layout=true t=1794549065174.987
+2026-11-13T05:51:05Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=5 mounted=28 render_ms=0.25 layout_ms=1.25 after_layout_ms=0.04 paint_ms=0.44 hover_ms=0.10 total_ms=2.29 layout_top=InputSuggestions:0.79,EditorView:0.29,Terminal:0.09 paint_top=Terminal:0.19,Workspace:0.07,EditorView:0.06 t=1794549065175.306
+2026-11-13T05:51:05Z [DEBUG] input_order hop=frame_drawn total_ms=4.0 acquire_ms=0.0 present_ms=0.1 t=1794549065177.006
+2026-11-13T05:51:05Z [DEBUG] input_order hop=kh_pane_key seq=22550 seq=22550 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794549065184.905
+2026-11-13T05:51:05Z [DEBUG] input_order hop=kh_editor_action seq=22550 kind=insert focused=true hold_active=false buffer_chars=69 buffer="[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() | Out-File lat_7 -E" t=1794549065184.922
+2026-11-13T05:51:05Z [DEBUG] input_order hop=kh_edit_sync seq=22550 us=135 t=1794549065185.323
+2026-11-13T05:51:05Z [DEBUG] input_order hop=suggestions_mode from=[completions trigger=AsYouType candidates=21] to=[completions trigger=AsYouType candidates=1] t=1794549065185.797
+2026-11-13T05:51:05Z [DEBUG] input_order hop=notify_cause view=Input cause=handle_completion_suggestions_results_3 t=1794549065185.855
+2026-11-13T05:51:05Z [DEBUG] input_order hop=notify_cause view=Input cause=new_10 t=1794549065185.918
+2026-11-13T05:51:05Z [DEBUG] input_order hop=notify_cause view=Input cause=new_10 t=1794549065185.968
+2026-11-13T05:51:05Z [DEBUG] input_order hop=key_frame layout=true t=1794549065187.763
+2026-11-13T05:51:05Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=5 mounted=28 render_ms=0.32 layout_ms=0.62 after_layout_ms=0.03 paint_ms=0.55 hover_ms=0.09 total_ms=1.88 layout_top=EditorView:0.37,Terminal:0.11,InputSuggestions:0.04 paint_top=Terminal:0.27,Workspace:0.09,EditorView:0.07 t=1794549065188.074
+2026-11-13T05:51:05Z [DEBUG] input_order hop=frame_drawn total_ms=4.7 acquire_ms=1.3 present_ms=0.1 t=1794549065190.823
+2026-11-13T05:51:05Z [DEBUG] input_order hop=frame_drawn total_ms=11.6 acquire_ms=9.2 present_ms=0.1 t=1794549065202.770
+2026-11-13T05:51:05Z [DEBUG] input_order hop=kh_pane_key seq=22551 seq=22551 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794549065203.549
+2026-11-13T05:51:05Z [DEBUG] input_order hop=kh_editor_action seq=22551 kind=insert focused=true hold_active=false buffer_chars=70 buffer="[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() | Out-File lat_7 -En" t=1794549065203.563
+2026-11-13T05:51:05Z [DEBUG] input_order hop=kh_edit_sync seq=22551 us=127 t=1794549065204.018
+2026-11-13T05:51:05Z [DEBUG] input_order hop=suggestions_mode from=[completions trigger=AsYouType candidates=1] to=[completions trigger=AsYouType candidates=1] t=1794549065204.550
+2026-11-13T05:51:05Z [DEBUG] input_order hop=notify_cause view=Input cause=handle_completion_suggestions_results_3 t=1794549065204.583
+2026-11-13T05:51:05Z [DEBUG] input_order hop=notify_cause view=Input cause=new_10 t=1794549065204.652
+2026-11-13T05:51:05Z [DEBUG] input_order hop=notify_cause view=Input cause=new_10 t=1794549065204.690
+2026-11-13T05:51:05Z [DEBUG] input_order hop=key_frame layout=true t=1794549065206.316
+2026-11-13T05:51:05Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=5 mounted=28 render_ms=0.29 layout_ms=0.57 after_layout_ms=0.03 paint_ms=0.45 hover_ms=0.07 total_ms=1.65 layout_top=EditorView:0.30,Terminal:0.11,InputSuggestions:0.05 paint_top=Terminal:0.21,Workspace:0.09,EditorView:0.06 t=1794549065206.579
+2026-11-13T05:51:05Z [DEBUG] input_order hop=frame_drawn total_ms=10.1 acquire_ms=6.9 present_ms=0.1 t=1794549065215.029
+2026-11-13T05:51:05Z [DEBUG] input_order hop=kh_pane_key seq=22552 seq=22552 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794549065216.075
+2026-11-13T05:51:05Z [DEBUG] input_order hop=kh_editor_action seq=22552 kind=insert focused=true hold_active=false buffer_chars=71 buffer="[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() | Out-File lat_7 -Enc" t=1794549065216.104
+2026-11-13T05:51:05Z [DEBUG] input_order hop=kh_edit_sync seq=22552 us=118 t=1794549065216.490
+2026-11-13T05:51:05Z [DEBUG] input_order hop=suggestions_mode from=[completions trigger=AsYouType candidates=1] to=[completions trigger=AsYouType candidates=1] t=1794549065216.888
+2026-11-13T05:51:05Z [DEBUG] input_order hop=notify_cause view=Input cause=handle_completion_suggestions_results_3 t=1794549065216.923
+2026-11-13T05:51:05Z [DEBUG] input_order hop=notify_cause view=Input cause=new_10 t=1794549065216.978
+2026-11-13T05:51:05Z [DEBUG] input_order hop=notify_cause view=Input cause=new_10 t=1794549065217.014
+2026-11-13T05:51:05Z [DEBUG] input_order hop=key_frame layout=true t=1794549065224.563
+2026-11-13T05:51:05Z [DEBUG] input_order hop=ui_item kind=frame ms=7.44 iter=1 layout=true render_ms=0.35 layout_paint_ms=7.09 t=1794549065224.647
+2026-11-13T05:51:05Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=5 mounted=28 render_ms=0.35 layout_ms=6.12 after_layout_ms=0.04 paint_ms=0.81 hover_ms=0.13 total_ms=7.79 layout_top=Terminal:5.54,EditorView:0.37,Workspace:0.06 paint_top=Terminal:0.36,Workspace:0.16,EditorView:0.13 t=1794549065224.992
+2026-11-13T05:51:05Z [DEBUG] input_order hop=frame_drawn total_ms=9.9 acquire_ms=0.1 present_ms=0.1 t=1794549065227.074
+2026-11-13T05:51:05Z [DEBUG] input_order hop=kh_pane_key seq=22553 seq=22553 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794549065228.136
+2026-11-13T05:51:05Z [DEBUG] input_order hop=kh_editor_action seq=22553 kind=insert focused=true hold_active=false buffer_chars=72 buffer="[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() | Out-File lat_7 -Enco" t=1794549065228.148
+2026-11-13T05:51:05Z [DEBUG] input_order hop=kh_edit_sync seq=22553 us=107 t=1794549065228.532
+2026-11-13T05:51:05Z [DEBUG] input_order hop=suggestions_mode from=[completions trigger=AsYouType candidates=1] to=[completions trigger=AsYouType candidates=1] t=1794549065228.918
+2026-11-13T05:51:05Z [DEBUG] input_order hop=notify_cause view=Input cause=handle_completion_suggestions_results_3 t=1794549065228.960
+2026-11-13T05:51:05Z [DEBUG] input_order hop=notify_cause view=Input cause=new_10 t=1794549065229.013
+2026-11-13T05:51:05Z [DEBUG] input_order hop=notify_cause view=Input cause=new_10 t=1794549065229.050
+2026-11-13T05:51:05Z [DEBUG] input_order hop=key_frame layout=true t=1794549065230.507
+2026-11-13T05:51:05Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=5 mounted=28 render_ms=0.27 layout_ms=0.47 after_layout_ms=0.02 paint_ms=0.41 hover_ms=0.07 total_ms=1.44 layout_top=EditorView:0.27,Terminal:0.09,Workspace:0.03 paint_top=Terminal:0.21,Workspace:0.06,EditorView:0.05 t=1794549065230.743
+2026-11-13T05:51:05Z [DEBUG] input_order hop=frame_drawn total_ms=6.7 acquire_ms=3.8 present_ms=0.1 t=1794549065235.969
+2026-11-13T05:51:05Z [DEBUG] input_order hop=kh_pane_key seq=22554 seq=22554 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794549065245.043
+2026-11-13T05:51:05Z [DEBUG] input_order hop=kh_editor_action seq=22554 kind=insert focused=true hold_active=false buffer_chars=73 buffer="[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() | Out-File lat_7 -Encod" t=1794549065245.057
+2026-11-13T05:51:05Z [DEBUG] input_order hop=kh_edit_sync seq=22554 us=117 t=1794549065245.457
+2026-11-13T05:51:05Z [DEBUG] input_order hop=suggestions_mode from=[completions trigger=AsYouType candidates=1] to=[completions trigger=AsYouType candidates=1] t=1794549065245.891
+2026-11-13T05:51:05Z [DEBUG] input_order hop=notify_cause view=Input cause=handle_completion_suggestions_results_3 t=1794549065245.920
+2026-11-13T05:51:05Z [DEBUG] input_order hop=notify_cause view=Input cause=new_10 t=1794549065245.975
+2026-11-13T05:51:05Z [DEBUG] input_order hop=notify_cause view=Input cause=new_10 t=1794549065246.012
+2026-11-13T05:51:05Z [DEBUG] input_order hop=key_frame layout=true t=1794549065247.468
+2026-11-13T05:51:05Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=5 mounted=28 render_ms=0.28 layout_ms=0.50 after_layout_ms=0.03 paint_ms=0.45 hover_ms=0.07 total_ms=1.51 layout_top=EditorView:0.28,Terminal:0.09,Workspace:0.04 paint_top=Terminal:0.23,Workspace:0.07,EditorView:0.06 t=1794549065247.706
+2026-11-13T05:51:05Z [DEBUG] input_order hop=frame_drawn total_ms=3.0 acquire_ms=0.0 present_ms=0.1 t=1794549065249.179
+2026-11-13T05:51:05Z [DEBUG] input_order hop=kh_pane_key seq=22555 seq=22555 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794549065257.580
+2026-11-13T05:51:05Z [DEBUG] input_order hop=kh_editor_action seq=22555 kind=insert focused=true hold_active=false buffer_chars=74 buffer="[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() | Out-File lat_7 -Encodi" t=1794549065257.593
+2026-11-13T05:51:05Z [DEBUG] input_order hop=kh_edit_sync seq=22555 us=146 t=1794549065258.000
+2026-11-13T05:51:05Z [DEBUG] input_order hop=suggestions_mode from=[completions trigger=AsYouType candidates=1] to=[completions trigger=AsYouType candidates=1] t=1794549065258.427
+2026-11-13T05:51:05Z [DEBUG] input_order hop=notify_cause view=Input cause=handle_completion_suggestions_results_3 t=1794549065258.454
+2026-11-13T05:51:05Z [DEBUG] input_order hop=notify_cause view=Input cause=new_10 t=1794549065258.507
+2026-11-13T05:51:05Z [DEBUG] input_order hop=notify_cause view=Input cause=new_10 t=1794549065258.542
+2026-11-13T05:51:05Z [DEBUG] input_order hop=key_frame layout=true t=1794549065260.001
+2026-11-13T05:51:05Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=5 mounted=28 render_ms=0.27 layout_ms=0.52 after_layout_ms=0.03 paint_ms=0.44 hover_ms=0.07 total_ms=1.54 layout_top=EditorView:0.29,Terminal:0.09,Workspace:0.04 paint_top=Terminal:0.20,Workspace:0.08,EditorView:0.06 t=1794549065260.272
+2026-11-13T05:51:05Z [DEBUG] input_order hop=frame_drawn total_ms=3.0 acquire_ms=0.0 present_ms=0.1 t=1794549065261.673
+2026-11-13T05:51:05Z [DEBUG] input_order hop=frame_drawn total_ms=6.8 acquire_ms=4.4 present_ms=0.1 t=1794549065269.631
+2026-11-13T05:51:05Z [DEBUG] input_order hop=kh_pane_key seq=22556 seq=22556 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794549065270.711
+2026-11-13T05:51:05Z [DEBUG] input_order hop=kh_editor_action seq=22556 kind=insert focused=true hold_active=false buffer_chars=75 buffer="[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() | Out-File lat_7 -Encodin" t=1794549065270.723
+2026-11-13T05:51:05Z [DEBUG] input_order hop=kh_edit_sync seq=22556 us=176 t=1794549065271.144
+2026-11-13T05:51:05Z [DEBUG] input_order hop=suggestions_mode from=[completions trigger=AsYouType candidates=1] to=[completions trigger=AsYouType candidates=1] t=1794549065271.606
+2026-11-13T05:51:05Z [DEBUG] input_order hop=notify_cause view=Input cause=handle_completion_suggestions_results_3 t=1794549065271.633
+2026-11-13T05:51:05Z [DEBUG] input_order hop=notify_cause view=Input cause=new_10 t=1794549065271.688
+2026-11-13T05:51:05Z [DEBUG] input_order hop=notify_cause view=Input cause=new_10 t=1794549065271.724
+2026-11-13T05:51:05Z [DEBUG] input_order hop=key_frame layout=true t=1794549065273.107
+2026-11-13T05:51:05Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=5 mounted=28 render_ms=0.25 layout_ms=0.50 after_layout_ms=0.02 paint_ms=0.40 hover_ms=0.09 total_ms=1.48 layout_top=EditorView:0.29,Terminal:0.09,Workspace:0.03 paint_top=Terminal:0.20,Workspace:0.07,EditorView:0.05 t=1794549065273.378
+2026-11-13T05:51:05Z [DEBUG] input_order hop=frame_drawn total_ms=7.2 acquire_ms=4.2 present_ms=0.1 t=1794549065279.026
+2026-11-13T05:51:05Z [DEBUG] input_order hop=kh_pane_key seq=22557 seq=22557 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794549065285.460
+2026-11-13T05:51:05Z [DEBUG] input_order hop=kh_editor_action seq=22557 kind=insert focused=true hold_active=false buffer_chars=76 buffer="[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() | Out-File lat_7 -Encoding" t=1794549065285.472
+2026-11-13T05:51:05Z [DEBUG] input_order hop=kh_edit_sync seq=22557 us=126 t=1794549065285.847
+2026-11-13T05:51:05Z [DEBUG] input_order hop=suggestions_mode from=[completions trigger=AsYouType candidates=1] to=[completions trigger=AsYouType candidates=52] t=1794549065286.242
+2026-11-13T05:51:05Z [DEBUG] input_order hop=notify_cause view=Input cause=handle_completion_suggestions_results_3 t=1794549065286.307
+2026-11-13T05:51:05Z [DEBUG] input_order hop=notify_cause view=Input cause=new_10 t=1794549065286.368
+2026-11-13T05:51:05Z [DEBUG] input_order hop=notify_cause view=Input cause=new_10 t=1794549065286.404
+2026-11-13T05:51:05Z [DEBUG] input_order hop=key_frame layout=true t=1794549065289.028
+2026-11-13T05:51:05Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=5 mounted=28 render_ms=0.25 layout_ms=0.52 after_layout_ms=0.03 paint_ms=0.87 hover_ms=0.09 total_ms=2.00 layout_top=EditorView:0.28,Terminal:0.10,InputSuggestions:0.06 paint_top=Workspace:0.47,Terminal:0.22,EditorView:0.06 t=1794549065289.320
+2026-11-13T05:51:05Z [DEBUG] input_order hop=frame_drawn total_ms=3.6 acquire_ms=0.0 present_ms=0.1 t=1794549065290.905
+2026-11-13T05:51:05Z [DEBUG] input_order hop=frame_drawn total_ms=8.5 acquire_ms=5.9 present_ms=0.1 t=1794549065299.969
+2026-11-13T05:51:05Z [DEBUG] input_order hop=kh_pane_key seq=22558 seq=22558 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794549065300.484
+2026-11-13T05:51:05Z [DEBUG] input_order hop=kh_editor_action seq=22558 kind=insert focused=true hold_active=false buffer_chars=77 buffer="[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() | Out-File lat_7 -Encoding " t=1794549065300.496
+2026-11-13T05:51:05Z [DEBUG] input_order hop=kh_edit_sync seq=22558 us=110 t=1794549065300.943
+2026-11-13T05:51:05Z [DEBUG] input_order hop=suggestions_mode from=[completions trigger=AsYouType candidates=52] to=[completions trigger=AsYouType candidates=4] t=1794549065301.350
+2026-11-13T05:51:05Z [DEBUG] input_order hop=notify_cause view=Input cause=handle_completion_suggestions_results_3 t=1794549065301.414
+2026-11-13T05:51:05Z [DEBUG] input_order hop=notify_cause view=Input cause=new_10 t=1794549065301.471
+2026-11-13T05:51:05Z [DEBUG] input_order hop=notify_cause view=Input cause=new_10 t=1794549065301.509
+2026-11-13T05:51:05Z [DEBUG] input_order hop=key_frame layout=true t=1794549065302.901
+2026-11-13T05:51:05Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=5 mounted=28 render_ms=0.25 layout_ms=0.49 after_layout_ms=0.03 paint_ms=0.40 hover_ms=0.07 total_ms=1.44 layout_top=EditorView:0.29,Terminal:0.09,InputSuggestions:0.04 paint_top=Terminal:0.20,Workspace:0.07,EditorView:0.05 t=1794549065303.146
+2026-11-13T05:51:05Z [DEBUG] input_order hop=frame_drawn total_ms=7.9 acquire_ms=5.0 present_ms=0.1 t=1794549065309.604
+2026-11-13T05:51:05Z [DEBUG] input_order hop=frame_drawn total_ms=8.2 acquire_ms=5.8 present_ms=0.1 t=1794549065318.264
+2026-11-13T05:51:05Z [DEBUG] input_order hop=kh_pane_key seq=22559 seq=22559 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794549065318.890
+2026-11-13T05:51:05Z [DEBUG] input_order hop=kh_editor_action seq=22559 kind=insert focused=true hold_active=false buffer_chars=78 buffer="[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() | Out-File lat_7 -Encoding a" t=1794549065318.903
+2026-11-13T05:51:05Z [DEBUG] input_order hop=kh_edit_sync seq=22559 us=126 t=1794549065319.274
+2026-11-13T05:51:05Z [DEBUG] input_order hop=suggestions_mode from=[completions trigger=AsYouType candidates=4] to=[completions trigger=AsYouType candidates=2] t=1794549065319.676
+2026-11-13T05:51:05Z [DEBUG] input_order hop=notify_cause view=Input cause=handle_completion_suggestions_results_3 t=1794549065319.704
+2026-11-13T05:51:05Z [DEBUG] input_order hop=notify_cause view=Input cause=new_10 t=1794549065319.763
+2026-11-13T05:51:05Z [DEBUG] input_order hop=notify_cause view=Input cause=new_10 t=1794549065319.803
+2026-11-13T05:51:05Z [DEBUG] input_order hop=key_frame layout=true t=1794549065321.225
+2026-11-13T05:51:05Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=5 mounted=28 render_ms=0.27 layout_ms=0.49 after_layout_ms=0.02 paint_ms=0.40 hover_ms=0.08 total_ms=1.48 layout_top=EditorView:0.28,Terminal:0.09,Workspace:0.04 paint_top=Terminal:0.20,Workspace:0.07,EditorView:0.05 t=1794549065321.493
+2026-11-13T05:51:05Z [DEBUG] input_order hop=frame_drawn total_ms=8.0 acquire_ms=5.1 present_ms=0.1 t=1794549065327.976
+2026-11-13T05:51:05Z [DEBUG] input_order hop=kh_pane_key seq=22560 seq=22560 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794549065328.769
+2026-11-13T05:51:05Z [DEBUG] input_order hop=kh_editor_action seq=22560 kind=insert focused=true hold_active=false buffer_chars=79 buffer="[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() | Out-File lat_7 -Encoding as" t=1794549065328.783
+2026-11-13T05:51:05Z [DEBUG] input_order hop=kh_edit_sync seq=22560 us=106 t=1794549065329.112
+2026-11-13T05:51:05Z [DEBUG] input_order hop=suggestions_mode from=[completions trigger=AsYouType candidates=2] to=[completions trigger=AsYouType candidates=1] t=1794549065329.470
+2026-11-13T05:51:05Z [DEBUG] input_order hop=notify_cause view=Input cause=handle_completion_suggestions_results_3 t=1794549065329.495
+2026-11-13T05:51:05Z [DEBUG] input_order hop=notify_cause view=Input cause=new_10 t=1794549065329.545
+2026-11-13T05:51:05Z [DEBUG] input_order hop=notify_cause view=Input cause=new_10 t=1794549065329.582
+2026-11-13T05:51:05Z [DEBUG] input_order hop=key_frame layout=true t=1794549065330.917
+2026-11-13T05:51:05Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=5 mounted=28 render_ms=0.24 layout_ms=0.46 after_layout_ms=0.02 paint_ms=0.40 hover_ms=0.06 total_ms=1.35 layout_top=EditorView:0.27,Terminal:0.09,InputSuggestions:0.03 paint_top=Terminal:0.21,Workspace:0.06,EditorView:0.05 t=1794549065331.134
+2026-11-13T05:51:05Z [DEBUG] input_order hop=frame_drawn total_ms=6.5 acquire_ms=3.8 present_ms=0.1 t=1794549065336.235
+2026-11-13T05:51:05Z [DEBUG] input_order hop=frame_drawn total_ms=7.4 acquire_ms=5.2 present_ms=0.1 t=1794549065343.994
+2026-11-13T05:51:05Z [DEBUG] input_order hop=kh_pane_key seq=22561 seq=22561 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794549065344.624
+2026-11-13T05:51:05Z [DEBUG] input_order hop=kh_editor_action seq=22561 kind=insert focused=true hold_active=false buffer_chars=80 buffer="[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() | Out-File lat_7 -Encoding asc" t=1794549065344.640
+2026-11-13T05:51:05Z [DEBUG] input_order hop=kh_edit_sync seq=22561 us=106 t=1794549065344.978
+2026-11-13T05:51:05Z [DEBUG] input_order hop=suggestions_mode from=[completions trigger=AsYouType candidates=1] to=[completions trigger=AsYouType candidates=1] t=1794549065345.382
+2026-11-13T05:51:05Z [DEBUG] input_order hop=notify_cause view=Input cause=handle_completion_suggestions_results_3 t=1794549065345.411
+2026-11-13T05:51:05Z [DEBUG] input_order hop=notify_cause view=Input cause=new_10 t=1794549065345.467
+2026-11-13T05:51:05Z [DEBUG] input_order hop=notify_cause view=Input cause=new_10 t=1794549065345.503
+2026-11-13T05:51:05Z [DEBUG] input_order hop=key_frame layout=true t=1794549065346.845
+2026-11-13T05:51:05Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=5 mounted=28 render_ms=0.23 layout_ms=0.48 after_layout_ms=0.03 paint_ms=0.38 hover_ms=0.06 total_ms=1.36 layout_top=EditorView:0.26,Terminal:0.09,InputSuggestions:0.04 paint_top=Terminal:0.19,Workspace:0.06,EditorView:0.05 t=1794549065347.069
+2026-11-13T05:51:05Z [DEBUG] input_order hop=frame_drawn total_ms=5.8 acquire_ms=3.1 present_ms=0.1 t=1794549065351.471
+2026-11-13T05:51:05Z [DEBUG] input_order hop=kh_pane_key seq=22562 seq=22562 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794549065353.168
+2026-11-13T05:51:05Z [DEBUG] input_order hop=kh_editor_action seq=22562 kind=insert focused=true hold_active=false buffer_chars=81 buffer="[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() | Out-File lat_7 -Encoding asci" t=1794549065353.181
+2026-11-13T05:51:05Z [DEBUG] input_order hop=kh_edit_sync seq=22562 us=1246 t=1794549065354.680
+2026-11-13T05:51:05Z [DEBUG] input_order hop=suggestions_mode from=[completions trigger=AsYouType candidates=1] to=[completions trigger=AsYouType candidates=1] t=1794549065355.161
+2026-11-13T05:51:05Z [DEBUG] input_order hop=notify_cause view=Input cause=handle_completion_suggestions_results_3 t=1794549065355.194
+2026-11-13T05:51:05Z [DEBUG] input_order hop=notify_cause view=Input cause=new_10 t=1794549065355.265
+2026-11-13T05:51:05Z [DEBUG] input_order hop=notify_cause view=Input cause=new_10 t=1794549065355.305
+2026-11-13T05:51:05Z [DEBUG] input_order hop=key_frame layout=true t=1794549065356.649
+2026-11-13T05:51:05Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=5 mounted=27 render_ms=0.25 layout_ms=0.46 after_layout_ms=0.02 paint_ms=0.40 hover_ms=0.06 total_ms=1.37 layout_top=EditorView:0.27,Terminal:0.09,Workspace:0.03 paint_top=Terminal:0.20,Workspace:0.07,EditorView:0.05 t=1794549065356.865
+2026-11-13T05:51:05Z [DEBUG] input_order hop=frame_drawn total_ms=4.2 acquire_ms=1.4 present_ms=0.1 t=1794549065359.648
+2026-11-13T05:51:05Z [DEBUG] input_order hop=frame_drawn total_ms=7.5 acquire_ms=5.2 present_ms=0.1 t=1794549065367.624
+2026-11-13T05:51:05Z [DEBUG] input_order hop=frame_drawn total_ms=6.2 acquire_ms=3.5 present_ms=0.1 t=1794549065376.346
+2026-11-13T05:51:05Z [DEBUG] input_order hop=core_enter stage=handle_window_event key_bindings_enabled=true focused_view=EntityId(1595) t=1794549065655.012
+2026-11-13T05:51:05Z [DEBUG] input_order hop=core_enter stage=dispatch_keystroke chain_len=7 composing=false ctrl=false alt=false shift=false cmd=false t=1794549065655.360
+2026-11-13T05:51:05Z [DEBUG] input_order hop=core_enter stage=match_step step=6 view=EntityId(1595) result=action action=Enter ime_open=false context=Autosuggestions_Enabled,EditorView,EditorView_SingleCursorBufferEnd,FeatureFlag.AgentView,Has_Autosuggestion,TerminalInputPageKeysHandledByInput t=1794549065655.432
+2026-11-13T05:51:05Z [DEBUG] input_order hop=kh_editor_action seq=22562 kind=enter focused=true hold_active=false buffer_chars=82 buffer="[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() | Out-File lat_7 -Encoding ascii" t=1794549065655.474
+2026-11-13T05:51:05Z [DEBUG] input_order hop=core_enter stage=action_handled step=6 action_type=warp::editor::view::EditorAction handled=true t=1794549065655.523
+2026-11-13T05:51:05Z [DEBUG] input_order hop=core_enter stage=dispatch_result handled=true pending=false t=1794549065655.539
+2026-11-13T05:51:05Z [DEBUG] input_order hop=enter_begin deferred=false buffer="[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() | Out-File lat_7 -Encoding ascii" input_type=Shell t=1794549065655.601
+2026-11-13T05:51:05Z [DEBUG] input_order hop=notify_cause view=Input cause=try_execute_command_from_source t=1794549065656.171
+2026-11-13T05:51:05Z [DEBUG] input_order hop=notify_cause view=Input cause=try_execute_command_from_source_2 t=1794549065656.198
+2026-11-13T05:51:05Z [DEBUG] input_order hop=notify_cause view=Input cause=clear_selected_workflow t=1794549065656.232
+2026-11-13T05:51:05Z [DEBUG] input_order hop=suggestions_mode from=[completions trigger=AsYouType candidates=1] to=[closed] t=1794549065656.277
+2026-11-13T05:51:05Z [DEBUG] input_order hop=notify_cause view=Input cause=close_input_suggestions t=1794549065656.301
+2026-11-13T05:51:05Z [DEBUG] input_order hop=try_execute_done executed=true took_ms=0.2 t=1794549065656.320
+2026-11-13T05:51:05Z [DEBUG] input_order hop=enter_submit_done since_submit_ms=0.26 t=1794549065656.418
+2026-11-13T05:51:05Z [DEBUG] input_order hop=ssh_pty_owner ssh=false site=other_submit prompt_fact=Unknown command_interactive=false young_hold_evidence=None t=1794549065656.485
+2026-11-13T05:51:05Z [DEBUG] input_order hop=notify_cause view=Input cause=new_10 t=1794549065656.646
+2026-11-13T05:51:05Z [DEBUG] input_order hop=notify_cause view=Input cause=update_voice_transcription_options t=1794549065656.840
+2026-11-13T05:51:05Z [DEBUG] input_order hop=notify_cause view=Input cause=update_image_context_options t=1794549065656.869
+2026-11-13T05:51:05Z [DEBUG] input_order hop=notify_cause view=Input cause=update_ai_context_menu t=1794549065657.353
+2026-11-13T05:51:05Z [DEBUG] input_order hop=notify_cause view=Input cause=new_11 t=1794549065657.467
+2026-11-13T05:51:05Z [DEBUG] input_order hop=kh_focus_terminal_view seq=22562 self_focused=true ssh_holding=false t=1794549065659.073
+2026-11-13T05:51:05Z [DEBUG] input_order hop=write_command  t=1794549065659.173
+2026-11-13T05:51:05Z [DEBUG] input_order hop=pwsh_command_via_pipe bytes=82 qpc=1855530324215 qpf=10000000 t=1794549065659.715
+2026-11-13T05:51:05Z [DEBUG] input_order hop=pty_write_bytes class=UserCommand wrote=2 of_job=2 bytes="\x1b3" since_precmd_ms=1644 since_preexec_ms=1650 since_ready_ms=1625 since_request_ms=1625 since_report_ms=1619 t=1794549065659.873
+2026-11-13T05:51:05Z [DEBUG] input_order hop=preexec_received signal=preexec t=1794549065667.439 qpc=1855530401581 qpf=10000000
+2026-11-13T05:51:05Z [DEBUG] input_order frame layout=true t=1794549065671.358
+2026-11-13T05:51:05Z [DEBUG] input_order hop=ui_item kind=frame ms=4.32 iter=1 layout=true render_ms=1.84 layout_paint_ms=2.48 t=1794549065671.403
+2026-11-13T05:51:05Z [DEBUG] input_order hop=frame_drawn total_ms=6.5 acquire_ms=0.0 present_ms=0.1 t=1794549065673.516
+2026-11-13T05:51:05Z [DEBUG] input_order hop=decset_2004 on=false t=1794549065675.600
+2026-11-13T05:51:05Z [DEBUG] input_order hop=notify_cause view=Input cause=handle_block_completed_event t=1794549065677.389
+2026-11-13T05:51:05Z [DEBUG] input_order hop=ssh_pty_owner ssh=false site=block_completed prompt_fact=Unknown command_interactive=false young_hold_evidence=None t=1794549065677.474
+2026-11-13T05:51:05Z [DEBUG] input_order hop=notify_cause view=Input cause=update_voice_transcription_options t=1794549065677.730
+2026-11-13T05:51:05Z [DEBUG] input_order hop=notify_cause view=Input cause=update_image_context_options t=1794549065677.757
+2026-11-13T05:51:05Z [DEBUG] input_order hop=notify_cause view=Input cause=update_ai_context_menu t=1794549065678.207
+2026-11-13T05:51:05Z [DEBUG] input_order hop=notify_cause view=Input cause=new_11 t=1794549065678.344
+2026-11-13T05:51:05Z [DEBUG] input_order hop=notify_cause view=Input cause=agent::rerender_agent_input_if_facts_changed t=1794549065678.406
+2026-11-13T05:51:05Z [DEBUG] input_order hop=precmd_seen consumed=false seq_mode=true enters=1 precmds=0 t=1794549065688.250
+2026-11-13T05:51:05Z [DEBUG] input_order hop=frame_drawn total_ms=6.3 acquire_ms=1.1 present_ms=0.1 t=1794549065691.536
+2026-11-13T05:51:05Z [DEBUG] input_order hop=notify_cause view=Input cause=update_image_context_options t=1794549065692.295
+2026-11-13T05:51:05Z [DEBUG] input_order hop=notify_cause view=Input cause=new_14 t=1794549065692.316
+2026-11-13T05:51:05Z [DEBUG] input_order hop=handoff_commit_source ssh_gate_armed=false ssh_holding=false remote_prompt_seen=false t=1794549065703.192
+2026-11-13T05:51:05Z [DEBUG] input_order hop=handoff_commit_at_prompt committed=true still_pty_owned=false t=1794549065703.213
+2026-11-13T05:51:05Z [DEBUG] input_order hop=kh_focus_input seq=22562 self_focused=true t=1794549065703.314
+2026-11-13T05:51:05Z [DEBUG] input_order hop=notify_cause view=Input cause=close_voltron t=1794549065703.339
+2026-11-13T05:51:05Z [DEBUG] input_order hop=notify_cause view=Input cause=on_focus t=1794549065703.352
+2026-11-13T05:51:05Z [DEBUG] input_order hop=kh_focus_terminal_view seq=22562 self_focused=false ssh_holding=false t=1794549065703.396
+2026-11-13T05:51:05Z [DEBUG] input_order hop=kh_focus_editor seq=22562 self_focused=true t=1794549065703.428
+2026-11-13T05:51:05Z [DEBUG] input_order hop=kh_focus_input seq=22562 self_focused=false t=1794549065703.491
+2026-11-13T05:51:05Z [DEBUG] input_order hop=kh_focus_terminal_view seq=22562 self_focused=false ssh_holding=false t=1794549065703.503
+2026-11-13T05:51:05Z [DEBUG] input_order hop=notify_cause view=Input cause=notify_and_notify_children t=1794549065703.799
+2026-11-13T05:51:05Z [DEBUG] input_order hop=notify_cause view=Input cause=notify_and_notify_children_2 t=1794549065703.818
+2026-11-13T05:51:05Z [DEBUG] input_order hop=line_editor_reading_activates released_queued_hold=false t=1794549065703.856
+2026-11-13T05:51:05Z [DEBUG] input_order hop=handoff_decision decision=Legacy retry=false t=1794549065703.881
+2026-11-13T05:51:05Z [DEBUG] input_order hop=pty_write_bytes class=UserKey wrote=2 of_job=2 bytes="\x1b1" since_precmd_ms=15 since_preexec_ms=36 since_ready_ms=0 since_request_ms=0 since_report_ms=1663 t=1794549065703.981
+2026-11-13T05:51:05Z [DEBUG] input_order hop=input_report reported_chars=0 kept_chars=0 text="" t=1794549065705.038
+2026-11-13T05:51:05Z [DEBUG] input_order frame layout=true t=1794549065710.200
+2026-11-13T05:51:05Z [DEBUG] input_order hop=frame_drawn total_ms=4.5 acquire_ms=0.0 present_ms=0.1 t=1794549065711.980
+2026-11-13T05:51:05Z [DEBUG] input_order hop=frame_drawn total_ms=9.1 acquire_ms=6.9 present_ms=0.1 t=1794549065721.696
+2026-11-13T05:51:05Z [DEBUG] input_order hop=frame_drawn total_ms=2.3 acquire_ms=0.0 present_ms=0.1 t=1794549065730.171
+2026-11-13T05:51:05Z [DEBUG] input_order hop=frame_drawn total_ms=5.2 acquire_ms=0.0 present_ms=0.2 t=1794549065860.906
+2026-11-13T05:51:05Z [DEBUG] input_order hop=kh_pane_key seq=22563 seq=22563 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794549065895.347
+2026-11-13T05:51:05Z [DEBUG] input_order hop=kh_editor_action seq=22563 kind=insert focused=true hold_active=false buffer_chars=0 buffer="" t=1794549065895.366
+2026-11-13T05:51:05Z [DEBUG] input_order hop=notify_cause view=Input cause=agent::rerender_agent_input_if_facts_changed t=1794549065895.603
+2026-11-13T05:51:05Z [DEBUG] input_order hop=notify_cause view=Input cause=handle_editor_event_inner_6 t=1794549065895.758
+2026-11-13T05:51:05Z [DEBUG] input_order hop=kh_edit_sync seq=22563 us=1707 t=1794549065897.422
+2026-11-13T05:51:05Z [DEBUG] input_order hop=notify_cause view=Input cause=agent::rerender_agent_input_if_facts_changed t=1794549065897.496
+2026-11-13T05:51:05Z [DEBUG] input_order hop=key_frame layout=true t=1794549065900.313
+2026-11-13T05:51:05Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=4 mounted=26 render_ms=0.21 layout_ms=0.61 after_layout_ms=0.06 paint_ms=0.73 hover_ms=0.11 total_ms=2.04 layout_top=EditorView:0.24,Terminal:0.23,Workspace:0.06 paint_top=Terminal:0.43,Workspace:0.13,EditorView:0.06 t=1794549065900.688
+2026-11-13T05:51:05Z [DEBUG] input_order hop=frame_drawn total_ms=5.2 acquire_ms=0.0 present_ms=0.2 t=1794549065903.820
+2026-11-13T05:51:05Z [DEBUG] input_order hop=notify_cause view=Input cause=update_voice_transcription_options t=1794549065907.905
+2026-11-13T05:51:05Z [DEBUG] input_order hop=notify_cause view=Input cause=update_image_context_options t=1794549065907.939
+2026-11-13T05:51:05Z [DEBUG] input_order hop=notify_cause view=Input cause=update_ai_context_menu t=1794549065908.445
+2026-11-13T05:51:05Z [DEBUG] input_order hop=notify_cause view=Input cause=new_11 t=1794549065908.567
+2026-11-13T05:51:05Z [DEBUG] input_order hop=kh_pane_key seq=22564 seq=22564 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794549065915.827
+2026-11-13T05:51:05Z [DEBUG] input_order hop=kh_editor_action seq=22564 kind=insert focused=true hold_active=false buffer_chars=2 buffer="[]" t=1794549065915.854
+2026-11-13T05:51:05Z [DEBUG] input_order hop=notify_cause view=Input cause=handle_editor_event_inner_6 t=1794549065916.110
+2026-11-13T05:51:05Z [DEBUG] input_order hop=kh_edit_sync seq=22564 us=1803 t=1794549065917.851
+2026-11-13T05:51:05Z [DEBUG] input_order hop=notify_cause view=Input cause=agent::rerender_agent_input_if_facts_changed t=1794549065917.957
+2026-11-13T05:51:05Z [DEBUG] input_order hop=key_frame layout=true t=1794549065920.811
+2026-11-13T05:51:05Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=10 mounted=26 render_ms=0.77 layout_ms=0.38 after_layout_ms=0.03 paint_ms=0.59 hover_ms=0.09 total_ms=2.16 layout_top=EditorView:0.16,Terminal:0.13,Workspace:0.03 paint_top=Terminal:0.32,Workspace:0.11,AgentMessageBar:0.04 t=1794549065921.126
+2026-11-13T05:51:05Z [DEBUG] input_order hop=frame_drawn total_ms=4.0 acquire_ms=0.0 present_ms=0.1 t=1794549065922.946
+2026-11-13T05:51:05Z [DEBUG] input_order hop=kh_pane_key seq=22565 seq=22565 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794549065923.941
+2026-11-13T05:51:05Z [DEBUG] input_order hop=kh_editor_action seq=22565 kind=insert focused=true hold_active=false buffer_chars=3 buffer="[D]" t=1794549065923.952
+2026-11-13T05:51:05Z [DEBUG] input_order hop=kh_edit_sync seq=22565 us=1699 t=1794549065925.830
+2026-11-13T05:51:05Z [DEBUG] input_order hop=key_frame layout=true t=1794549065927.455
+2026-11-13T05:51:05Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=1 mounted=26 render_ms=0.05 layout_ms=0.37 after_layout_ms=0.03 paint_ms=0.50 hover_ms=0.07 total_ms=1.25 layout_top=Terminal:0.13,EditorView:0.11,Workspace:0.05 paint_top=Terminal:0.24,Workspace:0.10,EditorView:0.04 t=1794549065927.720
+2026-11-13T05:51:05Z [DEBUG] input_order hop=frame_drawn total_ms=8.7 acquire_ms=5.9 present_ms=0.1 t=1794549065935.108
+2026-11-13T05:51:05Z [DEBUG] input_order hop=kh_pane_key seq=22566 seq=22566 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794549065936.194
+2026-11-13T05:51:05Z [DEBUG] input_order hop=kh_editor_action seq=22566 kind=insert focused=true hold_active=false buffer_chars=4 buffer="[Da]" t=1794549065936.213
+2026-11-13T05:51:05Z [DEBUG] input_order hop=kh_edit_sync seq=22566 us=1764 t=1794549065938.257
+2026-11-13T05:51:05Z [DEBUG] input_order hop=key_frame layout=true t=1794549065939.917
+2026-11-13T05:51:05Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=1 mounted=26 render_ms=0.04 layout_ms=0.44 after_layout_ms=0.04 paint_ms=0.48 hover_ms=0.07 total_ms=1.30 layout_top=Terminal:0.16,EditorView:0.15,Workspace:0.05 paint_top=Terminal:0.21,Workspace:0.09,EditorView:0.05 t=1794549065940.174
+2026-11-13T05:51:05Z [DEBUG] input_order hop=frame_drawn total_ms=8.3 acquire_ms=5.3 present_ms=0.1 t=1794549065947.190
+2026-11-13T05:51:05Z [DEBUG] input_order hop=kh_pane_key seq=22567 seq=22567 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794549065948.213
+2026-11-13T05:51:05Z [DEBUG] input_order hop=kh_editor_action seq=22567 kind=insert focused=true hold_active=false buffer_chars=5 buffer="[Dat]" t=1794549065948.252
+2026-11-13T05:51:05Z [DEBUG] input_order hop=kh_edit_sync seq=22567 us=1647 t=1794549065950.101
+2026-11-13T05:51:05Z [DEBUG] input_order hop=key_frame layout=true t=1794549065951.552
+2026-11-13T05:51:05Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=1 mounted=26 render_ms=0.04 layout_ms=0.35 after_layout_ms=0.03 paint_ms=0.41 hover_ms=0.07 total_ms=1.10 layout_top=Terminal:0.12,EditorView:0.11,Workspace:0.04 paint_top=Terminal:0.20,Workspace:0.08,EditorView:0.04 t=1794549065951.800
+2026-11-13T05:51:05Z [DEBUG] input_order hop=frame_drawn total_ms=7.6 acquire_ms=3.4 present_ms=0.2 t=1794549065958.282
+2026-11-13T05:51:05Z [DEBUG] input_order hop=kh_pane_key seq=22568 seq=22568 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794549065960.558
+2026-11-13T05:51:05Z [DEBUG] input_order hop=kh_editor_action seq=22568 kind=insert focused=true hold_active=false buffer_chars=6 buffer="[Date]" t=1794549065960.572
+2026-11-13T05:51:05Z [DEBUG] input_order hop=kh_edit_sync seq=22568 us=1562 t=1794549065962.296
+2026-11-13T05:51:05Z [DEBUG] input_order hop=key_frame layout=true t=1794549065964.175
+2026-11-13T05:51:05Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=1 mounted=26 render_ms=0.04 layout_ms=0.32 after_layout_ms=0.03 paint_ms=0.38 hover_ms=0.06 total_ms=1.07 layout_top=Terminal:0.12,EditorView:0.11,Workspace:0.03 paint_top=Terminal:0.18,Workspace:0.08,EditorView:0.04 t=1794549065964.435
+2026-11-13T05:51:05Z [DEBUG] input_order hop=frame_drawn total_ms=5.6 acquire_ms=2.1 present_ms=0.1 t=1794549065968.940
+2026-11-13T05:51:05Z [DEBUG] input_order hop=kh_pane_key seq=22569 seq=22569 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794549065977.228
+2026-11-13T05:51:05Z [DEBUG] input_order hop=kh_editor_action seq=22569 kind=insert focused=true hold_active=false buffer_chars=7 buffer="[DateT]" t=1794549065977.255
+2026-11-13T05:51:05Z [DEBUG] input_order hop=kh_edit_sync seq=22569 us=1535 t=1794549065978.958
+2026-11-13T05:51:05Z [DEBUG] input_order hop=key_frame layout=true t=1794549065980.582
+2026-11-13T05:51:05Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=1 mounted=26 render_ms=0.04 layout_ms=0.35 after_layout_ms=0.03 paint_ms=0.47 hover_ms=0.07 total_ms=1.17 layout_top=Terminal:0.12,EditorView:0.11,Workspace:0.04 paint_top=Terminal:0.23,Workspace:0.10,EditorView:0.04 t=1794549065980.829
+2026-11-13T05:51:05Z [DEBUG] input_order hop=frame_drawn total_ms=2.7 acquire_ms=0.0 present_ms=0.1 t=1794549065982.294
+2026-11-13T05:51:05Z [DEBUG] input_order hop=kh_pane_key seq=22570 seq=22570 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794549065991.728
+2026-11-13T05:51:05Z [DEBUG] input_order hop=kh_editor_action seq=22570 kind=insert focused=true hold_active=false buffer_chars=8 buffer="[DateTi]" t=1794549065991.740
+2026-11-13T05:51:05Z [DEBUG] input_order hop=kh_edit_sync seq=22570 us=1577 t=1794549065993.480
+2026-11-13T05:51:05Z [DEBUG] input_order hop=key_frame layout=true t=1794549065994.960
+2026-11-13T05:51:05Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=1 mounted=26 render_ms=0.04 layout_ms=0.41 after_layout_ms=0.04 paint_ms=0.38 hover_ms=0.07 total_ms=1.17 layout_top=EditorView:0.15,Terminal:0.13,Workspace:0.05 paint_top=Terminal:0.18,Workspace:0.08,EditorView:0.04 t=1794549065995.214
+2026-11-13T05:51:05Z [DEBUG] input_order hop=frame_drawn total_ms=2.7 acquire_ms=0.0 present_ms=0.1 t=1794549065996.712
+2026-11-13T05:51:06Z [DEBUG] input_order hop=kh_pane_key seq=22571 seq=22571 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794549066005.122
+2026-11-13T05:51:06Z [DEBUG] input_order hop=kh_editor_action seq=22571 kind=insert focused=true hold_active=false buffer_chars=9 buffer="[DateTim]" t=1794549066005.134
+2026-11-13T05:51:06Z [DEBUG] input_order hop=kh_edit_sync seq=22571 us=1549 t=1794549066006.859
+2026-11-13T05:51:06Z [DEBUG] input_order hop=key_frame layout=true t=1794549066008.500
+2026-11-13T05:51:06Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=1 mounted=26 render_ms=0.04 layout_ms=0.36 after_layout_ms=0.03 paint_ms=0.45 hover_ms=0.07 total_ms=1.16 layout_top=EditorView:0.12,Terminal:0.11,Workspace:0.04 paint_top=Terminal:0.22,Workspace:0.08,EditorView:0.04 t=1794549066008.743
+2026-11-13T05:51:06Z [DEBUG] input_order hop=frame_drawn total_ms=2.7 acquire_ms=0.0 present_ms=0.1 t=1794549066010.254
+2026-11-13T05:51:06Z [DEBUG] input_order hop=kh_pane_key seq=22572 seq=22572 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794549066017.885
+2026-11-13T05:51:06Z [DEBUG] input_order hop=kh_editor_action seq=22572 kind=insert focused=true hold_active=false buffer_chars=10 buffer="[DateTime]" t=1794549066017.898
+2026-11-13T05:51:06Z [DEBUG] input_order hop=kh_edit_sync seq=22572 us=1571 t=1794549066019.635
+2026-11-13T05:51:06Z [DEBUG] input_order hop=key_frame layout=true t=1794549066021.518
+2026-11-13T05:51:06Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=1 mounted=26 render_ms=0.04 layout_ms=0.33 after_layout_ms=0.02 paint_ms=0.43 hover_ms=0.07 total_ms=1.11 layout_top=EditorView:0.13,Terminal:0.12,Workspace:0.03 paint_top=Terminal:0.21,Workspace:0.08,EditorView:0.04 t=1794549066021.755
+2026-11-13T05:51:06Z [DEBUG] input_order hop=frame_drawn total_ms=2.6 acquire_ms=0.0 present_ms=0.1 t=1794549066023.238
+2026-11-13T05:51:06Z [DEBUG] input_order hop=kh_pane_key seq=22573 seq=22573 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794549066030.694
+2026-11-13T05:51:06Z [DEBUG] input_order hop=kh_editor_action seq=22573 kind=insert focused=true hold_active=false buffer_chars=11 buffer="[DateTimeO]" t=1794549066030.707
+2026-11-13T05:51:06Z [DEBUG] input_order hop=kh_edit_sync seq=22573 us=1702 t=1794549066032.599
+2026-11-13T05:51:06Z [DEBUG] input_order hop=key_frame layout=true t=1794549066034.094
+2026-11-13T05:51:06Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=1 mounted=26 render_ms=0.04 layout_ms=0.41 after_layout_ms=0.03 paint_ms=0.40 hover_ms=0.10 total_ms=1.21 layout_top=EditorView:0.13,Terminal:0.13,Workspace:0.06 paint_top=Terminal:0.19,Workspace:0.08,EditorView:0.04 t=1794549066034.385
+2026-11-13T05:51:06Z [DEBUG] input_order hop=frame_drawn total_ms=3.0 acquire_ms=0.0 present_ms=0.1 t=1794549066036.114
+2026-11-13T05:51:06Z [DEBUG] input_order hop=kh_pane_key seq=22574 seq=22574 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794549066046.713
+2026-11-13T05:51:06Z [DEBUG] input_order hop=kh_editor_action seq=22574 kind=insert focused=true hold_active=false buffer_chars=12 buffer="[DateTimeOf]" t=1794549066046.725
+2026-11-13T05:51:06Z [DEBUG] input_order hop=kh_edit_sync seq=22574 us=1557 t=1794549066048.469
+2026-11-13T05:51:06Z [DEBUG] input_order hop=key_frame layout=true t=1794549066050.171
+2026-11-13T05:51:06Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=1 mounted=26 render_ms=0.06 layout_ms=0.40 after_layout_ms=0.04 paint_ms=0.47 hover_ms=0.08 total_ms=1.30 layout_top=Terminal:0.14,EditorView:0.13,Workspace:0.06 paint_top=Terminal:0.22,Workspace:0.08,EditorView:0.05 t=1794549066050.445
+2026-11-13T05:51:06Z [DEBUG] input_order hop=frame_drawn total_ms=2.8 acquire_ms=0.0 present_ms=0.1 t=1794549066051.930
+2026-11-13T05:51:06Z [DEBUG] input_order hop=kh_pane_key seq=22575 seq=22575 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794549066059.729
+2026-11-13T05:51:06Z [DEBUG] input_order hop=kh_editor_action seq=22575 kind=insert focused=true hold_active=false buffer_chars=13 buffer="[DateTimeOff]" t=1794549066059.745
+2026-11-13T05:51:06Z [DEBUG] input_order hop=kh_edit_sync seq=22575 us=1642 t=1794549066061.615
+2026-11-13T05:51:06Z [DEBUG] input_order hop=key_frame layout=true t=1794549066063.453
+2026-11-13T05:51:06Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=1 mounted=26 render_ms=0.04 layout_ms=0.48 after_layout_ms=0.05 paint_ms=0.51 hover_ms=0.09 total_ms=1.43 layout_top=Terminal:0.19,EditorView:0.16,Workspace:0.05 paint_top=Terminal:0.24,Workspace:0.10,EditorView:0.05 t=1794549066063.763
+2026-11-13T05:51:06Z [DEBUG] input_order hop=frame_drawn total_ms=3.3 acquire_ms=0.0 present_ms=0.1 t=1794549066065.602
+2026-11-13T05:51:06Z [DEBUG] input_order hop=kh_pane_key seq=22576 seq=22576 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794549066074.275
+2026-11-13T05:51:06Z [DEBUG] input_order hop=kh_editor_action seq=22576 kind=insert focused=true hold_active=false buffer_chars=14 buffer="[DateTimeOffs]" t=1794549066074.290
+2026-11-13T05:51:06Z [DEBUG] input_order hop=kh_edit_sync seq=22576 us=1634 t=1794549066076.253
+2026-11-13T05:51:06Z [DEBUG] input_order hop=key_frame layout=true t=1794549066077.955
+2026-11-13T05:51:06Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=1 mounted=26 render_ms=0.04 layout_ms=0.44 after_layout_ms=0.04 paint_ms=0.47 hover_ms=0.09 total_ms=1.32 layout_top=Terminal:0.14,EditorView:0.14,Workspace:0.05 paint_top=Terminal:0.22,Workspace:0.09,EditorView:0.05 t=1794549066078.265
+2026-11-13T05:51:06Z [DEBUG] input_order hop=frame_drawn total_ms=2.8 acquire_ms=0.0 present_ms=0.1 t=1794549066079.727
+2026-11-13T05:51:06Z [DEBUG] input_order hop=kh_pane_key seq=22577 seq=22577 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794549066088.709
+2026-11-13T05:51:06Z [DEBUG] input_order hop=kh_editor_action seq=22577 kind=insert focused=true hold_active=false buffer_chars=15 buffer="[DateTimeOffse]" t=1794549066088.721
+2026-11-13T05:51:06Z [DEBUG] input_order hop=kh_edit_sync seq=22577 us=1595 t=1794549066090.503
+2026-11-13T05:51:06Z [DEBUG] input_order hop=key_frame layout=true t=1794549066092.111
+2026-11-13T05:51:06Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=1 mounted=27 render_ms=0.04 layout_ms=0.55 after_layout_ms=0.04 paint_ms=0.40 hover_ms=0.10 total_ms=1.35 layout_top=EditorView:0.29,Terminal:0.13,Workspace:0.04 paint_top=Terminal:0.18,Workspace:0.08,EditorView:0.04 t=1794549066092.407
+2026-11-13T05:51:06Z [DEBUG] input_order hop=frame_drawn total_ms=3.0 acquire_ms=0.0 present_ms=0.1 t=1794549066094.012
+2026-11-13T05:51:06Z [DEBUG] input_order hop=kh_pane_key seq=22578 seq=22578 class=Typed target=Editor editor_focused=true terminal_focused=false in_text_field=false ssh_hold=false shadow=false focus=Editor gap_leaf=- chain_len=7 input_gap=false t=1794549066102.764
+2026-11-13T05:51:06Z [DEBUG] input_order hop=kh_editor_action seq=22578 kind=insert focused=true hold_active=false buffer_chars=16 buffer="[DateTimeOffset]" t=1794549066102.776
+2026-11-13T05:51:06Z [DEBUG] input_order hop=key_frame layout=true t=1794549066104.536
+2026-11-13T05:51:06Z [DEBUG] input_order hop=key_frame_build passes=1 layout_passes=1 views=1 mounted=27 render_ms=0.06 layout_ms=0.38 after_layout_ms=0.03 paint_ms=0.65 hover_ms=0.09 total_ms=1.53 layout_top=Terminal:0.17,EditorView:0.08,Workspace:0.05 paint_top=Terminal:0.33,Workspace:0.11,EditorView:0.06 t=1794549066104.846

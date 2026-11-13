@@ -1,0 +1,160 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="appci-macos" tests="55" failures="5" skipped="21">
+<testcase classname="terminal" name="mode_proof" time="3.70">
+</testcase>
+<testcase classname="terminal" name="ctrl_c_d" time="560.50">
+<skipped message="NO-REFERENCE (not a pass): Ctrl-C: same trap/timestamp command typed in both terminals; reference measured after Phosphor in the same session; absolute Phosphor median 200.25 ms includes the input-tool spawn"/>
+</testcase>
+<testcase classname="terminal" name="subshell_sh_probe_empty_ps1" time="17.50">
+</testcase>
+<testcase classname="terminal" name="subshell_ready_rc_clear" time="16.30">
+</testcase>
+<testcase classname="terminal" name="latency_enter" time="493.40">
+</testcase>
+<testcase classname="terminal" name="latency_key_log" time="30.50">
+</testcase>
+<testcase classname="terminal" name="latency_paint" time="126.70">
+</testcase>
+<testcase classname="terminal" name="latency_first_key_after_idle" time="754.20">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: First key after 1 s idle: overhead -0.01 +/- 1.18 ms (SE) vs budget 0.79 ms is within noise: INCONCLUSIVE/NO-COMPARE, the overhead budget was NOT judged (not a pass)"/>
+</testcase>
+<testcase classname="terminal" name="routing_table" time="80.10">
+</testcase>
+<testcase classname="terminal" name="routing_table_powershell" time="1.90">
+<skipped message="Windows only: the PowerShell pane (routing_table judges the POSIX panes from rec.log)"/>
+</testcase>
+<testcase classname="terminal" name="remote_tab_no_helper" time="10.70">
+</testcase>
+<testcase classname="terminal" name="remote_tab_enter_no_helper" time="14.90">
+</testcase>
+<testcase classname="terminal" name="ssh_gitbash_managed" time="1.80">
+<skipped message="Windows only (ConPTY)"/>
+</testcase>
+<testcase classname="terminal" name="ssh_gitbash_bootstrap_in_command" time="1.90">
+<skipped message="Windows only (ConPTY)"/>
+</testcase>
+<testcase classname="terminal" name="ssh_gitbash_kill_switch" time="1.90">
+<skipped message="Windows only (ConPTY)"/>
+</testcase>
+<testcase classname="terminal" name="ui_completions_as_you_type_local" time="7.00">
+</testcase>
+<testcase classname="terminal" name="latency_enter_ssh" time="352.40">
+</testcase>
+<testcase classname="terminal" name="history_up_recall" time="20.00">
+</testcase>
+<testcase classname="terminal" name="ssh_drop_reconnect" time="72.30">
+</testcase>
+<testcase classname="terminal" name="scroll_keys_position" time="35.80">
+</testcase>
+<testcase classname="terminal" name="startup_shell_pane" time="1.50">
+<skipped message="Windows only: the pane-shell passes (PowerShell 7, cmd.exe, WSL chosen through the app's own shell settings) exist on the Windows runner; no machine change makes it run here"/>
+</testcase>
+<testcase classname="terminal" name="link_and_path_click" time="26.80">
+<failure message="the in-app code pane has the keyboard and this platform has no close-pane key (APPCI_KEY_CLOSE empty): the pane was left open and nothing was typed after the links">the in-app code pane has the keyboard and this platform has no close-pane key (APPCI_KEY_CLOSE empty): the pane was left open and nothing was typed after the links
+the path opened in an in-app code pane at line 140 (the line's text 'fcd4cwuy4' is drawn; last gained-focus hop in the app log: editor; the pane is closed by the close-pane key whatever the hops say)
+macOS: this case has no trace of the app's own connections (strace is Linux; the per-platform network trace is r14-test-gaps T41): 'no other outbound connection' is NOT judged here
+the after_links probe lines were NOT typed: the in-app code pane could not be closed, so they would have gone into the editor
+injector accounting: injector sent 24; app saw 24; lost-before-app 0 (Enter: sent 1, app saw 1); of the app's: 21 unbound keydown/typed, 1 taken by a key binding, 1 Enter by a binding; macOS: 24 key-down(s) reached NSApplication, 24 dispatched as key events (1 of them a menu key equivalent), 0 not (0 Cmd chord(s) injected)
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 1 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="terminal" name="pane_not_local_after_link_and_path_click" time="0.00">
+<failure message="after link_and_path_click the pane's shell was not the root shell (none; root pid 73992); the app is relaunched so later cases start clean">after link_and_path_click the pane's shell was not the root shell (none; root pid 73992); the app is relaunched so later cases start clean</failure>
+</testcase>
+<testcase classname="terminal" name="editor_daily" time="54.30">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: macOS: the close question was not played. NEEDS (harness, not built): a usable close key (Phosphor's is cmd-shift-W, which the frontmost-app guard refuses) and a way "/>
+</testcase>
+<testcase classname="terminal" name="md_viewer" time="12.80">
+</testcase>
+<testcase classname="terminal" name="editor_memory_7mb" time="397.30">
+</testcase>
+<testcase classname="terminal" name="tab_pointer_use" time="98.20">
+<skipped message="NO-REFERENCE (not a pass): the app log says terminal but the screen reads as agent (OCR); the log decides"/>
+</testcase>
+<testcase classname="terminal" name="network_gate_switch" time="67.50">
+<skipped message="NO-REFERENCE (not a pass): Escape left the settings page open (the shell did not take the probe line); closed it with palette cmd+p + 'Close Current Session'"/>
+</testcase>
+<testcase classname="terminal" name="keybinding_rebind" time="73.30">
+</testcase>
+<testcase classname="agent" name="mode_proof" time="2.80">
+</testcase>
+<testcase classname="agent" name="ctrl_c_d" time="558.00">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: Ctrl-C: overhead 6.59 +/- 1.51 ms (SE) vs budget 9.05 ms is within noise: INCONCLUSIVE/NO-COMPARE, the overhead budget was NOT judged (not a pass)"/>
+</testcase>
+<testcase classname="agent" name="subshell_sh_probe_empty_ps1" time="17.70">
+</testcase>
+<testcase classname="agent" name="subshell_ready_rc_clear" time="16.30">
+</testcase>
+<testcase classname="agent" name="latency_enter" time="413.00">
+</testcase>
+<testcase classname="agent" name="latency_key_log" time="29.90">
+</testcase>
+<testcase classname="agent" name="latency_paint" time="126.40">
+<skipped message="NO-REFERENCE (not a pass): measurement mode: interleaved, blocks of 5 kept samples (+1 discarded lead per block), 12 blocks"/>
+</testcase>
+<testcase classname="agent" name="latency_first_key_after_idle" time="754.80">
+<failure message="First key after 1 s idle: 1.98 ms (SE 1.02) is outside its band (history band -2.04--1.26 from n=4 run(s) (median -1.56), PROVISIONAL (n &lt; 5); above -1.26) [macos/agent/latency_first_key_after_idle/gap1s]">First key after 1 s idle: 1.98 ms (SE 1.02) is outside its band (history band -2.04--1.26 from n=4 run(s) (median -1.56), PROVISIONAL (n &lt; 5); above -1.26) [macos/agent/latency_first_key_after_idle/gap1s]
+First key after 1 s idle: first key after 1 s idle, kl3 post-to-first-changed-pixel at 240 Hz (4.17 ms quantum, not applied as a resolution veto: the SE of the median difference is); Phosphor and Terminal.app in blocks of 10, the first side alternating per gap
+First key after 1 s idle: macos/agent/latency_first_key_after_idle/gap1s: 1.98 is outside its band (history band -2.04--1.26 from n=4 run(s) (median -1.56), PROVISIONAL (n &lt; 5); above -1.26)
+NO-REFERENCE: First key after 2 s idle: the reference measured implausibly slow (overhead -7.23 ms): INCONCLUSIVE/NO-COMPARE, the overhead budget was NOT judged (not a pass)
+First key after 2 s idle: first key after 2 s idle, kl3 post-to-first-changed-pixel at 240 Hz (4.17 ms quantum, not applied as a resolution veto: the SE of the median difference is); Phosphor and Terminal.app in blocks of 10, the first side alternating per gap
+First key after 2 s idle: IMPLAUSIBLE reference: Phosphor is 7.23 ms FASTER than the reference (&gt; 5 ms, beyond 2 SE of 1.7002842525892838): an ordering / focus / idle-wake artifact of the reference window, not a Phosphor figure; NOREF, no verdict (a PASS here would rest on a mis-measured reference)
+First key after 2 s idle: macos/agent/latency_first_key_after_idle/gap2s: band -7.38--1.73 from n=4 run(s) (median -4.55), PROVISIONAL (n &lt; 5)
+NO-REFERENCE: First key after 5 s idle: overhead -8.14 +/- 3.99 ms (SE) vs budget -9.63 ms is within noise: INCONCLUSIVE/NO-COMPARE, the overhead budget was NOT judged (not a pass)
+First key after 5 s idle: first key after 5 s idle, kl3 post-to-first-changed-pixel at 240 Hz (4.17 ms quantum, not applied as a resolution veto: the SE of the median difference is); Phosphor and Terminal.app in blocks of 10, the first side alternating per gap
+First key after 5 s idle: overhead -8.14 +/- 3.99 ms (SE of the median difference) vs budget -9.63 ms: neither within nor over budget at 2 SE; more samples needed
+First key after 5 s idle: macos/agent/latency_first_key_after_idle/gap5s: -8.14 is outside its band (history band -19.45--9.63 from n=4 run(s) (median -14.54), PROVISIONAL (n &lt; 5); above -9.63)
+injector accounting: injector sent 119; app saw 119; lost-before-app 0 (Enter: sent 0, app saw 0); of the app's: 51 unbound keydown/typed, 58 taken by a key binding, 0 Enter by a binding; macOS: 119 key-down(s) reached NSApplication, 119 dispatched as key events (10 of them a menu key equivalent), 0 not (0 Cmd chord(s) injected)</failure>
+</testcase>
+<testcase classname="agent" name="routing_table" time="76.80">
+</testcase>
+<testcase classname="agent" name="routing_table_powershell" time="1.80">
+<skipped message="Windows only: the PowerShell pane (routing_table judges the POSIX panes from rec.log)"/>
+</testcase>
+<testcase classname="agent" name="remote_tab_no_helper" time="10.60">
+</testcase>
+<testcase classname="agent" name="remote_tab_enter_no_helper" time="14.70">
+</testcase>
+<testcase classname="agent" name="ssh_gitbash_managed" time="1.80">
+<skipped message="Windows only (ConPTY)"/>
+</testcase>
+<testcase classname="agent" name="ssh_gitbash_bootstrap_in_command" time="1.90">
+<skipped message="Windows only (ConPTY)"/>
+</testcase>
+<testcase classname="agent" name="ssh_gitbash_kill_switch" time="1.90">
+<skipped message="Windows only (ConPTY)"/>
+</testcase>
+<testcase classname="agent" name="latency_enter_ssh" time="352.70">
+</testcase>
+<testcase classname="agent" name="history_up_recall" time="20.20">
+</testcase>
+<testcase classname="agent" name="scroll_keys_position" time="37.10">
+<skipped message="NO-REFERENCE (not a pass): control: the job printed 28 lines and none is on screen at the bottom of the agent view (shots/*skp_0_stream.png): the agent view does not draw a background job's output (#2145)"/>
+</testcase>
+<testcase classname="agent" name="link_and_path_click" time="25.70">
+<failure message="the in-app code pane has the keyboard and this platform has no close-pane key (APPCI_KEY_CLOSE empty): the pane was left open and nothing was typed after the links">the in-app code pane has the keyboard and this platform has no close-pane key (APPCI_KEY_CLOSE empty): the pane was left open and nothing was typed after the links
+the path opened in an in-app code pane at line 140 (the line's text 'fcyuwh3e3' is drawn; last gained-focus hop in the app log: editor; the pane is closed by the close-pane key whatever the hops say)
+macOS: this case has no trace of the app's own connections (strace is Linux; the per-platform network trace is r14-test-gaps T41): 'no other outbound connection' is NOT judged here
+the after_links probe lines were NOT typed: the in-app code pane could not be closed, so they would have gone into the editor
+injector accounting: injector sent 24; app saw 24; lost-before-app 0 (Enter: sent 1, app saw 1); of the app's: 21 unbound keydown/typed, 1 taken by a key binding, 1 Enter by a binding; macOS: 24 key-down(s) reached NSApplication, 24 dispatched as key events (1 of them a menu key equivalent), 0 not (0 Cmd chord(s) injected)
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 1 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="agent" name="pane_not_local_after_link_and_path_click" time="0.00">
+<failure message="after link_and_path_click the pane's shell was not the root shell (none; root pid 9094); the app is relaunched so later cases start clean">after link_and_path_click the pane's shell was not the root shell (none; root pid 9094); the app is relaunched so later cases start clean</failure>
+</testcase>
+<testcase classname="agent" name="editor_daily" time="54.20">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: macOS: the close question was not played. NEEDS (harness, not built): a usable close key (Phosphor's is cmd-shift-W, which the frontmost-app guard refuses) and a way "/>
+</testcase>
+<testcase classname="agent" name="md_viewer" time="12.80">
+</testcase>
+<testcase classname="agent" name="tab_pointer_use" time="50.70">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: vertical panel: the tabs' titles could not be located in the strip (the rows are not top to bottom in tab order: tab 2 at (890, 1205), tab 3 at (890, 12"/>
+</testcase>
+<testcase classname="agent" name="keybinding_rebind" time="72.30">
+</testcase>
+<testcase classname="agent@fake" name="agent_latency_key" time="129.50">
+<skipped message="NO-REFERENCE (not a pass): a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context"/>
+</testcase>
+<testcase classname="agent@fake" name="agent_latency_enter" time="299.50">
+<skipped message="NO-REFERENCE (not a pass): a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context"/>
+</testcase>
+</testsuite>
