@@ -705,27 +705,31 @@ fn native_shell_completions_need_the_advertised_protocol_and_bash_3_2() {
     );
     // #2196: fish answers the exchange too (its bootstrap binds ^Y and answers with `complete -C`),
     // and only when it advertised the protocol; PowerShell and nu have no hook and never do.
-    assert!(Shell::new(
-        ShellType::Fish,
-        None,
-        advertised(),
-        Default::default(),
-        None
-    )
-    .supports_native_shell_completions());
+    assert!(
+        Shell::new(
+            ShellType::Fish,
+            None,
+            advertised(),
+            Default::default(),
+            None
+        )
+        .supports_native_shell_completions()
+    );
     assert!(
         !Shell::new(ShellType::Fish, None, None, Default::default(), None)
             .supports_native_shell_completions(),
         "a fish that did not advertise the protocol never gets ^Y"
     );
-    assert!(!Shell::new(
-        ShellType::Fish,
-        None,
-        Some(HashSet::from(["vi_mode".to_owned()])),
-        Default::default(),
-        None
-    )
-    .supports_native_shell_completions());
+    assert!(
+        !Shell::new(
+            ShellType::Fish,
+            None,
+            Some(HashSet::from(["vi_mode".to_owned()])),
+            Default::default(),
+            None
+        )
+        .supports_native_shell_completions()
+    );
     for shell_type in [ShellType::PowerShell, ShellType::Nu] {
         assert!(
             !Shell::new(shell_type, None, advertised(), Default::default(), None)

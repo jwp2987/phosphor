@@ -903,11 +903,13 @@ stty -echo -icanon min 1 time 0 <&3 2>/dev/null || exit 3
 D=${PHOSPHOR_NC_DEADLINE:-20}
 case $D in ""|*[!0-9]*) D=20;; esac
 us=$(printf "\037")
+# give-up-net: the overall deadline of the native-completions read, its only clock; expiry hands the bytes read back to the line, writes nothing
 end=$((SECONDS+D))
 acc=
 while :; do
 left=$((end-SECONDS))
 [ $left -gt 0 ] || break
+# give-up-net: read -t bounded by the overall deadline only (no inter-byte gap); expiry hands the bytes read back to the line
 IFS= read -r -s -n 1 -d "" -t $left c <&3 || break
 acc=$acc$c
 case $c in "$us") break;; esac

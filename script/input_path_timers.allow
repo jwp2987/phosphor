@@ -86,6 +86,7 @@ app/assets/bundled/bootstrap/bash_body.sh	__warp_nc_read_byte	read -t bounded by
 app/assets/bundled/bootstrap/bash_body.sh	__warp_nc_time_left	time left on the overall deadline; the only give-up clock of the exchange
 app/assets/bundled/bootstrap/zsh_body.sh	__warp_nc_deadline_set	starts the overall deadline of a native-completions read, the only clock; expiry hands the read bytes back (zle -U), writes nothing
 app/assets/bundled/bootstrap/zsh_body.sh	__warp_nc_time_left	time left on the overall deadline; the only give-up clock of the exchange
+app/assets/bundled/bootstrap/fish.sh	__warp_nc_sh	native-completions read (#2196): read -t bounded by the overall deadline only (PHOSPHOR_NC_DEADLINE, default 20 s, no inter-byte gap); expiry hands the bytes read back to the line, writes nothing
 app/assets/bundled/bootstrap/zsh_body.sh	__warp_nc_read_frame_body	read -t bounded by the overall deadline only; expiry or a non-frame byte hands everything read back to zle
 app/assets/bundled/bootstrap/zsh_body.sh	__warp_nc_give_back_escape	read -t bounded by the overall deadline only; replies dropped whole, keys handed back to zle
 app/assets/bundled/bootstrap/zsh_body.sh	warp_read_completion_buffer	first-byte read -t within PHOSPHOR_NC_DEADLINE; a non-frame byte or expiry hands back to zle, nothing is written
