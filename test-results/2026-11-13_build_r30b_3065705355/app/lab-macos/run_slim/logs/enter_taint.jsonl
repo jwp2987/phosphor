@@ -1,0 +1,1 @@
+{"case": "lab_freeze_and_wake.bash.lan.nohelper", "mode": "agent", "kind": "UNCOVERED", "ts": 2510745.593704875, "wall": 1794608679.259272, "target_pid": 99100, "app_alive": true, "app_slice_chars": 1767895}

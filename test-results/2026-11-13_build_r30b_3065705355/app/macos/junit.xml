@@ -1,0 +1,172 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="appci-macos" tests="58" failures="1" skipped="23">
+<testcase classname="terminal" name="mode_proof" time="3.70">
+</testcase>
+<testcase classname="terminal" name="ctrl_c_d" time="559.20">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: Ctrl-C: overhead 7.43 +/- 0.92 ms (SE) vs budget 8.09 ms is within noise: INCONCLUSIVE/NO-COMPARE, the overhead budget was NOT judged (not a pass)"/>
+</testcase>
+<testcase classname="terminal" name="subshell_sh_probe_empty_ps1" time="17.60">
+</testcase>
+<testcase classname="terminal" name="subshell_ready_rc_clear" time="16.20">
+</testcase>
+<testcase classname="terminal" name="latency_enter" time="493.10">
+<skipped message="NO-REFERENCE (not a pass): measurement mode: interleaved, blocks of 5 kept samples (+1 discarded lead per block), 24 blocks"/>
+</testcase>
+<testcase classname="terminal" name="latency_key_log" time="30.40">
+</testcase>
+<testcase classname="terminal" name="latency_paint" time="126.80">
+</testcase>
+<testcase classname="terminal" name="latency_first_key_after_idle" time="754.10">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: First key after 1 s idle: overhead -1.43 +/- 1.13 ms (SE) vs budget 0.79 ms is within noise: INCONCLUSIVE/NO-COMPARE, the overhead budget was NOT judged (not a pass)"/>
+</testcase>
+<testcase classname="terminal" name="routing_table" time="80.60">
+</testcase>
+<testcase classname="terminal" name="routing_table_powershell" time="1.80">
+<skipped message="Windows only: the PowerShell pane (routing_table judges the POSIX panes from rec.log)"/>
+</testcase>
+<testcase classname="terminal" name="routing_plain_installed_head" time="13.60">
+</testcase>
+<testcase classname="terminal" name="remote_tab_no_helper" time="10.60">
+</testcase>
+<testcase classname="terminal" name="remote_tab_enter_no_helper" time="14.50">
+</testcase>
+<testcase classname="terminal" name="ssh_gitbash_managed" time="1.90">
+<skipped message="Windows only (ConPTY)"/>
+</testcase>
+<testcase classname="terminal" name="ssh_gitbash_bootstrap_in_command" time="2.00">
+<skipped message="Windows only (ConPTY)"/>
+</testcase>
+<testcase classname="terminal" name="ssh_gitbash_kill_switch" time="1.90">
+<skipped message="Windows only (ConPTY)"/>
+</testcase>
+<testcase classname="terminal" name="ui_completions_as_you_type_local" time="7.00">
+</testcase>
+<testcase classname="terminal" name="latency_enter_ssh" time="352.80">
+</testcase>
+<testcase classname="terminal" name="history_up_recall" time="20.10">
+</testcase>
+<testcase classname="terminal" name="ssh_drop_reconnect" time="73.80">
+</testcase>
+<testcase classname="terminal" name="scroll_keys_position" time="36.40">
+</testcase>
+<testcase classname="terminal" name="startup_shell_pane" time="1.40">
+<skipped message="Windows only: the pane-shell passes (PowerShell 7, cmd.exe, WSL chosen through the app's own shell settings) exist on the Windows runner; no machine change makes it run here"/>
+</testcase>
+<testcase classname="terminal" name="link_and_path_click" time="38.60">
+</testcase>
+<testcase classname="terminal" name="editor_daily" time="54.20">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: macOS: the close question was not played. NEEDS (harness, not built): a usable close key (Phosphor's is cmd-shift-W, which the frontmost-app guard refuses) and a way "/>
+</testcase>
+<testcase classname="terminal" name="md_viewer" time="12.60">
+</testcase>
+<testcase classname="terminal" name="editor_memory_7mb" time="401.70">
+<failure message="rs: -5 MB of phys_footprint still held 75 s after closing the editor (over the pre-open baseline; close via palette cmd+p + 'Close Current Session'): -4.67 is outside its band (history band -24.12--5.16 from n=2 run(s) (median -18.18), PROVISIONAL (n &lt; 5); above -5.16) [macos/terminal/editor_memory_7mb/rs_held_after_close/phys_footprint]">rs: -5 MB of phys_footprint still held 75 s after closing the editor (over the pre-open baseline; close via palette cmd+p + 'Close Current Session'): -4.67 is outside its band (history band -24.12--5.16 from n=2 run(s) (median -18.18), PROVISIONAL (n &lt; 5); above -5.16) [macos/terminal/editor_memory_7mb/rs_held_after_close/phys_footprint]
+judged memory figures: phys_footprint, rss (owner: each one is checked; macOS ps RSS also counts freed-but-reusable malloc pages)
+heap prime (#2185): one unmeasured open+close of the txt file first; RSS before 432 MB, after open 574 MB, after the close trim 567 MB (close trim line seen: True, freed_estimate 0); the baseline below is taken from that post-trim heap
+open cost txt: phys_footprint base 225 MB -&gt; after-open 277 MB = +53 MB, rss base 567 MB -&gt; after-open 620 MB = +53 MB; app breakdown: buffer_item_size=136 buffer_items=230561 buffer_leaves=19215 buffer_nodes_bytes=53800800 dehydrated=252 frame_bytes=10208 hydrated=4 lines=115282 other_items=1 parked_bytes=9869879 parked_chunks=450 parked_lines=115024 render_items=707 render_nodes_bytes=1344672 source_bytes=66257 syntax_trees=0 text_bytes=7340089 undo_entries=0 walk_ms=0.50
+txt: opening the 7.0 MB file added 53 MB of phys_footprint (7.5x the file), 53 MB of rss (7.5x the file)
+txt: the app's own 'editor_memory open' breakdown walk took 0.50 ms on the main thread right after the load's layout (instrumentation: it runs only with editor_memory=debug, so a user's open does not pay it)
+txt: at the close trim the app was 620 MB resident, 187 MB of it freed-but-reusable malloc pages (MADV_FREE_REUSABLE: out of phys_footprint, still in RSS until the kernel reclaims them; no trim returns them)
+txt_c2: memory grew only 4.2 MB but the app logged 'editor_memory open': the file opened into reused heap
+open cost txt_c2: phys_footprint base 263 MB -&gt; after-open 266 MB = +3 MB, rss base 607 MB -&gt; after-open 611 MB = +4 MB; app breakdown: buffer_item_size=136 buffer_items=230561 buffer_leaves=19215 buffer_nodes_bytes=53800800 dehydrated=252 frame_bytes=10208 hydrated=4 lines=115282 other_items=1 parked_bytes=9869879 parked_chunks=450 parked_lines=115024 render_items=707 render_nodes_bytes=1344672 source_bytes=66257 syntax_trees=0 text_bytes=7340089 undo_entries=0 walk_ms=0.51
+txt_c2: at the close trim the app was 619 MB resident, 189 MB of it freed-but-reusable malloc pages (MADV_FREE_REUSABLE: out of phys_footprint, still in RSS until the kernel reclaims them; no trim returns them)
+open cost txt_c3: phys_footprint base 233 MB -&gt; after-open 266 MB = +33 MB, rss base 582 MB -&gt; after-open 615 MB = +33 MB; app breakdown: buffer_item_size=136 buffer_items=230561 buffer_leaves=19215 buffer_nodes_bytes=53800800 dehydrated=252 frame_bytes=10208 hydrated=4 lines=115282 other_items=1 parked_bytes=9869879 parked_chunks=450 parked_lines=115024 render_items=707 render_nodes_bytes=1344672 source_bytes=66257 syntax_trees=0 text_bytes=7340089 undo_entries=0 walk_ms=0.50
+txt_c3: at the close trim the app was 620 MB resident, 194 MB of it freed-but-reusable malloc pages (MADV_FREE_REUSABLE: out of phys_footprint, still in RSS until the kernel reclaims them; no trim returns them)
+txt: opening a 7 MB file cost 53 MB of phys_footprint (worst of 3 cycle(s)): band 49.3-70.3 from n=2 run(s) (median 58.3), PROVISIONAL (n &lt; 5) [macos/terminal/editor_memory_7mb/txt_open_cost_worst/phys_footprint]
+txt: opening a 7 MB file cost 53 MB of rss (worst of 3 cycle(s)): band 49.1-70.2 from n=2 run(s) (median 58.25), PROVISIONAL (n &lt; 5) [macos/terminal/editor_memory_7mb/txt_open_cost_worst/rss]
+txt: 3 open/close cycles grew the post-close phys_footprint by -33 MB: 277, 252, 245: band -52.79--10.4 from n=2 run(s) (median -31.59), PROVISIONAL (n &lt; 5) [macos/terminal/editor_memory_7mb/txt_cycle_growth/phys_footprint]
+txt: 3 open/close cycles grew the post-close rss by -24 MB: 620, 600, 596: band -38.83--1.99 from n=2 run(s) (median -20.41), PROVISIONAL (n &lt; 5) [macos/terminal/editor_memory_7mb/txt_cycle_growth/rss]
+rss: +7 MB over the pre-open baseline after close (reported, not judged on macOS: freed pages marked reusable stay in RSS; phys_footprint is the judged figure)
+rss: +7 MB over the baseline (reported, not judged on Windows: the working set is OS-trimmed and shared; private bytes are the judged figure)
+txt: -23 MB of phys_footprint still held 75 s after closing the editor (over the pre-open baseline; close via palette cmd+p + 'Close Current Session'): band -13.71-5.93 from n=2 run(s) (median -9.07), PROVISIONAL (n &lt; 5); -23.39 is below the band (an improvement) [macos/terminal/editor_memory_7mb/txt_held_after_close/phys_footprint]
+open cost rs: phys_footprint base 205 MB -&gt; after-open 259 MB = +54 MB, rss base 574 MB -&gt; after-open 628 MB = +54 MB; app breakdown: buffer_item_size=136 buffer_items=102205 buffer_leaves=8518 buffer_nodes_bytes=23851200 dehydrated=252 frame_bytes=29280 hydrated=4 lines=34070 other_items=1 parked_bytes=8034011 parked_chunks=133 parked_lines=33812 render_items=390 render_nodes_bytes=391552 source_bytes=105504 syntax_trees=0 text_bytes=7340216 undo_entries=0 walk_ms=0.22
+rs: opening the 7.0 MB file added 54 MB of phys_footprint (7.7x the file), 54 MB of rss (7.7x the file)
+rs: the app's own 'editor_memory open' breakdown walk took 0.22 ms on the main thread right after the load's layout (instrumentation: it runs only with editor_memory=debug, so a user's open does not pay it)
+rs: at the close trim the app was 629 MB resident, 213 MB of it freed-but-reusable malloc pages (MADV_FREE_REUSABLE: out of phys_footprint, still in RSS until the kernel reclaims them; no trim returns them)
+rs: opening a 7 MB file cost 54 MB of phys_footprint (worst of 1 cycle(s)): band 44.8-63.8 from n=2 run(s) (median 50.8), PROVISIONAL (n &lt; 5) [macos/terminal/editor_memory_7mb/rs_open_cost_worst/phys_footprint]
+rs: opening a 7 MB file cost 54 MB of rss (worst of 1 cycle(s)): band 46.4-65.8 from n=2 run(s) (median 53), PROVISIONAL (n &lt; 5) [macos/terminal/editor_memory_7mb/rs_open_cost_worst/rss]
+rss: +12 MB over the pre-open baseline after close (reported, not judged on macOS: freed pages marked reusable stay in RSS; phys_footprint is the judged figure)
+rss: +12 MB over the baseline (reported, not judged on Windows: the working set is OS-trimmed and shared; private bytes are the judged figure)
+EXPERIMENT (the opt-in open trim, PHOSPHOR_EDITOR_TRIM_AFTER_OPEN=1; owner 2026-11-10, #1340: reported, never a FAIL): inside the budget: trim A/B: the open trim put a 0.0 ms UI item on screen while it ran (budget 4 ms; control default: 0.0 ms)
+trim A/B: the control no_trim is itself over the 4 ms UI budget after close (12.0 ms)
+injector accounting: injector sent 1086; app saw 1086; lost-before-app 0 (Enter: sent 16, app saw 16); of the app's: 1022 unbound keydown/typed, 16 taken by a key binding, 16 Enter by a binding; macOS: 1086 key-down(s) reached NSApplication, 1086 dispatched as key events (32 of them a menu key equivalent), 0 not (16 Cmd chord(s) injected)</failure>
+</testcase>
+<testcase classname="terminal" name="tab_pointer_use" time="99.70">
+<skipped message="NO-REFERENCE (not a pass): vertical panel: tab 2 at (468, 413), tab 3 at (468, 538), tab 4 at (468, 662)"/>
+</testcase>
+<testcase classname="terminal" name="network_gate_switch" time="67.40">
+<skipped message="NO-REFERENCE (not a pass): Escape left the settings page open (the shell did not take the probe line); closed it with palette cmd+p + 'Close Current Session'"/>
+</testcase>
+<testcase classname="terminal" name="keybinding_rebind" time="73.30">
+</testcase>
+<testcase classname="terminal" name="history_survives_restart" time="68.50">
+</testcase>
+<testcase classname="agent" name="mode_proof" time="2.70">
+</testcase>
+<testcase classname="agent" name="ctrl_c_d" time="556.30">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: Ctrl-C: overhead 7.52 +/- 1.09 ms (SE) vs budget 9.05 ms is within noise: INCONCLUSIVE/NO-COMPARE, the overhead budget was NOT judged (not a pass)"/>
+</testcase>
+<testcase classname="agent" name="subshell_sh_probe_empty_ps1" time="17.70">
+</testcase>
+<testcase classname="agent" name="subshell_ready_rc_clear" time="16.10">
+</testcase>
+<testcase classname="agent" name="latency_enter" time="412.20">
+</testcase>
+<testcase classname="agent" name="latency_key_log" time="30.20">
+</testcase>
+<testcase classname="agent" name="latency_paint" time="126.30">
+<skipped message="NO-REFERENCE (not a pass): measurement mode: interleaved, blocks of 5 kept samples (+1 discarded lead per block), 12 blocks"/>
+</testcase>
+<testcase classname="agent" name="latency_first_key_after_idle" time="753.70">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: First key after 1 s idle: overhead -3.24 +/- 1.16 ms (SE) vs budget -1.26 ms is within noise: INCONCLUSIVE/NO-COMPARE, the overhead budget was NOT judged (not a pass)"/>
+</testcase>
+<testcase classname="agent" name="routing_table" time="76.80">
+</testcase>
+<testcase classname="agent" name="routing_table_powershell" time="1.80">
+<skipped message="Windows only: the PowerShell pane (routing_table judges the POSIX panes from rec.log)"/>
+</testcase>
+<testcase classname="agent" name="routing_typo_head" time="10.80">
+</testcase>
+<testcase classname="agent" name="routing_plain_installed_head" time="17.50">
+</testcase>
+<testcase classname="agent" name="remote_tab_no_helper" time="10.60">
+</testcase>
+<testcase classname="agent" name="remote_tab_enter_no_helper" time="14.60">
+</testcase>
+<testcase classname="agent" name="ssh_gitbash_managed" time="1.80">
+<skipped message="Windows only (ConPTY)"/>
+</testcase>
+<testcase classname="agent" name="ssh_gitbash_bootstrap_in_command" time="1.90">
+<skipped message="Windows only (ConPTY)"/>
+</testcase>
+<testcase classname="agent" name="ssh_gitbash_kill_switch" time="1.90">
+<skipped message="Windows only (ConPTY)"/>
+</testcase>
+<testcase classname="agent" name="latency_enter_ssh" time="353.00">
+</testcase>
+<testcase classname="agent" name="history_up_recall" time="19.60">
+</testcase>
+<testcase classname="agent" name="scroll_keys_position" time="37.40">
+<skipped message="NO-REFERENCE (not a pass): control: the job printed 28 lines and none is on screen at the bottom of the agent view (shots/*skp_0_stream.png): the agent view does not draw a background job's output (#2145)"/>
+</testcase>
+<testcase classname="agent" name="link_and_path_click" time="37.90">
+</testcase>
+<testcase classname="agent" name="editor_daily" time="54.70">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: macOS: the close question was not played. NEEDS (harness, not built): a usable close key (Phosphor's is cmd-shift-W, which the frontmost-app guard refuses) and a way "/>
+</testcase>
+<testcase classname="agent" name="md_viewer" time="12.50">
+</testcase>
+<testcase classname="agent" name="tab_pointer_use" time="48.80">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: vertical panel: the tabs' titles could not be located in the strip (the rows are not top to bottom in tab order: tab 2 at (890, 1205), tab 3 at (890, 12"/>
+</testcase>
+<testcase classname="agent" name="keybinding_rebind" time="72.40">
+</testcase>
+<testcase classname="agent" name="history_survives_restart" time="69.70">
+</testcase>
+<testcase classname="agent@fake" name="agent_latency_key" time="129.70">
+<skipped message="NO-REFERENCE (not a pass): a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context"/>
+</testcase>
+<testcase classname="agent@fake" name="agent_latency_enter" time="300.00">
+<skipped message="NO-REFERENCE (not a pass): a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context"/>
+</testcase>
+</testsuite>
