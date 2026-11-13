@@ -3193,6 +3193,28 @@ impl EditorView {
         // (and every key behind it, to keep the order) is applied by a deferred step, which runs
         // after the effects of the keys before it.
         let hold = Rc::clone(&self.paste_hold);
+        // #2193: ONE ordering. While the queue holds keys (a paste being read, any other gate,
+        // entries still queued), earlier keys of this same stream are in it, so this key goes
+        // behind them THERE, whatever it is. A key that reads the display map used to go
+        // straight to the replay list below while the text typed before it was queued: when the
+        // queue then delivered that text it found the replay list busy and joined it BEHIND the
+        // later key (`xy`, Backspace behind a paste came out as Backspace, `xy`: `abPASTxy`).
+        // The replay list now only ever receives keys the queue has delivered, or keys that
+        // arrive while it holds nothing, so it is the tail of the queue's order, never a second
+        // one. (Not mid-drain: `queue_is_busy` is false there and the key is part of that
+        // delivery. Not on the plain editors' sequencer path, which holds its own keys.)
+        if !hold.is_replaying() && !hold.sequencer_pending() && hold.queue_is_busy() {
+            let action = match &key {
+                HeldPasteKey::Text(text) => EditorAction::UserInsert(UserInput::new(text.clone())),
+                HeldPasteKey::Action(action) => action.clone(),
+            };
+            // (An interrupt is never a held key; it is not offered twice in any case.)
+            if !matches!(action, EditorAction::CtrlC)
+                && self.hold_key_for_paste_on_queue(&action, ctx)
+            {
+                return;
+            }
+        }
         if !hold.is_replaying()
             && (hold.replay_pending() || paste_hold::needs_fresh_display_map(&key))
         {
@@ -3274,14 +3296,34 @@ impl EditorView {
             && !matches!(action, EditorAction::ReplayHeldKeys)
         {
             if let Some(key) = paste_hold::held_form(action) {
+                // #2193: only while the queue holds nothing. With keys queued (typed after the
+                // ones waiting here), this key is later than they are and goes behind them in
+                // the queue, below; pushed here it would be applied before them.
+                if self.paste_hold.sequencer_pending() || !self.paste_hold.queue_is_busy() {
+                    self.paste_hold.replay_push(key);
+                    self.schedule_held_replay(ctx);
+                    return true;
+                }
+            } else {
+                self.flush_held_replay_now(ctx);
+            }
+        }
+        if !self.paste_hold.sequencer_pending() {
+            if self.hold_key_for_paste_on_queue(action, ctx) {
+                return true;
+            }
+            // #2193: the queue did not take it (its gates let editor keys pass), but keys still
+            // wait for the display map: it goes behind them, never ahead.
+            if self.paste_hold.replay_pending()
+                && !self.paste_hold.is_replaying()
+                && !matches!(action, EditorAction::ReplayHeldKeys)
+                && let Some(key) = paste_hold::held_form(action)
+            {
                 self.paste_hold.replay_push(key);
                 self.schedule_held_replay(ctx);
                 return true;
             }
-            self.flush_held_replay_now(ctx);
-        }
-        if !self.paste_hold.sequencer_pending() {
-            return self.hold_key_for_paste_on_queue(action, ctx);
+            return false;
         }
         if matches!(action, EditorAction::CtrlC) {
             for key in self.paste_hold.cancel() {

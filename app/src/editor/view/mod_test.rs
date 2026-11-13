@@ -5486,6 +5486,47 @@ fn test_keys_held_behind_a_paste_apply_in_typing_order_and_are_reported_until_ap
     })
 }
 
+// #2193 (r29): ONE ordering for the keys held behind a paste, whichever way each key arrives.
+// `xy` is typed (the queue holds it behind the paste's gate); the Backspace arrives as a held key
+// (`apply_held_paste_key`, as a paste that completes hands its keys on). It reads the display
+// map, and used to go straight to the editor's replay list while `xy` sat in the queue: the
+// queue then delivered `xy` behind it and the Backspace ate the paste's last character
+// (`abPASTxy`). Both now wait in the queue, in typed order, and nothing waits anywhere else
+// until the queue has delivered it.
+#[test]
+fn test_a_held_key_that_reads_the_display_map_never_overtakes_keys_queued_before_it() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let (_, view) = app.add_window(WindowStyle::NotStealFocus, |ctx| {
+            EditorView::new_with_base_text("ab", Default::default(), ctx)
+        });
+        view.update(&mut app, |view, ctx| {
+            view.move_to_buffer_end(ctx);
+            let id = start_queued_paste(view, ctx);
+            view.handle_action(&EditorAction::UserInsert(UserInput::new("xy")), ctx);
+            view.apply_held_paste_key(HeldPasteKey::Action(EditorAction::Backspace), ctx);
+            assert_eq!(
+                view.buffer_text(ctx),
+                "ab",
+                "nothing applies before the paste"
+            );
+            assert!(
+                !view.paste_hold().replay_pending(),
+                "no key waits outside the queue while the queue holds earlier ones"
+            );
+            view.user_initiated_insert("PASTE", PlainTextEditorViewAction::Paste, ctx);
+            finish_queued_paste(view, ctx, id, Ok(Vec::new()));
+            // `xy` is in; the Backspace waits for the display map to catch up with it (#1389).
+            assert_eq!(view.buffer_text(ctx), "abPASTExy");
+            assert!(view.paste_hold().has_unapplied_keys());
+        });
+        view.read(&app, |view, ctx| {
+            assert_eq!(view.buffer_text(ctx), "abPASTEx");
+            assert!(!view.paste_hold().has_unapplied_keys());
+        });
+    })
+}
+
 // #1635: on the pane's shared queue (display gate on), a key the EDITOR's host delivers from a
 // non-flush drain waits for the display map exactly as on the input's host: a cursor key and a
 // typed closer open the display-map gate instead of applying against the pre-paste map.
