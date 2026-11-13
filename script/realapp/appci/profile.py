@@ -104,7 +104,7 @@ __pa_rec() {
   [[ -n $c ]] || c=$(fc -ln -1 2>/dev/null)
   c=${c#"${c%%%%[![:space:]]*}"}; c=${c//$'\n'/\\n}
   if [[ -n $__pa_pre ]]; then __pa_n=$HISTCMD   # #2162: preexec already logged this line itself (below); the history path is only the guard
-  elif [[ $HISTCMD != $__pa_n || -n $__pa_ran ]]; then __pa_n=$HISTCMD; print -r -- "C"$'\t'"$EPOCHREALTIME"$'\t'"$c" >> "$PA_CTL/rec.log"; fi
+  elif [[ $HISTCMD != $__pa_n || -n $__pa_ran ]]; then __pa_n=$HISTCMD; [[ -n $c ]] && print -r -- "C"$'\t'"$EPOCHREALTIME"$'\t'"$c" >> "$PA_CTL/rec.log"; fi   # #2213: no empty C record (the first precmd of a plain ssh has an empty history entry)
   __pa_ran=
   __pa_pre=
   print -r -- "P"$'\t'"$EPOCHREALTIME" >> "$PA_CTL/prompt.log"

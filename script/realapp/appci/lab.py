@@ -397,9 +397,48 @@ class LocalRemote:
 INTERNAL_NU_COMMANDS = ("__warp_report_input",)
 
 
+ZSH_APP_BOOTSTRAP_PREFIX = "read -r -d '' WARP_BOOTSTRAP_VAR << 'EOM'"
+
+
+def read_ctl_all(lab, user, name):
+    """the WHOLE ctl file as text (#2213). labd's /ctl returns at most 1,000,000 bytes per call, so a single read silently lost every line after the first MB of a
+    lease (zsh logs the app's ~64 KB bootstrap per session, so u_zsh's rec.log passed 1 MB and every later case read "the remote shell received []").
+    Pages with the byte offset `since` until it reaches the reported size; a chunk that is not the last is cut back to its last newline and the offset advances by
+    that many BYTES. Works against the old labd (same wire format). If the bytes consumed differ from the size labd reported (invalid UTF-8 shifted the offsets,
+    the file shrank or grew oddly, a line longer than a chunk) it raises LabError: a partial file is never returned."""
+    off, parts = 0, []
+    while True:
+        r = lab.ctl(user, name, off) if off else lab.ctl(user, name)
+        data = r.get("data", "")
+        size = r.get("size")
+        if size is None:       # a stub without a size: one chunk is the file
+            return data
+        if off >= size:
+            break
+        used = len(data.encode("utf-8"))
+        if off + used < size:
+            cut = data.rfind("\n")
+            if cut < 0:
+                raise LabError("ctl %s/%s: no newline in the chunk at offset %d of %d bytes: cannot page" % (user, name, off, size))
+            data = data[:cut + 1]
+            used = len(data.encode("utf-8"))
+        if used <= 0:
+            raise LabError("ctl %s/%s: no progress at offset %d of %d bytes" % (user, name, off, size))
+        parts.append(data)
+        off += used
+    if off != size:
+        raise LabError("ctl %s/%s: read %d bytes but labd reports %d (partial file refused, #2213)" % (user, name, off, size))
+    return "".join(parts)
+
+
 def drop_internal_commands(cmds, shell):
-    """r25 D: nu's pre_execution hook logs the app's OWN host command (` __warp_report_input`, sent by the Alt-i keybinding via executehostcommand, nu.nu) as a
+    """#2213: for zsh (and zshc, which is zsh with compinit) drop the app's ssh bootstrap line: a C line whose text starts with
+    `read -r -d '' WARP_BOOTSTRAP_VAR << 'EOM'` (~64 KB, once per session). The app types its bootstrap into the remote zsh, and the rc's preexec hook logs it;
+    bash's history-based recorder never logs it. It is not a line the case typed, so it must not shift the case's line counts. Nothing else is dropped.
+    r25 D (nu): nu's pre_execution hook logs the app's OWN host command (` __warp_report_input`, sent by the Alt-i keybinding via executehostcommand, nu.nu) as a
     received line. In nu rows those lines are not what the case typed: drop EXACTLY that command (after strip), nothing else. cmds: [(epoch, line)]."""
+    if shell in ("zsh", "zshc"):
+        return [(t, c) for t, c in cmds if not c.startswith(ZSH_APP_BOOTSTRAP_PREFIX)]
     if shell != "nu":
         return list(cmds)
     return [(t, c) for t, c in cmds if c.strip() not in INTERNAL_NU_COMMANDS]
@@ -436,7 +475,7 @@ class LabRemote:
 
     def read(self, which):
         """rec.log / prompt.log / fish_rec.log of the user (Profile.read(remote=True) goes through here)"""
-        return self.lab.ctl(self.user, which)["data"].splitlines()
+        return read_ctl_all(self.lab, self.user, which).splitlines()
 
     def commands(self):
         """[(epoch on the REMOTE clock, line)] the shell received, in order (fish: whole-second epoch)"""
@@ -715,6 +754,10 @@ class Lab:
 
     def ctl(self, user, name, since=0):
         return self._req("GET", "/ctl?user=%s&name=%s&since=%d" % (user, name, since))
+
+    def ctl_all(self, user, name):
+        """the whole ctl file, paged (#2213); see read_ctl_all"""
+        return read_ctl_all(self, user, name)
 
     def tree(self, user, files, dir="", git=False, branches=(), branch="main"):
         return self._req("PUT", "/tree", dict(user=user, dir=dir, branch=branch, files={k: base64.b64encode(v if isinstance(v, bytes) else v.encode()).decode() for k, v in files.items()},

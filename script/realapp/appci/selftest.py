@@ -9483,8 +9483,6 @@ def main(argv=None):
     return 1 if failed or absent else 0
 
 
-if __name__ == "__main__":
-    sys.exit(main())
 import selftest_r26_wintests  # noqa: E402  (r24a Windows test faults: enters_agent on the routing tables, md fixture fits the viewer, pane-shell identity, #2025 row; own file)
 CHECKS.extend(selftest_r26_wintests.CHECKS)
 import selftest_r27_mactests  # noqa: E402  (r25a macOS test faults: in-app code pane after the path click, stale agent line is not a drawn stream; own file)
@@ -9513,3 +9511,10 @@ import selftest_r30_labport  # noqa: E402  (r30: the Windows fake-sshd ssh cases
 CHECKS.extend(selftest_r30_labport.CHECKS)
 import selftest_r30_remotetab  # noqa: E402  (r30, #2196: the zshc lab user (zsh WITH compinit), the in-band answer the case judges per shell, the Tab press time from the injector, the fish bootstrap answer; own file)
 CHECKS.extend(selftest_r30_remotetab.CHECKS)
+import selftest_r30_ctlreader  # noqa: E402  (#2213: the lab ctl reader pages the whole file, the zsh bootstrap line is internal, no empty zsh C line; own file)
+CHECKS.extend(selftest_r30_ctlreader.CHECKS)
+
+
+# #2214: the guard stays LAST. A registration after it never runs under `python3 selftest.py` (the CI form), as r26-r30's did not.
+if __name__ == "__main__":
+    sys.exit(main())
