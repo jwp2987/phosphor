@@ -2226,6 +2226,9 @@ def ocr_agent_markers(low):
     if re.search(hint_re, low):
         hint = True
     low_wo_hint = re.sub(hint_re, " ", low)
+    # r29 Windows mode_proof: the fresh terminal session's landing screen reads 'new terminal session ... start a new agent conversation' (also
+    # cut short by OCR: '... start a new agent convers'); that line is the prompt to START one, never the agent view's header.
+    low_wo_hint = re.sub(r"start\s+a\s+new\s+(?:phosphor\s+)?agent\s+conv\w*", " ", low_wo_hint)
     header = "new phosphor agent conversation" in low_wo_hint or "new agent conversation" in low_wo_hint
     esc_bar = "esc for terminal" in low
     placeholder = "ask anything" in low

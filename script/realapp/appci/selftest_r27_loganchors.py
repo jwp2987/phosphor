@@ -89,4 +89,4 @@ def r27_pane_path_always_closes():
     assert not P.close_code_pane_verdict("cmd+w", {"x": 1}, True)[0]
     assert not P.close_code_pane_verdict("", {}, True)[0]
     src = inspect.getsource(P.links_play)
-    assert 'if st == "editor"' not in src and "R.CLOSE_PANE" in src and "close_code_pane_verdict(R.CLOSE_PANE, still, have_ocr)" in src
+    assert 'if st == "editor"' not in src and "R.CLOSE_PANE" in src and "close_code_pane_verdict(closer, still, have_ocr)" in src
