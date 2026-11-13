@@ -9513,3 +9513,5 @@ import selftest_r30_labport  # noqa: E402  (r30: the Windows fake-sshd ssh cases
 CHECKS.extend(selftest_r30_labport.CHECKS)
 import selftest_r30_remotetab  # noqa: E402  (r30, #2196: the zshc lab user (zsh WITH compinit), the in-band answer the case judges per shell, the Tab press time from the injector, the fish bootstrap answer; own file)
 CHECKS.extend(selftest_r30_remotetab.CHECKS)
+import selftest_r30_ctlreader  # noqa: E402  (#2213: the lab ctl reader pages the whole file, the zsh bootstrap line is internal, no empty zsh C line; own file)
+CHECKS.extend(selftest_r30_ctlreader.CHECKS)
