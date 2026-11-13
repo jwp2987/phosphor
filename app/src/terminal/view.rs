@@ -296,6 +296,7 @@ use crate::terminal::input::log_late_timer_wake;
 use crate::terminal::input::{
     CommandExecutionSource, InputAction, InputEmptyStateChangeReason, YoungTypeaheadDetection,
 };
+use crate::terminal::input::{HandoffInsert, ReportLineFacts};
 use crate::terminal::ligature_settings::{LigatureSettings, should_use_ligature_rendering};
 #[cfg(feature = "local_tty")]
 use crate::terminal::local_tty::get_shell_starter;
@@ -14269,26 +14270,9 @@ impl TerminalView {
     /// hold no keys (they would be written first, into the line the `\r` submits) and the shell,
     /// not a program or the agent, to own the line.
     fn ssh_escape_line_start(&self) -> SshEscapeLineStart {
-        let decision = if !FeatureFlag::TypeaheadHandoff.is_enabled() {
-            SshEscapeLineStart::Skipped("handoff_off")
-        } else if !self
-            .paste_queue
-            .queue
-            .try_peek()
-            .is_some_and(|queue| !queue.holds_keys())
-        {
-            SshEscapeLineStart::Skipped("queue_holds_keys")
-        } else {
-            let facts = self.read_key_facts();
-            if facts.alt_screen {
-                SshEscapeLineStart::Skipped("alt_screen")
-            } else if facts.agent_in_control {
-                SshEscapeLineStart::Skipped("agent_in_control")
-            } else if facts.command_not_owned_by_handoff_possible {
-                SshEscapeLineStart::Skipped("command_running")
-            } else {
-                self.handoff.write().ssh_escape_line_start()
-            }
+        let decision = match self.ssh_escape_cr_view_blocker() {
+            Some(reason) => SshEscapeLineStart::Skipped(reason),
+            None => self.handoff.write().ssh_escape_line_start(),
         };
         match decision {
             SshEscapeLineStart::AddCr => {
@@ -14309,6 +14293,63 @@ impl TerminalView {
             }
         }
         decision
+    }
+
+    /// The view's own reasons to write an ssh escape without the `\r` of
+    /// [`Self::ssh_escape_line_start`], before the hand-off's rule is asked: the hand-off is off,
+    /// the pane queue holds keys (they would be written first, into the line the `\r` submits),
+    /// or a program or the agent, not the shell, owns the line.
+    fn ssh_escape_cr_view_blocker(&self) -> Option<&'static str> {
+        if !FeatureFlag::TypeaheadHandoff.is_enabled() {
+            return Some("handoff_off");
+        }
+        if !self
+            .paste_queue
+            .queue
+            .try_peek()
+            .is_some_and(|queue| !queue.holds_keys())
+        {
+            return Some("queue_holds_keys");
+        }
+        let facts = self.read_key_facts();
+        if facts.alt_screen {
+            Some("alt_screen")
+        } else if facts.agent_in_control {
+            Some("agent_in_control")
+        } else if facts.command_not_owned_by_handoff_possible {
+            Some("command_running")
+        } else {
+            None
+        }
+    }
+
+    /// #2202: whether an ssh escape written now would reach ssh at its line start, alone or
+    /// behind the `\r` of [`Self::ssh_escape_line_start`]: the same rule, asked without its
+    /// bookkeeping, before the report of a line is judged. Where it does not (an Enter deferred
+    /// with keys behind its gate, keys held in the pane queue, user bytes possibly in the remote
+    /// line) the two bytes would land in the remote line as text, so the report stays text.
+    fn report_escape_reaches_ssh_line_start(&self) -> bool {
+        self.ssh_escape_cr_view_blocker().is_none()
+            && self.handoff.read().ssh_escape_would_reach_line_start()
+    }
+
+    /// #1638: writes ssh's escape `bytes` (`~X`), typed at the start of an empty line or (#2202)
+    /// finished there by the shell's report. Through the pane queue like any typed key, so it
+    /// stays behind keys the queue holds. #1793: ssh takes it only right after a newline in its
+    /// input, and the last bytes it read are usually the hand-off's report request; a `\r` goes
+    /// first, in the same write, where the remote line is proven empty.
+    fn write_ssh_escape(&mut self, bytes: [u8; 2], ctx: &mut ViewContext<Self>) {
+        let line_start = self.ssh_escape_line_start();
+        let mut escape = Vec::with_capacity(3);
+        if line_start == SshEscapeLineStart::AddCr {
+            escape.push(b'\r');
+        }
+        escape.extend_from_slice(&bytes);
+        self.write_user_bytes_to_pty(escape, ctx);
+        if line_start == SshEscapeLineStart::AddCr {
+            // The pty owns input now, as after a bare Enter's command (focus, queue).
+            self.handle_typeahead_handoff_changed(ctx);
+        }
     }
 
     /// Like [`Self::write_user_bytes_to_pty`], but for pointer-driven and synthesized input
@@ -14635,6 +14676,12 @@ impl TerminalView {
                     .take_prompt_hold_started()
                     .map(|id| (id, handoff.prompt_hold_give_up()));
                 hold_start.deferred = handoff.take_deferred_key_started();
+            } else {
+                // #2202: this key goes to the pty now. Whether it is a lone `~` that ssh reads at
+                // its line start is remembered for the report of the line (never for a
+                // full-screen program's key, which is not the shell's line).
+                let shell_line_bytes: &[u8] = if facts.alt_screen { &[] } else { &bytes };
+                handoff.note_raw_user_write(shell_line_bytes);
             }
             route
         } else {
@@ -15022,6 +15069,11 @@ impl TerminalView {
 
             return;
         };
+        // #2208: the editor judges the line this report finishes, as it does on the hand-off
+        // path, and that judgement reads the model (the shared-session check): the report is
+        // copied out and the model lock released before the editor is called.
+        let typeahead = typeahead.to_owned();
+        drop(model);
 
         // We don't insert typeahead into the input buffer when it was entered during an
         // agent-requested command - the agent is going to follow-up immediately after the
@@ -15032,11 +15084,63 @@ impl TerminalView {
             #[cfg(feature = "integration_tests")]
             log::info!("Writing typeahead to input editor: {typeahead}");
 
-            self.input.update(ctx, |input, ctx| {
-                input.insert_typeahead_text(num_typeahead_chars_inserted, typeahead, ctx);
+            let facts = self.take_report_line_facts(ctx);
+            let outcome = self.input.update(ctx, |input, ctx| {
+                input.insert_legacy_reported_line(
+                    num_typeahead_chars_inserted,
+                    &typeahead,
+                    facts,
+                    ctx,
+                )
             });
             ctx.notify();
+            if let HandoffInsert::SshEscape(bytes) = outcome {
+                // The line was ssh's escape (`~` raw at ssh's line start, its escape character
+                // in the editor): written at once, as the typed escape is.
+                self.forget_report_judged_as_ssh_escape();
+                self.write_ssh_escape(bytes, ctx);
+            }
         }
+    }
+
+    /// #2202: what the view knows about the local ssh client for the report it is about to hand
+    /// the editor ([`ReportLineFacts`]). The fact about the raw `~` is this report's: it is taken
+    /// (whatever the report holds), so it never outlives the line it was typed on. Whether an
+    /// escape would reach ssh's line start is only asked for a report that can be the escape's
+    /// `~`. With the hand-off off nothing is ever recorded and both are false.
+    fn take_report_line_facts(&mut self, ctx: &AppContext) -> ReportLineFacts {
+        let tilde_at_ssh_line_start = self.handoff.write().take_raw_tilde_at_ssh_line_start();
+        ReportLineFacts {
+            tilde_at_ssh_line_start,
+            // #2207: with an Enter deferred behind this report the escape still reaches ssh's
+            // line start when that Enter and the keys behind it can wait for the next prompt
+            // (`hold_deferred_enter_behind_ssh_escape`): `\r~X` then goes out alone.
+            escape_reaches_ssh_line_start: tilde_at_ssh_line_start
+                && (self.report_escape_reaches_ssh_line_start()
+                    || self.report_escape_can_go_ahead_of_the_deferred_enter(ctx)),
+        }
+    }
+
+    /// #2207: whether an ssh escape the report finishes can be written ahead of the Enter
+    /// deferred behind that report: the view's own blockers of the escape's `\r` are clear except
+    /// for the keys the deferred Enter's gate holds, and that Enter can wait for the next prompt
+    /// with them (`deferred_enter_can_wait_behind_ssh_escape`).
+    ///
+    /// Not for `~C` (review F1): it opens ssh's own `ssh>` command line, which no prompt event
+    /// follows, so the Enter held "for the next prompt" would only be ended by the hold's cap, a
+    /// timer as the hand-over. `~C` with an Enter deferred behind it stays text, as before.
+    fn report_escape_can_go_ahead_of_the_deferred_enter(&self, ctx: &AppContext) -> bool {
+        if !FeatureFlag::TypeaheadHandoff.is_enabled() {
+            return false;
+        }
+        if self.input.as_ref(ctx).buffer_text(ctx) == "C" {
+            return false;
+        }
+        let facts = self.read_key_facts();
+        !facts.alt_screen
+            && !facts.agent_in_control
+            && !facts.command_not_owned_by_handoff_possible
+            && self.deferred_enter_can_wait_behind_ssh_escape()
     }
 
     /// Whether keys typed on the terminal go to the pty because the typeahead hand-off gives it
@@ -15055,7 +15159,10 @@ impl TerminalView {
         // The hand-off's owner may have changed: the line pinned to a destination is over.
         self.request_queue_pin_clear();
         // A hold the hand-off ended since (a command written, a state that outgrew it) is
-        // applied to the queue before anything decides on the keys behind it.
+        // applied to the queue before anything decides on the keys behind it. #2207 (review
+        // F4): the hold made for a reported ssh escape ends HERE, at the edge where input left
+        // the pty's ownership, so its Enter and keys are written before any later command.
+        self.handoff.write().end_escape_hold_if_unowned();
         self.drain_young_hold_ends(ctx);
         let has_stashed_report = {
             let model = self.model.lock();
@@ -15220,7 +15327,23 @@ impl TerminalView {
                 ctx.emit(Event::RetryTypeaheadHandoffRequest);
             }
             ReportDisposition::Insert | ReportDisposition::InsertYoung => {
-                let inserted = self.insert_typeahead_from_handoff(ctx);
+                let outcome = self.insert_reported_line_from_handoff(ctx);
+                if matches!(
+                    outcome,
+                    HandoffInsert::SshEscape(_) | HandoffInsert::SshEscapeHeld(_)
+                ) {
+                    // #2202: the line the report finished was ssh's escape. It is written (with
+                    // the `\r` that hands input to the pty, where the escape path adds one, and
+                    // that write has re-decided focus and the queue): the editor took nothing
+                    // over, unless the escape went out alone and the editor still owns input.
+                    self.resume_tab_after_report(ctx);
+                    if self.handoff.read().editor_owns_input() {
+                        self.note_editor_took_over();
+                        self.redetermine_terminal_focus(ctx);
+                    }
+                    return;
+                }
+                let inserted = outcome == HandoffInsert::Inserted;
                 if disposition == ReportDisposition::InsertYoung && inserted {
                     self.input
                         .update(ctx, |input, ctx| input.mark_typeahead_young(ctx));
@@ -15231,7 +15354,16 @@ impl TerminalView {
             }
             ReportDisposition::InsertThenSubmit | ReportDisposition::InsertThenSubmitYoung => {
                 let young = disposition == ReportDisposition::InsertThenSubmitYoung;
-                if !self.insert_typeahead_from_handoff(ctx) {
+                let outcome = self.insert_reported_line_from_handoff(ctx);
+                if matches!(outcome, HandoffInsert::SshEscapeHeld(_)) {
+                    // #2207: the line was ssh's escape and it is written. The deferred Enter
+                    // does not run now: it waits, with the keys behind it, for the next prompt
+                    // event (a young hold). Only then (review F3): after a plain `SshEscape`
+                    // the deferred Enter is still due and is finished below, as after any
+                    // report, or it would stay deferred with nothing left to run it.
+                    return;
+                }
+                if outcome == HandoffInsert::Refused {
                     // #1569: the editor refused the report as another line's text (it does not
                     // extend the editor's own typeahead): the Enter must not run the fragment the
                     // buffer holds instead. It is given up like one that cannot run; the keys held
@@ -15249,6 +15381,18 @@ impl TerminalView {
             }
             ReportDisposition::Stash => {}
         }
+    }
+
+    /// Test seam (#2202/#2203): a shell report of the line, stored in the model, reaches the view.
+    #[cfg(test)]
+    pub(crate) fn handle_typeahead_report_for_test(&mut self, ctx: &mut ViewContext<Self>) {
+        self.handle_typeahead_report_with_handoff(true, ctx);
+    }
+
+    /// Test seam (#2202): a key typed with the terminal focused, on the user-key write path.
+    #[cfg(test)]
+    pub(crate) fn write_user_bytes_for_test(&mut self, bytes: &[u8], ctx: &mut ViewContext<Self>) {
+        self.write_user_bytes_to_pty(bytes.to_vec(), ctx);
     }
 
     /// Runs a Tab that waited for the shell's line report, now on the merged line (#1659), when
@@ -15320,9 +15464,12 @@ impl TerminalView {
     /// The part of a report that carried a deferred Enter which follows the insert: a young line
     /// is classified first, the Enter then runs (#933).
     fn finish_report_enter(&mut self, young: bool, ctx: &mut ViewContext<Self>) {
-        // #933: text the hand-off inserted was never classified (system edits do not
-        // request detection), so a line typed right after a command that reads as
-        // English is classified now, and its Enter waits for the verdict (bounded).
+        // #933: the line the report just completed has no verdict yet (the insert's own
+        // `Edited` event, which asks for one, is delivered after this handler), so a line
+        // typed right after a command that reads as English is classified now, and its
+        // Enter waits for the verdict (bounded). #2203: that request sticks until its
+        // verdict; a later pass without detection carries it
+        // (`decorations::pass_owes_detection`).
         let detection = if young {
             self.input.update(ctx, |input, ctx| {
                 input.request_detection_for_young_typeahead(ctx)
@@ -15592,7 +15739,18 @@ impl TerminalView {
     /// Inserts the stored typeahead at the front of the editor, ahead of anything the user typed
     /// there since the request. Returns `false` only when the editor refused a report as another
     /// line's text (#1569); an empty report inserts nothing and is not a refusal.
+    ///
+    /// #2202: the editor judges the line the report finishes as it judges a typed line
+    /// (`Input::insert_reported_line`). When that line is ssh's escape (`~` went to ssh raw at
+    /// its line start, its escape character landed in the editor) nothing is inserted: the editor
+    /// is left empty and the escape is written here, at once, before anything else acts on the
+    /// report, exactly as the typed escape is ([`Self::write_ssh_escape`]). That is `true` too.
     fn insert_typeahead_from_handoff(&mut self, ctx: &mut ViewContext<Self>) -> bool {
+        self.insert_reported_line_from_handoff(ctx) != HandoffInsert::Refused
+    }
+
+    /// [`Self::insert_typeahead_from_handoff`], saying what became of the report.
+    fn insert_reported_line_from_handoff(&mut self, ctx: &mut ViewContext<Self>) -> HandoffInsert {
         warpui::profiling::zone!("typeahead_handoff_insert");
         let typeahead = self
             .model
@@ -15603,14 +15761,42 @@ impl TerminalView {
             .map(|(typeahead, num_typeahead_chars_inserted)| {
                 (typeahead.to_owned(), num_typeahead_chars_inserted)
             });
+        // Taken whether or not the report holds text (see `take_report_line_facts`).
+        let facts = self.take_report_line_facts(ctx);
         let Some((typeahead, num_typeahead_chars_inserted)) = typeahead else {
-            return true;
+            return HandoffInsert::Inserted;
         };
         let inserted = self.input.update(ctx, |input, ctx| {
-            input.insert_handoff_typeahead_text(num_typeahead_chars_inserted, &typeahead, ctx)
+            input.insert_reported_line(num_typeahead_chars_inserted, &typeahead, facts, ctx)
         });
         ctx.notify();
+        if let HandoffInsert::SshEscape(bytes) = inserted {
+            // #2207: with an Enter deferred behind this report, `\r~X` goes out alone and the
+            // Enter with the keys behind it waits for the next prompt event; the pty owns input
+            // from that write on (focus, queue), as after the `\r` of any ssh escape.
+            self.forget_report_judged_as_ssh_escape();
+            if self.hold_deferred_enter_behind_ssh_escape(bytes, ctx) {
+                self.handle_typeahead_handoff_changed(ctx);
+                // Review F3: only this outcome means the deferred Enter is placed (held for the
+                // next prompt). A plain `SshEscape` leaves it to the caller, as after any report.
+                return HandoffInsert::SshEscapeHeld(bytes);
+            }
+            self.write_ssh_escape(bytes, ctx);
+        }
         inserted
+    }
+
+    /// #2207: the report the editor judged as ssh's escape was not inserted: its `~` went to
+    /// ssh with the escape. The model must not keep it as typeahead the editor holds (one
+    /// character "inserted"): the next report event of the line would then replace the first
+    /// character of the buffer with that `~` again, and a stray `~` was left in the local editor
+    /// after the session ended. Forgotten as a command's own typeahead is when it is written.
+    fn forget_report_judged_as_ssh_escape(&mut self) {
+        self.model
+            .lock()
+            .block_list_mut()
+            .early_output_mut()
+            .clear_typeahead_for_new_command();
     }
 
     /// Runs the deferred Enter and, if it submitted no shell command, releases the keys held
@@ -34047,22 +34233,8 @@ impl TerminalView {
                 }
             }
             InputEvent::SshEscapeToPty { bytes } => {
-                // #1638: the ssh client's escape, typed at the start of an empty line. Through
-                // the pane queue like any typed key, so it stays behind keys the queue holds.
-                // #1793: ssh takes it only right after a newline in its input, and the last bytes
-                // it read are usually the hand-off's report request; a `\r` goes first, in the
-                // same write, where the remote line is proven empty.
-                let line_start = self.ssh_escape_line_start();
-                let mut escape = Vec::with_capacity(3);
-                if line_start == SshEscapeLineStart::AddCr {
-                    escape.push(b'\r');
-                }
-                escape.extend_from_slice(bytes);
-                self.write_user_bytes_to_pty(escape, ctx);
-                if line_start == SshEscapeLineStart::AddCr {
-                    // The pty owns input now, as after a bare Enter's command (focus, queue).
-                    self.handle_typeahead_handoff_changed(ctx);
-                }
+                // #1638: the ssh client's escape, typed at the start of an empty line.
+                self.write_ssh_escape(*bytes, ctx);
             }
             #[cfg(not(target_family = "wasm"))]
             InputEvent::OpenPluginInstructionsPane(agent, kind) => {

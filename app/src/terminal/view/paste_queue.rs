@@ -1621,7 +1621,16 @@ impl TerminalView {
             let mut host = PtyQueueHost::new(self, ctx);
             (kind, guard.close_gate_taking(&mut host, kind, hold_id))
         };
-        let chunks = if kind == GateKind::HandoffReport && end == YoungHoldEnd::FollowCommand {
+        // #2207 (review F2): the hold made for a reported ssh escape holds the keys typed behind
+        // a deferred Enter, editor-typed ones among them. Written out, they are ALL the pty's, in
+        // typed order: handed to the editor instead, `pwd`, Enter would be applied (and
+        // submitted) there at once, ahead of the hold's own Enter.
+        let escape_hold_written =
+            matches!(end, YoungHoldEnd::Typeahead | YoungHoldEnd::FollowCommand)
+                && self.handoff.read().is_escape_hold(hold_id);
+        let chunks = if escape_hold_written
+            || (kind == GateKind::HandoffReport && end == YoungHoldEnd::FollowCommand)
+        {
             self.pty_bytes_of_taken_entries(entries, ctx)
         } else {
             self.bytes_of_taken_entries(entries, ctx)
@@ -1672,6 +1681,114 @@ impl TerminalView {
             // Handled above, in place.
             YoungHoldEnd::SubmitOnReport { .. } => {}
         }
+    }
+
+    /// #2207: whether the Enter deferred behind the report, and the keys held behind its gate,
+    /// could wait for the next prompt behind an ssh escape
+    /// ([`Self::hold_deferred_enter_behind_ssh_escape`]): the hand-off says the deferral is the
+    /// only thing in the way, the pane queue is free, the deferred Enter's gate is the ONLY gate
+    /// in it (no paste being read, no other hold) and it holds no signal (a held Ctrl-C keeps its
+    /// own rules). Reads only.
+    pub(super) fn deferred_enter_can_wait_behind_ssh_escape(&self) -> bool {
+        let gate = {
+            let handoff = self.handoff.read();
+            if !handoff.deferred_enter_could_wait_for_next_prompt() {
+                return false;
+            }
+            handoff.deferred_gate()
+        };
+        let Some(gate) = gate else {
+            return false;
+        };
+        let queue = &self.paste_queue.queue;
+        if queue.has_deferred() {
+            return false;
+        }
+        queue.try_peek().is_some_and(|queue| {
+            // Review F5: the hold adds one entry (the Enter); at the cap that entry would push
+            // out the newest held key.
+            queue.queued_len() < queue.max_entries()
+                && queue.has_gate(GateKind::HandoffReport, gate)
+                && queue
+                    .gates()
+                    .iter()
+                    .all(|open| open.kind == GateKind::HandoffReport && open.key == gate)
+                && !queue
+                    .entries()
+                    .any(|entry| matches!(entry.kind, EntryKind::Signal(_)))
+        })
+    }
+
+    /// #2207: the line the report finished was ssh's escape `~X`, with an Enter deferred behind
+    /// that report and keys held behind the Enter's gate. `\r~X` goes to the pty now, alone; the
+    /// Enter and the keys behind it wait for the next prompt event, in typed order, the Enter
+    /// first: the hand-off turns the deferral into a young hold
+    /// (`TypeaheadHandoff::hold_deferred_enter_for_next_prompt`), and here the deferred Enter's
+    /// `HandoffReport` gate becomes that hold's `PromptSeen` gate. Under one lock of the queue
+    /// the held entries are taken, the Enter is queued under the new gate and the entries are
+    /// queued behind it again, as they were (kind, origin, stamp), so nothing can arrive in
+    /// between and nothing is delivered. The gate's cap is the young hold's own give-up; its ends
+    /// are the young hold's ([`Self::drain_young_hold_ends`]).
+    ///
+    /// The escape is emitted straight to the pty (the hand-off has counted it): through the
+    /// queue it would wait behind the gate it must go ahead of. Returns `false`, with nothing
+    /// changed, unless [`Self::deferred_enter_can_wait_behind_ssh_escape`].
+    pub(super) fn hold_deferred_enter_behind_ssh_escape(
+        &mut self,
+        escape: [u8; 2],
+        ctx: &mut ViewContext<Self>,
+    ) -> bool {
+        if !self.deferred_enter_can_wait_behind_ssh_escape() {
+            return false;
+        }
+        let queue = self.paste_queue.queue.clone();
+        let Some(mut guard) = queue.try_lock() else {
+            return false;
+        };
+        let transition = {
+            let mut handoff = self.handoff.write();
+            handoff
+                .hold_deferred_enter_for_next_prompt(escape)
+                .map(|(gate, hold_id)| {
+                    (
+                        gate,
+                        hold_id,
+                        handoff.young_hold_give_up(instant::Instant::now()),
+                    )
+                })
+        };
+        let Some((gate, hold_id, give_up)) = transition else {
+            return false;
+        };
+        let held = {
+            let mut host = PtyQueueHost::new(self, ctx);
+            let mut held = Vec::new();
+            while guard.has_gate(GateKind::HandoffReport, gate) {
+                held.extend(guard.close_gate_taking(&mut host, GateKind::HandoffReport, gate));
+            }
+            let spec = GateSpec::new(GateKind::PromptSeen, hold_id).with_cap(Some(give_up));
+            guard.offer_gated(
+                &mut host,
+                EntryKind::PtyBytes {
+                    bytes: b"\r".to_vec(),
+                    takes_over_agent_control: true,
+                },
+                spec,
+            );
+            let count = held.len();
+            for entry in held {
+                guard.offer_stamped(&mut host, entry.kind, entry.origin, entry.stamp);
+            }
+            count
+        };
+        drop(guard);
+        warpui::input_order::log_hop("ssh_escape_enter_held", || {
+            format!("hold_id={hold_id} keys_behind_enter={held}")
+        });
+        ctx.emit(Event::WriteHandoffUserBytesToPty {
+            bytes: Cow::Owned(vec![b'\r', escape[0], escape[1]]),
+        });
+        true
     }
 
     /// Opens the `HandoffReport` gate for the Enter the hand-off just deferred (#1016): every key

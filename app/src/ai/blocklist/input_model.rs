@@ -1043,6 +1043,13 @@ impl BlocklistAIInputModel {
         self.pending_detection_buffer.as_deref() == Some(buffer_text)
     }
 
+    /// Whether a detection is requested for any text and its verdict has not landed (#2203): the
+    /// cheap question a background pass asks before it copies the buffer for
+    /// [`Self::is_detection_requested_for`].
+    pub fn has_detection_request(&self) -> bool {
+        self.pending_detection_buffer.is_some()
+    }
+
     /// Records that the view inserted `typeahead` at the front of the buffer (#886); see
     /// [`Self::typeahead_prefix`].
     pub fn note_typeahead_inserted(&mut self, typeahead: String) {

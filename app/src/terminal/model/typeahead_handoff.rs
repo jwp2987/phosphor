@@ -1214,6 +1214,20 @@ pub struct TypeaheadHandoff {
     /// #2186: the escape `\r` rule this pane uses, overriding `PHOSPHOR_SSH_ESCAPE_CR_RULE`:
     /// `Some(false)` is the old proof-based rule. Kept across a session's end like the env switch.
     ssh_escape_cr_rule_override: Option<bool>,
+    /// #2202: the last user key that went to the pty raw was a lone `~` written right after a
+    /// newline, so ssh read it at its line start ([`TypeaheadHandoff::note_raw_user_write`]). Void
+    /// at any other raw key, a command written, a new session, and once the report of the line is
+    /// judged.
+    raw_tilde_at_ssh_line_start: bool,
+    /// #2207: the id of the young hold made for a reported ssh escape
+    /// ([`TypeaheadHandoff::hold_deferred_enter_for_next_prompt`]): the deferred Enter and the keys
+    /// typed behind it. That hold is never dropped when its session goes
+    /// ([`TypeaheadHandoff::end_unowned_young_hold`]). Hold ids only grow, so a stale id names
+    /// no later hold.
+    escape_hold_id: Option<u64>,
+    /// Test seam: see [`TypeaheadHandoff::refuse_deferred_enter_hold_for_test`].
+    #[cfg(test)]
+    refuse_deferred_enter_hold_for_test: bool,
 }
 
 /// #1615: an Enter the hand-off delivered to the pty although a line was unanswered, because the
@@ -1492,6 +1506,174 @@ impl TypeaheadHandoff {
     /// #1793: the pty write count `PtyController` increments for every write it hands the pty.
     pub fn pty_write_count(&self) -> PtyWriteCount {
         self.pty_writes.clone()
+    }
+
+    /// #2202: the view routed a user key to the pty (not held): `bytes` are what ssh reads next.
+    /// Remembers whether they are a lone `~` written right after a newline, which is when ssh
+    /// reads `~` at its line start (#2186: every byte ssh reads is a byte the app wrote). Any
+    /// other key written ends the fact: `a`, Backspace, `~` leaves `~` in the remote line, but
+    /// ssh never saw it at a line start (review A4).
+    pub fn note_raw_user_write(&mut self, bytes: &[u8]) {
+        self.raw_tilde_at_ssh_line_start = bytes == b"~" && self.pty_writes.tail_is_newline();
+    }
+
+    /// #2202: whether the last user key that went to the pty raw was a lone `~` read by ssh at its
+    /// line start ([`Self::note_raw_user_write`]). Taken once, by the report of that line: the
+    /// `~` is editor text or ssh's escape from then on.
+    pub fn take_raw_tilde_at_ssh_line_start(&mut self) -> bool {
+        mem::take(&mut self.raw_tilde_at_ssh_line_start)
+    }
+
+    /// #2202: whether an ssh escape written now would reach ssh at its line start: alone (ssh
+    /// read a newline or its own escape last) or behind the `\r` that
+    /// [`Self::ssh_escape_line_start`] would add. The same rule as that function, without its
+    /// bookkeeping; `false` exactly where it answers [`SshEscapeLineStart::Skipped`] (an Enter
+    /// deferred with its gate live, keys held, user bytes possibly in the remote line), where the
+    /// two bytes would land in the remote line as text instead.
+    pub fn ssh_escape_would_reach_line_start(&self) -> bool {
+        let writes = self.pty_writes.get();
+        if self.ssh_line_start_at_writes == Some(writes) {
+            return true;
+        }
+        if self.ssh_escape_cr_line_start_rule() {
+            self.pty_writes.tail_is_newline() || self.ssh_escape_cr_blocker_line_start().is_none()
+        } else {
+            self.ssh_escape_cr_blocker(writes).is_none()
+        }
+    }
+
+    /// #2207: whether [`Self::hold_deferred_enter_for_next_prompt`] would act: the report arrived
+    /// for a deferred Enter (its submit is due), its gate is live, and that deferral is the ONLY
+    /// thing between an ssh escape and ssh's line start (nothing else is held, no user bytes the
+    /// report did not cover are in the remote line, no counted write is in flight). Asked before
+    /// the line a report finishes is judged; changes nothing.
+    pub fn deferred_enter_could_wait_for_next_prompt(&self) -> bool {
+        self.state == (HandoffState::HoldAfterEnter { released: true })
+            && self.deferred_gate.is_some()
+            && !self.young_hold_queued
+            && !self.prompt_hold_queued
+            && !self.untracked_line_bytes
+            && self.writes_in_flight == 0
+            && self.ssh_escape_cr_line_start_rule()
+    }
+
+    /// #2207: the line the report finished is ssh's escape `~X` and an Enter is deferred behind
+    /// that report, with the keys typed since held behind its gate. ssh must get `\r~X` now, and
+    /// the Enter with the keys behind it must not go out in the same run (ssh drops what it reads
+    /// together with `~.`): they wait for the next prompt event. The one transition, into states
+    /// that exist:
+    ///
+    /// * the `\r~X` the view writes next is accounted exactly as
+    ///   [`Self::ssh_escape_line_start`]'s `AddCr` and the routed write account it: the pty owns
+    ///   input, the `\r` is a bare Enter's line, one write is in flight;
+    /// * the deferred Enter becomes a queued young hold (`PromptSeen` gate in the view's queue:
+    ///   the view turns the deferred gate into it, the Enter first). Its evidence is
+    ///   [`YoungHoldEvidence::PrecmdMaybeInFlight`]: it waits for the Precmd the `\r` will be
+    ///   answered with and is not re-decided by the stream barrier. Its ends are the young
+    ///   hold's own (the request and its report run the Enter in the editor; a command written;
+    ///   no request possible; a signal), and its net is that gate's cap (the 10 s give-up,
+    ///   which writes the keys in typed order). No new state, gate kind or timer.
+    /// * this hold is never dropped when its session goes ([`Self::end_unowned_young_hold`]).
+    ///
+    /// Returns the deferred gate's id and the hold's id, or `None` (nothing changed) unless
+    /// [`Self::deferred_enter_could_wait_for_next_prompt`].
+    pub fn hold_deferred_enter_for_next_prompt(&mut self, escape: [u8; 2]) -> Option<(u64, u64)> {
+        if !self.deferred_enter_could_wait_for_next_prompt() {
+            return None;
+        }
+        #[cfg(test)]
+        if self.refuse_deferred_enter_hold_for_test {
+            return None;
+        }
+        let gate = self.deferred_gate.take()?;
+        // A bare Enter's line, as `ssh_escape_line_start` makes it for `AddCr`.
+        self.keys_follow_editor = false;
+        self.state = HandoffState::PtyOwned {
+            wrote_user_bytes: false,
+            enters_written: 0,
+            precmds_seen: 0,
+        };
+        self.deferred_young = false;
+        self.last_activity_at = Some(Instant::now());
+        self.note_fresh_activity_for_test();
+        self.line_empty_at_writes = None;
+        self.ssh_line_start_at_writes = Some(self.pty_writes.get().saturating_add(1));
+        // The write itself, counted as any routed user write to the pty (the view emits it
+        // straight to the pty: it must not queue behind the gate).
+        let _ = self.route_user_bytes_unheld(&[b'\r', escape[0], escape[1]], true);
+        self.young_line = false;
+        self.raw_tilde_at_ssh_line_start = false;
+        // The deferred Enter and the keys behind it: a young hold.
+        self.young_hold_id = self.young_hold_id.wrapping_add(1);
+        self.young_hold_queued = true;
+        self.young_hold_evidence = Some(YoungHoldEvidence::PrecmdMaybeInFlight);
+        // Its cap is a give-up (the 10 s net), not the 2 s normal end of the no-barrier hold.
+        self.young_hold_normal_end = false;
+        self.escape_hold_id = Some(self.young_hold_id);
+        warpui::input_order::log_hop("ssh_escape_enter_held_for_prompt", || {
+            format!(
+                "char={:?} gate={gate} hold_id={}",
+                escape[1] as char, self.young_hold_id
+            )
+        });
+        Some((gate, self.young_hold_id))
+    }
+
+    /// Test seam (#2207 review F3): the next [`Self::hold_deferred_enter_for_next_prompt`] is
+    /// refused although [`Self::deferred_enter_could_wait_for_next_prompt`] said yes.
+    #[cfg(test)]
+    pub(crate) fn refuse_deferred_enter_hold_for_test(&mut self) {
+        self.refuse_deferred_enter_hold_for_test = true;
+    }
+
+    /// #2207: whether `hold_id` is the young hold made for a reported ssh escape
+    /// ([`Self::hold_deferred_enter_for_next_prompt`]). Still true after the session ended: the
+    /// view asks when it applies the end that exit recorded (review F2: every key of that hold,
+    /// an editor-typed one too, is written to the pty in typed order).
+    pub fn is_escape_hold(&self, hold_id: u64) -> bool {
+        self.escape_hold_id == Some(hold_id)
+    }
+
+    /// #2207 (review F4): ends the escape's hold at the edge where input left the pty's
+    /// ownership with it still queued (the editor took over at the local prompt after `~.`): its
+    /// Enter and keys are written now ([`Self::end_unowned_young_hold`]), before a command
+    /// written later could get in front of them. The view calls this on every hand-off change.
+    /// Any other young hold keeps its lazy stale check. Returns whether the hold ended.
+    pub fn end_escape_hold_if_unowned(&mut self) -> bool {
+        if !self.young_hold_queued
+            || self.escape_hold_id != Some(self.young_hold_id)
+            || matches!(
+                self.state,
+                HandoffState::PtyOwned { .. } | HandoffState::AwaitingReport
+            )
+        {
+            return false;
+        }
+        self.end_unowned_young_hold()
+    }
+
+    /// Ends a young hold the state no longer owns (the session ended, or the state left
+    /// `PtyOwned` / `AwaitingReport` with the hold still queued). Its keys are void
+    /// ([`YoungHoldEnd::Dropped`]), as before -- except the hold made for a reported ssh escape
+    /// (#2207, owner decision 2026-11-13): after `~.` the session is expected to go, and the Enter
+    /// and the keys typed behind it are written in typed order to whatever owns input now
+    /// ([`YoungHoldEnd::Typeahead`]), as a plain terminal delivers what was typed after ssh
+    /// exits. Returns whether there was a hold.
+    fn end_unowned_young_hold(&mut self) -> bool {
+        let queued = mem::take(&mut self.young_hold_queued);
+        if queued {
+            let end = if self.escape_hold_id == Some(self.young_hold_id) {
+                self.young_hold_evidence = None;
+                warpui::input_order::log_hop("young_hold_end", || {
+                    format!("why=ssh_escape_session_gone hold_id={}", self.young_hold_id)
+                });
+                YoungHoldEnd::Typeahead
+            } else {
+                YoungHoldEnd::Dropped
+            };
+            self.young_hold_ends.push((self.young_hold_id, end));
+        }
+        queued
     }
 
     /// #1793: whether the #1638 ssh escape path writes a `\r` ahead of the escape so ssh reads it
@@ -3287,6 +3469,8 @@ impl TypeaheadHandoff {
     pub fn on_command_written(&mut self) {
         self.end_keys_follow_editor("command_written");
         self.forget_untracked_line_bytes();
+        // #2202: the command's own newline starts a new line for ssh; a `~` before it was text.
+        self.raw_tilde_at_ssh_line_start = false;
         // #1574: the command's kill prefix and Enter end whatever line it lands on.
         self.committed_delivery = false;
         self.interrupt_barrier = false;
@@ -3371,6 +3555,10 @@ impl TypeaheadHandoff {
             if queued_hold_follows {
                 self.young_hold_follow_pending = Some(id);
                 self.young_hold_ends.push((id, YoungHoldEnd::FollowCommand));
+            } else if self.escape_hold_id == Some(id) {
+                // #2207: the hold made for a reported ssh escape is never dropped: its Enter and
+                // keys are written behind this command, in typed order.
+                self.young_hold_ends.push((id, YoungHoldEnd::Typeahead));
             } else {
                 self.young_hold_ends.push((id, YoungHoldEnd::Dropped));
             }
@@ -3392,6 +3580,8 @@ impl TypeaheadHandoff {
         if bytes.is_empty() {
             return;
         }
+        // #2202: keys written behind a command are not a lone `~` at ssh's line start.
+        self.raw_tilde_at_ssh_line_start = false;
         if let HandoffState::PtyOwned {
             wrote_user_bytes,
             enters_written,
@@ -4284,7 +4474,8 @@ impl TypeaheadHandoff {
             self.state,
             HandoffState::PtyOwned { .. } | HandoffState::AwaitingReport
         ) {
-            self.drop_young_hold();
+            // #2207: the hold made for a reported ssh escape is written, not dropped.
+            self.end_unowned_young_hold();
         }
     }
 
@@ -4625,6 +4816,14 @@ impl TypeaheadHandoff {
     pub(crate) fn stream_undrained_for_test(&mut self) {
         self.foreground_probe.stream_drained_or_unknown = None;
         self.foreground_probe.stream_drained = Some(Arc::new(|| false));
+    }
+
+    /// The editor took input back (a prompt's commit), whatever was queued: the state a young
+    /// hold is stale in (#2207 tests of what becomes of its keys).
+    #[cfg(test)]
+    pub(crate) fn force_editor_owned_for_test(&mut self) {
+        self.keys_follow_editor = false;
+        self.state = HandoffState::EditorOwned;
     }
 
     /// Whether the Enter deferred behind the report has not run yet: the keys typed since are
@@ -5117,14 +5316,18 @@ impl TypeaheadHandoff {
     pub fn reset_on_exit(&mut self) {
         // A young hold whose keys are in the view's queue ends with the session: the view drops
         // them, and the ids keep growing so a later hold never reuses the gate's key. So do the
-        // keys held behind a deferred Enter.
-        self.drop_young_hold();
+        // keys held behind a deferred Enter. (#2207: except the hold made for a reported ssh
+        // escape, whose keys are written in typed order: `end_unowned_young_hold`.)
+        self.end_unowned_young_hold();
         if let Some(gate) = self.deferred_gate.take() {
             self.young_hold_ends.push((gate, YoungHoldEnd::Dropped));
         }
         *self = Self {
             tracks_view_precmds: self.tracks_view_precmds,
             young_hold_id: self.young_hold_id,
+            // #2207: the view still asks whether the hold whose end is recorded above was the
+            // escape's.
+            escape_hold_id: self.escape_hold_id,
             deferred_gate_seq: self.deferred_gate_seq,
             young_hold_ends: mem::take(&mut self.young_hold_ends),
             // #2182: the pane's queue keeps publishing into the same cell; the switch is the pane's.

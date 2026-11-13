@@ -410,6 +410,26 @@ fn skip_redundant_completion_notify_enabled() -> bool {
     })
 }
 
+/// The one kill switch of the report-line judge (#2203, #2202): `PHOSPHOR_REPORT_LINE_JUDGE=0`
+/// restores the behaviour before it, exactly. Read once per process. With it off:
+///
+/// * a background pass that carries no detection is never upgraded for a pending request
+///   (`decorations::pass_owes_detection`; #2203), so it can again cancel or replace the parse that
+///   owed a verdict;
+/// * a shell report is never judged as the ssh escape (`Input::judge_reported_line`; #2202): `~`
+///   reported in front of a typed `.` is the text `~.`;
+/// * an Enter the hand-back guard holds on several lines is consumed, not turned into a line
+///   break (`Input::hold_back_enter_after_ssh_handover`; Q1).
+///
+/// The log hops added with it (`detection_job_cancelled`, `debounce_dropped_detection`) stay on:
+/// they decide nothing.
+pub(crate) fn report_line_judge_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        !std::env::var("PHOSPHOR_REPORT_LINE_JUDGE").is_ok_and(|value| value == "0")
+    })
+}
+
 /// Whether a completion result with nothing to show (no result, or no suggestions) needs
 /// `Input` re-rendered (#1995, owner decision 2026-11-11). With completions as you type such a
 /// result comes back for nearly every typed character; while no menu is up it changes nothing
@@ -1380,6 +1400,49 @@ fn ssh_escape_bytes(before: &str, after: &str) -> Option<[u8; 2]> {
     (matches!(before, "" | "~") && SSH_ESCAPE_CHARS.contains(&escape)).then_some([b'~', escape])
 }
 
+/// #2202: what the view knows about the shell's line when it hands a report of it to the editor
+/// ([`Input::insert_reported_line`]). Both facts are about the local ssh client, which the editor
+/// cannot see. The default (neither holds) is a report that is only ever text.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ReportLineFacts {
+    /// The last key that went to the pty raw was a lone `~`, written right after a newline: ssh
+    /// read it at its line start (`TypeaheadHandoff::take_raw_tilde_at_ssh_line_start`). A `~`
+    /// typed after other bytes of the line (`a`, Backspace, `~`) is not.
+    pub tilde_at_ssh_line_start: bool,
+    /// An ssh escape written now reaches ssh at its line start, alone or behind the `\r` the
+    /// escape path adds (`TerminalView::report_escape_reaches_ssh_line_start`). It does not while
+    /// an Enter is deferred with keys held behind it, or while the remote line may hold bytes.
+    pub escape_reaches_ssh_line_start: bool,
+}
+
+/// The edit that made the line `~X` at its start, for the ssh escape rule (#1638): the three
+/// share its conditions (`Input::ssh_escape_at_line_start`).
+#[derive(Clone, Copy, Debug)]
+enum LineStartEdit {
+    /// The second key was typed into the editor.
+    Typed,
+    /// #2181: keys the ssh gate held, released into the editor late.
+    HeldRelease,
+    /// #2202: the shell's report puts the `~` in front of the one character the editor holds.
+    Report(ReportLineFacts),
+}
+
+/// #2202: what [`Input::insert_reported_line`] did with a report of the shell's line.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HandoffInsert {
+    /// #1569: another line's text; the buffer is exactly as it was.
+    Refused,
+    /// The report is in the buffer, as text.
+    Inserted,
+    /// The report and the one character the editor held are ssh's escape `~X` (#1638): the editor
+    /// is empty and the view writes these two bytes to the pty.
+    SshEscape([u8; 2]),
+    /// #2207, set by the view only (the editor never returns it): as [`Self::SshEscape`], and
+    /// the Enter that was deferred behind the report is placed: it waits, with the keys typed
+    /// behind it, for the next prompt event. The caller must not finish that Enter itself.
+    SshEscapeHeld([u8; 2]),
+}
+
 /// One piece of input the user typed after an Enter that is waiting for a classification verdict
 /// (#1016): it follows that Enter, never joins the text it submits.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -2238,6 +2301,10 @@ pub struct Input {
     command_x_ray_description: Option<Arc<Description>>,
     last_parsed_tokens: Option<decorations::ParsedTokensSnapshot>,
     debounce_input_background_tx: Sender<InputBackgroundJobOptions>,
+    /// #2203, log only: a pass with detection was queued into the debounce and no debounced pass
+    /// has run since (`run_debounced_input_background_jobs` logs a detection the debounce
+    /// dropped). Decides nothing.
+    detection_pass_queued: bool,
     debounce_ai_query_prediction_tx: Sender<()>,
     /// If true, will submit the command in the editor to the shell upon receiving the
     /// precmd message.
@@ -3732,7 +3799,7 @@ impl Input {
                 DEBOUNCE_INPUT_DECORATION_PERIOD,
                 debounce_input_background_rx,
             ),
-            |me, mode, ctx| me.run_input_background_jobs(mode, ctx),
+            |me, mode, ctx| me.run_debounced_input_background_jobs(mode, ctx),
             |_me, _ctx| {},
         );
 
@@ -4350,6 +4417,7 @@ impl Input {
             command_x_ray_description: None,
             last_parsed_tokens: None,
             debounce_input_background_tx,
+            detection_pass_queued: false,
             debounce_ai_query_prediction_tx,
             has_pending_command: false,
             held_release_edit: false,
@@ -7268,17 +7336,67 @@ impl Input {
     ) -> Option<[u8; 2]> {
         // #2181: keys the ssh gate held and released as editor text are typed keys that arrived
         // late (`system_insert_held`); the same rule applies to them.
-        let typed = *edit_origin == EditOrigin::UserTyped
-            || (held_release && *edit_origin == EditOrigin::UserInitiated);
-        if !typed {
+        let edit = if *edit_origin == EditOrigin::UserTyped {
+            LineStartEdit::Typed
+        } else if held_release && *edit_origin == EditOrigin::UserInitiated {
+            LineStartEdit::HeldRelease
+        } else {
             return None;
-        }
+        };
         let editor = self.editor.as_ref(ctx);
         // Cheap check first: this runs on every typed key.
         if editor.buffer_size(ctx).as_usize() != 2 {
             return None;
         }
         let bytes = ssh_escape_bytes(editor.last_buffer_text(ctx), &editor.buffer_text(ctx))?;
+        self.ssh_escape_at_line_start(bytes, edit, ctx)
+    }
+
+    /// #2202: the judgement of a line the shell's report is about to finish, made before the
+    /// report is inserted: the two bytes of ssh's escape when the report is the lone `~` that ssh
+    /// read at its line start and the editor holds exactly one of ssh's escape characters behind
+    /// it (review A2: any more text and taking `~X` out would leave the rest behind an Enter typed
+    /// after it), under every condition of the typed rule
+    /// ([`Self::ssh_escape_at_line_start`]). `None` is "text, as before": for a second report of
+    /// the line (`replaced_chars`), a report that goes behind the editor's own text (`anchored`,
+    /// #2012), and with `PHOSPHOR_REPORT_LINE_JUDGE=0`.
+    ///
+    /// Called before the #1574 switch of an AI-mode input to shell, so the typed rule's "not for
+    /// a line meant for the agent" reads the input as the user left it (review A1).
+    fn judge_reported_line(
+        &self,
+        report: &str,
+        replaced_chars: usize,
+        anchored: bool,
+        facts: ReportLineFacts,
+        ctx: &AppContext,
+    ) -> Option<[u8; 2]> {
+        if report != "~" || replaced_chars != 0 || anchored || !report_line_judge_enabled() {
+            return None;
+        }
+        let editor = self.editor.as_ref(ctx);
+        if editor.buffer_size(ctx).as_usize() != 1 {
+            return None;
+        }
+        let &[escape] = editor.buffer_text(ctx).as_bytes() else {
+            return None;
+        };
+        if !SSH_ESCAPE_CHARS.contains(&escape) {
+            return None;
+        }
+        self.ssh_escape_at_line_start([b'~', escape], LineStartEdit::Report(facts), ctx)
+    }
+
+    /// The conditions the typed ssh escape (#1638), a held one released late (#2181) and one a
+    /// report finished (#2202) share, for a line that IS `~X`: `Some(bytes)` when the two bytes
+    /// are ssh's. A refusal is logged with its reason.
+    fn ssh_escape_at_line_start(
+        &self,
+        bytes: [u8; 2],
+        edit: LineStartEdit,
+        ctx: &AppContext,
+    ) -> Option<[u8; 2]> {
+        let editor = self.editor.as_ref(ctx);
         // r18u22 (Wayland ssh_drop_reconnect): `<Enter>~.` left the session up on Wayland
         // while the Mac run of the same build dropped it. From here on the buffer IS `~X`, so a
         // refusal is logged with its reason (no text: the two bytes are ssh's escape) and the
@@ -7289,13 +7407,36 @@ impl Input {
             });
             None
         };
-        let expected_action = if held_release {
-            PlainTextEditorViewAction::SystemInsert
-        } else {
-            PlainTextEditorViewAction::InsertChar
+        let last_action = editor.get_last_action(ctx);
+        let typed_as_expected = match edit {
+            LineStartEdit::Typed => last_action == Some(PlainTextEditorViewAction::InsertChar),
+            LineStartEdit::HeldRelease => {
+                last_action == Some(PlainTextEditorViewAction::SystemInsert)
+            }
+            // The escape character itself was typed into the editor, or held and released into
+            // it; the report only puts the `~` in front of it.
+            LineStartEdit::Report(_) => matches!(
+                last_action,
+                Some(
+                    PlainTextEditorViewAction::InsertChar | PlainTextEditorViewAction::SystemInsert
+                )
+            ),
         };
-        if editor.get_last_action(ctx) != Some(expected_action) {
+        if !typed_as_expected {
             return refuse("not_insert_char");
+        }
+        if let LineStartEdit::Report(facts) = edit {
+            // Review A4: `a`, Backspace, `~` typed raw is reported as `~` too, but ssh did not
+            // read that `~` at its line start.
+            if !facts.tilde_at_ssh_line_start {
+                return refuse("report_tilde_not_at_ssh_line_start");
+            }
+            // An escape written now would land in the remote line as text (an Enter is deferred
+            // with its gate live, keys are held, the remote line may hold bytes): the report
+            // stays text, in typed order.
+            if !facts.escape_reaches_ssh_line_start {
+                return refuse("report_escape_not_at_ssh_line_start");
+            }
         }
         let ai_input = self.ai_input_model.as_ref(ctx);
         if ai_input.is_ai_input_enabled() && ai_input.is_input_type_locked() {
@@ -9128,9 +9269,30 @@ impl Input {
         mode: InputBackgroundJobOptions,
         ctx: &mut ViewContext<Self>,
     ) {
-        if let Some(mode) = try_queue(&self.debounce_input_background_tx, mode) {
-            self.run_input_background_jobs(mode, ctx);
+        match try_queue(&self.debounce_input_background_tx, mode) {
+            Some(mode) => self.run_input_background_jobs(mode, ctx),
+            None => self.detection_pass_queued |= mode.carries_detection(),
         }
+    }
+
+    /// The debounce's consumer: runs the one pass the debounce kept of its window. The debounce
+    /// keeps only the LAST item queued, so a pass with detection followed inside the window by one
+    /// without is dropped before it ran; that is logged here (#2203, `debounce_dropped_detection`,
+    /// log only: the pass that runs carries a detection still requested for the buffer, see
+    /// `decorations::pass_owes_detection`).
+    fn run_debounced_input_background_jobs(
+        &mut self,
+        mode: InputBackgroundJobOptions,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        if std::mem::take(&mut self.detection_pass_queued) && !mode.carries_detection() {
+            log::info!(
+                "input-type detection: the debounce kept a pass without detection and dropped \
+                 the detection queued before it in the same window (#2203)"
+            );
+            warpui::input_order::log_hop("debounce_dropped_detection", String::new);
+        }
+        self.run_input_background_jobs(mode, ctx);
     }
 
     pub fn close_input_suggestions(
@@ -9197,15 +9359,53 @@ impl Input {
         self.system_insert(content, ctx);
     }
 
+    /// [`Self::insert_legacy_reported_line`] for a report that is only ever text (no facts about
+    /// the local ssh client).
     pub fn insert_typeahead_text(
         &mut self,
         num_typeahead_chars_inserted: CharOffset,
         typeahead: &str,
         ctx: &mut ViewContext<Self>,
     ) {
+        self.insert_legacy_reported_line(
+            num_typeahead_chars_inserted,
+            typeahead,
+            ReportLineFacts::default(),
+            ctx,
+        );
+    }
+
+    /// Inserts a report that answers no hand-off request at the front of the buffer. #2208: it
+    /// finishes the user's line all the same, so the line is judged first, as on the hand-off
+    /// path ([`Self::insert_reported_line`]): `~` in front of the one escape character the editor
+    /// holds, with the view's `facts`, is ssh's escape; the editor is emptied and the two bytes
+    /// are returned for the view to write. Never [`HandoffInsert::Refused`]: this path has no
+    /// #1569 refusal. The caller must not hold the model lock (the judge reads the model).
+    pub fn insert_legacy_reported_line(
+        &mut self,
+        num_typeahead_chars_inserted: CharOffset,
+        typeahead: &str,
+        facts: ReportLineFacts,
+        ctx: &mut ViewContext<Self>,
+    ) -> HandoffInsert {
         warpui::profiling::zone!("typeahead_insert");
+        if let Some(bytes) = self.judge_reported_line(
+            typeahead,
+            num_typeahead_chars_inserted.as_usize(),
+            false,
+            facts,
+            ctx,
+        ) {
+            warpui::input_order::log_hop("typeahead_insert", || "judged=ssh_escape".to_owned());
+            warpui::input_order::log_hop("ssh_escape_to_pty", || {
+                format!("char={:?} by=legacy_report", bytes[1] as char)
+            });
+            self.clear_buffer_and_reset_undo_stack(ctx);
+            return HandoffInsert::SshEscape(bytes);
+        }
         self.replace_typeahead_prefix(num_typeahead_chars_inserted, typeahead, ctx);
         self.note_typeahead_inserted(typeahead, ctx);
+        HandoffInsert::Inserted
     }
 
     /// Puts the shell's typeahead report at the front of the buffer, replacing the
@@ -9369,15 +9569,38 @@ impl Input {
             .update(ctx, |model, _| model.note_typeahead_inserted(typeahead));
     }
 
-    /// Like [`Self::insert_typeahead_text`], for a report the typeahead hand-off asked for.
-    /// Returns whether the report was inserted; a refusal (#1569: another line's text) leaves the
-    /// buffer exactly as it was and is logged.
+    /// [`Self::insert_reported_line`] for a report that is only ever text (no facts about the
+    /// local ssh client). Returns whether the report was inserted.
     pub fn insert_handoff_typeahead_text(
         &mut self,
         num_typeahead_chars_inserted: CharOffset,
         typeahead: &str,
         ctx: &mut ViewContext<Self>,
     ) -> bool {
+        self.insert_reported_line(
+            num_typeahead_chars_inserted,
+            typeahead,
+            ReportLineFacts::default(),
+            ctx,
+        ) == HandoffInsert::Inserted
+    }
+
+    /// Like [`Self::insert_typeahead_text`], for a report the typeahead hand-off asked for. A
+    /// refusal (#1569: another line's text) leaves the buffer exactly as it was and is logged.
+    ///
+    /// #2202: the report is the last edit of the line the user typed, and the finished line is
+    /// judged here, synchronously, as a typed line is, before anything else acts on it. The one
+    /// line-start rule there is today is the ssh escape ([`Self::judge_reported_line`], with what
+    /// the view knows in `facts`): for it the report is not inserted, the editor is emptied of the
+    /// escape character it held and the two bytes are returned for the view to write
+    /// ([`HandoffInsert::SshEscape`]).
+    pub fn insert_reported_line(
+        &mut self,
+        num_typeahead_chars_inserted: CharOffset,
+        typeahead: &str,
+        facts: ReportLineFacts,
+        ctx: &mut ViewContext<Self>,
+    ) -> HandoffInsert {
         let text_before = warpui::input_order::enabled().then(|| self.buffer_text(ctx));
         // #2012: the text this report goes behind (the editor held it before the report's keys
         // went to the pty), or `None`: the front of the buffer, as for every other report.
@@ -9412,7 +9635,34 @@ impl Input {
                     warpui::input_order::describe_text(&text_before.unwrap_or_default())
                 )
             });
-            return false;
+            return HandoffInsert::Refused;
+        }
+        // #2202: the line this report finishes is judged like a typed line, before the #1574
+        // switch below (the lock it reads is the one the user left). `~X` at ssh's line start is
+        // ssh's escape, not editor text: the escape character leaves the editor (as it does for
+        // the typed escape) and the view writes the two bytes.
+        if let Some(bytes) = self.judge_reported_line(
+            typeahead,
+            num_typeahead_chars_inserted.as_usize(),
+            anchor.is_some(),
+            facts,
+            ctx,
+        ) {
+            // The same hop as every report's insertion (#1393), with the judgement: nothing of
+            // the report stays in the editor.
+            warpui::input_order::log_hop("handoff_insert", || {
+                format!(
+                    "replaced_prefix_chars=0 report={} before={} after={} judged=ssh_escape",
+                    warpui::input_order::describe_text(typeahead),
+                    warpui::input_order::describe_text(&text_before.unwrap_or_default()),
+                    warpui::input_order::describe_text("")
+                )
+            });
+            warpui::input_order::log_hop("ssh_escape_to_pty", || {
+                format!("char={:?} by=report", bytes[1] as char)
+            });
+            self.clear_buffer_and_reset_undo_stack(ctx);
+            return HandoffInsert::SshEscape(bytes);
         }
         // #1574: the report is the shell's line, typed for the shell, and the shell has already
         // cleared it from its own line: it is inserted (never dropped). An input whose mode is AI
@@ -9469,7 +9719,7 @@ impl Input {
             )
         });
         self.note_typeahead_inserted(typeahead, ctx);
-        true
+        HandoffInsert::Inserted
     }
 
     /// #1574: whether the input is in AI mode for a shell report: the input type is AI and will
@@ -15905,8 +16155,8 @@ impl Input {
 
     /// For a line the typeahead hand-off inserted right after a command (#933): when it reads as
     /// English (not a valid slash command, not prose-free shell typeahead) its text must be
-    /// classified before it is submitted, which the insert did not do (system edits request no
-    /// detection). Requests the detection for the exact buffer text.
+    /// classified before it is submitted, and the insert's own `Edited` event (which asks for it)
+    /// has not been delivered yet. Requests the detection for the exact buffer text.
     pub(crate) fn request_detection_for_young_typeahead(
         &mut self,
         ctx: &mut ViewContext<Self>,
@@ -16950,6 +17200,16 @@ impl Input {
             return false;
         }
         warpui::input_order::log_key_hop("enter_guard_held", || format!("kind={:?}", guard.kind));
+        // Q1 (owner 2026-11-13, #2203): on several lines (a give-up kept the keys typed after an
+        // unrun Enter with its line) the held Enter does not vanish: it is a line break at the END
+        // of the buffer, wherever the cursor is. Nothing runs unseen, as before, and what is typed
+        // next starts its own line instead of joining the last kept one
+        // (`…r_tr13.txtecho t518…`). One line is left as it was (the Enter is held, the next one
+        // runs the line the user sees): a trailing break there would make that line a multi-line
+        // submit.
+        if report_line_judge_enabled() && buffer.contains('\n') {
+            self.append_line_break_for_held_enter(buffer.len(), ctx);
+        }
         if !ctx.has_singleton_model::<ToastStack>() {
             return true;
         }
@@ -16962,6 +17222,30 @@ impl Input {
             );
         });
         true
+    }
+
+    /// Q1 (#2203): the Enter the hand-back guard holds becomes a line break at the end of the
+    /// buffer (`buffer_bytes` long), as one buffer edit that is not typed (no auto-indent, no
+    /// pairing). A single cursor at the end of the buffer follows the break, so the next key
+    /// starts the new line; a cursor or selection anywhere else is left where the user put it.
+    fn append_line_break_for_held_enter(
+        &mut self,
+        buffer_bytes: usize,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        warpui::input_order::log_key_hop("enter_guard_line_break", || {
+            format!("at_end_of_bytes={buffer_bytes}")
+        });
+        self.editor.update(ctx, |view, ctx| {
+            let cursor_at_end = view.is_single_cursor_only(&*ctx)
+                && view.start_byte_index_of_first_selection(&*ctx).as_usize() == buffer_bytes;
+            let end = view.buffer_size(ctx);
+            view.replace_n_characters_at(end, CharOffset::from(0), "\n", ctx);
+            if cursor_at_end {
+                let after_break = ByteOffset::from(buffer_bytes + 1);
+                view.select_ranges_by_byte_offset([after_break..after_break], ctx);
+            }
+        });
     }
 
     /// Remembers a submit for the misroute recovery (#835).

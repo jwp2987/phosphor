@@ -695,6 +695,11 @@ impl InputQueue {
         self.max_entries = max_entries;
     }
 
+    /// The cap on queued entries (#2207: an operation that adds an entry of its own asks first).
+    pub fn max_entries(&self) -> usize {
+        self.max_entries
+    }
+
     /// Arrivals dropped for the cap since the queue last went idle.
     pub fn overflow_dropped(&self) -> u64 {
         self.overflow_dropped

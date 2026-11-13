@@ -373,3 +373,140 @@ across the boundary):
   later activation or counted write arrives, the pty keeps input until the next
   Enter;
 - IME composition on the terminal is not routed by the hand-off.
+
+## A report-rewritten line is judged like a typed line (#2203, #2202)
+
+The shell's report is the LAST edit of the line the user typed: the head went to
+the shell, the tail to the editor, and the report joins them. Until round 30 the
+joined line was "not the user's line" for two rules, and both lost input. The
+rule now: the finished line has the standing of a typed line.
+
+**(a) Line-start rules run on the finished line, synchronously, before anything
+else acts on it.** `Input::insert_reported_line` judges the line before the
+report is inserted (`Input::judge_reported_line`). The one line-start rule there
+is today is ssh's escape (#1638): `~` typed before the remote prompt goes to ssh
+raw, the `.` after it lands in the editor, and the report says `~`. That is
+`~.` at ssh's line start, so the editor is emptied and the view writes the
+escape through the same writer as the typed one (`TerminalView::write_ssh_escape`,
+`\r~.` where the escape path adds the `\r`). It is the escape only when ALL hold:
+
+- the report is exactly `~`, a first report of the line, not placed behind
+  editor text (#2012);
+- the editor holds exactly ONE of ssh's escape characters, typed (or held and
+  released) into it. With anything more (`.foo`) the report is text: taking `~.`
+  out would leave `foo` behind an Enter typed after it;
+- ssh read that `~` at its line start: the hand-off records, at the raw write,
+  whether the key was a lone `~` written right after a newline
+  (`TypeaheadHandoff::note_raw_user_write`). `a`, Backspace, `~` typed raw is
+  reported as `~` too and stays text;
+- an escape written now reaches ssh at its line start
+  (`TypeaheadHandoff::ssh_escape_would_reach_line_start`, the rule of
+  `ssh_escape_line_start` without its bookkeeping), or, with an Enter deferred
+  behind the report, that Enter and the keys behind it can wait for the next
+  prompt so the escape goes out alone (#2207, below);
+- every condition of the typed rule: a managed ssh session, not a shared-session
+  viewer, and not an input locked to the agent. The lock is read BEFORE the
+  #1574 switch that makes a reported line a shell line, so an agent view or a
+  steer box (#851) never ends the session.
+
+**(b) A judgement requested for the finished text is dropped only by a newer
+edit of that text.** A young line's deferred Enter asks for the input-type
+verdict of the completed line (`finish_report_enter`). The debounce in front of
+the background passes keeps only the last item of its 10 ms window, and in AI
+mode a pass with nothing to do cancels the parse in flight, so a pass that
+carried no detection (the input model's own event queues one) could take the
+only job that owed the verdict with it: no verdict, the 2 s backstop, the line
+handed back with every key typed behind it. Now a pass that carries no detection
+carries the one still requested for the text in the buffer
+(`decorations::pass_owes_detection`: requested for exactly this text,
+autodetection on, no classifier job in flight for it). Level-based, read from
+the model's pending request; no flag, no timer, no new state.
+
+**The eaten Enter (owner decision Q1, 2026-11-13).** After a real give-up the
+unrun line and the keys typed behind it sit in the editor as several lines,
+guarded: the first Enter on them is held, with the "check the lines" toast. That
+Enter used to vanish, so what was typed next joined the last kept line. It is a
+line break at the END of the buffer now (`enter_guard_line_break`); nothing runs
+unseen, and no Enter is lost. A guarded buffer of ONE line is unchanged (its
+held Enter is still only held): a trailing break there would turn the line the
+user sees into a multi-line submit, which nobody has decided.
+
+**Kill switch.** `PHOSPHOR_REPORT_LINE_JUDGE=0` (read once per process,
+`input::report_line_judge_enabled`) restores the behaviour before all three.
+
+**Log.** `detection_pass_upgraded` (a pass carried a pending detection),
+`debounce_dropped_detection` (the debounce kept a pass without detection and
+dropped one with it), `detection_job_cancelled pending=1` (WARN: a pass
+cancelled the job while a verdict was still requested and nothing is left to
+deliver it; not reached with the switch on), `handoff_insert ... judged=ssh_escape`
+then `ssh_escape_to_pty char='.' by=report`, `ssh_escape_refused ... why=report_*`,
+`enter_guard_line_break`. Counts and reasons only, never the line.
+
+**The escape with an Enter deferred behind it (#2207).** `~` raw, then `.` and
+an Enter in the editor before the report (keys typed after that Enter are held
+behind its `HandoffReport` gate). ssh gets `\r~.` at once and ALONE: OpenSSH
+drops the rest of what it read together with `~.` / `~&`, so the Enter and the
+keys behind it must not go out in the same run. They wait for the next prompt
+event instead, in typed order, the Enter first:
+
+- `TypeaheadHandoff::hold_deferred_enter_for_next_prompt` is the one new
+  transition, into states that exist: the `\r~X` is counted as
+  `ssh_escape_line_start`'s `AddCr` counts it (the pty owns input, a bare
+  Enter's line, one write in flight) and the deferred Enter becomes a queued
+  young hold with evidence `PrecmdMaybeInFlight`.
+- The view (`hold_deferred_enter_behind_ssh_escape`) takes the entries behind
+  the deferred gate, queues the Enter under a `PromptSeen` gate and the entries
+  behind it again, under one lock of the queue, and emits `\r~X` straight to the
+  pty (through the queue it would wait behind the gate it must go ahead of).
+- Ends: the young hold's own. The next prompt's request and report run the
+  Enter in the editor with the keys behind it (the remote shell after `~?`, the
+  local shell after `~.`); a command written; no request possible. Net: that
+  gate's cap (the 10 s give-up, which writes in typed order). No new state,
+  gate kind or timer.
+- Never dropped (owner decision 2026-11-13). Where any other young hold's keys
+  are void (`YoungHoldEnd::Dropped`: the session ended, or the state left
+  `PtyOwned` / `AwaitingReport` with the hold queued, or a command was written
+  from another state), THIS hold's Enter and keys are written in typed order to
+  whatever owns input now (`YoungHoldEnd::Typeahead`,
+  `end_unowned_young_hold`), as a plain terminal delivers what was typed after
+  ssh exits. A Ctrl-C still drops it, as the tty flushes typeahead on an
+  interrupt. Other young holds are unchanged.
+- Only when the deferral is the one thing in the way
+  (`deferred_enter_could_wait_for_next_prompt`, and in the view: the deferred
+  gate is the only gate in the pane queue and no signal is held). Otherwise,
+  and for `.foo` + Enter, the report is text as before, in typed order.
+- Log: `ssh_escape_enter_held_for_prompt`, `ssh_escape_enter_held`,
+  `young_hold_end why=ssh_escape_session_gone`.
+- Review round (r30b):
+  - not for `~C` with an Enter deferred behind it: `~C` opens ssh's own `ssh>`
+    command line, no prompt event follows, and only the hold's cap would end
+    it (a timer as the hand-over). It stays text, as before;
+  - every key of this hold is the pty's when it is written out, an
+    editor-typed one too (`pty_bytes_of_taken_entries`): handed to the editor,
+    `pwd`, Enter would be submitted there ahead of the hold's own Enter;
+  - the hold ends at the EDGE where input leaves the pty's ownership
+    (`end_escape_hold_if_unowned`, called from
+    `handle_typeahead_handoff_changed`), so its Enter and keys are written
+    before a command written later, not into that command's stdin;
+  - the transition adds one queue entry (the Enter); with the queue at its cap
+    it is not made (text, as before);
+  - `HandoffInsert::SshEscapeHeld` is the only outcome that tells the report
+    handler the deferred Enter is placed; after a plain `SshEscape` the
+    deferred Enter is finished as after any report;
+  - a report judged as the escape is forgotten by the model
+    (`forget_report_judged_as_ssh_escape`): it was not inserted, and the next
+    report event of the line otherwise replaced the first character of the
+    buffer with its `~` again (a stray `~` in the local editor after the
+    session ended).
+
+**The legacy report path is judged too (#2208).** A report that answers no
+hand-off request (`ReportDisposition::InsertLegacy`, `handle_typeahead_event`)
+finishes the user's line as well. The view copies the report out and releases
+the model lock (the judge's shared-session check reads the model; holding the
+lock across the insert was the reason this path was left out), takes the same
+facts (`take_report_line_facts`) and calls `Input::insert_legacy_reported_line`,
+which runs the same `judge_reported_line`; the escape goes out through
+`write_ssh_escape`. `insert_typeahead_text` is the unjudged wrapper (no facts).
+With the typeahead hand-off off no fact is ever recorded, so that routing is
+exactly as before. Log: `typeahead_insert judged=ssh_escape`, then
+`ssh_escape_to_pty ... by=legacy_report`.

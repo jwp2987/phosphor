@@ -644,3 +644,176 @@ fn test_ai_mode_background_job_does_not_restyle_an_undecorated_prompt() {
         );
     });
 }
+
+/// The line the #2203 tests ask a verdict for.
+const JUDGED_LINE: &str = "echo hello world >> out.txt";
+
+/// #2203 fixture: the agent's input (AI, unlocked, autodetection on) holding [`JUDGED_LINE`], with
+/// everything its own edit started (the detection request, the debounced pass, the parse and the
+/// verdict) settled, and the input type put back to AI, unlocked, as a stale verdict for an
+/// earlier fragment leaves it. From here a test re-requests detection for the line and decides
+/// which passes run. The caller holds the `AgentMode` flag.
+async fn ai_input_holding_a_settled_line(
+    app: &mut App,
+) -> warpui::ViewHandle<crate::terminal::input::Input> {
+    use crate::ai::blocklist::InputConfig;
+    use crate::settings::AISettings;
+    use input_classifier::InputType;
+
+    initialize_app(app);
+    ensure_input_classifier_for_test(app);
+    AISettings::handle(app).update(app, |ai_settings, ctx| {
+        let _ = ai_settings
+            .ai_autodetection_enabled_internal
+            .set_value(true, ctx);
+    });
+    let session_info = SessionInfo::new_for_test();
+    let session_id = session_info.session_id;
+    let terminal = add_window_with_bootstrapped_terminal(app, None, Some(session_info)).await;
+    let input = terminal.read(app, |view, _| view.input().clone());
+    simulate_directory_for_completion(session_id, &terminal, app, "/usr/bin");
+    let ai_unlocked = InputConfig {
+        input_type: InputType::AI,
+        is_locked: false,
+    };
+    input.update(app, |input, ctx| {
+        input.ai_input_model().update(ctx, |ai_input, ctx| {
+            ai_input.set_input_config(ai_unlocked, true /* is_input_buffer_empty */, ctx);
+        });
+    });
+    warpui::r#async::Timer::after(std::time::Duration::from_millis(400)).await;
+    input.update(app, |input, ctx| {
+        input.clear_buffer_and_reset_undo_stack(ctx);
+        input.user_insert(JUDGED_LINE, ctx);
+    });
+    // The edit's own request, pass, parse and verdict.
+    warpui::r#async::Timer::after(std::time::Duration::from_millis(500)).await;
+    input.update(app, |input, ctx| {
+        input.ai_input_model().update(ctx, |ai_input, ctx| {
+            ai_input.set_input_config(ai_unlocked, false /* is_input_buffer_empty */, ctx);
+        });
+    });
+    // Past the explicit write's window, and past the pass its event queued.
+    warpui::r#async::Timer::after(std::time::Duration::from_millis(400)).await;
+    input.read(app, |input, ctx| {
+        let model = input.ai_input_model().as_ref(ctx);
+        assert_eq!(input.buffer_text(ctx), JUDGED_LINE, "test setup");
+        assert!(model.is_ai_input_enabled(), "test setup: an AI-mode input");
+        assert!(
+            model.should_run_input_autodetection(ctx),
+            "test setup: unlocked, autodetection on"
+        );
+        assert!(
+            !model.is_detection_requested_for(JUDGED_LINE),
+            "test setup: nothing pending"
+        );
+    });
+    input
+}
+
+/// #2203 (T1): a detection was requested for the buffer and its parse is in flight; a pass that
+/// carries no detection (the input model's own event queues one, decoration only) arrives before
+/// the parse lands. In AI mode that pass used to end in `cancel_decorations_job()`, which killed
+/// the only job that owed the verdict: the request stayed pending for ever and the Enter waiting
+/// on it ran into its 2 s backstop. The request sticks now: the pass carries the detection, and
+/// the verdict lands.
+#[test]
+fn a_detectionless_pass_keeps_a_requested_detection() {
+    App::test((), |mut app| async move {
+        let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+        let input = ai_input_holding_a_settled_line(&mut app).await;
+        input.update(&mut app, |input, ctx| {
+            // No cached parse: the detection is carried by a parse job, as for a new line.
+            input.last_parsed_tokens = None;
+            input.ai_input_model().update(ctx, |model, _| {
+                model.abort_in_progress_detection();
+                model.note_detection_requested(JUDGED_LINE.to_owned());
+            });
+            input.run_input_background_jobs(
+                InputBackgroundJobOptions::default().with_ai_input_detection(),
+                ctx,
+            );
+            assert!(
+                input.decorations_future_handle.is_some(),
+                "test setup: the requested detection's parse is in flight"
+            );
+            assert!(input.detection_pending_for_buffer(ctx), "test setup");
+
+            // The pass without detection, before the parse lands.
+            input.run_input_background_jobs(
+                InputBackgroundJobOptions::default().with_command_decoration(),
+                ctx,
+            );
+            assert!(
+                input.decorations_future_handle.is_some(),
+                "a pass without detection must not leave a requested detection without a job"
+            );
+        });
+        warpui::r#async::Timer::after(std::time::Duration::from_millis(500)).await;
+        input.read(&app, |input, ctx| {
+            assert!(
+                !input
+                    .ai_input_model()
+                    .as_ref(ctx)
+                    .is_detection_requested_for(JUDGED_LINE),
+                "the verdict for the requested text landed"
+            );
+        });
+    });
+}
+
+/// #2203 (T1, the debounce): a pass with detection and then a pass without one are queued inside
+/// one debounce window. The debounce keeps only the last item, so the detection was dropped
+/// before any pass ran and nothing asked again. The pass that does run finds the request still
+/// pending for the buffer and carries it.
+#[test]
+fn a_decoration_pass_queued_behind_a_detection_pass_does_not_drop_the_detection() {
+    App::test((), |mut app| async move {
+        let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+        let input = ai_input_holding_a_settled_line(&mut app).await;
+        input.update(&mut app, |input, ctx| {
+            input.ai_input_model().update(ctx, |model, _| {
+                model.abort_in_progress_detection();
+                model.note_detection_requested(JUDGED_LINE.to_owned());
+            });
+            assert!(input.detection_pending_for_buffer(ctx), "test setup");
+            input.queue_input_background_job(
+                InputBackgroundJobOptions::default().with_ai_input_detection(),
+                ctx,
+            );
+            input.queue_input_background_job(
+                InputBackgroundJobOptions::default().with_command_decoration(),
+                ctx,
+            );
+        });
+        warpui::r#async::Timer::after(std::time::Duration::from_millis(500)).await;
+        input.read(&app, |input, ctx| {
+            assert!(
+                !input
+                    .ai_input_model()
+                    .as_ref(ctx)
+                    .is_detection_requested_for(JUDGED_LINE),
+                "the verdict for the requested text landed although the debounce kept only the \
+                 pass without detection"
+            );
+        });
+    });
+}
+
+/// #2203 (review 3, test v): the rule that upgrades a pass. A pass owes the detection only when
+/// it carries none, the request is still pending for the buffer and autodetection runs; and never
+/// while the classifier job for that text is in flight (an upgraded pass would abort and restart
+/// it, starving a slow classifier).
+#[test]
+fn test_pass_owes_detection_rule() {
+    use crate::terminal::input::decorations::pass_owes_detection;
+    assert!(pass_owes_detection(false, true, true, false));
+    // (v): the classifier job in flight is left alone.
+    assert!(!pass_owes_detection(false, true, true, true));
+    // Nothing requested for this text (settled, superseded, or another buffer).
+    assert!(!pass_owes_detection(false, false, true, false));
+    // Locked, or autodetection off: no verdict is owed.
+    assert!(!pass_owes_detection(false, true, false, false));
+    // The pass carries the detection already.
+    assert!(!pass_owes_detection(true, true, true, false));
+}

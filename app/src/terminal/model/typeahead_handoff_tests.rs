@@ -8116,3 +8116,313 @@ fn handed_back_keys_apply_ctrl_a_ctrl_e_and_ctrl_k() {
         b"\x01\x05\x1b[D\x0b"
     )));
 }
+
+/// #2202 fixture: an empty Enter's command was written (`\r`), then `keys` went to the pty raw one
+/// at a time before its prompt (each noted as the view notes a raw user key, then counted and
+/// flushed as `PtyController` does), then the prompt's request was written.
+fn raw_keys_then_request(keys: &[&[u8]]) -> (TypeaheadHandoff, PtyWriteCount) {
+    let mut handoff = TypeaheadHandoff::default();
+    handoff.set_ssh_escape_cr_line_start_rule(true);
+    let pty = handoff.pty_write_count();
+    handoff.on_command_written();
+    handoff.note_written_command_text("");
+    pty.note_write_bytes(b"\r");
+    handoff.age_last_activity_for_test();
+    for key in keys {
+        assert_eq!(handoff.on_user_bytes(key), UserBytesRoute::WriteCounted);
+        handoff.note_raw_user_write(key);
+        pty.note_write_bytes(key);
+        handoff.on_user_write_flushed();
+    }
+    handoff.on_precmd();
+    assert_eq!(
+        handoff.on_line_editor_active(true, true),
+        ActiveDecision::SendRequest
+    );
+    pty.note_write_bytes(b"\x1bi");
+    (handoff, pty)
+}
+
+/// #2202: a lone `~` that went to the pty raw right after a newline was read by ssh at its line
+/// start; the hand-off remembers that until the report of the line is judged, once. T7: after that
+/// report (it emptied the remote line) an escape written now reaches ssh at its line start, behind
+/// the `\r` the escape path adds.
+#[test]
+fn a_raw_tilde_right_after_a_newline_is_remembered_until_its_report() {
+    let (mut handoff, _pty) = raw_keys_then_request(&[b"~"]);
+    handoff.on_report_parsed();
+    assert!(matches!(
+        handoff.on_report(),
+        ReportDisposition::Insert | ReportDisposition::InsertYoung
+    ));
+    assert!(
+        handoff.ssh_escape_would_reach_line_start(),
+        "the report emptied the remote line: `\\r~X` starts a line for ssh"
+    );
+    assert!(
+        handoff.take_raw_tilde_at_ssh_line_start(),
+        "ssh read the `~` right after the Enter's newline"
+    );
+    assert!(
+        !handoff.take_raw_tilde_at_ssh_line_start(),
+        "the fact is used once"
+    );
+    // T7 (passes before the fix too): the existing rule adds the `\r`.
+    assert_eq!(handoff.ssh_escape_line_start(), SshEscapeLineStart::AddCr);
+}
+
+/// #2202 (review A4): `a`, Backspace, `~` typed raw leave `~` in the remote line, but ssh never
+/// saw that `~` at its line start. So does a `~` followed by another raw key, a key that is not a
+/// lone `~`, and a `~` behind bytes the app wrote itself (a terminal-query reply).
+#[test]
+fn a_raw_tilde_that_ssh_did_not_read_at_its_line_start_is_not_remembered() {
+    let cases: [&[&[u8]]; 4] = [&[b"a", b"\x7f", b"~"], &[b"~", b"x"], &[b"~~"], &[b"x"]];
+    for keys in cases {
+        let (mut handoff, _pty) = raw_keys_then_request(keys);
+        assert!(
+            !handoff.take_raw_tilde_at_ssh_line_start(),
+            "{keys:?}: not a lone `~` right after a newline"
+        );
+    }
+
+    // A reply the app wrote behind the newline: ssh last read that, not the newline.
+    let mut handoff = TypeaheadHandoff::default();
+    let pty = handoff.pty_write_count();
+    handoff.on_command_written();
+    pty.note_write_bytes(b"\r");
+    pty.note_tail(b"\x1b[24;1R");
+    assert_eq!(handoff.on_user_bytes(b"~"), UserBytesRoute::WriteCounted);
+    handoff.note_raw_user_write(b"~");
+    assert!(!handoff.take_raw_tilde_at_ssh_line_start());
+
+    // A command written since (its own newline starts a new line; the `~` was that line's text).
+    let (mut handoff, pty) = raw_keys_then_request(&[b"~"]);
+    handoff.on_command_written();
+    pty.note_write_bytes(b"ls\r");
+    assert!(
+        !handoff.take_raw_tilde_at_ssh_line_start(),
+        "a command written since ends the fact"
+    );
+}
+
+/// #2202 (review A3, item 4): while an Enter is deferred behind the report with keys held behind
+/// its gate, an escape written now would not reach ssh at its line start (the escape path refuses
+/// the `\r` there, `hold_after_enter`): the report stays text and the deferred Enter runs the line
+/// as typed, in order.
+#[test]
+fn an_ssh_escape_would_not_reach_the_line_start_while_an_enter_is_deferred() {
+    let (mut handoff, _pty) = raw_keys_then_request(&[b"~"]);
+    assert!(handoff.defer_enter());
+    assert!(!handoff.ssh_escape_would_reach_line_start());
+    handoff.on_report_parsed();
+    assert!(matches!(
+        handoff.on_report(),
+        ReportDisposition::InsertThenSubmit | ReportDisposition::InsertThenSubmitYoung
+    ));
+    assert!(
+        !handoff.ssh_escape_would_reach_line_start(),
+        "the deferred Enter's gate is live"
+    );
+    assert_eq!(
+        handoff.ssh_escape_line_start(),
+        SshEscapeLineStart::Skipped("hold_after_enter")
+    );
+}
+
+/// #2207 fixture: `~` went to ssh raw at its line start, the prompt's request is out, an Enter
+/// was deferred behind it, and the report arrived (the deferred submit is due). Returns the
+/// hand-off, the pty write count and the deferred Enter's gate.
+fn deferred_enter_behind_a_reported_tilde() -> (TypeaheadHandoff, PtyWriteCount, u64) {
+    let (mut handoff, pty) = raw_keys_then_request(&[b"~"]);
+    assert!(handoff.defer_enter());
+    let gate = handoff.deferred_gate().expect("the Enter holds a gate");
+    handoff.on_report_parsed();
+    assert!(matches!(
+        handoff.on_report(),
+        ReportDisposition::InsertThenSubmit | ReportDisposition::InsertThenSubmitYoung
+    ));
+    assert!(handoff.take_raw_tilde_at_ssh_line_start());
+    (handoff, pty, gate)
+}
+
+/// #2207: `~` raw, then its escape character and an Enter in the editor before the report. The
+/// escape cannot wait for the Enter, and the Enter with the keys behind it must not go out in the
+/// same run (ssh drops what it read together with `~.`). The one transition: the `\r~X` is
+/// counted as a bare Enter's line, exactly as `ssh_escape_line_start`'s `AddCr` counts it, and
+/// the deferred Enter becomes a young hold: it and the keys behind its gate wait for the next
+/// prompt event. That hold's ends are the young hold's own: at the next prompt the request is
+/// written and its report runs the Enter in the editor, with the keys held behind it.
+#[test]
+fn a_deferred_enter_behind_a_reported_ssh_escape_waits_for_the_next_prompt() {
+    let (mut handoff, pty, gate) = deferred_enter_behind_a_reported_tilde();
+    assert!(
+        handoff.deferred_enter_could_wait_for_next_prompt(),
+        "the report arrived, the deferred gate is the only thing in the way"
+    );
+    let (taken_gate, hold_id) = handoff
+        .hold_deferred_enter_for_next_prompt(*b"~.")
+        .expect("the deferred Enter waits for the next prompt");
+    assert_eq!(taken_gate, gate, "the view turns this gate into the hold's");
+    assert_eq!(handoff.deferred_gate(), None);
+    assert!(handoff.has_young_hold());
+    assert_eq!(
+        handoff.state(),
+        &HandoffState::PtyOwned {
+            wrote_user_bytes: true,
+            enters_written: 1,
+            precmds_seen: 0,
+        },
+        "the `\\r` of `\\r~.` is a bare Enter's line"
+    );
+    assert_eq!(
+        handoff.writes_in_flight(),
+        1,
+        "`\\r~.` is one counted write"
+    );
+    assert!(
+        !handoff.deferred_enter_could_wait_for_next_prompt(),
+        "once: the deferral is over"
+    );
+    assert_eq!(handoff.hold_deferred_enter_for_next_prompt(*b"~."), None);
+
+    // The controller writes `\r~.`; the next prompt comes (the remote shell's after `~?`, the
+    // local shell's after `~.`): the request, then its report runs the held Enter in the editor.
+    pty.note_write_bytes(b"\r~.");
+    handoff.on_user_write_flushed();
+    handoff.on_precmd();
+    assert_eq!(
+        handoff.on_line_editor_active(true, true),
+        ActiveDecision::SendRequest
+    );
+    assert!(handoff.take_young_hold_ends().is_empty(), "still held");
+    handoff.on_report_parsed();
+    assert_eq!(
+        handoff.on_report(),
+        ReportDisposition::InsertThenSubmitYoung
+    );
+    let ends = handoff.take_young_hold_ends();
+    assert_eq!(ends.len(), 1, "{ends:?}");
+    assert_eq!(ends[0].0, hold_id);
+    assert!(
+        matches!(ends[0].1, YoungHoldEnd::SubmitOnReport { .. }),
+        "{ends:?}"
+    );
+}
+
+/// #2207 (owner decision 2026-11-13): the hold made for a reported ssh escape is never dropped.
+/// When the session ends, or the state leaves the pty's ownership with the hold still queued (the
+/// local shell's prompt after `~.`), its Enter and the keys behind it are written in typed order
+/// to whatever owns input now, as a plain terminal delivers what was typed after ssh exits.
+#[test]
+fn the_hold_behind_a_reported_ssh_escape_is_written_not_dropped_when_its_session_goes() {
+    // The session ends.
+    let (mut handoff, _pty, _gate) = deferred_enter_behind_a_reported_tilde();
+    let (_, hold_id) = handoff
+        .hold_deferred_enter_for_next_prompt(*b"~.")
+        .expect("the deferred Enter waits for the next prompt");
+    handoff.reset_on_exit();
+    assert_eq!(
+        handoff.take_young_hold_ends(),
+        vec![(hold_id, YoungHoldEnd::Typeahead)],
+        "written in typed order, not dropped"
+    );
+
+    // The state left the pty's ownership with the hold still queued; the next key finds it.
+    let (mut handoff, _pty, _gate) = deferred_enter_behind_a_reported_tilde();
+    let (_, hold_id) = handoff
+        .hold_deferred_enter_for_next_prompt(*b"~.")
+        .expect("the deferred Enter waits for the next prompt");
+    handoff.state = HandoffState::EditorOwned;
+    assert!(handoff.check_queued_young_hold());
+    assert_eq!(
+        handoff.take_young_hold_ends(),
+        vec![(hold_id, YoungHoldEnd::Typeahead)],
+        "written in typed order, not dropped"
+    );
+}
+
+/// #2207 guard: every other young hold ends as before on those paths (its keys are void: the
+/// session is gone, or the state has run, flushed or dropped the hold), and a Ctrl-C still drops
+/// the escape's hold, as the tty flushes typeahead on an interrupt.
+#[test]
+fn other_young_holds_are_still_dropped_when_their_session_goes() {
+    let mut handoff = young_after_submit();
+    type_and_flush(&mut handoff, b"abc");
+    let (id, _) = hold_young_enter(&mut handoff, b"\r");
+    handoff.reset_on_exit();
+    assert_eq!(
+        handoff.take_young_hold_ends(),
+        vec![(id, YoungHoldEnd::Dropped)]
+    );
+
+    let mut handoff = young_after_submit();
+    type_and_flush(&mut handoff, b"abc");
+    let (id, _) = hold_young_enter(&mut handoff, b"\r");
+    handoff.state = HandoffState::EditorOwned;
+    assert!(handoff.check_queued_young_hold());
+    assert_eq!(
+        handoff.take_young_hold_ends(),
+        vec![(id, YoungHoldEnd::Dropped)]
+    );
+
+    // A signal: the user's interrupt voids what was typed ahead, the escape's hold included.
+    let (mut handoff, _pty, _gate) = deferred_enter_behind_a_reported_tilde();
+    if let Some((_, hold_id)) = handoff.hold_deferred_enter_for_next_prompt(*b"~.") {
+        let _ = handoff.on_user_bytes(b"\x03");
+        assert_eq!(
+            handoff.take_young_hold_ends(),
+            vec![(hold_id, YoungHoldEnd::Dropped)]
+        );
+    }
+}
+
+/// #2207 (review F4): the hold made for a reported ssh escape ends at the EDGE where the editor
+/// takes input back (the local prompt after `~.`), not lazily at the next key: its Enter and keys
+/// are written then, before any command written later. An ordinary young hold is not ended there
+/// (its stale check stays where it was).
+#[test]
+fn the_escape_hold_ends_at_the_edge_where_the_editor_takes_input_back() {
+    let (mut handoff, _pty, _gate) = deferred_enter_behind_a_reported_tilde();
+    let (_, hold_id) = handoff
+        .hold_deferred_enter_for_next_prompt(*b"~.")
+        .expect("the deferred Enter waits for the next prompt");
+    assert!(handoff.is_escape_hold(hold_id));
+    assert!(
+        !handoff.end_escape_hold_if_unowned(),
+        "the pty owns input: the hold waits for its prompt"
+    );
+    assert!(handoff.take_young_hold_ends().is_empty());
+    handoff.force_editor_owned_for_test();
+    assert!(handoff.end_escape_hold_if_unowned());
+    assert_eq!(
+        handoff.take_young_hold_ends(),
+        vec![(hold_id, YoungHoldEnd::Typeahead)],
+        "written in typed order at the edge"
+    );
+    assert!(!handoff.end_escape_hold_if_unowned(), "once");
+
+    let mut handoff = young_after_submit();
+    type_and_flush(&mut handoff, b"abc");
+    let (id, _) = hold_young_enter(&mut handoff, b"\r");
+    assert!(!handoff.is_escape_hold(id));
+    handoff.force_editor_owned_for_test();
+    assert!(!handoff.end_escape_hold_if_unowned());
+    assert!(
+        handoff.take_young_hold_ends().is_empty(),
+        "an ordinary young hold is not ended at the edge"
+    );
+}
+
+/// #2207 (review F2): the view must still know the escape's hold when it applies the end the
+/// session's exit recorded (it writes that hold's editor-typed keys to the pty too), so the tag
+/// survives `reset_on_exit`.
+#[test]
+fn the_escape_hold_is_still_known_after_its_session_ended() {
+    let (mut handoff, _pty, _gate) = deferred_enter_behind_a_reported_tilde();
+    let (_, hold_id) = handoff
+        .hold_deferred_enter_for_next_prompt(*b"~.")
+        .expect("the deferred Enter waits for the next prompt");
+    handoff.reset_on_exit();
+    assert!(handoff.is_escape_hold(hold_id));
+    assert!(!handoff.is_escape_hold(hold_id.wrapping_add(1)));
+}

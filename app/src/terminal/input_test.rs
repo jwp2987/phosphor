@@ -18820,6 +18820,23 @@ async fn pane_for_ssh_escape_test(
     ViewHandle<EditorView>,
     Rc<RefCell<Vec<Vec<u8>>>>,
 ) {
+    let (_terminal, input, editor, writes) =
+        pane_and_terminal_for_ssh_escape_test(app, remote, input_config).await;
+    (input, editor, writes)
+}
+
+/// [`pane_for_ssh_escape_test`], with the pane's terminal view (#2202: the tests that hand the
+/// view a report of the shell's line).
+async fn pane_and_terminal_for_ssh_escape_test(
+    app: &mut App,
+    remote: bool,
+    input_config: InputConfig,
+) -> (
+    ViewHandle<TerminalView>,
+    ViewHandle<Input>,
+    ViewHandle<EditorView>,
+    Rc<RefCell<Vec<Vec<u8>>>>,
+) {
     let terminal = add_window_with_bootstrapped_terminal(app, None, None).await;
     let input = terminal.read(app, |terminal, _| terminal.input().clone());
     let editor = input.read(app, |input, _| input.editor().clone());
@@ -18859,7 +18876,7 @@ async fn pane_for_ssh_escape_test(
         });
         input.clear_buffer_and_reset_undo_stack(ctx);
     });
-    (input, editor, writes)
+    (terminal, input, editor, writes)
 }
 
 /// Types `keys` into the editor one key at a time, as the keyboard does (each key its own
@@ -19452,6 +19469,847 @@ fn test_ssh_escape_carriage_return_leaves_a_local_session_alone() {
             handoff_state(&app, &input),
             crate::terminal::model::typeahead_handoff::HandoffState::EditorOwned
         );
+    });
+}
+
+// ---- #2202 / #2203: a report-rewritten line is judged like a typed line ------------------------
+
+/// What the view tells the editor with a report when ssh read the reported `~` at its line start
+/// and an escape written now reaches ssh at its line start.
+const REPORT_OF_A_LINE_START_TILDE: ReportLineFacts = ReportLineFacts {
+    tilde_at_ssh_line_start: true,
+    escape_reaches_ssh_line_start: true,
+};
+
+/// #2202 (T2; lab `lab_ssh_drop_reconnect.nu.150.nohelper` [escape]): `~` was typed before the
+/// remote prompt and went to ssh raw, the `.` after it landed in the editor, and the shell's
+/// report then put the `~` in front of it: `~.` was built by the report and never judged, so the
+/// session stayed up. The finished line is judged like a typed one: the editor is emptied and the
+/// two bytes are handed to the view, for every escape character the typed rule passes. (`#` is
+/// left out: alone in the editor it opens command search, which is not this test's subject; it is
+/// in the typed rule's own list.)
+#[test]
+fn test_report_tilde_in_front_of_a_typed_escape_char_is_the_ssh_escape() {
+    for escape in [".", "?", "C", "R", "V", "v", "&", "B"] {
+        App::test((), move |mut app| async move {
+            initialize_app(&mut app);
+            let (input, editor, writes) =
+                pane_for_ssh_escape_test(&mut app, true, SHELL_INPUT_FOR_SSH_ESCAPE_TEST).await;
+            type_keys_for_ssh_escape_test(&mut app, &editor, &[escape]);
+            let outcome = input.update(&mut app, |input, ctx| {
+                input.insert_reported_line(
+                    CharOffset::from(0),
+                    "~",
+                    REPORT_OF_A_LINE_START_TILDE,
+                    ctx,
+                )
+            });
+            assert_eq!(
+                outcome,
+                HandoffInsert::SshEscape([b'~', escape.as_bytes()[0]]),
+                "`{escape}` in the editor, `~` reported in front of it"
+            );
+            input.read(&app, |input, ctx| {
+                assert_eq!(
+                    input.buffer_text(ctx),
+                    "",
+                    "`~{escape}`: the editor is empty"
+                );
+            });
+            assert!(
+                writes.borrow().is_empty(),
+                "the editor only judges; the view writes the two bytes"
+            );
+        });
+    }
+}
+
+/// #2202 (T3; review A2, A4): a reported `~` is the escape only in front of exactly one escape
+/// character, when ssh read that `~` at its line start, and when an escape written now reaches ssh
+/// at its line start. Everything else is the report as text, as before, in typed order, and
+/// nothing is written. A `~` reported into an empty editor waits for the next key, which the
+/// typed rule decides.
+#[test]
+fn test_report_tilde_that_is_not_the_ssh_escape_stays_text() {
+    let not_at_line_start = ReportLineFacts {
+        tilde_at_ssh_line_start: false,
+        ..REPORT_OF_A_LINE_START_TILDE
+    };
+    let escape_would_not_start_a_line = ReportLineFacts {
+        escape_reaches_ssh_line_start: false,
+        ..REPORT_OF_A_LINE_START_TILDE
+    };
+    let cases: [(&[&str], ReportLineFacts, &str); 6] = [
+        (&[], REPORT_OF_A_LINE_START_TILDE, "~"),
+        // Review A2: more than the escape character was typed: taking `~.` out would put what is
+        // left behind an Enter typed after it.
+        (&[".", "f", "o", "o"], REPORT_OF_A_LINE_START_TILDE, "~.foo"),
+        (&["x"], REPORT_OF_A_LINE_START_TILDE, "~x"),
+        // Review A4 (`a`, Backspace, `~` typed raw): ssh never saw the `~` at its line start.
+        (&["."], not_at_line_start, "~."),
+        // An Enter is deferred with keys behind it, or the remote line may hold bytes.
+        (&["."], escape_would_not_start_a_line, "~."),
+        (&["."], ReportLineFacts::default(), "~."),
+    ];
+    for (typed, facts, expected) in cases {
+        App::test((), move |mut app| async move {
+            initialize_app(&mut app);
+            let (input, editor, writes) =
+                pane_for_ssh_escape_test(&mut app, true, SHELL_INPUT_FOR_SSH_ESCAPE_TEST).await;
+            type_keys_for_ssh_escape_test(&mut app, &editor, typed);
+            let outcome = input.update(&mut app, |input, ctx| {
+                input.insert_reported_line(CharOffset::from(0), "~", facts, ctx)
+            });
+            assert_eq!(outcome, HandoffInsert::Inserted, "{typed:?} {facts:?}");
+            input.read(&app, |input, ctx| {
+                assert_eq!(input.buffer_text(ctx), expected, "{typed:?} {facts:?}");
+            });
+            assert!(
+                writes.borrow().is_empty(),
+                "{typed:?} {facts:?}: nothing to the pty"
+            );
+            if typed.is_empty() {
+                // The lone reported `~`: the next key decides, by the typed rule.
+                type_keys_for_ssh_escape_test(&mut app, &editor, &["."]);
+                assert_eq!(*writes.borrow(), vec![b"~.".to_vec()]);
+                input.read(&app, |input, ctx| {
+                    assert_eq!(input.buffer_text(ctx), "");
+                });
+            }
+        });
+    }
+}
+
+/// #2202 (T3): a local session has no ssh client, a second report of the same line and a report
+/// that goes behind the editor's own text (#2012) are not a line start: text, as before.
+#[test]
+fn test_report_tilde_outside_a_managed_ssh_line_start_stays_text() {
+    // A local session.
+    App::test((), move |mut app| async move {
+        initialize_app(&mut app);
+        let (input, editor, writes) =
+            pane_for_ssh_escape_test(&mut app, false, SHELL_INPUT_FOR_SSH_ESCAPE_TEST).await;
+        type_keys_for_ssh_escape_test(&mut app, &editor, &["."]);
+        let outcome = input.update(&mut app, |input, ctx| {
+            input.insert_reported_line(CharOffset::from(0), "~", REPORT_OF_A_LINE_START_TILDE, ctx)
+        });
+        assert_eq!(outcome, HandoffInsert::Inserted);
+        input.read(&app, |input, ctx| {
+            assert_eq!(input.buffer_text(ctx), "~.");
+        });
+        assert!(writes.borrow().is_empty(), "nothing to the pty");
+    });
+    // A report that claims to replace an earlier one (#1569 refuses it: `.` is not its text).
+    App::test((), move |mut app| async move {
+        initialize_app(&mut app);
+        let (input, editor, writes) =
+            pane_for_ssh_escape_test(&mut app, true, SHELL_INPUT_FOR_SSH_ESCAPE_TEST).await;
+        type_keys_for_ssh_escape_test(&mut app, &editor, &["."]);
+        let outcome = input.update(&mut app, |input, ctx| {
+            input.insert_reported_line(CharOffset::from(1), "~", REPORT_OF_A_LINE_START_TILDE, ctx)
+        });
+        assert_eq!(outcome, HandoffInsert::Refused);
+        input.read(&app, |input, ctx| {
+            assert_eq!(input.buffer_text(ctx), ".");
+        });
+        assert!(writes.borrow().is_empty(), "nothing to the pty");
+    });
+    // #2012: the report belongs behind the text the editor held.
+    App::test((), move |mut app| async move {
+        initialize_app(&mut app);
+        let (input, editor, writes) =
+            pane_for_ssh_escape_test(&mut app, true, SHELL_INPUT_FOR_SSH_ESCAPE_TEST).await;
+        type_keys_for_ssh_escape_test(&mut app, &editor, &["."]);
+        let outcome = input.update(&mut app, |input, ctx| {
+            assert!(input.anchor_handoff_report_at_cursor(ctx));
+            input.insert_reported_line(CharOffset::from(0), "~", REPORT_OF_A_LINE_START_TILDE, ctx)
+        });
+        assert_eq!(outcome, HandoffInsert::Inserted);
+        input.read(&app, |input, ctx| {
+            assert_eq!(input.buffer_text(ctx), ".~");
+        });
+        assert!(writes.borrow().is_empty(), "nothing to the pty");
+    });
+}
+
+/// #2202 (review A1, test i): a line meant for the agent (the input locked to AI: the agent view,
+/// a running agent's steer, #851) is never an ssh escape, as for typed keys. The lock is read
+/// before the #1574 switch makes the reported text a shell line, so that switch cannot open the
+/// way: `~.` is kept as text and the session stays up.
+#[test]
+fn test_report_tilde_into_an_input_locked_to_the_agent_stays_text() {
+    let locked_ai = InputConfig {
+        input_type: InputType::AI,
+        is_locked: true,
+    };
+    App::test((), move |mut app| async move {
+        initialize_app(&mut app);
+        let (input, editor, writes) = pane_for_ssh_escape_test(&mut app, true, locked_ai).await;
+        type_keys_for_ssh_escape_test(&mut app, &editor, &["."]);
+        let outcome = input.update(&mut app, |input, ctx| {
+            input.insert_reported_line(CharOffset::from(0), "~", REPORT_OF_A_LINE_START_TILDE, ctx)
+        });
+        assert_eq!(outcome, HandoffInsert::Inserted, "never an escape");
+        input.read(&app, |input, ctx| {
+            assert_eq!(input.buffer_text(ctx), "~.", "kept as text, in order");
+        });
+        assert!(writes.borrow().is_empty(), "nothing to the pty");
+    });
+}
+
+/// #2202 fixture: an empty Enter's command was written (`\r`), then `raw_keys` were typed before
+/// its prompt and went to the pty one at a time on the user-key path (the pty owns input), then
+/// the prompt's request was written. What `PtyController` does with each write (count it, flush
+/// it) is done here.
+fn type_raw_before_the_prompt_then_request(
+    app: &mut App,
+    terminal: &ViewHandle<TerminalView>,
+    input: &ViewHandle<Input>,
+    raw_keys: &[&[u8]],
+) {
+    input.read(app, |input, _| {
+        let mut model = input.model.lock();
+        let mut handoff = model.typeahead_handoff_mut();
+        handoff.set_ssh_escape_cr_line_start_rule(true);
+        handoff.on_command_written();
+        handoff.note_written_command_text("");
+        handoff.pty_write_count().note_write_bytes(b"\r");
+        handoff.age_last_activity_for_test();
+    });
+    for key in raw_keys {
+        terminal.update(app, |view, ctx| view.write_user_bytes_for_test(key, ctx));
+        input.read(app, |input, _| {
+            let mut model = input.model.lock();
+            let mut handoff = model.typeahead_handoff_mut();
+            handoff.pty_write_count().note_write_bytes(key);
+            handoff.on_user_write_flushed();
+        });
+    }
+    input.read(app, |input, _| {
+        let mut model = input.model.lock();
+        let mut handoff = model.typeahead_handoff_mut();
+        handoff.on_precmd();
+        assert_eq!(
+            handoff.on_line_editor_active(true, true),
+            crate::terminal::model::typeahead_handoff::ActiveDecision::SendRequest,
+            "test setup: the prompt's request"
+        );
+        handoff.pty_write_count().note_write_bytes(b"\x1bi");
+    });
+}
+
+/// Hands the view the shell's report `text` of its line, as the model's report handler does.
+fn deliver_shell_report(
+    app: &mut App,
+    terminal: &ViewHandle<TerminalView>,
+    input: &ViewHandle<Input>,
+    text: &str,
+) {
+    input.read(app, |input, _| {
+        let mut model = input.model.lock();
+        let early_output = model.block_list_mut().early_output_mut();
+        early_output.clear_typeahead_for_new_command();
+        early_output.set_reported_typeahead_for_test(text);
+        model.typeahead_handoff_mut().on_report_parsed();
+    });
+    terminal.update(app, |view, ctx| view.handle_typeahead_report_for_test(ctx));
+}
+
+/// #2202 (T5), the lab trace through the view: Enter, `~` before the remote prompt (raw to ssh,
+/// right after the Enter's newline), the prompt's request, `.` in the editor, the report `~`. ssh
+/// receives `\r~.` in one write (the `\r` because the last bytes ssh read were the request), the
+/// editor is left empty, and the `\r` is counted as a bare Enter's line, exactly as for the typed
+/// escape (`test_ssh_escape_on_a_proven_empty_remote_line_goes_out_behind_a_carriage_return`).
+#[test]
+fn test_a_reported_ssh_escape_reaches_the_pty_behind_a_carriage_return() {
+    use crate::terminal::model::typeahead_handoff::HandoffState;
+    App::test((), move |mut app| async move {
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        initialize_app(&mut app);
+        let (terminal, input, editor, writes) =
+            pane_and_terminal_for_ssh_escape_test(&mut app, true, SHELL_INPUT_FOR_SSH_ESCAPE_TEST)
+                .await;
+        type_raw_before_the_prompt_then_request(&mut app, &terminal, &input, &[b"~"]);
+        assert_eq!(
+            *writes.borrow(),
+            vec![b"~".to_vec()],
+            "test setup: the `~` went to ssh raw"
+        );
+        type_keys_for_ssh_escape_test(&mut app, &editor, &["."]);
+        input.read(&app, |input, ctx| {
+            assert_eq!(
+                input.buffer_text(ctx),
+                ".",
+                "test setup: `.` is in the editor"
+            );
+        });
+
+        deliver_shell_report(&mut app, &terminal, &input, "~");
+        assert_eq!(
+            *writes.borrow(),
+            vec![b"~".to_vec(), b"\r~.".to_vec()],
+            "ssh receives `\\r~.`, once, in one write"
+        );
+        input.read(&app, |input, ctx| {
+            assert_eq!(input.buffer_text(ctx), "", "the editor is empty");
+        });
+        assert_eq!(
+            handoff_state(&app, &input),
+            HandoffState::PtyOwned {
+                wrote_user_bytes: true,
+                enters_written: 1,
+                precmds_seen: 0,
+            },
+            "the `\\r` is counted as a bare Enter's line"
+        );
+    });
+}
+
+/// #2202 (review A4, test iii), through the view: `a`, Backspace, `~` typed before the prompt
+/// leave `~` in the remote line and the report says `~`, but ssh did not read that `~` at its line
+/// start. The report is text: `~.` stays in the editor and nothing more is written.
+#[test]
+fn test_a_reported_tilde_typed_behind_other_raw_keys_stays_text() {
+    App::test((), move |mut app| async move {
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        initialize_app(&mut app);
+        let (terminal, input, editor, writes) =
+            pane_and_terminal_for_ssh_escape_test(&mut app, true, SHELL_INPUT_FOR_SSH_ESCAPE_TEST)
+                .await;
+        type_raw_before_the_prompt_then_request(
+            &mut app,
+            &terminal,
+            &input,
+            &[b"a", b"\x7f", b"~"],
+        );
+        let raw = writes.borrow().clone();
+        assert_eq!(raw.concat(), b"a\x7f~".to_vec(), "test setup: typed raw");
+        type_keys_for_ssh_escape_test(&mut app, &editor, &["."]);
+
+        deliver_shell_report(&mut app, &terminal, &input, "~");
+        input.read(&app, |input, ctx| {
+            assert_eq!(input.buffer_text(ctx), "~.", "the report is text");
+        });
+        assert_eq!(*writes.borrow(), raw, "nothing more reaches the pty");
+    });
+}
+
+/// #2202 (review A2; test ii): `~` raw, then `.foo` and an Enter in the editor before the
+/// report. More than the escape character was typed: taking `~.` out would put `foo` behind the
+/// Enter typed after it. The report stays text: no escape bytes are written, and the line is
+/// whole and in typed order, in the editor or submitted as typed. (The exact `.` + Enter case
+/// was here too while it kept the old behaviour; it is ssh's escape now, #2207:
+/// `test_a_reported_ssh_escape_with_an_enter_deferred_behind_it_goes_out_alone`.)
+#[test]
+fn test_a_reported_tilde_with_an_enter_deferred_behind_it_stays_the_typed_line() {
+    let cases: [&[&str]; 1] = [&[".", "f", "o", "o"]];
+    for typed in cases {
+        App::test((), move |mut app| async move {
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            initialize_app(&mut app);
+            let (terminal, input, editor, writes) = pane_and_terminal_for_ssh_escape_test(
+                &mut app,
+                true,
+                SHELL_INPUT_FOR_SSH_ESCAPE_TEST,
+            )
+            .await;
+            type_raw_before_the_prompt_then_request(&mut app, &terminal, &input, &[b"~"]);
+            type_keys_for_ssh_escape_test(&mut app, &editor, typed);
+            input.update(&mut app, |input, ctx| input.input_enter(ctx));
+            assert!(
+                enter_is_deferred_behind_the_report(&app, &input),
+                "{typed:?}: test setup: the Enter waits for the report"
+            );
+
+            deliver_shell_report(&mut app, &terminal, &input, "~");
+            // Whatever the deferred Enter starts (a submit, a gate) has time to land.
+            warpui::r#async::Timer::after(Duration::from_millis(250)).await;
+
+            let line = format!("~{}", typed.concat());
+            let submitted = format!("{line}\r").into_bytes();
+            let written = writes.borrow().clone();
+            assert!(
+                !written
+                    .iter()
+                    .any(|write| write.starts_with(b"\r~") || write.as_slice() == b"~."),
+                "{typed:?}: no escape is written while the Enter is deferred: {written:?}"
+            );
+            let buffer = input.read(&app, |input, ctx| input.buffer_text(ctx));
+            assert!(
+                buffer == line || written.contains(&submitted),
+                "{typed:?}: the line is whole and in typed order (buffer {buffer:?}, \
+                 written {written:?})"
+            );
+        });
+    }
+}
+
+/// A decorated shell line of `words` six-character words: `echo <prefix>0000 ... >> out.txt`. The
+/// completer parse is roughly quadratic in the word count (#1174), so the count sets how long
+/// the parse runs.
+fn long_echo_line(prefix: &str, words: usize) -> String {
+    let mut line = String::from("echo");
+    for index in 0..words {
+        line.push_str(&format!(" {prefix}{index:04}"));
+    }
+    line.push_str(" >> out.txt");
+    line
+}
+
+/// Types `line` into an input whose type is autodetected and returns how long its verdict took,
+/// undisturbed: the edit's debounce (10 ms), then its parse, then the rules.
+async fn undisturbed_verdict_ms(app: &mut App, input: &ViewHandle<Input>, line: &str) -> u128 {
+    let requested = |app: &App| {
+        input.read(app, |input, ctx| {
+            input
+                .ai_input_model()
+                .as_ref(ctx)
+                .is_detection_requested_for(line)
+        })
+    };
+    input.update(app, |input, ctx| {
+        input.clear_buffer_and_reset_undo_stack(ctx);
+        input.user_insert(line, ctx);
+    });
+    let started = std::time::Instant::now();
+    assert!(
+        requested(&*app),
+        "test setup: a typed line asks for its verdict"
+    );
+    for _ in 0..5000 {
+        if !requested(&*app) {
+            break;
+        }
+        warpui::r#async::Timer::after(Duration::from_millis(1)).await;
+    }
+    assert!(
+        !requested(&*app),
+        "test setup: an undisturbed verdict lands"
+    );
+    started.elapsed().as_millis()
+}
+
+/// #2203 (T4), the r29a Windows trace (`gitbash_typeahead_reps`, rep tr13) through the view, in
+/// its order:
+///
+/// 1. `xt` is in the editor, the head of the line is in the shell's line, the prompt's request is
+///    out; Enter is deferred behind the report, and the keys typed next are held behind it.
+/// 2. The stale verdict for `xt` flips the input to AI. The input model's event queues a pass
+///    that carries no detection into the 10 ms debounce.
+/// 3. Inside that window the report completes the line. Its detection is requested and a parse
+///    starts; the insert's own `Edited` event runs its pass at once (the insert's cursor fix
+///    leaves `CursorChanged`, a short-circuit action), so nothing with detection is queued behind
+///    the pass of step 2.
+/// 4. The debounce delivers the pass of step 2. In AI mode a pass with nothing to do ends in
+///    `cancel_decorations_job()`: the parse that owed the verdict is cancelled and nothing asks
+///    again. No verdict, the 2 s backstop, the line handed back with every key typed behind it.
+///
+/// In the trace the pass of step 4 arrived right behind the parse's start (the UI thread was
+/// late on the debounce timer), which no test can arrange for a 34-byte line: its parse is done,
+/// on a background thread, microseconds after it starts, and a cancel after that is a no-op.
+/// (That is why the first version of this test passed before the fix: it ran its passes in a
+/// later update, the parse had finished, and its result was delivered.) Here the parse is held
+/// open the honest way, by a line long enough that it outlasts the debounce: the length is
+/// measured on this machine first, with a line of the same shape. The cancelled job is then the
+/// same job, cancelled by the same pass, at the same place.
+///
+/// With the request sticking, the pass of step 4 carries the detection: the verdict lands and the
+/// Enter runs the completed line once, well inside the backstop, with no hand-back; the keys
+/// typed behind it are neither written before it nor put into the editor, and follow its command
+/// to the pty in typed order.
+#[test]
+fn test_a_deferred_young_enter_runs_the_reported_line_after_passes_without_detection() {
+    use crate::terminal::input::decorations::InputBackgroundJobOptions;
+    use crate::terminal::model::typeahead_handoff::{ActiveDecision, UserBytesRoute};
+
+    const TYPED: &str = "xt";
+    const HELD_KEYS: &[u8] = b"pwd\r";
+
+    App::test((), |mut app| async move {
+        let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        initialize_app(&mut app);
+        ensure_input_classifier_for_test(&mut app);
+        AISettings::handle(&app).update(&mut app, |ai_settings, ctx| {
+            let _ = ai_settings
+                .ai_autodetection_enabled_internal
+                .set_value(true, ctx);
+        });
+        let session_info = SessionInfo::new_for_test();
+        let session_id = session_info.session_id;
+        let terminal =
+            add_window_with_bootstrapped_terminal(&mut app, None, Some(session_info)).await;
+        simulate_directory_for_completion(session_id, &terminal, &mut app, "~");
+        let input = terminal.read(&app, |terminal, _| terminal.input().clone());
+        let editor = input.read(&app, |input, _| input.editor().clone());
+        let queue = editor.read(&app, |editor, _| editor.paste_hold().queue());
+
+        // Everything that reaches the pty, in order: byte writes, and each command the view hands
+        // the pty controller, as its text and the `\r` that runs it.
+        let pty: Rc<RefCell<Vec<Vec<u8>>>> = Rc::new(RefCell::new(Vec::new()));
+        let agent_queries = Rc::new(RefCell::new(0usize));
+        {
+            let pty = pty.clone();
+            let agent_queries = agent_queries.clone();
+            app.update(|ctx| {
+                ctx.subscribe_to_view(&terminal, move |_, event, _| match event {
+                    crate::terminal::view::Event::WriteBytesToPty { bytes }
+                    | crate::terminal::view::Event::WriteHandoffUserBytesToPty { bytes } => {
+                        pty.borrow_mut().push(bytes.to_vec());
+                    }
+                    crate::terminal::view::Event::ExecuteCommand(event) => {
+                        pty.borrow_mut()
+                            .push(format!("{}\r", event.command).into_bytes());
+                    }
+                    _ => {}
+                });
+                ctx.subscribe_to_view(&input, move |_, event: &super::Event, _| {
+                    if let super::Event::ExecuteAIQuery = event {
+                        *agent_queries.borrow_mut() += 1;
+                    }
+                });
+            });
+        }
+        let ai_unlocked = InputConfig {
+            input_type: InputType::AI,
+            is_locked: false,
+        };
+        input.update(&mut app, |input, ctx| {
+            input.ai_input_model().update(ctx, |ai_input, ctx| {
+                ai_input.set_input_config(ai_unlocked, true /* is_input_buffer_empty */, ctx);
+            });
+        });
+        warpui::r#async::Timer::after(Duration::from_millis(400)).await;
+
+        // A line whose parse outlasts the debounce on this machine, and stays far under the young
+        // Enter's 250 ms compute cap: the first of these that takes 50 ms from edit to verdict
+        // (10 ms of it the debounce). Each step is about 1.6 times the parse of the one before, so
+        // the line chosen stays well under 120 ms: with a restart and a loaded machine that is
+        // still far from the cap.
+        let mut words = 0;
+        let mut verdict_ms = 0;
+        for candidate in [40, 50, 63, 79, 99, 124, 155, 194, 243, 304, 380, 475, 560] {
+            words = candidate;
+            verdict_ms =
+                undisturbed_verdict_ms(&mut app, &input, &long_echo_line("ca", candidate)).await;
+            if verdict_ms >= 50 {
+                break;
+            }
+        }
+        assert!(
+            (35..=120).contains(&verdict_ms),
+            "test setup: no line under the parse cap takes this machine's parse past the 10 ms \
+             debounce and stays under the 250 ms compute cap ({words} words: {verdict_ms} ms \
+             from edit to verdict); the race cannot be held open here"
+        );
+        let line = long_echo_line("tb", words);
+        let reported = &line[..line.len() - TYPED.len()];
+        assert!(line.ends_with(TYPED), "test setup");
+        input.update(&mut app, |input, ctx| {
+            input.clear_buffer_and_reset_undo_stack(ctx)
+        });
+        warpui::r#async::Timer::after(Duration::from_millis(100)).await;
+
+        // 1. The head of the line was typed right after a command (a young line) and is in the
+        // shell's line; the prompt's request is out; `xt` lands in the editor.
+        input.read(&app, |input, _| {
+            let mut model = input.model.lock();
+            let mut handoff = model.typeahead_handoff_mut();
+            handoff.on_command_written();
+            handoff.stream_undrained_for_test();
+            assert_eq!(
+                handoff.on_user_bytes(reported.as_bytes()),
+                UserBytesRoute::WriteCounted
+            );
+            handoff.on_user_write_flushed();
+            handoff.on_precmd();
+            assert_eq!(
+                handoff.on_line_editor_active(true, true),
+                ActiveDecision::SendRequest,
+                "test setup: the prompt's request"
+            );
+        });
+        input.update(&mut app, |input, ctx| {
+            input.clear_buffer_and_reset_undo_stack(ctx);
+            input.user_insert(TYPED, ctx);
+        });
+        // The verdict of `xt` itself, and every pass its edit queued.
+        warpui::r#async::Timer::after(Duration::from_millis(400)).await;
+        input.update(&mut app, |input, ctx| input.input_enter(ctx));
+        assert!(
+            enter_is_deferred_behind_the_report(&app, &input),
+            "test setup: the Enter waits for the report"
+        );
+        terminal.update(&mut app, |view, ctx| {
+            view.write_user_bytes_for_test(&HELD_KEYS[..3], ctx);
+            view.write_user_bytes_for_test(&HELD_KEYS[3..], ctx);
+        });
+        assert!(
+            pty.borrow().is_empty(),
+            "test setup: nothing ran, and the keys typed behind the Enter are held: {:?}",
+            pty.borrow()
+        );
+        assert!(
+            queue.peek().queued_len() > 0,
+            "test setup: the keys typed behind the Enter wait in the pane queue"
+        );
+
+        // 2. The stale verdict flips the input to AI; the model's event queues a pass without
+        // detection (queued here as that subscription queues it, so the test does not depend on
+        // which type `xt` was given above).
+        input.update(&mut app, |input, ctx| {
+            input.ai_input_model().update(ctx, |ai_input, ctx| {
+                ai_input.set_input_config(ai_unlocked, false /* is_input_buffer_empty */, ctx);
+            });
+            input.queue_input_background_job(
+                InputBackgroundJobOptions::default().with_command_decoration(),
+                ctx,
+            );
+        });
+
+        // 3. The report, inside the debounce window of that pass.
+        deliver_shell_report(&mut app, &terminal, &input, reported);
+        input.read(&app, |input, ctx| {
+            assert_eq!(
+                input.buffer_text(ctx),
+                line,
+                "test setup: the completed line"
+            );
+            assert!(
+                input.ai_input_model().as_ref(ctx).is_ai_input_enabled(),
+                "test setup: an AI-mode input"
+            );
+            assert!(
+                input.detection_pending_for_buffer(ctx),
+                "test setup: the young line's Enter waits for its verdict"
+            );
+            assert!(
+                input.editor().as_ref(ctx).get_last_action(ctx)
+                    == Some(PlainTextEditorViewAction::CursorChanged),
+                "test setup: the insert's cursor fix is the last action, so the insert's own \
+                 `Edited` event ran its pass at once and queued none"
+            );
+        });
+        assert!(
+            pty.borrow().is_empty() && *agent_queries.borrow() == 0,
+            "test setup: the Enter did not run on the report; it waits for the verdict: {:?}",
+            pty.borrow()
+        );
+
+        // 4. The debounce delivers the pass of step 2 while the parse is in flight. The Enter
+        // must run on the verdict, well inside the 2 s backstop.
+        for _ in 0..300 {
+            if !pty.borrow().is_empty() || *agent_queries.borrow() > 0 {
+                break;
+            }
+            warpui::r#async::Timer::after(Duration::from_millis(5)).await;
+        }
+        let submitted = format!("{line}\r").into_bytes();
+        assert_eq!(
+            *pty.borrow(),
+            vec![submitted.clone()],
+            "the deferred Enter ran the completed line once, as a shell command, on its \
+             verdict and before the backstop; nothing typed behind it was written before it \
+             (agent queries: {})",
+            agent_queries.borrow()
+        );
+        input.read(&app, |input, ctx| {
+            assert!(
+                !input.ssh_handover_enter_guard_armed(),
+                "no hand-back, so no guard that eats the next Enter"
+            );
+            assert!(
+                !input.buffer_text(ctx).contains("pwd"),
+                "the keys typed behind the Enter were not put into the editor"
+            );
+        });
+        assert!(
+            queue.peek().queued_len() > 0,
+            "the keys typed behind the Enter still wait for its command to be written"
+        );
+
+        // The pty controller writes the command (what `PtyController::write_command` tells the
+        // hand-off); the next hand-off event the view handles applies the end it recorded: the
+        // held keys follow the command, in typed order, once.
+        input.read(&app, |input, _| {
+            let mut model = input.model.lock();
+            let mut handoff = model.typeahead_handoff_mut();
+            handoff.on_command_written();
+            handoff.note_written_command_text(&line);
+        });
+        terminal.update(&mut app, |view, ctx| {
+            view.handle_typeahead_report_for_test(ctx)
+        });
+        assert_eq!(
+            pty.borrow().concat(),
+            [submitted.as_slice(), HELD_KEYS].concat(),
+            "the keys typed behind the Enter follow its command, in typed order, once"
+        );
+        assert_eq!(pty.borrow().len(), 2, "one write behind the command");
+    });
+}
+
+/// #2203 (review 3, test iv): a request pending in a running agent's steer box (#851: AI is the
+/// live type and the selected conversation is streaming). A pass that now carries the detection
+/// for it must not flip the input to Shell: the steer check ends the detection before any type
+/// change, and the line stays the agent's.
+#[test]
+fn test_a_pass_that_carries_a_pending_detection_does_not_flip_a_steer_box() {
+    use crate::terminal::input::decorations::InputBackgroundJobOptions;
+
+    const LINE: &str = "echo hello world >> out.txt";
+
+    App::test((), |mut app| async move {
+        let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+        let _agent_view = FeatureFlag::AgentView.override_enabled(false);
+        initialize_app(&mut app);
+        ensure_input_classifier_for_test(&mut app);
+        AISettings::handle(&app).update(&mut app, |ai_settings, ctx| {
+            let _ = ai_settings
+                .ai_autodetection_enabled_internal
+                .set_value(true, ctx);
+        });
+        let session_info = SessionInfo::new_for_test();
+        let session_id = session_info.session_id;
+        let terminal =
+            add_window_with_bootstrapped_terminal(&mut app, None, Some(session_info)).await;
+        simulate_directory_for_completion(session_id, &terminal, &mut app, "~");
+        let conversation_id = seed_in_progress_conversation(&mut app, &terminal);
+        select_conversation(&mut app, &terminal, conversation_id);
+        let input = terminal.read(&app, |terminal, _| terminal.input().clone());
+        input.update(&mut app, |input, ctx| {
+            input.ai_input_model().update(ctx, |ai_input, ctx| {
+                ai_input.set_input_config(
+                    InputConfig {
+                        input_type: InputType::AI,
+                        is_locked: false,
+                    },
+                    true, /* is_input_buffer_empty */
+                    ctx,
+                );
+            });
+        });
+        warpui::r#async::Timer::after(Duration::from_millis(400)).await;
+        input.update(&mut app, |input, ctx| {
+            input.clear_buffer_and_reset_undo_stack(ctx);
+            input.user_insert(LINE, ctx);
+        });
+        warpui::r#async::Timer::after(Duration::from_millis(400)).await;
+
+        input.update(&mut app, |input, ctx| {
+            input.ai_input_model().update(ctx, |model, _| {
+                model.abort_in_progress_detection();
+                model.note_detection_requested(LINE.to_owned());
+            });
+            let model = input.ai_input_model().as_ref(ctx);
+            assert_eq!(model.input_type(), InputType::AI, "test setup");
+            assert!(
+                model.should_run_input_autodetection(ctx),
+                "test setup: unlocked, autodetection on"
+            );
+            assert!(model.is_detection_requested_for(LINE), "test setup");
+            assert!(
+                !input.detection_pending_for_buffer(ctx),
+                "test setup: a steer box has no verdict an Enter would wait for (#851)"
+            );
+            input.run_input_background_jobs(
+                InputBackgroundJobOptions::default().with_command_decoration(),
+                ctx,
+            );
+        });
+        warpui::r#async::Timer::after(Duration::from_millis(500)).await;
+        input.read(&app, |input, ctx| {
+            assert_eq!(
+                input.ai_input_model().as_ref(ctx).input_type(),
+                InputType::AI,
+                "the steer box stays the agent's"
+            );
+        });
+    });
+}
+
+/// Q1 (owner 2026-11-13; #2203, the eaten Enter): the first Enter on several lines a give-up left
+/// in the editor is held by the guard, as before (nothing runs unseen, the toast says to check the
+/// lines). It used to vanish: what was typed next landed on the end of the last kept line and two
+/// commands were joined (`…r_tr13.txtecho t518…`). It is a line break at the END of the buffer
+/// now, wherever the cursor is, so the lines stay separate and no Enter is lost.
+#[test]
+fn test_an_enter_the_guard_holds_on_several_lines_becomes_a_line_break_at_the_end() {
+    const KEPT: &str = "echo a >> f\necho b >> f";
+
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let toasts = record_toast_texts(&mut app);
+        let terminal = add_window_with_bootstrapped_terminal(&mut app, None, None).await;
+        let input = terminal.read(&app, |terminal, _| terminal.input().clone());
+        let executed = Rc::new(RefCell::new(Vec::<String>::new()));
+        {
+            let executed = executed.clone();
+            app.update(|ctx| {
+                ctx.subscribe_to_view(&input, move |_, event: &super::Event, _| {
+                    if let super::Event::ExecuteCommand(event) = event {
+                        executed.borrow_mut().push(event.command.clone());
+                    }
+                });
+            });
+        }
+
+        // The cursor at the end, where a give-up leaves it.
+        input.update(&mut app, |input, ctx| {
+            input.clear_buffer_and_reset_undo_stack(ctx);
+            input.user_insert(KEPT, ctx);
+            input.arm_handed_back_enter_guard(KEPT.to_owned());
+        });
+        input.update(&mut app, |input, ctx| input.input_enter(ctx));
+        assert!(executed.borrow().is_empty(), "the kept lines do not run");
+        input.read(&app, |input, ctx| {
+            assert_eq!(
+                input.buffer_text(ctx),
+                format!("{KEPT}\n"),
+                "the held Enter is a line break at the end of the buffer"
+            );
+            assert!(!input.ssh_handover_enter_guard_armed(), "used once");
+        });
+        assert_eq!(
+            toasts.borrow().last().map(String::as_str),
+            Some(HANDED_BACK_GUARD_TOAST),
+            "the guard still says to check the lines"
+        );
+        assert_eq!(
+            cursor_byte_offset(&input, &app),
+            KEPT.len() + 1,
+            "the cursor follows the break: what is typed next starts its own line"
+        );
+        input.update(&mut app, |input, ctx| {
+            input.user_insert("echo c >> f", ctx);
+        });
+        input.read(&app, |input, ctx| {
+            assert_eq!(
+                input.buffer_text(ctx),
+                format!("{KEPT}\necho c >> f"),
+                "the next command is not joined onto the last kept line"
+            );
+        });
+        assert!(executed.borrow().is_empty());
+
+        // The cursor moved into the kept lines: the break still goes to the end, and the cursor
+        // stays where the user put it.
+        input.update(&mut app, |input, ctx| {
+            input.clear_buffer_and_reset_undo_stack(ctx);
+            input.user_insert(KEPT, ctx);
+            input.arm_handed_back_enter_guard(KEPT.to_owned());
+        });
+        place_cursor(&input, &mut app, 0);
+        input.update(&mut app, |input, ctx| input.input_enter(ctx));
+        input.read(&app, |input, ctx| {
+            assert_eq!(input.buffer_text(ctx), format!("{KEPT}\n"));
+        });
+        assert_eq!(
+            cursor_byte_offset(&input, &app),
+            0,
+            "not at the cursor: the user's place is kept"
+        );
+        assert!(executed.borrow().is_empty());
     });
 }
 
@@ -20501,4 +21359,521 @@ fn test_tab_menu_hop_detail_format() {
     let detail = tab_menu_hop_detail(many.iter().map(String::as_str), quoted);
     assert!(detail.starts_with("count=60 items=["), "{detail}");
     assert_eq!(detail.matches('"').count(), 2 * TAB_MENU_HOP_MAX_ITEMS);
+}
+
+// ---- #2208: the legacy report path is judged like the hand-off's ------------------------------
+
+/// #2208: a report that answers no hand-off request (`ReportDisposition::InsertLegacy`,
+/// `Input::insert_legacy_reported_line`) finishes the user's line too. `~` reported in front of
+/// the one escape character the editor holds, with the same facts from the view, is ssh's escape
+/// there as on the hand-off path: the editor is emptied and the two bytes are handed to the view.
+/// Without the facts (the hand-off off, or `insert_typeahead_text`) it is text, as before.
+#[test]
+fn test_legacy_report_tilde_in_front_of_a_typed_escape_char_is_the_ssh_escape() {
+    for (facts, outcome, buffer) in [
+        (
+            REPORT_OF_A_LINE_START_TILDE,
+            HandoffInsert::SshEscape(*b"~."),
+            "",
+        ),
+        (ReportLineFacts::default(), HandoffInsert::Inserted, "~."),
+    ] {
+        App::test((), move |mut app| async move {
+            initialize_app(&mut app);
+            let (input, editor, writes) =
+                pane_for_ssh_escape_test(&mut app, true, SHELL_INPUT_FOR_SSH_ESCAPE_TEST).await;
+            type_keys_for_ssh_escape_test(&mut app, &editor, &["."]);
+            let got = input.update(&mut app, |input, ctx| {
+                input.insert_legacy_reported_line(CharOffset::from(0), "~", facts, ctx)
+            });
+            assert_eq!(got, outcome, "{facts:?}");
+            input.read(&app, |input, ctx| {
+                assert_eq!(input.buffer_text(ctx), buffer, "{facts:?}");
+            });
+            assert!(
+                writes.borrow().is_empty(),
+                "the editor only judges; the view writes the two bytes"
+            );
+        });
+    }
+    // The unjudged wrapper its callers and tests use: text.
+    App::test((), move |mut app| async move {
+        initialize_app(&mut app);
+        let (input, editor, writes) =
+            pane_for_ssh_escape_test(&mut app, true, SHELL_INPUT_FOR_SSH_ESCAPE_TEST).await;
+        type_keys_for_ssh_escape_test(&mut app, &editor, &["."]);
+        input.update(&mut app, |input, ctx| {
+            input.insert_typeahead_text(CharOffset::from(0), "~", ctx);
+        });
+        input.read(&app, |input, ctx| {
+            assert_eq!(input.buffer_text(ctx), "~.");
+        });
+        assert!(writes.borrow().is_empty(), "nothing to the pty");
+    });
+}
+
+/// #2208, through the view: the editor owns input at a prompt whose legacy request was answered;
+/// a `~` typed with the terminal focused goes to the pty raw, right after a newline; the next
+/// legacy request is written; `.` lands in the editor; the report says `~`. The hand-off does not
+/// own that report (`InsertLegacy`), and it used to build the text `~.`. ssh receives `\r~.` in
+/// one write and the editor is left empty, as on the hand-off path. The view copies the report
+/// out and releases the model lock before the editor judges it (the judge reads the model).
+#[test]
+fn test_a_legacy_reported_ssh_escape_reaches_the_pty_behind_a_carriage_return() {
+    use crate::terminal::model::typeahead_handoff::HandoffState;
+    App::test((), move |mut app| async move {
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        initialize_app(&mut app);
+        let (terminal, input, editor, writes) =
+            pane_and_terminal_for_ssh_escape_test(&mut app, true, SHELL_INPUT_FOR_SSH_ESCAPE_TEST)
+                .await;
+        handoff_after_an_answered_empty_report(&app, &input, true);
+        // An Enter's newline was the last thing written; then the `~`, raw.
+        input.read(&app, |input, _| {
+            let mut model = input.model.lock();
+            model
+                .typeahead_handoff_mut()
+                .pty_write_count()
+                .note_write_bytes(b"\r");
+        });
+        terminal.update(&mut app, |view, ctx| {
+            view.write_user_bytes_for_test(b"~", ctx)
+        });
+        assert_eq!(
+            *writes.borrow(),
+            vec![b"~".to_vec()],
+            "test setup: the `~` went to the pty raw"
+        );
+        // The prompt's legacy request, written behind it.
+        input.read(&app, |input, _| {
+            let mut model = input.model.lock();
+            let mut handoff = model.typeahead_handoff_mut();
+            assert_eq!(
+                handoff.state(),
+                &HandoffState::EditorOwned,
+                "test setup: the hand-off does not own this prompt"
+            );
+            handoff.pty_write_count().note_write_bytes(b"~");
+            handoff.on_legacy_request_written();
+            handoff.pty_write_count().note_write_bytes(b"\x1bi");
+        });
+        type_keys_for_ssh_escape_test(&mut app, &editor, &["."]);
+
+        deliver_shell_report(&mut app, &terminal, &input, "~");
+        assert_eq!(
+            *writes.borrow(),
+            vec![b"~".to_vec(), b"\r~.".to_vec()],
+            "ssh receives `\\r~.`, once, in one write"
+        );
+        input.read(&app, |input, ctx| {
+            assert_eq!(input.buffer_text(ctx), "", "the editor is empty");
+        });
+    });
+}
+
+/// #2208 guard: with the typeahead hand-off off nothing records where a raw `~` was read, so a
+/// legacy report is text exactly as before: `~.` stays in the editor and nothing is written.
+#[test]
+fn test_a_legacy_report_with_the_handoff_off_stays_text() {
+    App::test((), move |mut app| async move {
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(false);
+        initialize_app(&mut app);
+        let (terminal, input, editor, writes) =
+            pane_and_terminal_for_ssh_escape_test(&mut app, true, SHELL_INPUT_FOR_SSH_ESCAPE_TEST)
+                .await;
+        input.read(&app, |input, _| {
+            let mut model = input.model.lock();
+            model
+                .typeahead_handoff_mut()
+                .pty_write_count()
+                .note_write_bytes(b"\r");
+        });
+        terminal.update(&mut app, |view, ctx| {
+            view.write_user_bytes_for_test(b"~", ctx)
+        });
+        let raw = writes.borrow().clone();
+        type_keys_for_ssh_escape_test(&mut app, &editor, &["."]);
+        deliver_shell_report(&mut app, &terminal, &input, "~");
+        input.read(&app, |input, ctx| {
+            assert_eq!(input.buffer_text(ctx), "~.", "text, as before");
+        });
+        assert_eq!(*writes.borrow(), raw, "nothing more reaches the pty");
+    });
+}
+
+// ---- #2207: the reported ssh escape with an Enter deferred behind it ---------------------------
+
+/// The pty bytes entries the pane queue holds, in order, and whether exactly one gate of `kind`
+/// holds them.
+fn held_pty_bytes(
+    app: &App,
+    editor: &ViewHandle<EditorView>,
+    kind: crate::terminal::input_queue::GateKind,
+) -> (Vec<u8>, bool) {
+    use crate::terminal::input_queue::EntryKind;
+    let queue = editor.read(app, |editor, _| editor.paste_hold().queue());
+    let queue = queue.peek();
+    let mut bytes = Vec::new();
+    for entry in queue.entries() {
+        if let EntryKind::PtyBytes { bytes: held, .. } = &entry.kind {
+            bytes.extend_from_slice(held);
+        }
+    }
+    (bytes, queue.gates().len() == 1 && queue.has_gate_kind(kind))
+}
+
+/// How the #2207 fixture is varied.
+#[derive(Clone, Copy)]
+struct DeferredEscapeCase {
+    /// The escape character typed into the editor behind the raw `~`.
+    escape: &'static str,
+    /// `pwd` typed behind the deferred Enter goes into the EDITOR (held as editor keys) instead
+    /// of being typed with the terminal focused (held as pty bytes); its Enter is typed with the
+    /// terminal focused either way.
+    keys_into_editor: bool,
+    /// The pane queue is full with the held keys: one more entry does not fit.
+    queue_full: bool,
+    /// The view refuses to turn the deferred Enter into the hold (review F3).
+    refuse_hold: bool,
+}
+
+const DEFERRED_ESCAPE: DeferredEscapeCase = DeferredEscapeCase {
+    escape: ".",
+    keys_into_editor: false,
+    queue_full: false,
+    refuse_hold: false,
+};
+
+/// #2207 fixture: Enter, `~` before the remote prompt (raw to ssh, at its line start), the
+/// prompt's request, then `.` and an Enter in the editor (deferred behind the report) and `pwd`,
+/// Enter typed behind it (held behind the deferred Enter's gate), then the report `~`.
+async fn reported_escape_with_an_enter_deferred_behind_it(
+    app: &mut App,
+) -> (
+    ViewHandle<TerminalView>,
+    ViewHandle<Input>,
+    ViewHandle<EditorView>,
+    Rc<RefCell<Vec<Vec<u8>>>>,
+) {
+    reported_escape_with_an_enter_deferred_behind_it_as(app, DEFERRED_ESCAPE).await
+}
+
+/// [`reported_escape_with_an_enter_deferred_behind_it`], varied by `case`.
+async fn reported_escape_with_an_enter_deferred_behind_it_as(
+    app: &mut App,
+    case: DeferredEscapeCase,
+) -> (
+    ViewHandle<TerminalView>,
+    ViewHandle<Input>,
+    ViewHandle<EditorView>,
+    Rc<RefCell<Vec<Vec<u8>>>>,
+) {
+    let (terminal, input, editor, writes) =
+        pane_and_terminal_for_ssh_escape_test(app, true, SHELL_INPUT_FOR_SSH_ESCAPE_TEST).await;
+    type_raw_before_the_prompt_then_request(app, &terminal, &input, &[b"~"]);
+    type_keys_for_ssh_escape_test(app, &editor, &[case.escape]);
+    input.update(app, |input, ctx| input.input_enter(ctx));
+    assert!(
+        enter_is_deferred_behind_the_report(app, &input),
+        "test setup: the Enter waits for the report"
+    );
+    if case.keys_into_editor {
+        type_keys_for_ssh_escape_test(app, &editor, &["p", "w", "d"]);
+        terminal.update(app, |view, ctx| {
+            view.write_user_bytes_for_test(b"\r", ctx);
+        });
+        input.read(app, |input, ctx| {
+            assert_eq!(
+                input.buffer_text(ctx),
+                case.escape,
+                "test setup: the keys typed into the editor behind the Enter are held, not applied"
+            );
+        });
+    } else {
+        terminal.update(app, |view, ctx| {
+            view.write_user_bytes_for_test(b"pwd", ctx);
+            view.write_user_bytes_for_test(b"\r", ctx);
+        });
+    }
+    assert_eq!(
+        *writes.borrow(),
+        vec![b"~".to_vec()],
+        "test setup: only the raw `~` reached the pty; the keys behind the Enter are held"
+    );
+    let queue = editor.read(app, |editor, _| editor.paste_hold().queue());
+    assert!(
+        queue.peek().queued_len() > 0,
+        "test setup: the keys behind the Enter wait in the pane queue"
+    );
+    if case.queue_full {
+        let held = queue.peek().queued_len();
+        queue
+            .try_lock()
+            .expect("test setup: the queue is free")
+            .set_max_entries(held);
+    }
+    if case.refuse_hold {
+        input.read(app, |input, _| {
+            input
+                .model
+                .lock()
+                .typeahead_handoff_mut()
+                .refuse_deferred_enter_hold_for_test();
+        });
+    }
+    deliver_shell_report(app, &terminal, &input, "~");
+    (terminal, input, editor, writes)
+}
+
+/// The fallback every refused #2207 case keeps: the report is text, no escape bytes reach the
+/// pty, and the line `~X` is whole, in the editor or submitted as typed.
+fn assert_reported_tilde_stayed_text(
+    app: &App,
+    input: &ViewHandle<Input>,
+    writes: &Rc<RefCell<Vec<Vec<u8>>>>,
+    escape: &str,
+    why: &str,
+) {
+    let line = format!("~{escape}");
+    let written = writes.borrow().clone();
+    let escape_bytes = format!("\r{line}").into_bytes();
+    assert!(
+        !written
+            .iter()
+            .any(|write| *write == escape_bytes || write.as_slice() == line.as_bytes()),
+        "{why}: no escape is written: {written:?}"
+    );
+    let buffer = input.read(app, |input, ctx| input.buffer_text(ctx));
+    let submitted = format!("{line}\r").into_bytes();
+    assert!(
+        buffer.starts_with(&line) || written.contains(&submitted),
+        "{why}: the line is whole and in typed order (buffer {buffer:?}, written {written:?})"
+    );
+}
+
+/// #2207 (review F1): `~C` opens ssh's own `ssh>` command line. No prompt event follows it, so an
+/// Enter held "for the next prompt" would only ever be ended by the hold's 10 s cap: a timer as
+/// the hand-over. With an Enter deferred behind the report, `~C` is not the escape: text, as
+/// before, in typed order.
+#[test]
+fn test_a_reported_tilde_c_with_an_enter_deferred_behind_it_stays_text() {
+    App::test((), move |mut app| async move {
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        initialize_app(&mut app);
+        let case = DeferredEscapeCase {
+            escape: "C",
+            ..DEFERRED_ESCAPE
+        };
+        let (_terminal, input, _editor, writes) =
+            reported_escape_with_an_enter_deferred_behind_it_as(&mut app, case).await;
+        warpui::r#async::Timer::after(Duration::from_millis(250)).await;
+        assert_reported_tilde_stayed_text(&app, &input, &writes, "C", "`~C` + Enter");
+    });
+}
+
+/// #2207 (review F5): turning the deferred Enter into the hold adds one entry (the Enter) to the
+/// pane queue. With the queue full that entry would push out the newest held key, so the
+/// transition is not made: text, as before, nothing dropped.
+#[test]
+fn test_a_reported_ssh_escape_with_a_full_queue_behind_the_deferred_enter_stays_text() {
+    App::test((), move |mut app| async move {
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        initialize_app(&mut app);
+        let case = DeferredEscapeCase {
+            queue_full: true,
+            ..DEFERRED_ESCAPE
+        };
+        let (_terminal, input, _editor, writes) =
+            reported_escape_with_an_enter_deferred_behind_it_as(&mut app, case).await;
+        warpui::r#async::Timer::after(Duration::from_millis(250)).await;
+        assert_reported_tilde_stayed_text(&app, &input, &writes, ".", "a full queue");
+    });
+}
+
+/// #2207 (review F3): the editor judged the line as the escape, but the deferred Enter could not
+/// be turned into the hold after all. The escape is then written by the ordinary escape path,
+/// and the deferred Enter must still be finished as after any report: it used to be skipped and
+/// left deferred (its submit due, nothing to run it) until the gate's leak net, which does not
+/// run it either.
+#[test]
+fn test_a_reported_ssh_escape_whose_hold_is_refused_still_finishes_the_deferred_enter() {
+    use crate::terminal::model::typeahead_handoff::HandoffState;
+    App::test((), move |mut app| async move {
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        initialize_app(&mut app);
+        let case = DeferredEscapeCase {
+            refuse_hold: true,
+            ..DEFERRED_ESCAPE
+        };
+        let (_terminal, input, _editor, writes) =
+            reported_escape_with_an_enter_deferred_behind_it_as(&mut app, case).await;
+        warpui::r#async::Timer::after(Duration::from_millis(250)).await;
+        // Finished: its submit is no longer due, or the bare Enter it had become was submitted
+        // (the test pane has no pty controller to take the command and move the state on).
+        let submit_still_due =
+            handoff_state(&app, &input) == HandoffState::HoldAfterEnter { released: true };
+        let bare_enter_submitted = writes.borrow().contains(&b"\r".to_vec());
+        assert!(
+            !submit_still_due || bare_enter_submitted,
+            "the deferred Enter was finished, not left with its submit due: {:?}",
+            writes.borrow()
+        );
+    });
+}
+
+/// #2207 (review F2): the keys typed behind the deferred Enter went into the EDITOR and are held
+/// as editor keys. When the escape's hold is written out (here: ssh is gone) they are the hold's
+/// keys like any other: written to the pty in typed order behind the Enter, not applied to the
+/// local editor (where `pwd`, Enter would be submitted from the editor, ahead of the Enter typed
+/// before them).
+#[test]
+fn test_editor_keys_behind_a_reported_ssh_escape_are_written_in_order_when_ssh_is_gone() {
+    App::test((), move |mut app| async move {
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        initialize_app(&mut app);
+        let case = DeferredEscapeCase {
+            keys_into_editor: true,
+            ..DEFERRED_ESCAPE
+        };
+        let (terminal, input, editor, writes) =
+            reported_escape_with_an_enter_deferred_behind_it_as(&mut app, case).await;
+        warpui::r#async::Timer::after(Duration::from_millis(250)).await;
+        assert_eq!(
+            *writes.borrow(),
+            vec![b"~".to_vec(), b"\r~.".to_vec()],
+            "test setup: the escape went out alone"
+        );
+        input.read(&app, |input, _| {
+            input.model.lock().typeahead_handoff_mut().reset_on_exit();
+        });
+        terminal.update(&mut app, |view, ctx| {
+            view.handle_typeahead_report_for_test(ctx)
+        });
+        assert_eq!(
+            writes.borrow().concat(),
+            b"~\r~.\rpwd\r".to_vec(),
+            "the Enter, then the keys typed into the editor behind it, are written in typed \
+             order, once: {:?}",
+            writes.borrow()
+        );
+        input.read(&app, |input, ctx| {
+            assert_eq!(
+                input.buffer_text(ctx),
+                "",
+                "nothing was applied to the editor"
+            );
+        });
+        let queue = editor.read(&app, |editor, _| editor.paste_hold().queue());
+        assert!(queue.peek().is_idle(), "nothing is left held");
+    });
+}
+
+/// #2207: `~` raw, then `.` and an Enter in the editor before the report (and keys typed behind
+/// that Enter). The line is ssh's escape: ssh receives `\r~.` ALONE, at once, in one write. The
+/// Enter and the keys behind it are not written with it (ssh drops what it reads together with
+/// `~.`) and are not put into the editor: they wait, in typed order, behind a `PromptSeen` gate
+/// for the next prompt event, the Enter first. The `\r` is counted as a bare Enter's line.
+#[test]
+fn test_a_reported_ssh_escape_with_an_enter_deferred_behind_it_goes_out_alone() {
+    use crate::terminal::input_queue::GateKind;
+    use crate::terminal::model::typeahead_handoff::HandoffState;
+    App::test((), move |mut app| async move {
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        initialize_app(&mut app);
+        let (_terminal, input, editor, writes) =
+            reported_escape_with_an_enter_deferred_behind_it(&mut app).await;
+        // Whatever the report started has time to land (a submit of `~.` would).
+        warpui::r#async::Timer::after(Duration::from_millis(250)).await;
+
+        assert_eq!(
+            *writes.borrow(),
+            vec![b"~".to_vec(), b"\r~.".to_vec()],
+            "ssh receives `\\r~.` alone: neither the Enter nor the keys behind it go out with it"
+        );
+        input.read(&app, |input, ctx| {
+            assert_eq!(input.buffer_text(ctx), "", "nothing is left in the editor");
+        });
+        let (held, one_prompt_gate) = held_pty_bytes(&app, &editor, GateKind::PromptSeen);
+        assert_eq!(
+            held,
+            b"\rpwd\r".to_vec(),
+            "the Enter, then the keys typed behind it, wait in typed order"
+        );
+        assert!(
+            one_prompt_gate,
+            "held for the next prompt event (a `PromptSeen` gate), nothing else"
+        );
+        assert_eq!(
+            handoff_state(&app, &input),
+            HandoffState::PtyOwned {
+                wrote_user_bytes: true,
+                enters_written: 1,
+                precmds_seen: 0,
+            },
+            "the `\\r` is counted as a bare Enter's line"
+        );
+    });
+}
+
+/// #2207 (owner decision 2026-11-13): `~.` ended the ssh session before any remote prompt came.
+/// The Enter and the keys typed behind it are written in typed order to whatever owns input now
+/// (the local shell), as a plain terminal delivers what was typed after ssh exits: never dropped,
+/// never put back into the editor. Both ways the hold can find its session gone: the session's
+/// end itself, and a state that left the pty's ownership while the hold was queued.
+#[test]
+fn test_the_enter_and_keys_behind_a_reported_ssh_escape_are_written_in_order_when_ssh_is_gone() {
+    use crate::terminal::model::typeahead_handoff::HandoffState;
+    for session_ended in [true, false] {
+        App::test((), move |mut app| async move {
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            initialize_app(&mut app);
+            let (terminal, input, editor, writes) =
+                reported_escape_with_an_enter_deferred_behind_it(&mut app).await;
+            warpui::r#async::Timer::after(Duration::from_millis(250)).await;
+            assert_eq!(
+                *writes.borrow(),
+                vec![b"~".to_vec(), b"\r~.".to_vec()],
+                "session_ended={session_ended}: test setup: the escape went out alone"
+            );
+
+            input.read(&app, |input, _| {
+                let mut model = input.model.lock();
+                let mut handoff = model.typeahead_handoff_mut();
+                if session_ended {
+                    handoff.reset_on_exit();
+                } else {
+                    // The local prompt took input back with the hold still queued; the next key
+                    // (or any hand-off event) finds the hold stale.
+                    handoff.on_user_write_flushed();
+                    handoff.force_editor_owned_for_test();
+                    assert_eq!(handoff.state(), &HandoffState::EditorOwned);
+                    assert!(handoff.check_queued_young_hold());
+                }
+            });
+            // The next hand-off event the view handles applies the end the hand-off recorded.
+            terminal.update(&mut app, |view, ctx| {
+                view.handle_typeahead_report_for_test(ctx)
+            });
+
+            assert_eq!(
+                writes.borrow().concat(),
+                b"~\r~.\rpwd\r".to_vec(),
+                "session_ended={session_ended}: the Enter, then the keys typed behind it, are \
+                 written in typed order, once: {:?}",
+                writes.borrow()
+            );
+            input.read(&app, |input, ctx| {
+                assert_eq!(
+                    input.buffer_text(ctx),
+                    "",
+                    "session_ended={session_ended}: nothing was put back into the editor"
+                );
+            });
+            let queue = editor.read(&app, |editor, _| editor.paste_hold().queue());
+            assert!(
+                queue.peek().is_idle(),
+                "session_ended={session_ended}: nothing is left held"
+            );
+        });
+    }
 }

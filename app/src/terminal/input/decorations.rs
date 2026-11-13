@@ -79,6 +79,12 @@ impl InputBackgroundJobOptions {
         self
     }
 
+    /// Whether this pass asks for input-type detection (#2203: the debounce's consumer logs a
+    /// detection the debounce dropped).
+    pub(super) fn carries_detection(self) -> bool {
+        self.ai_input_detection
+    }
+
     /// Returns `true` if there are no input background jobs to run. Returns `false` if there is at
     /// least one job to run.
     fn no_jobs_to_run(self) -> bool {
@@ -96,6 +102,25 @@ const INVALID_SYMBOLS_COMMAND_ERROR_UNDERLINING: [char; 22] = [
     '~', '`', '#', '$', '&', '*', '(', ')', '\\', '|', '[', ']', '{', '}', ';', '\'', '\"', '<',
     '>', '?', '!', ',',
 ];
+
+/// #2203: whether a background pass that carries no input-type detection owes one: a detection
+/// is still requested for exactly the text in the buffer (only a newer edit of that text drops a
+/// request), autodetection runs for it, and no classifier job is in flight for it (that job
+/// delivers the verdict; a pass that carried the detection again would abort and restart it).
+///
+/// The debounce in front of these passes keeps only the last one queued in its window, and in AI
+/// mode a pass with nothing to do cancels the parse in flight, so without this a pass that asked
+/// for nothing (the input model's own event queues one, decoration only) could take the only job
+/// that owed a verdict with it. Level-based: read from the model's pending request each time, no
+/// flag of its own.
+pub(super) fn pass_owes_detection(
+    carries_detection: bool,
+    requested_for_buffer: bool,
+    autodetection_on: bool,
+    classifier_job_in_flight: bool,
+) -> bool {
+    !carries_detection && requested_for_buffer && autodetection_on && !classifier_job_in_flight
+}
 
 enum CompletionSessionContext {
     Session(SessionContext),
@@ -278,6 +303,63 @@ impl Input {
         }
     }
 
+    /// [`Self::cancel_decorations_job`] for a background pass, with the #2203 log hop: a pass
+    /// that carries no detection has just cancelled a job while a detection is still requested
+    /// for the text in the buffer and no classifier job is in flight for it, so nothing is left
+    /// that will deliver that verdict (`detection_job_cancelled pending=1`, a warning). With the
+    /// request sticking ([`pass_owes_detection`]) such a pass carries the detection and this is
+    /// not reached while autodetection runs; with `PHOSPHOR_REPORT_LINE_JUDGE=0` it names the
+    /// pass that cost an Enter its verdict.
+    fn cancel_decorations_job_of_pass(
+        &mut self,
+        mode: InputBackgroundJobOptions,
+        ctx: &AppContext,
+    ) {
+        let had_job = self.decorations_future_handle.is_some();
+        self.cancel_decorations_job();
+        if !had_job || mode.ai_input_detection {
+            return;
+        }
+        let model = self.ai_input_model.as_ref(ctx);
+        if !model.has_detection_request() || model.detection_job_in_flight() {
+            return;
+        }
+        if !model.is_detection_requested_for(&self.editor.as_ref(ctx).buffer_text(ctx)) {
+            return;
+        }
+        log::warn!(
+            "input-type detection: a pass without detection cancelled the job in flight while \
+             a verdict is still requested for the buffer; nothing will deliver it (#2203)"
+        );
+        warpui::input_order::log_hop("detection_job_cancelled", || "pending=1".to_owned());
+    }
+
+    /// #2203: whether the pass `mode` owes the detection requested for the text in the buffer
+    /// ([`pass_owes_detection`]). Not for a buffer over the parse cap, whose detection has its
+    /// own job and its own start (`start_detection_for_unparsed_buffer`). Off with
+    /// `PHOSPHOR_REPORT_LINE_JUDGE=0`.
+    fn pass_owes_detection_for_buffer(
+        &self,
+        mode: InputBackgroundJobOptions,
+        ctx: &AppContext,
+    ) -> bool {
+        if mode.ai_input_detection || !super::report_line_judge_enabled() {
+            return false;
+        }
+        let model = self.ai_input_model.as_ref(ctx);
+        // Cheap checks first: nearly every pass finds no request pending, and the buffer is not
+        // copied for it.
+        if !model.has_detection_request() || self.buffer_exceeds_background_job_cap(ctx) {
+            return false;
+        }
+        pass_owes_detection(
+            false,
+            model.is_detection_requested_for(&self.editor.as_ref(ctx).buffer_text(ctx)),
+            model.should_run_input_autodetection(ctx),
+            model.detection_job_in_flight(),
+        )
+    }
+
     /// Whether the buffer is over [`MAX_BACKGROUND_JOB_BUFFER_CHARS`] chars or
     /// [`MAX_BACKGROUND_JOB_BUFFER_TOKENS`] words, so no background parse (and so no input-type
     /// verdict) will run for it. The length check reads the cached length, no copy; the text
@@ -301,11 +383,24 @@ impl Input {
         mode: InputBackgroundJobOptions,
         ctx: &mut ViewContext<Self>,
     ) {
+        let mut mode = mode;
+
+        // #2203: a detection requested for the text in the buffer sticks until its verdict (or a
+        // newer edit of that text). A pass that asks for none, or for nothing at all, would
+        // otherwise cancel or replace the parse that owes the verdict (the AI-mode early return
+        // and the restart below), or be the one item the debounce kept of a window that also
+        // held the detection: it carries the detection instead. Before the early returns, so no
+        // such pass can get past it.
+        if self.pass_owes_detection_for_buffer(mode, ctx) {
+            warpui::input_order::log_hop("detection_pass_upgraded", || {
+                format!("decoration={}", u8::from(mode.command_decoration))
+            });
+            mode.ai_input_detection = true;
+        }
+
         if mode.no_jobs_to_run() {
             return;
         }
-
-        let mut mode = mode;
 
         // A buffer this large is a recalled history line or a paste, not a command anyone
         // reads token by token (#868: a 50 MB history line recalled with Up). Parsing it for
@@ -353,7 +448,7 @@ impl Input {
             // Return early because there are no input background jobs to run.
             if mode.no_jobs_to_run() {
                 // A job started for earlier text would only decorate text that is gone.
-                self.cancel_decorations_job();
+                self.cancel_decorations_job_of_pass(mode, ctx);
                 return;
             }
         }
@@ -377,7 +472,7 @@ impl Input {
                 {
                     // The cached parse already describes this text, so any in-flight job
                     // is for different (stale) text and must not overwrite it.
-                    self.cancel_decorations_job();
+                    self.cancel_decorations_job_of_pass(mode, ctx);
                     if mode.ai_input_detection {
                         self.run_input_mode_detection(completion_context, ctx);
                     }
@@ -389,7 +484,7 @@ impl Input {
                     return;
                 }
 
-                self.cancel_decorations_job();
+                self.cancel_decorations_job_of_pass(mode, ctx);
                 let cancel = Arc::new(AtomicBool::new(false));
                 self.decorations_cancel = Some(cancel.clone());
 
