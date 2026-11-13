@@ -48,7 +48,10 @@ def _runner(fn, arm):
         try:
             if not lab_prepare(ctx, r, arm):
                 return
-            fn(ctx, r, arm)
+            # r30 (owner rule 2026-11-13: the Windows ssh coverage runs in the lab): on the Windows Git Bash pane the one-connection managed ssh is OFF unless the
+            # shell has PHOSPHOR_MSYS_MANAGED_SSH=1 (#2051), so a plain `ssh lab-<user>` is a plain session there and every managed-session check would judge the
+            # wrong thing. in_msys_managed_ssh switches it on for the pane's shell, restores and PROVES the default afterwards, and is a plain call everywhere else.
+            CR.in_msys_managed_ssh(ctx, lambda: fn(ctx, r, arm))
         finally:
             lab_cleanup(ctx, arm)
     run.__name__ = arm["name"]

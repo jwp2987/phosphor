@@ -811,14 +811,27 @@ def stop_container(cid, mode, box_key=None):
                        capture_output=True, timeout=60, stdin=subprocess.DEVNULL)
 
 
+LAST_STOP_WHY = ""
+
+
 def stop_from_json(run):
-    """teardown.sh / the run.py finally: stop the container named by <run>/lab.json (exact id; no token needed). True when something was asked to stop."""
+    """teardown.sh / the run.py finally / windows/ci/after_job.ps1: stop the container named by <run>/lab.json (exact id; no token needed). True when something was asked to
+    stop. A fixed slot needs the lease owner AND the box settings (SSHLAB_BOX, SSHLAB_TOKEN) in this process's environment: r30, the Windows after_script had never played a
+    lab job, and without them this returned False, which main() reported as 'no lab.json (nothing to stop)' although the file was there and the lease was left to expire.
+    The reason is now kept in LAST_STOP_WHY and printed."""
+    global LAST_STOP_WHY
+    LAST_STOP_WHY = ""
     try:
         j = json.load(open(os.path.join(run, "lab.json")))
     except (OSError, ValueError):
+        LAST_STOP_WHY = "no readable lab.json in %s (nothing to stop)" % run
         return False
     if j.get("mode") == "fixed":
-        if not j.get("owner") or fixed_ready():
+        if not j.get("owner"):
+            LAST_STOP_WHY = "lab.json names a fixed slot but no lease owner: no lease was taken, nothing to release"
+            return False
+        if fixed_ready():
+            LAST_STOP_WHY = "lab.json names a fixed slot lease, but this process cannot release it: %s; the lease ends on its own" % fixed_ready()
             return False
         lab = Lab(dict(cid=None, ports=slot_ports(j.get("slot")), token=ci_env.get("SSHLAB_TOKEN")), _host_of(box_addr()), "fixed")
         lab.owner, lab.owns_lease = j["owner"], True
@@ -965,6 +978,6 @@ class PlainSsh:
 if __name__ == "__main__":
     # lab.py stop <run dir>: teardown.sh / after_job.ps1 stop the container named by <run dir>/lab.json (exact id)
     if len(sys.argv) == 3 and sys.argv[1] == "stop":
-        print("lab stop: %s" % ("asked to stop the container in lab.json" if stop_from_json(sys.argv[2]) else "no lab.json in %s (nothing to stop)" % sys.argv[2]))
+        print("lab stop: %s" % ("asked to stop the container in lab.json" if stop_from_json(sys.argv[2]) else LAST_STOP_WHY))
     else:
         sys.exit("usage: lab.py stop <run dir>")

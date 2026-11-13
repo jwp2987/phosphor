@@ -6,6 +6,8 @@
 #               (PowerShell syntax: Ctx.append_cmd('pwsh', ...)) and fixed settles where the POSIX harness waits for a prompt.
 #   gitbash     session.startup_shell_override = Git for Windows' bash.exe with HOME = the scratch home, so ~/.bashrc logs exactly like on Linux.
 #               The POSIX cases run here unchanged. Result rows of this pass carry the mode label '<mode>@gitbash'.
+import os
+
 BOTH = {
     # shell-neutral (append_cmd / pane_shell) or self-skipping with their own explicit reason
     "mode_proof", "cadence", "fast_typing", "rollover", "keydown_count", "paste_instant_enter", "arrows_behind_paste", "tab_enter", "ctrl_c_d",
@@ -319,10 +321,45 @@ def lab_skip_reason(name, pane):
     return None
 
 
+# r30 (owner rule 2026-11-13: ssh / remote tests on Linux, macOS AND Windows run against the real lab sshd, not the Windows fake sshd, which cannot give the remote
+# shell a real pty: #2007, #2051, #1992). The Windows app job no longer plays these fake-sshd versions; each is a SKIP row that names the lab family that judges the same
+# thing (app-test-lab-windows, Git Bash pane; Linux and macOS play the same families in their lab jobs). They stay in the registry and run by hand with
+# APPCI_WIN_FAKESSHD=1. A name here must be a registered case and its family a registered lab family (selftest r30_windows_fake_sshd_cases_moved_to_the_lab).
+FAKESSHD_BY_HAND_ENV = "APPCI_WIN_FAKESSHD"
+LAB_MOVED = {
+    "ssh_connect_typing": "lab_connect_typeahead",
+    "ssh_connect_typing_wrapper": "lab_connect_typeahead",
+    "ssh_enter_then_immediate_command": "lab_connect_typeahead",
+    "ssh_gitbash_typeahead_managed": "lab_connect_typeahead",
+    "ssh_gitbash_managed": "lab_managed_connect",
+    "ssh_gitbash_bootstrap_in_command": "lab_managed_connect",
+    "ssh_gitbash_kill_switch": "lab_msys_ssh_switch",
+    "remote_tab_no_helper": "lab_tab_no_helper (and lab_tab_remote_dir)",
+    "remote_tab_enter_no_helper": "lab_tab_no_helper (and lab_tab_remote_dir)",
+    "remote_session_legacy": "lab_remote_session",
+    "ssh_password_prompt": "lab_password_prompt",
+}
+
+
+def lab_moved_reason(name, pane="gitbash"):
+    """the SKIP reason of a case the Windows app job no longer plays against the fake sshd (LAB_MOVED), else None; APPCI_WIN_FAKESSHD=1 plays it by hand. Git Bash pane
+    only: the lab families run in no other pane (lab_skip_reason), so a BOTH case keeps playing in the PowerShell pane (its remote is still the fake sshd: a gap the
+    owner decides, docs/testing.md round 30)."""
+    fam = LAB_MOVED.get(name)
+    if fam is None or pane != "gitbash" or os.environ.get(FAKESSHD_BY_HAND_ENV) == "1":
+        return None
+    return ("not played in the Windows app job (owner rule 2026-11-13: ssh tests run against the real lab, not the Windows fake sshd, #2007 #2051 #1992): "
+            "the same behaviour is judged by %s in app-test-lab-windows (Git Bash pane), and by the same family on Linux and macOS; "
+            "to run this fake-sshd version by hand set %s=1" % (fam, FAKESSHD_BY_HAND_ENV))
+
+
 def skip_reason(name, pane):
     """None when the case runs in this pane shell, else the reason it is skipped there"""
     if name.startswith("lab_"):
         return lab_skip_reason(name, pane)
+    moved = lab_moved_reason(name, pane)
+    if moved:
+        return moved
     if name in NOT_WINDOWS:
         return "not run on Windows: " + NOT_WINDOWS[name]
     if name in GITBASH_ONLY and pane == "powershell":

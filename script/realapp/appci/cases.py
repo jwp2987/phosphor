@@ -206,6 +206,9 @@ PROVING_FAKE += ("freeze_and_wake",)
 PROVING_LAB += ("lab_freeze_and_wake.*",)
 # #2094 (round 16): lab_agent_suggestions_ssh, no next-command / prompt-suggestion request from an ssh pane by default (per-purpose local control).
 PROVING_LAB += ("lab_agent_suggestions_ssh.*",)
+# r30 (owner rule 2026-11-13: ssh / remote tests on Linux, macOS and Windows run against the real lab, not the Windows fake sshd; cases_lab_winport.py): five new
+# families, never played. The Windows app job no longer plays the fake-sshd versions (winmap.LAB_MOVED); app-test-lab-windows plays these in the Git Bash pane.
+PROVING_LAB += ("lab_connect_typeahead.*", "lab_managed_connect.*", "lab_msys_ssh_switch.*", "lab_tab_no_helper.*", "lab_remote_session.*")
 # round 15 wave 4, desktop integration (docs/design/r14-test-gaps.md T35 / T37 / T38 / T39, design docs/design/r15-w4desk.md; #2075, #2078): display
 # scale 1.25 / 1.5 / 2 and a second output, desktop notifications (a recording service on the app's private bus), a real file drag, a real input method
 PROVING += ("scale_matrix", "desktop_notification", "desktop_notification_agent_question", "drag_drop_file", "ime_compose")
@@ -7296,6 +7299,7 @@ import cases_shells  # noqa: E402,F401  (#1534: startup_shell_override passes: c
 import cases_lab_helper  # noqa: E402,F401  (P10: helper lifecycle / capability / routing and no-helper lab cases)
 import cases_agent_interactive  # noqa: E402,F401  (#1829: agent-run password / vim / ssh / less hand-over and hand-back, agent_interactive_*)
 import cases_lab  # noqa: E402,F401  (Wave 0.5b: the fake ssh lab cases, lab_*; run only by --cases lab_*)
+import cases_lab_winport  # noqa: E402,F401  (r30: the Windows fake-sshd ssh cases as lab families: lab_connect_typeahead, lab_managed_connect, lab_msys_ssh_switch, lab_tab_no_helper, lab_remote_session)
 import cases_lab_git  # noqa: E402,F401  (wave H parity P7: lab_git_write_remote, git writes over ssh with a bare repo as the remote)
 import cases_lab_remote  # noqa: E402,F401  (Wave H parity: per-family helper vs no-helper lab cases, lab_file_tree_remote.*)
 import cases_lab_index  # noqa: E402,F401  (Wave H parity P9b: lab_codebase_index_remote, host scans / app embeds)

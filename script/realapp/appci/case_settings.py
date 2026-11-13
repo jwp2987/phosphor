@@ -550,6 +550,9 @@ def lab(globs, needs=None, reads=(), note=""):
 lab("lab_tab_remote_dir.* lab_nohelper_tab_hands_back.* lab_nohelper_listing_single_flight.*", needs=KEYS, note="Tab completion of remote paths by the default Tab key")
 lab("lab_path_detect.* lab_enter_start.* lab_enter_no_network_wait.* lab_raw_key_arrival.* lab_ctrl_c_no_esc_i.* lab_ssh_drop_reconnect.* "
     "lab_password_prompt.* lab_nu_agent_pager_env.* lab_nohelper_sh_login_keys.* lab_nohelper_sh_login_profile.*", note="typed lines and keys in the ssh session, judged by the host's files, the sshd log and the app log")
+lab("lab_connect_typeahead.* lab_managed_connect.* lab_msys_ssh_switch.* lab_remote_session.*",
+    note="r30: the Windows fake-sshd ssh cases against the lab: lines typed behind ssh, the managed connect, the Git Bash switch, a whole remote session")
+lab("lab_tab_no_helper.*", needs=KEYS, note="r30: remote Tab without the helper (the old remote_tab_no_helper / remote_tab_enter_no_helper) against the lab")
 lab("lab_chips.* lab_no_helper_chip.* lab_gh_chip_remote.*", note="chips by OCR or the app's chip hop lines; the theme and text size are the seed's and are not read")
 lab("lab_helper_install.* lab_helper_quiet_fallback.* lab_helper_digest_mismatch.* lab_helper_missing_asset.* lab_helper_one_version.* lab_helper_idle_exit.* "
     "lab_helper_reconnect.* lab_helper_scp_fallback.* lab_helper_route_unsupported.* lab_helper_killed.* lab_nohelper_unavailable.*",
