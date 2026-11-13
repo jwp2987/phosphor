@@ -810,7 +810,10 @@ def recall(ctx, r, label, want, keys):
 def history_round(ctx, r, how, fname, prompt_tok):
     """three commands, the stop (`how`: 'quit' | 'kill'), the relaunch, three recalls -> False when the round could not go on"""
     shell = ctx.pane_shell()
-    rid = "hs" + ctx.tok(4).replace("_", "")[-4:] + ("q" if how == "quit" else "k")
+    # #2204: the idents are unique per RUN (ptok is unseeded; tok is seeded, so every run on a machine whose history file persists typed identical
+    # commands and the file's earlier runs read as "typed more than once"), and the PowerShell history file is judged only from this round's lines
+    rid = "hs" + ctx.ptok(8).replace("_", "")[-8:] + ("q" if how == "quit" else "k")
+    hist_base = len(hist_lines(ctx)) if (ctx.win and ctx.pane == "powershell") else 0
     cmds = []
     mark, hmark = ctx.cmd_mark(), len(ctx.ps_history_lines())
     for i in (1, 2, 3):
@@ -835,7 +838,7 @@ def history_round(ctx, r, how, fname, prompt_tok):
     elif not R.hard_kill(ctx, r, "hs_kill"):
         return False
     time.sleep(1.5)                                      # a shell that got SIGHUP writes its history file now
-    hl = hist_lines(ctx)
+    hl = hist_lines(ctx)[hist_base:]
     counts = {ident: count_in(hl, ident) for _l, _p, ident in cmds}
     r.metric("history_file_counts_after_%s" % how, counts)
     r.check(all(n <= 1 for n in counts.values()), "after the %s the shell's history file holds a typed command more than once: %r" % (how, counts))

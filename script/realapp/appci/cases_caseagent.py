@@ -505,19 +505,51 @@ def verdict_give_ups(text):
     return len(VERDICT_GIVE_UP_RE.findall(text))
 
 
-def classify_dest(reached_shell, route_rows, begin_types):
+def wrote_to_shell(excerpt, line):
+    """#2205: True when the app's own pty writes (`hop=pty_write_bytes class=UserCommand`, Windows) carry `line`, the proof that the app put the
+    line to the shell when the shell's rec.log is dark. The bytes are escape_ascii text (a quote is `\\"`), so both spellings are tried."""
+    if not line:
+        return False
+    esc = line.replace("\\", "\\\\").replace('"', '\\"')
+    return any(line in m.group(1) or esc in m.group(1) for m in USER_COMMAND_WRITE_RE.finditer(excerpt or ""))
+
+
+def classify_dest(reached_shell, route_rows, begin_types, wrote_shell=False):
     """Where a typed line went, PROVEN from the app log (#1511). 'shell' = the shell's rec.log has the line; 'BOTH' = it did and the
     routing decision also says Agent; 'agent' = the shell received nothing AND the app logged the Enter as routed to the agent (the
     `enter: Agent` decision, or `enter_begin ... input_type=AI`); 'lost' = neither the shell nor an AI-routed Enter has it (a swallowed
-    line); 'unproven' = the shell has nothing and the app log has no routing row at all (no log: nothing can be said)."""
+    line); 'unproven' = the shell has nothing and the app log has no routing row at all (no log: nothing can be said).
+    #2205: when rec.log is dark the app's decision line (`enter: Shell by ...`) is what says where the line was meant to go, and the app's
+    UserCommand pty write of the line (`wrote_shell`) is the proof it ran in the shell. `enter_begin input_type` is the mode BEFORE the decision
+    and is only the fallback when no decision line exists. A Shell decision with no write is 'lost'."""
     route = route_rows[-1]["route"] if route_rows else None
     if reached_shell:
         return "BOTH" if route == "Agent" else "shell"
-    if route == "Agent" or (begin_types and begin_types[-1] == "AI"):
+    if route == "Agent":
+        return "agent"
+    if wrote_shell:
+        return "shell"
+    if route == "Shell":
+        return "lost"
+    if begin_types and begin_types[-1] == "AI":
         return "agent"
     if route is None and not begin_types:
         return "unproven"
     return "lost"
+
+
+def recorder_prompts(ctx):
+    """prompts the pane's recorder counted so far (None when the pane keeps none)"""
+    try:
+        return ctx.prompts() if ctx.prof.local_prompts else None
+    except Exception:
+        return None
+
+
+def recorder_dark(cmds_in_case, prompts_in_case):
+    """#2205: True when the shell recorder (rec.log) logged no command for a whole case although prompts occurred. The harness's recorder, not the
+    app, is what failed then: a row with no app-side proof is reported UNVERIFIABLE ('HARNESS: recorder dark', status noref, never a pass), not LOST."""
+    return not cmds_in_case and bool(prompts_in_case and prompts_in_case > 0)
 
 
 def routing_table_rows(ctx, off):
@@ -540,6 +572,7 @@ def c_routing_table(ctx, r):
     prose_to_agent = True if ctx.mode == "agent" else (nld is not False)       # absent key = the shipped default (on, manual 5.x)
     table = [(l, "shell", "shell") for l in SHELL_LINES] + [(l, "prose", "agent" if prose_to_agent else "shell") for l in PROSE_LINES] + [(l, "ambiguous", None) for l in AMBIGUOUS_LINES]
     results = []
+    case_mark, prompts0, unproven_msgs = ctx.cmd_mark(), recorder_prompts(ctx), []
     for line, kind, want in table:
         ctx.reset()
         off, mark = ctx.log_size(), ctx.cmd_mark()
@@ -554,7 +587,8 @@ def c_routing_table(ctx, r):
             ctx.until(lambda: any(c == line for c in ctx.cmds_since(mark)), 3)
             reached_shell = any(c == line for c in ctx.cmds_since(mark))
         excerpt = ctx.log_since(off)
-        dest = classify_dest(reached_shell, rows, enter_begin_types(excerpt))
+        wrote = wrote_to_shell(excerpt, line)
+        dest = classify_dest(reached_shell, rows, enter_begin_types(excerpt), wrote)
         gave_up = verdict_give_ups(excerpt) > 0                 # #1593: the A5 toast fired for this line
         # surface and rule: the enter-stage row, else the line's own keystroke-stage row. A line whose keystroke verdict had settled logs no `enter:`
         # row at all (every Wayland routing_table row up to r12a has surface None for that reason), and an ambiguous line then had no verdict
@@ -570,7 +604,9 @@ def c_routing_table(ctx, r):
             r.check(False, "%r (%s) was not sent: its shell-or-chat verdict missed the budget and the line stayed in the editor with the "
                     "'press Enter again' toast (#1593 A5; dest %s, surface %s)" % (line, kind, dest, surface))
         elif dest == "lost" or (dest == "unproven" and want != "shell"):
-            r.check(False, "%r (%s) was LOST or unproven: the shell received nothing and the app log shows no agent-routed Enter (dest %s, surface %s)" % (line, kind, dest, surface))
+            # #2205: whether this is the app's loss or the recorder's darkness is known only for the whole case (below)
+            unproven_msgs.append("%r (%s) was LOST or unproven: the shell received nothing and the app log shows no agent-routed Enter and no pty write of the "
+                                 "line (dest %s, surface %s)" % (line, kind, dest, surface))
         elif want is None:
             r.note("ambiguous %r: went to %s, no verdict (%s)" % (line, dest, "no routing log line, so no rule to check" if not surface else
                                                                  "surface %s, rule %s, first word a program here: %s" % (surface, rule, head_installed(line))))
@@ -580,6 +616,13 @@ def c_routing_table(ctx, r):
             ctx.be.key("ctrl+c")            # do not leave a model request running
             time.sleep(0.4)
     ctx.shot("routing_table_end")
+    dark = recorder_dark(len(ctx.cmds_since(case_mark)), recorder_prompts(ctx) - prompts0 if prompts0 is not None else None)
+    r.metric("recorder_dark", dark)
+    for m in unproven_msgs:
+        if dark:
+            r.unverifiable("HARNESS: recorder dark: rec.log has no line for this whole case although prompts occurred, and the app log has no proof either: " + m)
+        else:
+            r.check(False, m)
     r.metric("routing_rows", results)
     r.metric("misroutes", len([x for x in results if x["want"] and x["want"] != x["got"]]))
     r.metric("verdict_give_ups", len([x for x in results if x["verdict_give_up"]]))     # #1593: lines kept by the A5 toast
@@ -638,7 +681,7 @@ def c_routing_typo_head(ctx, r):
         rows = typo_rows(excerpt, line)
         last = rows[-1] if rows else None
         reached_shell = any(c == line for c in ctx.cmds_since(mark))
-        dest = classify_dest(reached_shell, [x for x in rows if x["stage"] == "enter"] or rows, enter_begin_types(excerpt))
+        dest = classify_dest(reached_shell, [x for x in rows if x["stage"] == "enter"] or rows, enter_begin_types(excerpt), wrote_to_shell(excerpt, line))
         surface = last["surface"] if last else None
         rule = last["rule"] if last else None
         verdict = typo_verdict(kind, dest, surface, rule)
@@ -723,7 +766,7 @@ def c_routing_plain_installed_head(ctx, r):
                 ctx.until(lambda: any(c == line for c in ctx.cmds_since(mark)), 3)          # the shell logs a command with its next prompt
             reached_shell = any(c == line for c in ctx.cmds_since(mark))
             excerpt = ctx.log_since(off)
-            dest = classify_dest(reached_shell, [x for x in rows if x["stage"] == "enter"] or rows, enter_begin_types(excerpt))
+            dest = classify_dest(reached_shell, [x for x in rows if x["stage"] == "enter"] or rows, enter_begin_types(excerpt), wrote_to_shell(excerpt, line))
             surface, rule, installed = (last["surface"] if last else None), (last["rule"] if last else None), head_installed(line)
             verdict = plain_installed_verdict(dest, surface, rule, installed)
             results.append(dict(line=line, got=dest, surface=surface, rule=rule, stage=last["stage"] if last else None, installed=installed))

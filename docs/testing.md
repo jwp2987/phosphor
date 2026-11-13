@@ -3808,6 +3808,15 @@ directory user names, and token/key patterns, so collect on a machine that has t
   non-printing character as the text `\u200d` (bytes 5c 75 32 30 30 64), while the effect file had the real U+200D. The rc now reads the raw `$history` entry.
 - **`ssh_hanging_host_not_local` refused arm**: a refused port exits in milliseconds, before the first key, so the ssh cannot be kept alive; the arm is UNVERIFIABLE
   (NOREF) in that case and no longer fails the "usable afterwards" check because the line correctly ran locally. The hanging-host arm is the real hold test.
+- **`routing_table` on Windows, rec.log dark (#2205, r30)**: `classify_dest` takes where a line went from the app's decision line (`enter: <Dest> by <rule>`),
+  not from `enter_begin input_type` (the mode BEFORE the decision; it is only the fallback when no decision line exists). A `Shell` decision whose line the
+  app wrote to the pty (`hop=pty_write_bytes class=UserCommand`, `wrote_to_shell`) is `shell` even when rec.log has nothing; a `Shell` decision with no write is
+  `lost`. A case whose rec.log logged no command at all although prompts occurred is `recorder_dark` (metric): its rows with no app-side proof become
+  UNVERIFIABLE (noref, `HARNESS: recorder dark`), never LOST and never a pass; rows the app proves (decision + write) still pass or fail as before.
+  Why the recorder goes dark is not fixed. Self-test `routing_dark_recorder_2205`.
+- **`history_survives_restart` (#2204, r30)**: the round's idents come from the unseeded `ctx.ptok` (the seeded `ctx.tok` typed identical commands every run, and the
+  persistent PowerShell history file, ~23,000 lines, then showed earlier runs as "typed more than once"), and the PowerShell history is judged only from the
+  lines this round added. A real duplicate write inside the round still fails. Self-test `history_idents_per_run_2204`.
 - **`routing_table`**: `what is 5 > 3` carries shell syntax (`>`; `what` is an installed head on macOS), so it runs in the shell (#1183 / #1560). It moved from the
   prose list to the ambiguous list (judged by the logged rule); a syntax-free prose line (`is five bigger than three`) took its place.
 
