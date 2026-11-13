@@ -57,7 +57,7 @@ if ($outFull) {
   # #2150: leftovers are ENDED by exact PID (reap.ps1), not only listed; one that keeps the job's output pipe open stalls the runner step
   . (Join-Path $PSScriptRoot "reap.ps1")
   Reap-Leftovers -OutFull $outFull -Tag "after_job"
-  foreach ($d in @("home", "ctl", "rctl", "refctl", "rhome")) {
+  foreach ($d in @("home", "ctl", "rctl", "refctl", "rhome", "labssh")) {      # r30: labssh = the lab lease's private key (appci/lab.py make_key): the lab job's run dir kept it after the lab had stopped
     $dd = Join-Path $outFull "run\$d"
     if (Test-Path $dd) { Remove-Item $dd -Recurse -Force -ErrorAction SilentlyContinue; Write-Output ("after_job: scratch dir run\{0} {1}" -f $d, $(if (Test-Path $dd) { "COULD NOT BE REMOVED" } else { "removed" })) }
   }

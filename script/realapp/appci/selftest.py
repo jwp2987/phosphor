@@ -4912,7 +4912,8 @@ def lab_cases_registry_and_selection():
     # winmap: a lab case is never 'unclassified'; PowerShell pane skips with a reason; p_onesess is skipped on Windows
     base = {n.split(".")[0] for n in names}
     base.discard("lab_freeze_and_wake")       # r15 wave 4 core (#2075): its registration is checked in selftest_w4core.py (a separate line: the set below is shared)
-    old = {"lab_tab_remote_dir", "lab_path_detect", "lab_chips", "lab_enter_start", "lab_enter_no_network_wait", "lab_raw_key_arrival", "lab_ssh_drop_reconnect", "lab_ctrl_c_no_esc_i", "lab_no_helper_chip", "lab_replay", "lab_password_prompt", "lab_helper_install", "lab_nu_agent_pager_env", "lab_read_files_remote", "lab_diff_apply_remote", "lab_file_tree_remote", "lab_remote_edit", "lab_skills_remote", "lab_diff_panel_remote", "lab_gh_chip_remote", "lab_codebase_index_remote", "lab_agent_remote_flow", "lab_agent_remote_errors", "lab_agent_remote_drop", "lab_agent_nld_predict_ssh", "lab_agent_suggestions_ssh"}
+    old = {"lab_tab_remote_dir", "lab_path_detect", "lab_chips", "lab_enter_start", "lab_enter_no_network_wait", "lab_raw_key_arrival", "lab_ssh_drop_reconnect", "lab_ctrl_c_no_esc_i", "lab_no_helper_chip", "lab_replay", "lab_password_prompt", "lab_helper_install", "lab_nu_agent_pager_env", "lab_read_files_remote", "lab_diff_apply_remote", "lab_file_tree_remote", "lab_remote_edit", "lab_skills_remote", "lab_diff_panel_remote", "lab_gh_chip_remote", "lab_codebase_index_remote", "lab_agent_remote_flow", "lab_agent_remote_errors", "lab_agent_remote_drop", "lab_agent_nld_predict_ssh", "lab_agent_suggestions_ssh",
+           "lab_connect_typeahead", "lab_managed_connect", "lab_msys_ssh_switch", "lab_tab_no_helper", "lab_remote_session"}      # r30: the Windows fake-sshd cases as lab families (cases_lab_winport.py)
     assert old <= base and all(n.startswith(("lab_fam_", "lab_helper_", "lab_nohelper_", "lab_git_write_remote")) for n in base - old), base
     assert all(c["modes"] == ("terminal",) for c in labs if c["name"].startswith("lab_ssh_drop_reconnect")), "the drop case is terminal-only"
     pw = [c["arm"] for c in labs if c["name"].startswith("lab_password_prompt")]
@@ -8290,7 +8291,16 @@ def gitbash_bootstrap_in_command_2051():
     reg = {c["name"]: c for c in cases.CASES}
     n = "ssh_gitbash_bootstrap_in_command"
     assert n in reg and n in cases.PROVING and n not in cases.SMOKE and n in winmap.GITBASH_ONLY
-    assert winmap.skip_reason(n, "gitbash") is None and winmap.skip_reason(n, "powershell")
+    # r30: the Windows app job no longer plays this fake-sshd version (lab_managed_connect judges it against the real lab); by hand it still runs
+    assert "lab_managed_connect" in (winmap.skip_reason(n, "gitbash") or "") and winmap.skip_reason(n, "powershell")
+    _old = os.environ.get(winmap.FAKESSHD_BY_HAND_ENV)
+    os.environ[winmap.FAKESSHD_BY_HAND_ENV] = "1"
+    try:
+        assert winmap.skip_reason(n, "gitbash") is None
+    finally:
+        os.environ.pop(winmap.FAKESSHD_BY_HAND_ENV, None)
+        if _old is not None:
+            os.environ[winmap.FAKESSHD_BY_HAND_ENV] = _old
     # the wrapper's side of it: the hook field, the fd-9 here-document, the plain login for a login shell that is not bash, the measured fit
     sh = open(os.path.join(root, "app", "assets", "bundled", "bootstrap", "bash_body.sh"), encoding="utf-8").read()
     for needle in ('\\"bootstrap_in_command\\": true', "} 9<<'$warp_bs_delim'", "command -p cat <&9) 9<&-", 'if test "\'"${SHELL##*/}"\'" != bash; then',
@@ -9499,3 +9509,5 @@ import selftest_r28_tabscleanup  # noqa: E402  (r28: tab cleanup retries lost cl
 CHECKS.extend(selftest_r28_tabscleanup.CHECKS)
 import selftest_r29_harness  # noqa: E402  (r29: mode_proof landing screen is not the agent header; link case palette close; own file)
 CHECKS.extend(selftest_r29_harness.CHECKS)
+import selftest_r30_labport  # noqa: E402  (r30: the Windows fake-sshd ssh cases as lab families, winmap.LAB_MOVED, the lab runner's msys switch, the lab stop reason; own file)
+CHECKS.extend(selftest_r30_labport.CHECKS)
