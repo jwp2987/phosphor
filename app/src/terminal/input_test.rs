@@ -19794,14 +19794,15 @@ fn test_a_reported_tilde_typed_behind_other_raw_keys_stays_text() {
     });
 }
 
-/// #2202 (review A2, A3, item 4; tests ii and T6): `~` raw, then `.` or `.foo` and an Enter in
-/// the editor before the report. The Enter is deferred with its gate live, so an escape written
-/// now would not reach ssh at its line start, and (for `.foo`) taking `~.` out would put `foo`
-/// behind the Enter typed after it. The report stays text: no escape bytes are written, and the
-/// line is whole and in typed order, in the editor or submitted as typed.
+/// #2202 (review A2; test ii): `~` raw, then `.foo` and an Enter in the editor before the
+/// report. More than the escape character was typed: taking `~.` out would put `foo` behind the
+/// Enter typed after it. The report stays text: no escape bytes are written, and the line is
+/// whole and in typed order, in the editor or submitted as typed. (The exact `.` + Enter case
+/// was here too while it kept the old behaviour; it is ssh's escape now, #2207:
+/// `test_a_reported_ssh_escape_with_an_enter_deferred_behind_it_goes_out_alone`.)
 #[test]
 fn test_a_reported_tilde_with_an_enter_deferred_behind_it_stays_the_typed_line() {
-    let cases: [&[&str]; 2] = [&["."], &[".", "f", "o", "o"]];
+    let cases: [&[&str]; 1] = [&[".", "f", "o", "o"]];
     for typed in cases {
         App::test((), move |mut app| async move {
             let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
@@ -21496,4 +21497,168 @@ fn test_a_legacy_report_with_the_handoff_off_stays_text() {
         });
         assert_eq!(*writes.borrow(), raw, "nothing more reaches the pty");
     });
+}
+
+// ---- #2207: the reported ssh escape with an Enter deferred behind it ---------------------------
+
+/// The pty bytes entries the pane queue holds, in order, and whether exactly one gate of `kind`
+/// holds them.
+fn held_pty_bytes(
+    app: &App,
+    editor: &ViewHandle<EditorView>,
+    kind: crate::terminal::input_queue::GateKind,
+) -> (Vec<u8>, bool) {
+    use crate::terminal::input_queue::EntryKind;
+    let queue = editor.read(app, |editor, _| editor.paste_hold().queue());
+    let queue = queue.peek();
+    let mut bytes = Vec::new();
+    for entry in queue.entries() {
+        if let EntryKind::PtyBytes { bytes: held, .. } = &entry.kind {
+            bytes.extend_from_slice(held);
+        }
+    }
+    (bytes, queue.gates().len() == 1 && queue.has_gate_kind(kind))
+}
+
+/// #2207 fixture: Enter, `~` before the remote prompt (raw to ssh, at its line start), the
+/// prompt's request, then `.` and an Enter in the editor (deferred behind the report) and `pwd`,
+/// Enter typed behind it (held behind the deferred Enter's gate), then the report `~`.
+async fn reported_escape_with_an_enter_deferred_behind_it(
+    app: &mut App,
+) -> (
+    ViewHandle<TerminalView>,
+    ViewHandle<Input>,
+    ViewHandle<EditorView>,
+    Rc<RefCell<Vec<Vec<u8>>>>,
+) {
+    let (terminal, input, editor, writes) =
+        pane_and_terminal_for_ssh_escape_test(app, true, SHELL_INPUT_FOR_SSH_ESCAPE_TEST).await;
+    type_raw_before_the_prompt_then_request(app, &terminal, &input, &[b"~"]);
+    type_keys_for_ssh_escape_test(app, &editor, &["."]);
+    input.update(app, |input, ctx| input.input_enter(ctx));
+    assert!(
+        enter_is_deferred_behind_the_report(app, &input),
+        "test setup: the Enter waits for the report"
+    );
+    terminal.update(app, |view, ctx| {
+        view.write_user_bytes_for_test(b"pwd", ctx);
+        view.write_user_bytes_for_test(b"\r", ctx);
+    });
+    assert_eq!(
+        *writes.borrow(),
+        vec![b"~".to_vec()],
+        "test setup: only the raw `~` reached the pty; the keys behind the Enter are held"
+    );
+    deliver_shell_report(app, &terminal, &input, "~");
+    (terminal, input, editor, writes)
+}
+
+/// #2207: `~` raw, then `.` and an Enter in the editor before the report (and keys typed behind
+/// that Enter). The line is ssh's escape: ssh receives `\r~.` ALONE, at once, in one write. The
+/// Enter and the keys behind it are not written with it (ssh drops what it reads together with
+/// `~.`) and are not put into the editor: they wait, in typed order, behind a `PromptSeen` gate
+/// for the next prompt event, the Enter first. The `\r` is counted as a bare Enter's line.
+#[test]
+fn test_a_reported_ssh_escape_with_an_enter_deferred_behind_it_goes_out_alone() {
+    use crate::terminal::input_queue::GateKind;
+    use crate::terminal::model::typeahead_handoff::HandoffState;
+    App::test((), move |mut app| async move {
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        initialize_app(&mut app);
+        let (_terminal, input, editor, writes) =
+            reported_escape_with_an_enter_deferred_behind_it(&mut app).await;
+        // Whatever the report started has time to land (a submit of `~.` would).
+        warpui::r#async::Timer::after(Duration::from_millis(250)).await;
+
+        assert_eq!(
+            *writes.borrow(),
+            vec![b"~".to_vec(), b"\r~.".to_vec()],
+            "ssh receives `\\r~.` alone: neither the Enter nor the keys behind it go out with it"
+        );
+        input.read(&app, |input, ctx| {
+            assert_eq!(input.buffer_text(ctx), "", "nothing is left in the editor");
+        });
+        let (held, one_prompt_gate) = held_pty_bytes(&app, &editor, GateKind::PromptSeen);
+        assert_eq!(
+            held,
+            b"\rpwd\r".to_vec(),
+            "the Enter, then the keys typed behind it, wait in typed order"
+        );
+        assert!(
+            one_prompt_gate,
+            "held for the next prompt event (a `PromptSeen` gate), nothing else"
+        );
+        assert_eq!(
+            handoff_state(&app, &input),
+            HandoffState::PtyOwned {
+                wrote_user_bytes: true,
+                enters_written: 1,
+                precmds_seen: 0,
+            },
+            "the `\\r` is counted as a bare Enter's line"
+        );
+    });
+}
+
+/// #2207 (owner decision 2026-11-13): `~.` ended the ssh session before any remote prompt came.
+/// The Enter and the keys typed behind it are written in typed order to whatever owns input now
+/// (the local shell), as a plain terminal delivers what was typed after ssh exits: never dropped,
+/// never put back into the editor. Both ways the hold can find its session gone: the session's
+/// end itself, and a state that left the pty's ownership while the hold was queued.
+#[test]
+fn test_the_enter_and_keys_behind_a_reported_ssh_escape_are_written_in_order_when_ssh_is_gone() {
+    use crate::terminal::model::typeahead_handoff::HandoffState;
+    for session_ended in [true, false] {
+        App::test((), move |mut app| async move {
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            initialize_app(&mut app);
+            let (terminal, input, editor, writes) =
+                reported_escape_with_an_enter_deferred_behind_it(&mut app).await;
+            warpui::r#async::Timer::after(Duration::from_millis(250)).await;
+            assert_eq!(
+                *writes.borrow(),
+                vec![b"~".to_vec(), b"\r~.".to_vec()],
+                "session_ended={session_ended}: test setup: the escape went out alone"
+            );
+
+            input.read(&app, |input, _| {
+                let mut model = input.model.lock();
+                let mut handoff = model.typeahead_handoff_mut();
+                if session_ended {
+                    handoff.reset_on_exit();
+                } else {
+                    // The local prompt took input back with the hold still queued; the next key
+                    // (or any hand-off event) finds the hold stale.
+                    handoff.on_user_write_flushed();
+                    handoff.force_editor_owned_for_test();
+                    assert_eq!(handoff.state(), &HandoffState::EditorOwned);
+                    assert!(handoff.check_queued_young_hold());
+                }
+            });
+            // The next hand-off event the view handles applies the end the hand-off recorded.
+            terminal.update(&mut app, |view, ctx| {
+                view.handle_typeahead_report_for_test(ctx)
+            });
+
+            assert_eq!(
+                writes.borrow().concat(),
+                b"~\r~.\rpwd\r".to_vec(),
+                "session_ended={session_ended}: the Enter, then the keys typed behind it, are \
+                 written in typed order, once: {:?}",
+                writes.borrow()
+            );
+            input.read(&app, |input, ctx| {
+                assert_eq!(
+                    input.buffer_text(ctx),
+                    "",
+                    "session_ended={session_ended}: nothing was put back into the editor"
+                );
+            });
+            let queue = editor.read(&app, |editor, _| editor.paste_hold().queue());
+            assert!(
+                queue.peek().is_idle(),
+                "session_ended={session_ended}: nothing is left held"
+            );
+        });
+    }
 }

@@ -1533,6 +1533,18 @@ impl TypeaheadHandoff {
         }
     }
 
+    /// #2207: whether the Enter deferred behind the report could wait for the next prompt instead.
+    /// (Stub of the tests-first commit: never.)
+    pub fn deferred_enter_could_wait_for_next_prompt(&self) -> bool {
+        false
+    }
+
+    /// #2207: the deferred Enter becomes a young hold behind ssh's escape. (Stub of the
+    /// tests-first commit: never; nothing changes.)
+    pub fn hold_deferred_enter_for_next_prompt(&mut self, _escape: [u8; 2]) -> Option<(u64, u64)> {
+        None
+    }
+
     /// #1793: whether the #1638 ssh escape path writes a `\r` ahead of the escape so ssh reads it
     /// at its line start (see [`SshEscapeLineStart`]). The `\r` reaches the remote shell, so it is
     /// added only where it provably submits an empty line: the editor owns input with no request
@@ -4668,6 +4680,14 @@ impl TypeaheadHandoff {
     pub(crate) fn stream_undrained_for_test(&mut self) {
         self.foreground_probe.stream_drained_or_unknown = None;
         self.foreground_probe.stream_drained = Some(Arc::new(|| false));
+    }
+
+    /// The editor took input back (a prompt's commit), whatever was queued: the state a young
+    /// hold is stale in (#2207 tests of what becomes of its keys).
+    #[cfg(test)]
+    pub(crate) fn force_editor_owned_for_test(&mut self) {
+        self.keys_follow_editor = false;
+        self.state = HandoffState::EditorOwned;
     }
 
     /// Whether the Enter deferred behind the report has not run yet: the keys typed since are
