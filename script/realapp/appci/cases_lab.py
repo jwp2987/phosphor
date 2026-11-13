@@ -860,7 +860,56 @@ def tab_band_check(r, ctx, arm, took_s):
     return bands.check(r, tab_band_key(ctx, arm), ms, "Tab -> insert took %.0f ms (RTT %d ms)" % (ms, arm["lat_ms"]))
 
 
-@lab_case("tab_remote_dir", shells=("bash", "zsh", "fish", "nu"), lat=("lan", "150", "300"), helper=("nohelper", "helper"),
+# ---- #2196: what the app's own log says about the in-band answer of a remote Tab (input.rs, pty_controller.rs). The lines carry counts and ms, never the names.
+NATIVE_TAB_RE = re.compile(r"without the helper: (\d+) candidates from the remote shell in (\d+) ms")
+NATIVE_TAB_REFUSED_RE = re.compile(r"Native completions not started \(([^)]*)\)")
+NATIVE_TAB_EMPTY = "The remote shell had no Tab answer; the completer answers instead"
+
+
+def native_tab_ms(log_text):
+    """pure: the ms of each 'N candidates from the remote shell in M ms' line (the shell's own answer reached the menu)"""
+    return [int(m.group(2)) for m in NATIVE_TAB_RE.finditer(log_text or "")]
+
+
+def native_tab_refusals(log_text):
+    """pure: the reason of each 'Native completions not started (why)' line (the Tab went to the completer without asking the shell)"""
+    return [m.group(1) for m in NATIVE_TAB_REFUSED_RE.finditer(log_text or "")]
+
+
+def native_tab_empty(log_text):
+    """pure: how many Tabs the remote shell answered with nothing (or not at all) so the completer answered instead"""
+    return (log_text or "").count(NATIVE_TAB_EMPTY)
+
+
+def native_tab_expectation(arm):
+    """pure: what an explicit Tab of a lab arm must do in-band. 'answers': the remote shell offers candidates (bash with bash-completion, zsh WITH compinit
+    = zshc, fish via `complete -C`, #2196); 'empty': zsh WITHOUT compinit answers nothing by design (#2174: the app never runs compinit for the user), so
+    the completer answers; 'completer': nu has no non-interactive completion API to call from its bootstrap, so it is always the completer. None where the
+    in-band path is not the one asked: a helper arm (the helper answers) and a scenario user."""
+    if arm.get("scenario") or arm.get("helper") != "nohelper":
+        return None
+    sh = arm.get("shell")
+    if sh in ("bash", "zshc", "fish"):
+        return "answers"
+    if sh == "zsh":
+        return "empty"
+    if sh == "nu":
+        return "completer"
+    return None
+
+
+def tab_press_wall(be, t_before, t_after):
+    """pure: when the Tab was PRESSED, on the wall clock. macOS key() runs the injector (htype2) as a process and returns after it exits, so a clock read before
+    the call carries the process start-up and the key gap (r29a bash.lan.nohelper: 303 ms on a ~0 ms LAN, no remote_tab_wait line, #2196); the injector's own post
+    time of the key is the press. Without one (X11, a backend with no record) the clock before the call. Clamped into [t_before, t_after]."""
+    try:
+        post = be.calls[-1]["post_wall"][-1]
+    except (AttributeError, TypeError, IndexError, KeyError):
+        return t_before
+    return min(max(post, t_before), t_after)
+
+
+@lab_case("tab_remote_dir", shells=("bash", "zsh", "zshc", "fish", "nu"), lat=("lan", "150", "300"), helper=("nohelper", "helper"),
           scenarios=("p_banner", "p_colon", "p_question", "p_slowrc", "p_rcerr"))
 def c_tab_remote_dir(ctx, r, arm):
     """A unique prefix + Tab completes a REMOTE directory (proof: the completed `cd` really ran there: `&& pwd >> file` writes the exact directory); an ambiguous
@@ -885,9 +934,10 @@ def c_tab_remote_dir(ctx, r, arm):
     ctx.be.type("cd %s%s/zzq%s" % (base, fx, uid), type_pace(ctx))
     t0 = time.time()
     ctx.be.key("Tab")
+    t_sent = time.time()
     hit = ctx.until(lambda: HOOK_TAB_INSERT.search(ctx.log_since(off)), 3 + 3 * rt, step=0.02)
     if hit:
-        took = time.time() - t0
+        took = time.time() - tab_press_wall(ctx.be, t0, t_sent)
         r.metric("tab_insert_s", round(took, 3))
         tab_band_check(r, ctx, arm, took)
     else:
@@ -897,6 +947,23 @@ def c_tab_remote_dir(ctx, r, arm):
     got = ctx.until(lambda: ctx.remote.lines("tab.txt"), 10 + 6 * rt)
     CA.exact_lines(r, "unique prefix + Tab: the remote directory the completed `cd` entered", ["%s%s/zzq%s_only" % (base, fx, uid)], got)
     ctx.shot("lab_tab_unique")
+    # (a2) #2196: the in-band answer the app logged for that Tab, per shell. A no-helper arm of bash, zsh with compinit and fish gets its candidates from the
+    # remote shell itself (about one exchange, not the completer's several round trips); zsh without compinit answers empty by design; nu is the completer.
+    exp = native_tab_expectation(arm)
+    if exp:
+        seg = ctx.log_since(off)
+        ms, refused, empty = native_tab_ms(seg), native_tab_refusals(seg), native_tab_empty(seg)
+        if ms:
+            r.metric("tab_native_ms", ms[0])
+        if refused:
+            r.unverifiable("the Tab was not offered to the remote shell (%s): the in-band answer is not judged on this Tab" % "; ".join(refused))
+        elif exp == "answers":
+            r.check(bool(ms), "an explicit Tab on a %s host without the helper is answered by the remote shell: the app log has no 'N candidates from the remote shell' line "
+                    "(the shell answered with nothing %d time(s), and the completer answered)" % (arm["shell"], empty))
+        elif exp == "empty":
+            r.check(not ms and empty >= 1, "zsh without compinit answers an in-band Tab with nothing by design (#2174), so the completer answers: %d candidate line(s), %d empty answer(s)" % (len(ms), empty))
+        else:
+            r.note("nu has no non-interactive completion API its bootstrap could call (#2196), so every Tab is the completer's; in-band candidate lines logged: %d" % len(ms))
     # (b) ambiguous prefix: the shell's own candidates vs the app's menu
     line = "cd %s%s/amb%s" % (base, fx, uid)
     comp = lab.complete(u, line)

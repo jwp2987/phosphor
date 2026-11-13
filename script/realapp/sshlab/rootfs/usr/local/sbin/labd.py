@@ -117,6 +117,10 @@ def rc_plan(row):
             plan[".zshrc"] = '[ -r "%s" ] && . "%s"\n' % (hz, hz)
     elif sh == "zsh":
         plan[".zshrc"] = '. "%s"\n' % hook
+    elif sh == "zshc":
+        # #2196: a zsh user who has the completion system loaded, as most do: the app never runs compinit for anyone (#2174), so only this user's in-band Tab answers.
+        # -u: no insecure-directory question, which would stop the login at a prompt nobody answers.
+        plan[".zshrc"] = '. "%s"\nautoload -Uz compinit && compinit -u\n' % hook
     elif sh == "fish":
         plan[".config/fish/config.fish"] = 'source %s\n' % hook
     elif sh == "nu":
@@ -130,7 +134,12 @@ def rc_plan(row):
 
 
 def hook_shell_key(shell):
-    return "sh" if shell in ("dash", "ash") else shell
+    return "sh" if shell in ("dash", "ash") else "zsh" if shell == "zshc" else shell
+
+
+def completer_key(shell):
+    """the COMPLETERS driver of a login shell: rbash is bash, zshc (zsh with compinit) is zsh"""
+    return {"rbash": "bash", "zshc": "zsh"}.get(shell, shell)
 
 
 def count_matches(text, pattern):
@@ -562,7 +571,7 @@ def complete(req):
     row = next((r for r in STATE["rows"] if r.user == user), None)
     if not row:
         raise ValueError("unknown user")
-    key = "bash" if row.shell == "rbash" else row.shell
+    key = completer_key(row.shell)
     if not COMPLETERS.get(key):
         return dict(shell=row.shell, candidates=None, note="no completion driver for %s" % row.shell)
     p = run_completer(key, line, "%s/%s" % (WORK_ROOT, user), user=user)

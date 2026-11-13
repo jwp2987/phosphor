@@ -544,6 +544,12 @@ function warp_precmd --on-event fish_prompt --on-event fish_posterror
 
     bind \ei warp_report_input
 
+    # Phosphor (#2196): the in-band native-completions keys, only where the bootstrap advertised the protocol.
+    if test "$__warp_nc_ok" = 1
+        bind \cy __warp_native_complete
+        bind \x1e __warp_native_discard
+    end
+
     # Define local variables in appropriate outer block for fish variable scoping.
     # See https://stackoverflow.com/a/53685510.
     set -l escaped_prompt
@@ -815,7 +821,12 @@ function warp_bootstrapped
   set -l escaped_fish_version (warp_escape_json "$FISH_VERSION")
   set -l escaped_linux_distribution (warp_escape_json "$linux_distribution")
   set -l escaped_wsl_name (warp_escape_json "$WSL_DISTRO_NAME")
-  set -l escaped_json "{\"hook\": \"Bootstrapped\", \"value\": {\"histfile\": \"$escaped_histfile\", \"session_id\": $WARP_SESSION_ID, \"shell\": \"fish\", \"home_dir\": \"$escaped_home\", \"path\": \"$escaped_path\", \"editor\": \"$escaped_editor\", \"abbreviations\": \"$escaped_abbr\", \"aliases\": \"$escaped_aliases\", \"function_names\": \"$function_names\", \"env_var_names\": \"$env_var_names\", \"builtins\": \"$escaped_builtins\", \"keywords\": \"\", \"shell_version\": \"$escaped_fish_version\", \"vi_mode_enabled\": \"$vi_mode_enabled\", \"os_category\": \"$os_category\", \"linux_distribution\": \"$escaped_linux_distribution\", \"wsl_name\": \"$escaped_wsl_name\", \"shell_path\": \"$escaped_shell_path\"}}"
+  # Phosphor (#2196): the pseudo option that advertises the framed in-band native-completions protocol (the app sends ^Y only to a shell that did).
+  set -l nc_option ""
+  if test "$__warp_nc_ok" = 1
+    set nc_option "!phosphor_nc_frames_v1"
+  end
+  set -l escaped_json "{\"hook\": \"Bootstrapped\", \"value\": {\"histfile\": \"$escaped_histfile\", \"shell_options\": \"$nc_option\", \"session_id\": $WARP_SESSION_ID, \"shell\": \"fish\", \"home_dir\": \"$escaped_home\", \"path\": \"$escaped_path\", \"editor\": \"$escaped_editor\", \"abbreviations\": \"$escaped_abbr\", \"aliases\": \"$escaped_aliases\", \"function_names\": \"$function_names\", \"env_var_names\": \"$env_var_names\", \"builtins\": \"$escaped_builtins\", \"keywords\": \"\", \"shell_version\": \"$escaped_fish_version\", \"vi_mode_enabled\": \"$vi_mode_enabled\", \"os_category\": \"$os_category\", \"linux_distribution\": \"$escaped_linux_distribution\", \"wsl_name\": \"$escaped_wsl_name\", \"shell_path\": \"$escaped_shell_path\"}}"
   warp_send_json_message $escaped_json
 end
 
@@ -854,6 +865,151 @@ function warp_report_input
     warp_send_json_message "{ \"hook\": \"InputBuffer\", \"value\": { \"buffer\": \"$escaped_input\", \"session_id\": $WARP_SESSION_ID } }"
     # This prevents fish from rendering typeahead as background output once we've collected it.
     commandline ''
+end
+
+# Phosphor (#2196): in-band native completions for fish, answering the app's `^Y` the way the
+# bash and zsh bootstraps do (#1801; the exchange is described in pty_controller.rs, "The in-band
+# native-completions exchange"; the wire format is theirs): this hook names the exchange with a
+# fresh token (OSC 9280;P;<token>), the app answers with ONE frame, RS <token> : <%HH bytes of the
+# line> US (RS = 0x1e, US = 0x1f), or the cancel frame RS - : US, and the answer is OSC
+# 9280;A;incrementally_typed, one OSC 9280;C;<candidate> (and OSC 9280;D?description;<text>) per
+# candidate, OSC 9280;B. The candidates are fish's own: `complete -C <line>`.
+#
+# Why this was left out of #1801 and what makes it safe now. fish's `read` runs the line editor
+# (it draws, queries the terminal), so the frame is read by ONE external `bash` (__warp_nc_sh),
+# byte by byte with its own `read -n 1` (no fork per byte): the same read the bash bootstrap's hook
+# does, so it never takes a byte past the frame's US and anything written behind it (a command the
+# app writes right after, in the same write or later, even before this read started) stays in the
+# tty for fish's own line editor. It first sets the tty raw and silent (`stty -echo -icanon`:
+# fish hands an external command a non-canonical tty already, and a canonical read would have
+# merged bytes queued before it into one line), prints the prompt OSC and reads until US. Every
+# external command, and every key binding, makes fish hand the terminal over and take it back
+# (bracketed paste, keypad and modifyOtherKeys are switched off and on around it); the answer's
+# OSCs below are builtin printf only, and its last one re-asserts bracketed paste before the end
+# mark (OSC 9280;B), on which the app releases what it holds. The read's only clock is a give-up
+# net: PHOSPHOR_NC_DEADLINE seconds (default 20), after which `bash` ends, writes nothing more and
+# the bytes read go back to the line.
+#
+# Limits, by design: only the app's frames and terminal replies come between ^Y and the frame
+# (every other write first writes the cancel frame), so what is read around a frame is given
+# back as printable text and an Enter and nothing else (the line editor cannot be handed a
+# control key from a function). A quoted word that contains a space is completed from its quote
+# on; fish escapes a name that has one. A host with no bash does not advertise the protocol.
+set -g __warp_nc_seq 0
+function __warp_nc_sh
+    command bash -c 'exec 3</dev/tty 4>/dev/tty 2>/dev/null || exit 3
+stty -echo -icanon min 1 time 0 <&3 2>/dev/null || exit 3
+[ -n "$1" ] && printf "\033]9280;P;%s\007" "$1" >&4
+D=${PHOSPHOR_NC_DEADLINE:-20}
+case $D in ""|*[!0-9]*) D=20;; esac
+us=$(printf "\037")
+end=$((SECONDS+D))
+acc=
+while :; do
+left=$((end-SECONDS))
+[ $left -gt 0 ] || break
+IFS= read -r -s -n 1 -d "" -t $left c <&3 || break
+acc=$acc$c
+case $c in "$us") break;; esac
+done
+printf %s "$acc"
+exit 0' bash "$argv[1]"
+end
+# Hands back what was read around a frame (or instead of one): printable text goes into the
+# line, a newline runs it; terminal replies and other control bytes are dropped.
+function __warp_nc_give_back
+    set -l t (__warp_strip_terminal_replies (string join '' -- $argv))
+    set -l text (string replace -r -a '[^[:print:]]' '' -- $t)
+    test -n "$text"; and commandline -i -- $text
+    if string match -q -r '[\r\n]' -- $t
+        commandline -f execute
+    end
+end
+# `complete -C` on the app's line, as the whole whitespace-delimited token the app replaces:
+# what comes before fish's own token (`a;` of `a;ec`, the opening quote) is put back, and a name
+# is escaped the way fish inserts it (not inside a quote, not the `~/` of a home path).
+function __warp_nc_answer
+    set -l line $argv[1]
+    set -l tok_app (string match -r -g '(\S*)$' -- $line | string collect -a)
+    set -l tok_fish (string match -r -g '([^\s;|&<>()]*)$' -- $line | string collect -a)
+    set -l lead ''
+    set -l la (string length -- "$tok_app")
+    set -l lf (string length -- "$tok_fish")
+    set -l tail (string sub -s (math $la - $lf + 1) -- "$tok_app" | string collect -a)
+    if test $la -gt $lf; and test "$tail" = "$tok_fish"
+        set lead (string sub -l (math $la - $lf) -- "$tok_app")
+    end
+    set -l quoted ''
+    if string match -q -r -- '^[\'"]' $tok_fish
+        set quoted (string sub -l 1 -- $tok_fish)
+    end
+    builtin printf '\e]9280;A;incrementally_typed\a'
+    set -l n 0
+    for c in (complete -C "$line" 2>/dev/null)
+        set -l parts (string split -m 1 \t -- $c)
+        set -l name $parts[1]
+        set -l desc ''
+        test (count $parts) -gt 1; and set desc $parts[2]
+        if test -z "$name"; or string match -q -r '[[:cntrl:]]' -- $name
+            continue
+        end
+        if test -z "$quoted"
+            if string match -q -- '~/*' $name
+                set name "~/"(string escape -n -- (string sub -s 3 -- $name))
+            else
+                set name (string escape -n -- $name)
+            end
+        end
+        builtin printf '\e]9280;C;%s\a' "$lead$quoted$name"
+        builtin printf '\e]9280;D?description;%s\a' (string replace -r -a '[[:cntrl:]]' ' ' -- $desc)
+        set n (math $n + 1)
+        test $n -ge 2000; and break
+    end
+    # Bracketed paste back on BEFORE the end mark: fish switches its terminal modes off while its
+    # binding runs and back on only when the binding returns, so without this the app would see
+    # OSC 9280;B first, release a command it holds and write it without bracketed paste into a
+    # fish that takes it key by key (abbreviations expand). fish repeats the same sequence
+    # right after the binding; setting a mode twice changes nothing.
+    builtin printf '\e[?2004h\e]9280;B\a'
+end
+function __warp_native_complete
+    set -g __warp_nc_seq (math "$__warp_nc_seq + 1")
+    set -l tok (random)"x$__warp_nc_seq"x(random)
+    set -l raw (__warp_nc_sh $tok | string collect -a)
+    set -l m (string match -r -g '\x1e(\d+x\d+x\d+|-):((?:%[0-9A-Fa-f]{2})*)\x1f' -- $raw)
+    if test (count $m) -ne 2
+        test -n "$raw"; and __warp_nc_give_back $raw
+        return 0
+    end
+    set -l before (string replace -r '(?s)\x1e.*$' '' -- $raw)
+    test -n "$before"; and __warp_nc_give_back $before
+    test "$m[1]" = "$tok"; or return 0
+    set -l line (string unescape --style=url -- "$m[2]" | string collect -a)
+    __warp_nc_answer "$line" >/dev/tty
+end
+# Whether this host can answer the exchange: fish 3.4 or later (`string collect -a`), no MSYS2, and
+# the tools the read needs (bash, stty) with a controlling tty to talk to. When not, the
+# protocol is not advertised and the app never sends ^Y (a ^Y nobody answers costs the Tab 2 s).
+set -g __warp_nc_ok 0
+set -l __warp_nc_v (string match -r -g '^(\d+)\.(\d+)' -- "$FISH_VERSION")
+set -l __warp_nc_ver_ok 0
+if test (count $__warp_nc_v) -eq 2
+    if test $__warp_nc_v[1] -gt 3
+        set __warp_nc_ver_ok 1
+    else if test $__warp_nc_v[1] -eq 3; and test $__warp_nc_v[2] -ge 4
+        set __warp_nc_ver_ok 1
+    end
+end
+if test $__warp_nc_ver_ok = 1; and test "$WARP_IN_MSYS2" != true; and command -q bash; and command -q stty; and begin; command stty -g </dev/tty >/dev/null; end 2>/dev/null
+    set -g __warp_nc_ok 1
+end
+# RS at the prompt opens a frame whose exchange already ended (the hook gave up, or was
+# interrupted): read it the same way and drop it. The same give-back rules apply to anything else.
+function __warp_native_discard
+    set -l raw (__warp_nc_sh '' | string collect -a)
+    if not string match -q -r '\x1e(\d+x\d+x\d+|-):((?:%[0-9A-Fa-f]{2})*)\x1f' -- $raw
+        test -n "$raw"; and __warp_nc_give_back $raw
+    end
 end
 
 function clear

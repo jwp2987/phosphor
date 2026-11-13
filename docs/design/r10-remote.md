@@ -113,3 +113,78 @@ and they sit under the ssh hand-over. Deleting the line: it is the only trace of
 never bootstrapped.
 
 **Risk.** Minimal: one log call's condition and text.
+
+## #2196 remote Tab without the helper: zsh with compinit, fish, nu, and the bash 300 ms
+
+The no-helper Tab asks the remote shell first, in-band (#1801). r27b/r29a showed it answering for
+bash only. Where each shell stands now (`docs/testing.md`, lab `lab_tab_remote_dir`):
+
+| shell | in-band answer | why |
+|---|---|---|
+| bash | yes (bash-completion, `__warp_native_candidates`) | since #1801 / #1969 |
+| zsh WITH compinit | yes (`warp_main_completer`, compsys) | since #1801; the lab never had such a user |
+| zsh WITHOUT compinit | empty by design, the completer answers | #2174: we never run `compinit` for the user (`warp_compsys_loaded`, `zsh_body.sh`) |
+| fish | yes, new | `complete -C <line>` through the same exchange (below) |
+| nu | no, the completer answers | no non-interactive completion API (below) |
+
+**Lab.** `u_zshc` (shell key `zshc`, the same `/usr/bin/zsh`) sources the zsh hook and then runs
+`autoload -Uz compinit && compinit -u` from its `.zshrc` (`labd.rc_plan`; `-u` so an insecure-
+directory question cannot stop the login at a prompt nobody answers). `u_zsh` keeps no compinit:
+it is the arm that proves the fallback is still correct. `zshc` is declared by `lab_tab_remote_dir`
+only (`lab.MATRIX_SHELLS`; `lab.ALL_SHELLS`, which the families run on, is unchanged) and is in
+the quick matrix. The case now judges the unique-prefix Tab against the app's own log:
+bash, zshc and fish must log `N candidates from the remote shell in M ms` (the in-band ms is
+recorded as `tab_native_ms`); zsh must log the empty-answer line and no candidates; a refusal
+(`Native completions not started (why)`) is named and the row is UNVERIFIABLE, never a pass.
+
+**fish.** The #1801 review left fish out: fish's `read` runs the line editor, and fish switches
+its terminal modes (bracketed paste, keypad, modifyOtherKeys) off and on around every external
+command, so a write released after the exchange's last OSC could meet a fish with bracketed paste
+off. The bootstrap now answers (`fish.sh`, `__warp_native_complete`, bound to `^Y`; RS bound to
+`__warp_native_discard`; the Bootstrapped hook advertises `!phosphor_nc_frames_v1` in
+`shell_options` only where fish is 3.4+, not MSYS2, and `sh dd stty sleep` and a tty exist):
+- the frame is read by ONE external `sh` (`__warp_nc_sh`): `stty -echo eol '^_'` (canonical mode,
+  US as a line terminator), the prompt OSC, one `dd`. The line discipline returns exactly up to
+  the frame's US, so bytes written behind it (the command after a cancel frame) stay in the tty
+  for fish: nothing over-read, no inter-byte timing. A watchdog `sleep` (PHOSPHOR_NC_DEADLINE,
+  default 20 s) is the give-up net and writes nothing.
+- every external command has ended before the answer; the answer is builtin `printf` only
+  (`OSC 9280;A;incrementally_typed`, `C;<token>`, `D?description;<text>`, `B`), so the app's
+  release on `B` cannot meet a fish with its modes off.
+- candidates are `complete -C <line>`; the `a;` of `echo a;ec` and an opening quote are put back
+  (the app replaces the whole whitespace-delimited token), names are escaped as fish inserts them
+  (not under a quote, not the `~/` of a home path), at most 2000.
+- limits: a frame over the tty's canonical line (4095 bytes, about 1300 characters of line) never
+  reaches its US and ends at the deadline; what is read around a frame is given back as
+  printable text and an Enter only (a function cannot hand fish a control key). The app writes
+  nothing between `^Y` and the frame (every other write first writes the cancel frame), so only
+  terminal replies come in between.
+- app: `ShellType::supports_native_shell_completions` now includes fish (`crates/warp_terminal`).
+  Tests: `script/test_native_completions --only-fish` (the REAL fish bootstrap in a pty),
+  `shell::mod_tests`.
+- state: worked, unproven in the app. The remote round trip count is the exchange's: `^Y` -> prompt OSC
+  (1 RTT) -> frame -> answer (1 RTT), i.e. 2 RTT on the wire, the same as bash and zsh. Plain ssh
+  completes in 1 RTT because the remote shell has the line already; reaching that needs a different
+  protocol (the line sent with `^Y`, before the token) and is not part of this change.
+
+**nu.** nu 0.116.x (the lab image's) has no usable non-interactive completion API for a
+bootstrap to call: completions exist only inside its own line editor (reedline, not scriptable)
+and through the CLI mode `nu --ide-complete <pos> <file>`, which starts a SECOND nu process that
+completes a file's text without the running session's aliases, custom completers, `$env` or
+scope (the lab's own driver, `labd.COMPLETERS["nu"]`, uses exactly that and notes `-c <line>`
+exits 1 with no output). So nu stays on the app's completer (correct, slower; r29a nu.150 536
+ms); a nu answer would be a different feature (a nu-side completer written in nu), to be filed
+separately. Left unchanged on purpose.
+
+**bash, ~300 ms on a LAN (macOS lab `bash.lan.nohelper`).** Nothing in the in-band Tab path of
+`bash_body.sh` or `pty_controller.rs` waits: the only timers on it are give-up nets (prompt 2 s,
+results 15 s) that never fire on a normal Tab, and the hook reads with no per-byte wait. What the
+r29a number measured: `lab_tab_remote_dir` started its clock BEFORE `ctx.be.key("Tab")`, and the
+macOS backend's `key()` runs the injector (`htype2`) as a process and returns after it exits, so
+the figure carried the process start-up and the key gap (`backend.py`, `MacBackend._ht`). The
+clock now starts at the injector's own post time of the Tab (`cases_lab.tab_press_wall`, from
+`backend.calls[-1]["post_wall"]`), falling back to the old clock where there is none (X11).
+Other cost that is real and not a defect: bash-completion's `_cd` and `_filedir` fork several
+times per Tab, the same work the user's own bash does. The first Tab right after connect can be
+refused (`Native completions not started (a command is executing)`), which the case now names
+instead of passing.

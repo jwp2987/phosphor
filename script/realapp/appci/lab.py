@@ -18,6 +18,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 SSHLAB_DIR = os.path.normpath(os.path.join(HERE, "..", "sshlab"))
 USERS_PY = os.path.join(SSHLAB_DIR, "rootfs", "usr", "local", "lib", "sshlab", "usersdb.py")
 ALL_SHELLS = ("bash", "zsh", "fish", "nu", "pwsh", "dash", "ash", "rbash")
+MATRIX_SHELLS = ALL_SHELLS + ("zshc",)   # zshc (#2196): zsh WITH compinit. Only lab_tab_remote_dir declares it, so the families that run on ALL_SHELLS do not grow an arm
 LATS = {"lan": 0, "150": 150, "300": 300}          # RTT label -> ms
 HELPERS = ("nohelper", "helper", "upload", "upgrade", "never")   # nohelper is the default and always the first arm. helper: pre-installed. upload: nothing installed, the app uploads
 # it in-band (the lab blocks outbound, so only an upload can succeed). upgrade: older versions pre-seeded, the app replaces them. never: per-host policy never, nothing may be uploaded
@@ -35,7 +36,7 @@ def matrix_selection(value=None):
     shells/lats/helpers None = every value the case declares. Unknown keys or values raise ValueError (a typo must not select nothing)."""
     v = (value if value is not None else os.environ.get("APPCI_LAB_MATRIX", "quick")).strip() or "quick"
     if v == "quick":
-        return dict(shells={"bash", "zsh", "fish", "nu"}, lats={"lan", "150"}, helpers={"nohelper", "helper"}, faults=False, scenarios=False)
+        return dict(shells={"bash", "zsh", "zshc", "fish", "nu"}, lats={"lan", "150"}, helpers={"nohelper", "helper"}, faults=False, scenarios=False)
     if v == "full":
         return dict(shells=None, lats=None, helpers=None, faults=True, scenarios=True)
     sel = dict(shells=None, lats=None, helpers={"nohelper"}, faults=False, scenarios=False)
@@ -47,7 +48,7 @@ def matrix_selection(value=None):
         k, val = [x.strip() for x in part.split("=", 1)]
         items = {x.strip() for x in val.split(",") if x.strip()}
         if k == "shells":
-            bad = items - set(ALL_SHELLS)
+            bad = items - set(MATRIX_SHELLS)
             sel["shells"] = items
         elif k == "lat":
             bad = items - set(LATS)

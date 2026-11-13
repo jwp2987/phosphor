@@ -528,16 +528,21 @@ impl ShellType {
 
     /// Returns whether the current shell supports native shell completions: the bootstrap binds
     /// `^Y` to a widget that answers the in-band completions handshake. zsh from upstream; bash
-    /// (programmable completion, COMP_* emulated) since #1801.
+    /// (programmable completion, COMP_* emulated) since #1801; fish (`complete -C`) since #2196.
     ///
-    /// Not fish (#1801 review): fish can read the answer only with external commands (its `read`
-    /// runs its line editor, which draws and queries the terminal), and around every external
-    /// command fish switches its terminal modes off and back on (bracketed paste, keypad,
-    /// modifyOtherKeys) after the exchange's last OSC, so a write released then could reach fish
-    /// with bracketed paste off, typed key by key, where abbreviations expand. fish's bootstrap
-    /// has no `^Y` handler.
+    /// fish was left out of #1801 (review): fish's `read` runs its line editor, which draws and
+    /// queries the terminal, and around every external command fish switches its terminal modes
+    /// off and back on (bracketed paste, keypad, modifyOtherKeys), so a write released after the
+    /// exchange's last OSC could reach a fish with bracketed paste off, typed key by key, where
+    /// abbreviations expand. #2196 answers both: the frame is read by one external `sh` that
+    /// reads exactly up to the frame's US (canonical mode, `stty eol`), so nothing behind it is
+    /// consumed, and every external command of the exchange has ended BEFORE the answer's OSCs,
+    /// which are builtin `printf` only; the app releases what it holds on the last of them.
+    /// nu has no non-interactive completion API its bootstrap could call (its completions are
+    /// reachable only through a second `nu --ide-complete` process that does not know the
+    /// session), so it stays on the completer.
     fn supports_native_shell_completions(&self) -> bool {
-        matches!(self, ShellType::Zsh | ShellType::Bash)
+        matches!(self, ShellType::Zsh | ShellType::Bash | ShellType::Fish)
     }
 
     /// Given the output of the `alias` command, returns a map of alias keys to values.

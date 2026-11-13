@@ -71,7 +71,8 @@ def r30_lab_tab_remote_dir_matrix_has_the_zshc_arms_2196():
     for lat in ("lan", "150", "300"):
         for h in ("nohelper", "helper"):
             assert "lab_tab_remote_dir.zshc.%s.%s" % (lat, h) in names, (lat, h)
-    assert "zshc" in L.ALL_SHELLS and "zshc" in L.matrix_selection("quick")["shells"]
+    assert "zshc" in L.MATRIX_SHELLS and "zshc" not in L.ALL_SHELLS and "zshc" in L.matrix_selection("quick")["shells"]
+    assert L.matrix_selection("shells=zshc;lat=lan")["shells"] == {"zshc"}
     assert not [n for n in names if ".zshc." in n and not n.startswith("lab_tab_remote_dir.")], "only lab_tab_remote_dir declares zshc"
     arm = next(c["arm"] for c in cases.CASES if c["name"] == "lab_tab_remote_dir.zshc.lan.nohelper")
     assert arm["shell"] == "zshc" and arm["user"] == "u_zshc" and arm["fault"] is None

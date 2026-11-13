@@ -5034,7 +5034,7 @@ def lab_helper_coverage_guard():
     played = [c["name"] for c in cases.CASES if fnmatch.fnmatch(c["name"], "lab_fam_agent_*")]
     assert played and all(n.startswith(("lab_fam_agent_edit_", "lab_fam_agent_delete_")) for n in played), "PROVING_LAB's lab_fam_agent_* plays only the agent edit cases"
     import lab as L
-    assert L.matrix_selection("quick")["shells"] == {"bash", "zsh", "fish", "nu"}
+    assert L.matrix_selection("quick")["shells"] == {"bash", "zsh", "fish", "nu", "zshc"}      # #2196: zshc (zsh WITH compinit) is in the quick set; the families run on ALL_SHELLS, which has no zshc
 
 
 @check

@@ -3,7 +3,8 @@
 import os, sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-SHELLS = {"bash": "/bin/bash", "zsh": "/usr/bin/zsh", "fish": "/usr/bin/fish", "nu": "/opt/nu/nu", "pwsh": "/opt/pwsh/pwsh",
+# zshc (#2196): the same /usr/bin/zsh as zsh, but its .zshrc runs compinit (labd.rc_plan); zsh's never does, which is the user an in-band Tab gets no answer from by design (#2174)
+SHELLS = {"bash": "/bin/bash", "zsh": "/usr/bin/zsh", "zshc": "/usr/bin/zsh", "fish": "/usr/bin/fish", "nu": "/opt/nu/nu", "pwsh": "/opt/pwsh/pwsh",
           "dash": "/bin/dash", "ash": "/usr/local/bin/ash", "rbash": "/bin/rbash"}
 # profile -> how labd builds the home. home: "normal" | "ro" (root-owned, mode 555) | "none" (the account's home does not exist).
 # rc: the bash scenario fragment scenarios/<profile>.sh is sourced after the hook (a profile without a file adds nothing).

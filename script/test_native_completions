@@ -756,6 +756,14 @@ def run_fish(base, lab):
             check(shell, "an option comes with its description (OSC 9280;D?description)",
                   b"--color=always" in out and DESCRIPTION_RE.search(out) is not None and b"Use colors" in out, f"(got {out[-200:]!r})")
 
+        # fish switches its terminal modes off while a binding runs and back on when it returns: the end mark must come AFTER bracketed paste is on again, or the
+        # app releases a held command and writes it without paste markers into a fish that takes it key by key (the #1801 review's reason for leaving fish out).
+        token = ask(sh, shell, "modes")
+        if token is not None:
+            sh.write(frame(token, "cd pro"))
+            out = sh.read_until(rb"\x1b\]9280;B\x07")
+            check(shell, "bracketed paste is switched back on before the end mark", b"\x1b[?2004h\x1b]9280;B\x07" in out, f"(got {out[-160:]!r})")
+
         # A command behind the frame (same write, and 5 ms later) runs.
         for gap, label in ((None, "same write"), (0.005, "5 ms later")):
             text, want = fish_command()
