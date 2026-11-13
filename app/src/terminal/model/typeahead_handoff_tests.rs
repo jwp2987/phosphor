@@ -8116,3 +8116,115 @@ fn handed_back_keys_apply_ctrl_a_ctrl_e_and_ctrl_k() {
         b"\x01\x05\x1b[D\x0b"
     )));
 }
+
+/// #2202 fixture: an empty Enter's command was written (`\r`), then `keys` went to the pty raw one
+/// at a time before its prompt (each noted as the view notes a raw user key, then counted and
+/// flushed as `PtyController` does), then the prompt's request was written.
+fn raw_keys_then_request(keys: &[&[u8]]) -> (TypeaheadHandoff, PtyWriteCount) {
+    let mut handoff = TypeaheadHandoff::default();
+    handoff.set_ssh_escape_cr_line_start_rule(true);
+    let pty = handoff.pty_write_count();
+    handoff.on_command_written();
+    handoff.note_written_command_text("");
+    pty.note_write_bytes(b"\r");
+    handoff.age_last_activity_for_test();
+    for key in keys {
+        assert_eq!(handoff.on_user_bytes(key), UserBytesRoute::WriteCounted);
+        handoff.note_raw_user_write(key);
+        pty.note_write_bytes(key);
+        handoff.on_user_write_flushed();
+    }
+    handoff.on_precmd();
+    assert_eq!(
+        handoff.on_line_editor_active(true, true),
+        ActiveDecision::SendRequest
+    );
+    pty.note_write_bytes(b"\x1bi");
+    (handoff, pty)
+}
+
+/// #2202: a lone `~` that went to the pty raw right after a newline was read by ssh at its line
+/// start; the hand-off remembers that until the report of the line is judged, once. T7: after that
+/// report (it emptied the remote line) an escape written now reaches ssh at its line start, behind
+/// the `\r` the escape path adds.
+#[test]
+fn a_raw_tilde_right_after_a_newline_is_remembered_until_its_report() {
+    let (mut handoff, _pty) = raw_keys_then_request(&[b"~"]);
+    handoff.on_report_parsed();
+    assert!(matches!(
+        handoff.on_report(),
+        ReportDisposition::Insert | ReportDisposition::InsertYoung
+    ));
+    assert!(
+        handoff.ssh_escape_would_reach_line_start(),
+        "the report emptied the remote line: `\\r~X` starts a line for ssh"
+    );
+    assert!(
+        handoff.take_raw_tilde_at_ssh_line_start(),
+        "ssh read the `~` right after the Enter's newline"
+    );
+    assert!(
+        !handoff.take_raw_tilde_at_ssh_line_start(),
+        "the fact is used once"
+    );
+    // T7 (passes before the fix too): the existing rule adds the `\r`.
+    assert_eq!(handoff.ssh_escape_line_start(), SshEscapeLineStart::AddCr);
+}
+
+/// #2202 (review A4): `a`, Backspace, `~` typed raw leave `~` in the remote line, but ssh never
+/// saw that `~` at its line start. So does a `~` followed by another raw key, a key that is not a
+/// lone `~`, and a `~` behind bytes the app wrote itself (a terminal-query reply).
+#[test]
+fn a_raw_tilde_that_ssh_did_not_read_at_its_line_start_is_not_remembered() {
+    let cases: [&[&[u8]]; 4] = [&[b"a", b"\x7f", b"~"], &[b"~", b"x"], &[b"~~"], &[b"x"]];
+    for keys in cases {
+        let (mut handoff, _pty) = raw_keys_then_request(keys);
+        assert!(
+            !handoff.take_raw_tilde_at_ssh_line_start(),
+            "{keys:?}: not a lone `~` right after a newline"
+        );
+    }
+
+    // A reply the app wrote behind the newline: ssh last read that, not the newline.
+    let mut handoff = TypeaheadHandoff::default();
+    let pty = handoff.pty_write_count();
+    handoff.on_command_written();
+    pty.note_write_bytes(b"\r");
+    pty.note_tail(b"\x1b[24;1R");
+    assert_eq!(handoff.on_user_bytes(b"~"), UserBytesRoute::WriteCounted);
+    handoff.note_raw_user_write(b"~");
+    assert!(!handoff.take_raw_tilde_at_ssh_line_start());
+
+    // A command written since (its own newline starts a new line; the `~` was that line's text).
+    let (mut handoff, pty) = raw_keys_then_request(&[b"~"]);
+    handoff.on_command_written();
+    pty.note_write_bytes(b"ls\r");
+    assert!(
+        !handoff.take_raw_tilde_at_ssh_line_start(),
+        "a command written since ends the fact"
+    );
+}
+
+/// #2202 (review A3, item 4): while an Enter is deferred behind the report with keys held behind
+/// its gate, an escape written now would not reach ssh at its line start (the escape path refuses
+/// the `\r` there, `hold_after_enter`): the report stays text and the deferred Enter runs the line
+/// as typed, in order.
+#[test]
+fn an_ssh_escape_would_not_reach_the_line_start_while_an_enter_is_deferred() {
+    let (mut handoff, _pty) = raw_keys_then_request(&[b"~"]);
+    assert!(handoff.defer_enter());
+    assert!(!handoff.ssh_escape_would_reach_line_start());
+    handoff.on_report_parsed();
+    assert!(matches!(
+        handoff.on_report(),
+        ReportDisposition::InsertThenSubmit | ReportDisposition::InsertThenSubmitYoung
+    ));
+    assert!(
+        !handoff.ssh_escape_would_reach_line_start(),
+        "the deferred Enter's gate is live"
+    );
+    assert_eq!(
+        handoff.ssh_escape_line_start(),
+        SshEscapeLineStart::Skipped("hold_after_enter")
+    );
+}

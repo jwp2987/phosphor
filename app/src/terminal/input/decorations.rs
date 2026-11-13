@@ -97,6 +97,17 @@ const INVALID_SYMBOLS_COMMAND_ERROR_UNDERLINING: [char; 22] = [
     '>', '?', '!', ',',
 ];
 
+/// #2203: whether a background pass that carries no input-type detection owes one. (Stub of the
+/// tests-first commit: never, which is the behaviour before the fix.)
+pub(super) fn pass_owes_detection(
+    _carries_detection: bool,
+    _requested_for_buffer: bool,
+    _autodetection_on: bool,
+    _classifier_job_in_flight: bool,
+) -> bool {
+    false
+}
+
 enum CompletionSessionContext {
     Session(SessionContext),
     Empty(EmptyCompletionContext),

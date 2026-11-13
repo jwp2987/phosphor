@@ -15251,6 +15251,18 @@ impl TerminalView {
         }
     }
 
+    /// Test seam (#2202/#2203): a shell report of the line, stored in the model, reaches the view.
+    #[cfg(test)]
+    pub(crate) fn handle_typeahead_report_for_test(&mut self, ctx: &mut ViewContext<Self>) {
+        self.handle_typeahead_report_with_handoff(true, ctx);
+    }
+
+    /// Test seam (#2202): a key typed with the terminal focused, on the user-key write path.
+    #[cfg(test)]
+    pub(crate) fn write_user_bytes_for_test(&mut self, bytes: &[u8], ctx: &mut ViewContext<Self>) {
+        self.write_user_bytes_to_pty(bytes.to_vec(), ctx);
+    }
+
     /// Runs a Tab that waited for the shell's line report, now on the merged line (#1659), when
     /// no Enter is deferred behind it.
     fn resume_tab_after_report(&mut self, ctx: &mut ViewContext<Self>) {

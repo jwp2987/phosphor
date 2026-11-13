@@ -1380,6 +1380,33 @@ fn ssh_escape_bytes(before: &str, after: &str) -> Option<[u8; 2]> {
     (matches!(before, "" | "~") && SSH_ESCAPE_CHARS.contains(&escape)).then_some([b'~', escape])
 }
 
+/// #2202: what the view knows about the shell's line when it hands a report of it to the editor
+/// ([`Input::insert_reported_line`]). Both facts are about the local ssh client, which the editor
+/// cannot see. The default (neither holds) is a report that is only ever text.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ReportLineFacts {
+    /// The last key that went to the pty raw was a lone `~`, written right after a newline: ssh
+    /// read it at its line start (`TypeaheadHandoff::take_raw_tilde_at_ssh_line_start`). A `~`
+    /// typed after other bytes of the line (`a`, Backspace, `~`) is not.
+    pub tilde_at_ssh_line_start: bool,
+    /// An ssh escape written now reaches ssh at its line start, alone or behind the `\r` the
+    /// escape path adds (`TerminalView::report_escape_reaches_ssh_line_start`). It does not while
+    /// an Enter is deferred with keys held behind it, or while the remote line may hold bytes.
+    pub escape_reaches_ssh_line_start: bool,
+}
+
+/// #2202: what [`Input::insert_reported_line`] did with a report of the shell's line.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HandoffInsert {
+    /// #1569: another line's text; the buffer is exactly as it was.
+    Refused,
+    /// The report is in the buffer, as text.
+    Inserted,
+    /// The report and the one character the editor held are ssh's escape `~X` (#1638): the editor
+    /// is empty and the view writes these two bytes to the pty.
+    SshEscape([u8; 2]),
+}
+
 /// One piece of input the user typed after an Enter that is waiting for a classification verdict
 /// (#1016): it follows that Enter, never joins the text it submits.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -9367,6 +9394,22 @@ impl Input {
         let typeahead = typeahead.to_owned();
         self.ai_input_model
             .update(ctx, |model, _| model.note_typeahead_inserted(typeahead));
+    }
+
+    /// #2202: [`Self::insert_handoff_typeahead_text`] with what the view knows about the shell's
+    /// line. (Stub of the tests-first commit: the facts are not judged yet.)
+    pub fn insert_reported_line(
+        &mut self,
+        num_typeahead_chars_inserted: CharOffset,
+        typeahead: &str,
+        _facts: ReportLineFacts,
+        ctx: &mut ViewContext<Self>,
+    ) -> HandoffInsert {
+        if self.insert_handoff_typeahead_text(num_typeahead_chars_inserted, typeahead, ctx) {
+            HandoffInsert::Inserted
+        } else {
+            HandoffInsert::Refused
+        }
     }
 
     /// Like [`Self::insert_typeahead_text`], for a report the typeahead hand-off asked for.

@@ -1494,6 +1494,21 @@ impl TypeaheadHandoff {
         self.pty_writes.clone()
     }
 
+    /// #2202: a user key went to the pty raw. (Stub of the tests-first commit: nothing is noted.)
+    pub fn note_raw_user_write(&mut self, _bytes: &[u8]) {}
+
+    /// #2202: whether the last raw user key was a lone `~` at ssh's line start, once. (Stub of the
+    /// tests-first commit: never.)
+    pub fn take_raw_tilde_at_ssh_line_start(&mut self) -> bool {
+        false
+    }
+
+    /// #2202: whether an ssh escape written now would reach ssh at its line start. (Stub of the
+    /// tests-first commit: never.)
+    pub fn ssh_escape_would_reach_line_start(&self) -> bool {
+        false
+    }
+
     /// #1793: whether the #1638 ssh escape path writes a `\r` ahead of the escape so ssh reads it
     /// at its line start (see [`SshEscapeLineStart`]). The `\r` reaches the remote shell, so it is
     /// added only where it provably submits an empty line: the editor owns input with no request
