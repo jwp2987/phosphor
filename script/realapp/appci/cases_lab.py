@@ -467,23 +467,26 @@ MANAGED_SESSION_CASES = {
 # ---- #2164: the helper takes the session over some time after the prompt (command executor swapped from the ControlMaster; remote index sync). A window
 # that counts exec channels must open after that, or the takeover's own channels are charged to the feature under test.
 HOOK_EXECUTOR_SWAPPED = re.compile(r"command executor swapped from the ControlMaster")
+# on lan the helper is connected when the executor is created: the log then says only "creating a remote server executor for session ..." (r29a
+# case_lab_helper_killed.bash.lan.helper.log :1073), never the swap line, which is the late-connect path
+HOOK_EXECUTOR_CREATED = re.compile(r"creating a remote server executor for session")
 HOOK_SYNC_START = re.compile(r"hop=remote_index_sync start\b")
 HOOK_SYNC_END = re.compile(r"hop=remote_index_sync (?:done|skipped|failed)\b")
 HOOK_ROUTE_SHELL = re.compile(r"hop=backend_route family=(\w+) backend=shell")
 
 
 def helper_takeover_state(log_text):
-    """pure: (swapped, pending_syncs) of an app log: whether the helper client replaced the ControlMaster executor, and how many remote index syncs
+    """pure: (swapped, pending_syncs) of an app log: whether the helper client replaced the ControlMaster executor (the swap line) or was there when the executor was created (lan), and how many remote index syncs
     started and have not logged done / skipped / failed"""
     t = log_text or ""
-    return (bool(HOOK_EXECUTOR_SWAPPED.search(t)), max(0, len(HOOK_SYNC_START.findall(t)) - len(HOOK_SYNC_END.findall(t))))
+    return (bool(HOOK_EXECUTOR_SWAPPED.search(t) or HOOK_EXECUTOR_CREATED.search(t)), max(0, len(HOOK_SYNC_START.findall(t)) - len(HOOK_SYNC_END.findall(t))))
 
 
 def helper_takeover_note(log_text):
     """pure: the one-line evidence of what the log says about the takeover (the swap, the syncs, the shell-routed lines AFTER the swap)"""
     t = log_text or ""
     swapped, pending = helper_takeover_state(t)
-    m = HOOK_EXECUTOR_SWAPPED.search(t)
+    m = HOOK_EXECUTOR_SWAPPED.search(t) or HOOK_EXECUTOR_CREATED.search(t)
     after = len(HOOK_ROUTE_SHELL.findall(t[m.end():])) if m else None
     return "executor_swapped=%s pending_syncs=%d syncs=%d shell_routes_after_swap=%s" % (swapped, pending, len(HOOK_SYNC_END.findall(t)), after)
 
@@ -582,6 +585,21 @@ def batch_exec_report(log_text):
     return batches, execs
 
 
+BATCH_PROMPT_RE = re.compile(r"git batch: exec started generation=\d+ prompt=(\d+)")
+
+
+def batch_prompts_run(log_text):
+    """pure: the prompt numbers the app ran a batched git exec for, in an app-log excerpt (`git batch: exec started generation=N prompt=M`). The shell's
+    prompt.log undercounts a window that opens before the app's last prompt work is done (r29a lab_chips: two prompts' batches fell in the window while
+    prompt.log grew by 1), so the channels are judged per prompt the app actually ran."""
+    return sorted({int(m) for m in BATCH_PROMPT_RE.findall(log_text or "")})
+
+
+def chip_prompt_count(prompt_log_growth, log_text):
+    """pure: the prompts a lab_chips window holds: the larger of the shell's own count and the app's distinct batch prompts, at least 1"""
+    return max(1, prompt_log_growth, len(batch_prompts_run(log_text)))
+
+
 def batch_exec_note(log_text):
     """pure: the row-note text naming what each exec was for, so a channel count above the limit says which producers opened them"""
     batches, execs = batch_exec_report(log_text)
@@ -609,6 +627,20 @@ def ocr_evidence(ctx, tag, arm, txt):
 
 
 CHIP_VALUE_RE = r"update_chip_value ShellGitBranch -> .*?%s"
+
+
+def branch_evidence(txt, branch, log_text):
+    """pure: (seen, how) for a branch name that must show after a cd into a repo: on screen (the OCR text read with the one-glyph tolerance of
+    cases_ui.token_hits, so an l/1 or 0/o misread still counts) or as the value the app's chip took ([chips] update_chip_value ShellGitBranch -> ..).
+    seen is False only when NEITHER holds; `how` names the evidence. txt None (no OCR) with no log line: (None, 'no OCR')."""
+    import cases_ui as U
+    if chip_value_logged(log_text, branch):
+        return True, "app log chip value"
+    if txt is None:
+        return None, "no OCR"
+    if U.token_hits([(w, 0, i) for i, w in enumerate(txt.split())], branch):
+        return True, "screen (OCR, one-glyph tolerance)"
+    return False, "neither the screen nor the app log"
 
 
 def chip_value_logged(log_text, branch):
@@ -814,6 +846,20 @@ def unique(ctx, n=6):
 
 
 # ------------------------------------------------------------------ 1. Tab completion of a remote directory
+def tab_band_key(ctx, arm):
+    """band key of the Tab -> insert time of a lab_tab_remote_dir arm: <platform>/<mode>/<arm name>/tab_to_insert (owner 2026-11-13 'Turn it into a band')"""
+    import bands
+    return bands.key(os.environ.get("APPCI_PLATFORM", "linux"), "%s/%s/tab_to_insert" % (ctx.label, arm["name"]))
+
+
+def tab_band_check(r, ctx, arm, took_s):
+    """the Tab -> insert time is a perf BAND, not a fixed 1 RTT + 100 ms budget: recorded as a metric (ms), judged by bands.judge (no band yet: NOREF)"""
+    import bands
+    ms = round(took_s * 1000.0, 1)
+    r.metric("tab_to_insert_ms", ms)
+    return bands.check(r, tab_band_key(ctx, arm), ms, "Tab -> insert took %.0f ms (RTT %d ms)" % (ms, arm["lat_ms"]))
+
+
 @lab_case("tab_remote_dir", shells=("bash", "zsh", "fish", "nu"), lat=("lan", "150", "300"), helper=("nohelper", "helper"),
           scenarios=("p_banner", "p_colon", "p_question", "p_slowrc", "p_rcerr"))
 def c_tab_remote_dir(ctx, r, arm):
@@ -843,7 +889,7 @@ def c_tab_remote_dir(ctx, r, arm):
     if hit:
         took = time.time() - t0
         r.metric("tab_insert_s", round(took, 3))
-        r.check(took <= rt + 0.1 + 0.05, "Tab -> insert took %.0f ms; the budget is 1 RTT (%d ms) + 100 ms (+50 ms poll slack)" % (took * 1000, arm["lat_ms"]))
+        tab_band_check(r, ctx, arm, took)
     else:
         r.unverifiable("[hook] no tab-insert line in the app log (hop=tab_insert / completion_inserted): the Tab -> insert time is not measured until the Wave 0 code logs it")
         time.sleep(0.5 + 2 * rt)
@@ -982,10 +1028,10 @@ def c_chips(ctx, r, arm):
     else:
         r.check(seen, "no branch chip (branch %s) on screen after cd into a git directory on the remote (the OCR text of every try is saved as lab_chips_%s_*.ocr.txt)" % (br, arm_tag(arm)))
     r.check(logged, "the app log has no update_chip_value ShellGitBranch -> %s line: the chip never took the branch" % br)
-    prompts = max(1, ctx.remote.prompts() - p0)
+    prompts = chip_prompt_count(ctx.remote.prompts() - p0, ctx.log_since(off))
     watch.stop(r)
     calls = L.count_starts(lab.sshd_since(size0)["data"])["command"]
-    r.note("side-call producers (#2156): " + batch_exec_note(ctx.log_since(off)))
+    r.note("side-call producers (#2156): " + batch_exec_note(ctx.log_since(off)) + "; prompts the app ran a batch for: %s" % (batch_prompts_run(ctx.log_since(off)),))
     r.metric("side_calls", calls)
     r.metric("prompts", prompts)
     r.check(calls <= prompts, "%d side-call exec channels for %d prompt(s): the app must batch to at most one per prompt" % (calls, prompts))

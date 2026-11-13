@@ -5,7 +5,7 @@ OWNER DECISION (2026-11-12): "Make bands for all, I don't [have] enough feel for
 include that as passing and we can tighten later."  Every perf / memory verdict of the app tests reads test-results/bands.json (appci/bands.py)
 instead of a fixed budget.
 
-Reads every committed run test-results/<date>_<kind>_<id>_<pipeline>/app/<platform>/results.json[l] (lab-* and X11 skipped; results.json may carry a
+Reads every committed run test-results/<date>_<kind>_<id>_<pipeline>/app/<platform>/results.json[l] (X11 skipped; lab-* only for lab_tab_remote_dir's tab_to_insert, keyed by the platform without the lab- prefix; results.json may carry a
 UTF-8 BOM; .jsonl rows or {"cases": [...]}), takes one value per run for each banded metric, keeps the LAST 8 runs (after the "since" cut of
 perf_bands_config.json) and writes test-results/bands.json:
 
@@ -117,6 +117,9 @@ def extract(row, plat=""):
             add("ssh_enter_to_start#app", m.get("app_enter_to_pty_write_ms"), "ms")
     if name == "latency_key_log" and plat != "macos" and not any(s == "latency_key_log/key_to_frame#app" for s, _, _ in out):
         add("key_to_frame#app", p50(m.get("key_to_pty_write_ms")), "ms")      # older runs: the key -> pty write share (the Linux / Windows gate)
+    # the one lab figure that is banded (owner 2026-11-13 'Turn it into a band'): lab_tab_remote_dir's Tab -> insert time, per shell / latency / helper arm
+    if name and name.startswith("lab_tab_remote_dir."):
+        add("tab_to_insert", m.get("tab_to_insert_ms"), "ms")
     # subshell: the first inner line after its Enter (seconds)
     for k, v in m.items():
         if k.endswith("_inner_line_after_enter_s"):
@@ -145,7 +148,8 @@ def history(results=RESULTS):
         run = os.path.basename(d)
         for pdir in sorted(glob.glob(os.path.join(d, "app", "*"))):
             plat = os.path.basename(pdir)
-            if plat.startswith("lab") or plat in SKIP_PLATFORMS:
+            lab = plat.startswith("lab")
+            if plat in SKIP_PLATFORMS:
                 continue
             f = os.path.join(pdir, "results.jsonl")
             if not os.path.exists(f):
@@ -157,7 +161,9 @@ def history(results=RESULTS):
                     continue
                 mode = row.get("mode") or ""
                 for suffix, v, kind in extract(row, platform_name(plat)):
-                    seen["%s/%s/%s" % (platform_name(plat), mode, suffix)] = (v, kind)
+                    if lab and not suffix.endswith("/tab_to_insert"):
+                        continue          # labs are not banded, except the Tab -> insert time
+                    seen["%s/%s/%s" % (platform_name(plat[4:] if lab else plat), mode, suffix)] = (v, kind)
             for key, (v, kind) in seen.items():
                 series.setdefault(key, []).append((run, v))
                 kinds[key] = kind

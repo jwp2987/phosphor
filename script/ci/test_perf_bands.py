@@ -144,6 +144,24 @@ def bom_jsonl_and_skips():
 
 
 @t
+def lab_results_feed_only_the_tab_to_insert_band():
+    root = tempfile.mkdtemp()
+    try:
+        for i, v in enumerate([180.0, 190.0]):
+            d = os.path.join(root, "2026-11-1%d_build_l%d_%d" % (i, i, 50 + i), "app", "lab-wayland")
+            os.makedirs(d)
+            rows = [{"name": "lab_tab_remote_dir.bash.lan.helper", "mode": "terminal", "metrics": {"tab_to_insert_ms": v, "tab_insert_s": v / 1000}},
+                    {"name": "lab_chips.bash.lan.helper", "mode": "terminal", "metrics": {"tab_to_insert_ms": 5.0}},
+                    lat_case("latency_enter", "enter_to_start", 1.0)]
+            open(os.path.join(d, "results.jsonl"), "w").write("\n".join(json.dumps(x) for x in rows) + "\n")
+        b, _ = pb.generate(root, {}, config={})
+        k = "wayland/terminal/lab_tab_remote_dir.bash.lan.helper/tab_to_insert"
+        assert list(b) == [k] and b[k]["values"] == [180.0, 190.0] and b[k]["kind"] == "ms" and b[k]["provisional"], b
+    finally:
+        shutil.rmtree(root)
+
+
+@t
 def since_cuts_old_history_and_its_loosening_is_held_back():
     root = fresh([16.0, 16.0, 2.0, 2.0, 2.0, 2.0, 2.0])
     try:
