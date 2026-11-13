@@ -766,12 +766,21 @@ def links_play(ctx, r, m, calls, fx, tok, front_changed=None):
         r.note("the path opened in an in-app code pane at line %d (the line's text %r is drawn; last gained-focus hop in the app log: %s; "
                "the pane is closed by the close-pane key whatever the hops say)" % (fx["line_no"], t_line, st or "none"))
         off2 = ctx.log_size()
-        if R.CLOSE_PANE:
-            ctx.be.key(R.CLOSE_PANE)
+        closer = R.CLOSE_PANE
+        if closer:
+            ctx.be.key(closer)
+        else:
+            # r29: no close key (macOS: cmd-shift-W is refused by the frontmost-app guard): the command palette runs the same action, as the editor
+            # cases do (C.editor_close). None when the platform has no palette key either.
+            via = C.editor_close(ctx, r)
+            closer = via or ""
+            if via:
+                r.note("no close-pane key on this platform; closed the code pane with %s" % via)
+        if closer:
             time.sleep(1.0)
         have_ocr = U.have_word_ocr(ctx)
-        still = locate_many(ctx, r, "lc_pane_closed", (t_line, t_first), off2) if R.CLOSE_PANE and have_ocr else {}
-        ok, why = close_code_pane_verdict(R.CLOSE_PANE, still, have_ocr)
+        still = locate_many(ctx, r, "lc_pane_closed", (t_line, t_first), off2) if closer and have_ocr else {}
+        ok, why = close_code_pane_verdict(closer, still, have_ocr)
         if not ok:
             r.check(False, why)
             return "pane_open"

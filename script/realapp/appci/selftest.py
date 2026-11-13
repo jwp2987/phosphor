@@ -9451,3 +9451,5 @@ import selftest_r28_ctrlcnu  # noqa: E402  (#2187 lab_ctrl_c_no_esc_i waits out 
 CHECKS.extend(selftest_r28_ctrlcnu.CHECKS)
 import selftest_r28_tabscleanup  # noqa: E402  (r28: tab cleanup retries lost close keys, final Ctrl-C probe, second window left open fails, #1658 row text; own file)
 CHECKS.extend(selftest_r28_tabscleanup.CHECKS)
+import selftest_r29_harness  # noqa: E402  (r29: mode_proof landing screen is not the agent header; link case palette close; own file)
+CHECKS.extend(selftest_r29_harness.CHECKS)
