@@ -1785,6 +1785,21 @@ fn initialize_app(
 
     let user_is_logged_in = auth_state.is_logged_in();
 
+    // The app has ONE frame-drawn callback slot. Every drawn frame: a held editor close trim may
+    // start now that the UI is calm (#2201; one atomic load when none is held). Crash recovery
+    // watches frames only for a logged-in start, as before.
+    ctx.on_frame_drawn(move |ctx, window_id| {
+        crate::alloc::close_trim_frame_drawn(ctx);
+        #[cfg(enable_crash_recovery)]
+        if user_is_logged_in {
+            crash_recovery::CrashRecovery::handle(ctx).update(ctx, |crash_recovery, ctx| {
+                crash_recovery.on_frame_drawn(window_id, ctx);
+            });
+        }
+        #[cfg(not(enable_crash_recovery))]
+        let _ = (window_id, user_is_logged_in);
+    });
+
     if user_is_logged_in {
         // Zap's local auth facade already loads the identity snapshot during
         // `AuthState::initialize`. The startup phase no longer triggers an extra
@@ -1827,13 +1842,6 @@ fn initialize_app(
 
             send_telemetry_from_app_ctx!(event, ctx);
         });
-
-        #[cfg(enable_crash_recovery)]
-        ctx.on_frame_drawn(|ctx, window_id| {
-            crash_recovery::CrashRecovery::handle(ctx).update(ctx, |crash_recovery, ctx| {
-                crash_recovery.on_frame_drawn(window_id, ctx);
-            });
-        })
     } else {
         // If the app was opened while logged out, record an event for measuring new users.
         // This is sent immediately in case they quit the app on the signup screen.

@@ -6202,6 +6202,11 @@ def reusable_note(tag, trim):
             "phys_footprint, still in RSS until the kernel reclaims them; no trim returns them)" % (tag, res / 1048576.0, reu / 1048576.0))
 
 
+# the `trim=` values of the app's buffer_dropped line that promise an 'editor_memory heap_trim why=close' line: a worker started on the drop
+# (true), a running trim makes one more pass (coalesced), or (#2201, the default) the trim is held until the UI is calm (deferred)
+CLOSE_TRIM_ASKED = ("true", "coalesced", "deferred")
+
+
 def editor_wait_close_trim(ctx, off, timeout=15.0):
     """the `editor_memory heap_trim why=close` lines since `off`, waiting up to `timeout` for the first (logged when the worker's trim ends)"""
     t0 = time.time()
@@ -6324,7 +6329,7 @@ def editor_wait_dropped(ctx, off, timeout=15.0):
 def editor_mem_relaunch(ctx, env):
     """restart the app with `env` set ({} restores the default): Linux/Windows inherit os.environ, macOS gets the keys through
     app.PASSTHROUGH_ENV. Returns whether the new instance reached a prompt."""
-    for k in ("PHOSPHOR_EDITOR_TRIM_AFTER_OPEN", "PHOSPHOR_HEAP_TRIM", "PHOSPHOR_HEAP_TRIM_ON_CLOSE"):
+    for k in ("PHOSPHOR_EDITOR_TRIM_AFTER_OPEN", "PHOSPHOR_HEAP_TRIM", "PHOSPHOR_HEAP_TRIM_ON_CLOSE", "PHOSPHOR_HEAP_TRIM_ON_CLOSE_DEFER"):
         os.environ.pop(k, None)
     os.environ.update(env)
     n = ctx.prompts()
@@ -6663,8 +6668,9 @@ def c_editor_mem(ctx, r):
                     # earlier cycle judged "did not open" had in fact opened the 7 MB file, and its editor stayed open under this measurement.
                     r.note("%s: %d other editor buffer(s) still registered when this one dropped: an earlier editor is still open, so the held-after-"
                            "close figure below includes its memory (#1607)" % (tag, left_open))
-                # #1607: a large buffer's drop starts (trim=true) or joins (coalesced) one heap trim on a worker; its line carries freed_estimate
-                if str(dropped[-1].get("trim")) in ("true", "coalesced"):
+                # #1607: a large buffer's drop starts (trim=true) or joins (coalesced) one heap trim on a worker; its line carries freed_estimate.
+                # #2201: by default the drop only HOLDS the trim (trim=deferred) until the UI is calm (give-up net 3 s); the same line must follow
+                if str(dropped[-1].get("trim")) in CLOSE_TRIM_ASKED:
                     trims = editor_wait_close_trim(ctx, off)
                     if trims:
                         r.metric("%s_app_heap_trim_close" % tag, trims[-1])

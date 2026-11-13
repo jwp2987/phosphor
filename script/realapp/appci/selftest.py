@@ -3391,6 +3391,14 @@ def editor_memory_close_trim_and_accepted_open_cost():
         assert [t["freed_estimate"] for t in br["trim"]] == [-4096, 104857600], br["trim"]
         assert br["trim"][0]["why"] == "close" and br["trim"][0]["ms"] == "3.25", br["trim"]
         assert cases.editor_wait_close_trim(c, 0, timeout=0)[-1]["freed_estimate"] == 104857600
+        # #2201: the default drop line says trim=deferred (held until the UI is calm) and still promises the heap_trim line; off / false do not
+        with open(log, "a") as f:
+            f.write("2026 DEBUG editor_memory editor_memory buffer_dropped file_id=FileId(3) registered=0 trim=deferred\n"
+                    "2026 DEBUG editor_memory editor_memory close_trim_start started_by=calm_frames waited_ms=496.2 worker=started\n")
+        assert cases.editor_mem_log(c, 0)["dropped"][-1]["trim"] == "deferred"
+        assert cases.CLOSE_TRIM_ASKED == ("true", "coalesced", "deferred") and "off" not in cases.CLOSE_TRIM_ASKED and "false" not in cases.CLOSE_TRIM_ASKED
+        import app as app_mod
+        assert "PHOSPHOR_HEAP_TRIM_ON_CLOSE_DEFER" in app_mod.PASSTHROUGH_ENV
         assert cases.heap_trims(open(log).read()) == [(1.0, 1.0, "close", None)]     # the hop regex still reads the line with freed_estimate
         assert not cases.editor_opened(-5.5, []) and cases.editor_opened(-5.5, [{"text_bytes": 1}]) and cases.editor_opened(9.0, [])
         # versions and the acceptance window
