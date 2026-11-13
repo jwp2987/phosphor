@@ -656,7 +656,8 @@ impl GlobalBufferModel {
     /// that closes with it, so the sweep runs on the drop event itself. The idle sweep a closing
     /// pane requests can run before the editors are freed (#1478), leaving the weak entry
     /// registered. Event-driven; no timer. When the closing editor asked for it, the drop also
-    /// hands the freed heap back to the OS on a worker ([`crate::alloc::request_close_trim`]).
+    /// asks for the freed heap to be handed back to the OS on a worker: held until the UI is calm
+    /// ([`crate::alloc::defer_close_trim`], #2201; its only timer is the give-up net).
     fn watch_buffer_drop(
         &mut self,
         buffer: &ModelHandle<Buffer>,
@@ -680,10 +681,29 @@ impl GlobalBufferModel {
                 let requested = me.take_trim_on_drop(file_id);
                 #[cfg(test)]
                 me.dropped_with_trim.push((file_id, requested));
-                // `trim=true`: a worker was started for this drop; `coalesced`: a running trim
-                // makes one more pass for it; `off`: a kill switch; `false`: not asked for.
+                // `trim=deferred` (#2201, the default): the trim is held until the UI is calm,
+                // so it no longer runs inside the close's own frames; `true`: a worker was
+                // started for this drop (`PHOSPHOR_HEAP_TRIM_ON_CLOSE_DEFER=0`); `coalesced`: a
+                // running trim makes one more pass for it; `off`: a kill switch; `false`: not
+                // asked for.
                 let trim = if !requested {
                     "false"
+                } else if let Some(generation) = crate::alloc::defer_close_trim() {
+                    // give-up-net: when no calm frame came (hidden window, streaming output),
+                    // the held trim runs anyway so the freed memory is handed back.
+                    ctx.spawn(
+                        async {
+                            warpui::r#async::Timer::after(crate::alloc::CLOSE_TRIM_GIVE_UP).await;
+                        },
+                        move |_, _, ctx| {
+                            if crate::alloc::close_trim_give_up(generation) {
+                                ctx.background_executor()
+                                    .spawn(async { crate::alloc::run_close_trims() })
+                                    .detach();
+                            }
+                        },
+                    );
+                    "deferred"
                 } else if crate::alloc::request_close_trim() {
                     ctx.background_executor()
                         .spawn(async { crate::alloc::run_close_trims() })

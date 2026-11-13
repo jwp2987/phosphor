@@ -321,7 +321,9 @@ impl TrimCoalescer {
 
 static CLOSE_TRIMS: TrimCoalescer = TrimCoalescer::new();
 
-/// Asks for one heap trim after a large editor buffer was really dropped (#1407, #1607). Returns
+/// Asks for one heap trim after a large editor buffer was really dropped (#1407, #1607). Since
+/// #2201 the drop event goes through [`defer_close_trim`] first and this is called when the held
+/// trim starts (or at once with `PHOSPHOR_HEAP_TRIM_ON_CLOSE_DEFER=0`). Returns
 /// `true` when the caller must run [`run_close_trims`] on a background worker (never the UI
 /// thread); `false` when the close trim is switched off or a running trim will make one more pass
 /// for it. Kill switches: `PHOSPHOR_HEAP_TRIM_ON_CLOSE=0` (this trim only) or `PHOSPHOR_HEAP_TRIM=0`
@@ -342,6 +344,217 @@ pub(crate) fn run_close_trims() {
             break;
         }
     }
+}
+
+/// How long the UI must have been quiet before a frame for that frame to count as a calm one
+/// (#2201). The frames of a close come 3-15 ms apart; an idle app draws at its cursor-blink pace
+/// (about 500 ms) with a stray frame 75 ms or more after the close (r29a Wayland, job 17990069590).
+pub(crate) const CLOSE_TRIM_QUIET_GAP: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// How many calm frames in a row start the held close trim (#2201). One is not enough: a single
+/// frame after a pause can be the first of a pair (r29a: frames 9-17 ms apart right after a 460 ms
+/// pause), and a trim started after it would run into the second.
+pub(crate) const CLOSE_TRIM_CALM_FRAMES: u8 = 2;
+
+/// give-up-net: a held close trim that saw no calm pair of frames this long after the last large
+/// drop (hidden or unfocused window: no frames at all; output streaming: no quiet gap) runs anyway,
+/// so the freed memory is always handed back. It discards nothing and touches no input.
+pub(crate) const CLOSE_TRIM_GIVE_UP: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// Holds the close trim until the UI is calm (#2201). The trim runs on a worker, but it holds each
+/// allocator arena's lock while it walks that arena (6.7-12 ms for the 65-150 MB a closed 7 MB
+/// file frees), and the app runs on two arenas, so a UI-thread allocation made meanwhile waits for
+/// the walk to end. Started on the drop event, the trim always overlapped the close's own relayout
+/// frame: that frame took 9.4 ms instead of 0.6 ms (r29a Wayland `editor_memory_7mb`; the frame
+/// ended 0.07 ms before the trim did).
+///
+/// So the drop only records the request ([`Self::request`]). The trim starts right after a drawn
+/// frame, when that frame and the one before it each followed a quiet gap
+/// ([`CLOSE_TRIM_QUIET_GAP`], [`CLOSE_TRIM_CALM_FRAMES`]): the close's burst of frames is over and
+/// the next frame is, by the pace of the last two, not due while the trim runs. Event-driven (the
+/// frame-drawn event decides); [`CLOSE_TRIM_GIVE_UP`] is the net for frames that never come.
+///
+/// What it cannot promise: a key pressed in the ~10 ms the trim runs still waits for it. That is
+/// one chance pause of at most the trim's length per large close, where it used to be a certain
+/// one on every large close.
+pub(crate) struct DeferredCloseTrim {
+    /// When the oldest request still held arrived (`None`: nothing is held).
+    held_since: Option<std::time::Instant>,
+    /// The latest request or drawn frame: the start of the gap the next frame is measured by.
+    last_activity: Option<std::time::Instant>,
+    /// Calm frames seen in a row since the last request.
+    calm_frames: u8,
+    /// Counts requests, so that only the give-up net of the LATEST request may fire: an earlier
+    /// drop's net would otherwise start the trim inside a later close's frames.
+    generation: u64,
+}
+
+impl DeferredCloseTrim {
+    pub(crate) const fn new() -> Self {
+        Self {
+            held_since: None,
+            last_activity: None,
+            calm_frames: 0,
+            generation: 0,
+        }
+    }
+
+    /// A large buffer was dropped at `now`: hold one trim for it. A request while one is already
+    /// held joins it and restarts the wait (its close has frames of its own). Returns the
+    /// generation the caller's give-up net must present to [`Self::give_up`].
+    pub(crate) fn request(&mut self, now: std::time::Instant) -> u64 {
+        if self.held_since.is_none() {
+            self.held_since = Some(now);
+        }
+        self.last_activity = Some(now);
+        self.calm_frames = 0;
+        self.generation = self.generation.wrapping_add(1);
+        self.generation
+    }
+
+    /// A frame was drawn at `now`. `Some(waited)` when the held trim must start now (it is no
+    /// longer held; `waited` is the time since its first request), `None` otherwise.
+    pub(crate) fn frame_drawn(&mut self, now: std::time::Instant) -> Option<std::time::Duration> {
+        let held_since = self.held_since?;
+        let calm = match self.last_activity {
+            Some(last) => now.saturating_duration_since(last) >= CLOSE_TRIM_QUIET_GAP,
+            None => true,
+        };
+        self.last_activity = Some(now);
+        if !calm {
+            self.calm_frames = 0;
+            return None;
+        }
+        self.calm_frames = self.calm_frames.saturating_add(1);
+        if self.calm_frames < CLOSE_TRIM_CALM_FRAMES {
+            return None;
+        }
+        self.release();
+        Some(now.saturating_duration_since(held_since))
+    }
+
+    /// The give-up net of request `generation` fired at `now`. `Some(waited)` when the trim is
+    /// still held and no later request replaced this one: it must start now. `None` when frames
+    /// already started it or a later request (with its own net) holds it.
+    pub(crate) fn give_up(
+        &mut self,
+        generation: u64,
+        now: std::time::Instant,
+    ) -> Option<std::time::Duration> {
+        let held_since = self.held_since?;
+        if generation != self.generation {
+            return None;
+        }
+        self.release();
+        Some(now.saturating_duration_since(held_since))
+    }
+
+    /// Whether a trim is held.
+    pub(crate) fn is_held(&self) -> bool {
+        self.held_since.is_some()
+    }
+
+    fn release(&mut self) {
+        self.held_since = None;
+        self.last_activity = None;
+        self.calm_frames = 0;
+    }
+}
+
+static DEFERRED_CLOSE_TRIM: std::sync::Mutex<DeferredCloseTrim> =
+    std::sync::Mutex::new(DeferredCloseTrim::new());
+
+/// Whether a close trim is held: the one atomic load a drawn frame pays when none is.
+static CLOSE_TRIM_HELD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The held-trim state. Every caller is on the main thread (drop event, frame-drawn callback,
+/// give-up callback); the mutex is what a `static` needs, and a poisoned one is still usable
+/// (plain data).
+fn deferred_close_trim() -> std::sync::MutexGuard<'static, DeferredCloseTrim> {
+    DEFERRED_CLOSE_TRIM
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// The drop event of a large editor buffer whose close asked for a trim (#2201): holds the trim
+/// until the UI is calm instead of starting it inside the close. `Some(generation)`: the trim is
+/// held; the caller arms the [`CLOSE_TRIM_GIVE_UP`] net and calls [`close_trim_give_up`] with
+/// this generation when it fires. `None`: nothing is held, because the close trim is switched off
+/// or `PHOSPHOR_HEAP_TRIM_ON_CLOSE_DEFER=0` asked for the trim on the drop event; the caller goes
+/// on to [`request_close_trim`] as before.
+pub(crate) fn defer_close_trim() -> Option<u64> {
+    if !close_trim_enabled() || !close_trim_deferred() {
+        return None;
+    }
+    let generation = deferred_close_trim().request(std::time::Instant::now());
+    CLOSE_TRIM_HELD.store(true, std::sync::atomic::Ordering::Release);
+    Some(generation)
+}
+
+/// Called on the main thread after every drawn frame (the app's frame-drawn callback): starts the
+/// held close trim on a background worker when this frame is the calm one it waited for. One
+/// atomic load when no trim is held.
+pub(crate) fn close_trim_frame_drawn(ctx: &mut warpui::AppContext) {
+    if !CLOSE_TRIM_HELD.load(std::sync::atomic::Ordering::Acquire) {
+        return;
+    }
+    let waited = {
+        let mut held = deferred_close_trim();
+        let waited = held.frame_drawn(std::time::Instant::now());
+        CLOSE_TRIM_HELD.store(held.is_held(), std::sync::atomic::Ordering::Release);
+        waited
+    };
+    let Some(waited) = waited else {
+        return;
+    };
+    if start_held_close_trim("calm_frames", waited) {
+        ctx.background_executor()
+            .spawn(async { run_close_trims() })
+            .detach();
+    }
+}
+
+/// The give-up net of [`defer_close_trim`]'s `generation` fired. `true`: the trim was still held
+/// and the caller must run [`run_close_trims`] on a background worker now. `false`: nothing to do
+/// (frames started it, a later drop holds it with its own net, or a running trim makes one more
+/// pass for it).
+pub(crate) fn close_trim_give_up(generation: u64) -> bool {
+    let waited = {
+        let mut held = deferred_close_trim();
+        let waited = held.give_up(generation, std::time::Instant::now());
+        CLOSE_TRIM_HELD.store(held.is_held(), std::sync::atomic::Ordering::Release);
+        waited
+    };
+    match waited {
+        Some(waited) => start_held_close_trim("give_up", waited),
+        None => false,
+    }
+}
+
+/// Logs why the held trim starts and hands it to the coalescer. `true`: start a worker.
+fn start_held_close_trim(started_by: &'static str, waited: std::time::Duration) -> bool {
+    let start_worker = request_close_trim();
+    log::debug!(
+        target: "editor_memory",
+        "editor_memory close_trim_start started_by={started_by} waited_ms={:.1} worker={}",
+        waited.as_secs_f64() * 1000.0,
+        if start_worker { "started" } else { "coalesced" }
+    );
+    start_worker
+}
+
+/// Switch for holding the close trim until the UI is calm (#2201), default on.
+/// `PHOSPHOR_HEAP_TRIM_ON_CLOSE_DEFER=0` restores the earlier behaviour: the trim starts on the
+/// buffer's drop event, inside the close. Read once.
+pub(crate) fn close_trim_deferred() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        env_flag_enabled(
+            std::env::var("PHOSPHOR_HEAP_TRIM_ON_CLOSE_DEFER")
+                .ok()
+                .as_deref(),
+        )
+    })
 }
 
 /// Kill switch for the close trim alone (#1607): `PHOSPHOR_HEAP_TRIM_ON_CLOSE=0` turns it off,
@@ -424,7 +637,115 @@ mod tests;
 
 #[cfg(test)]
 mod switch_tests {
-    use super::{TrimCoalescer, env_flag_enabled, env_flag_opted_in, trim_detail};
+    use std::time::{Duration, Instant};
+
+    use super::{
+        CLOSE_TRIM_GIVE_UP, CLOSE_TRIM_QUIET_GAP, DeferredCloseTrim, TrimCoalescer,
+        env_flag_enabled, env_flag_opted_in, trim_detail,
+    };
+
+    fn ms(n: u64) -> Duration {
+        Duration::from_millis(n)
+    }
+
+    /// #2201: the frames of the close itself (a few ms apart, right after the drop) never start
+    /// the held trim; it starts after the second frame in a row that followed a quiet gap. The
+    /// times are the frames of r29a Wayland `editor_memory_7mb` after one drop.
+    #[test]
+    fn held_close_trim_skips_the_close_frames_and_starts_on_the_second_calm_frame() {
+        let t0 = Instant::now();
+        let mut held = DeferredCloseTrim::new();
+        held.request(t0);
+        assert!(held.is_held());
+        // The close's relayout frame and its follow-up: 10 ms and 17 ms after the drop.
+        assert_eq!(held.frame_drawn(t0 + ms(10)), None);
+        assert_eq!(held.frame_drawn(t0 + ms(17)), None);
+        // 104 ms: the first frame after a quiet gap. One calm frame is not enough.
+        assert_eq!(held.frame_drawn(t0 + ms(104)), None);
+        assert!(held.is_held());
+        // 496 ms: the cursor blink, the second calm frame in a row: the trim starts.
+        assert_eq!(held.frame_drawn(t0 + ms(496)), Some(ms(496)));
+        assert!(!held.is_held());
+        // Nothing is held any more: later frames start nothing.
+        assert_eq!(held.frame_drawn(t0 + ms(997)), None);
+    }
+
+    /// #2201: a calm frame followed closely by another frame (r29a: 484 ms then 496 ms) is the
+    /// first of a pair, not an idle UI: the count starts over, so the trim cannot run into the
+    /// second frame of the pair.
+    #[test]
+    fn a_frame_close_behind_a_calm_one_restarts_the_count() {
+        let t0 = Instant::now();
+        let mut held = DeferredCloseTrim::new();
+        held.request(t0);
+        assert_eq!(held.frame_drawn(t0 + ms(12)), None);
+        assert_eq!(held.frame_drawn(t0 + ms(484)), None); // calm 1
+        assert_eq!(held.frame_drawn(t0 + ms(496)), None); // 12 ms behind it: start over
+        assert_eq!(held.frame_drawn(t0 + ms(997)), None); // calm 1
+        assert_eq!(held.frame_drawn(t0 + ms(1498)), Some(ms(1498))); // calm 2
+    }
+
+    /// #2201: steady frames closer together than the quiet gap (typing, streaming output) never
+    /// start the trim; the give-up net does, and only once.
+    #[test]
+    fn held_close_trim_waits_through_busy_frames_until_the_net() {
+        let t0 = Instant::now();
+        let mut held = DeferredCloseTrim::new();
+        let generation = held.request(t0);
+        let step = CLOSE_TRIM_QUIET_GAP - ms(1);
+        let mut now = t0;
+        while now < t0 + CLOSE_TRIM_GIVE_UP {
+            now += step;
+            assert_eq!(held.frame_drawn(now), None);
+        }
+        assert!(held.is_held());
+        let waited = held
+            .give_up(generation, now)
+            .expect("the net starts the held trim");
+        assert!(waited >= CLOSE_TRIM_GIVE_UP);
+        assert!(!held.is_held());
+        assert_eq!(held.give_up(generation, now), None);
+    }
+
+    /// #2201: with no frame at all (hidden window) the net starts the trim; when frames started
+    /// it first, the net finds nothing to do.
+    #[test]
+    fn the_net_runs_the_trim_without_frames_and_is_a_no_op_after_frames_started_it() {
+        let t0 = Instant::now();
+        let mut held = DeferredCloseTrim::new();
+        let generation = held.request(t0);
+        assert_eq!(
+            held.give_up(generation, t0 + CLOSE_TRIM_GIVE_UP),
+            Some(CLOSE_TRIM_GIVE_UP)
+        );
+
+        let generation = held.request(t0);
+        assert_eq!(held.frame_drawn(t0 + ms(100)), None);
+        assert_eq!(held.frame_drawn(t0 + ms(600)), Some(ms(600)));
+        assert_eq!(held.give_up(generation, t0 + CLOSE_TRIM_GIVE_UP), None);
+    }
+
+    /// #2201: a second large close while a trim is held joins it, restarts the calm count (its
+    /// own close frames follow) and takes the net over: the first drop's net must not start the
+    /// trim inside the second close.
+    #[test]
+    fn a_second_close_joins_the_held_trim_and_only_its_net_fires() {
+        let t0 = Instant::now();
+        let mut held = DeferredCloseTrim::new();
+        let first = held.request(t0);
+        assert_eq!(held.frame_drawn(t0 + ms(100)), None); // calm 1
+        let second = held.request(t0 + ms(2900));
+        assert_ne!(first, second);
+        // The second close's own frame is not calm (10 ms after its drop), and the count restarted.
+        assert_eq!(held.frame_drawn(t0 + ms(2910)), None);
+        // The first net fires 100 ms into the second close: nothing starts.
+        assert_eq!(held.give_up(first, t0 + ms(3000)), None);
+        assert!(held.is_held());
+        // Two calm frames after the second close: one trim for both, waited since the first.
+        assert_eq!(held.frame_drawn(t0 + ms(3400)), None);
+        assert_eq!(held.frame_drawn(t0 + ms(3900)), Some(ms(3900)));
+        assert_eq!(held.give_up(second, t0 + ms(5900)), None);
+    }
 
     #[test]
     fn close_trim_starts_one_worker_and_folds_a_burst_into_one_more_pass() {
