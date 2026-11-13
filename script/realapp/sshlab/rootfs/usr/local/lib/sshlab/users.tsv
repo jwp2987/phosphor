@@ -1,9 +1,10 @@
 # sshlab users: user<TAB>shell<TAB>profile<TAB>sshd Match fragment
-# shell: bash zsh fish nu pwsh dash ash rbash. profile: a name labd.py knows (default, banner, rcerr, ..., see usersdb.PROFILES).
+# shell: bash zsh zshc (zsh whose .zshrc runs compinit) fish nu pwsh dash ash rbash. profile: a name labd.py knows (default, banner, rcerr, ..., see usersdb.PROFILES).
 # sshd fragment: directives separated by ';' placed in `Match User <user>`; '-' = none. Parsed by usersdb.py (harness selftest too).
 # Never put keys, passwords or hostnames here: labd.py generates them per lease.
 u_bash	bash	default	-
 u_zsh	zsh	default	-
+u_zshc	zshc	default	-
 u_fish	fish	default	-
 u_nu	nu	default	-
 u_pwsh	pwsh	default	-

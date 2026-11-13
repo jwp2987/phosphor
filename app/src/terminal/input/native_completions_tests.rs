@@ -170,3 +170,27 @@ fn a_remote_path_token_is_replaced_from_its_partial_prefix() {
         assert_eq!(applied, "cd /work/u_fish/tabfx_a/zzqb_only/", "{buffer:?}");
     }
 }
+
+/// #2196: fish writes each candidate as the whole whitespace-delimited token it replaces, like
+/// the other shells: the `a;` lead of `echo a;ec` and an opening quote are put back by its hook
+/// and a name with a space arrives escaped. The span is the whole token, and a description
+/// (`D?description`) rides on the completion.
+#[test]
+fn fish_candidates_replace_the_whole_token_like_the_other_shells() {
+    use crate::terminal::model::completions::ShellCompletionUpdate;
+
+    let mut with_description = ShellCompletion::new("a;echo".to_owned());
+    with_description.update(ShellCompletionUpdate::Description {
+        value: "Display a line of text".to_owned(),
+    });
+    let results = native_suggestion_results(vec![with_description], "echo a;ec", 9);
+    assert_eq!(results.replacement_span, Span::from((5, 9)));
+    assert_eq!(results.suggestions.len(), 1);
+
+    let results = native_suggestion_results(
+        vec![ShellCompletion::new("sp\\ ace/".to_owned())],
+        "cat sp",
+        6,
+    );
+    assert_eq!(results.replacement_span, Span::from((4, 6)));
+}

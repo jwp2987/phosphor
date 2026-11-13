@@ -531,7 +531,7 @@ def cmd_selftest(root):
                 lab.clear_fault()
                 # #2161: labd /complete returns BOTH of two `amb*` directories for every shell that has a completion driver (all of them exist in this image)
                 for u in users:
-                    if u["shell"] not in ("bash", "rbash", "zsh", "fish", "nu", "pwsh") or u["profile"] != "default":
+                    if u["shell"] not in ("bash", "rbash", "zsh", "zshc", "fish", "nu", "pwsh") or u["profile"] != "default":
                         continue
                     lab.tree(u["user"], {"ambx_a/f": "", "ambx_b/f": "", "zzq_only/f": ""}, dir="cx")
                     got = lab.complete(u["user"], "cd /work/%s/cx/amb" % u["user"]).get("candidates") or []

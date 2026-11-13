@@ -29,7 +29,7 @@ Source: `docs/design/r14-test-gaps.md` 5.1 (G1, G2, G6, G7) and 7.0 a to f. Owne
 3. **The lab in candidate and release (#2063).** New order on the box: `sshlab-image` and `lab-helper` right after
    `check-linux` (both are no-ops of seconds when nothing changed), the unit and integration suites, then the app sequence
    above. The Linux lab job gets a matrix that reaches every family once per shell of the quick set:
-   `shells=bash,zsh,fish,nu;lat=lan,150;helper=nohelper,helper,upload,upgrade,never;faults=1;scenarios=1` (372 arms, 509 rows;
+   `shells=bash,zsh,zshc,fish,nu;lat=lan,150;helper=nohelper,helper,upload,upgrade,never;faults=1;scenarios=1` (376 arms, 517 rows since #2196 added zshc;
    the full matrix is 626 arms, 831 rows, about 10 h at the 43 s a row the committed lab runs took, over the job's 6 h).
    `lab_*` never sweeps in the replay (`run.py`), so the replay runs once, in its own job. macOS and Windows play their lab job
    after their app tests with the quick matrix and `APPCI_LAB=fixed` (the job's own variable); the two jobs now `needs` the

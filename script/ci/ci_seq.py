@@ -130,9 +130,9 @@ REPLAY_JOB = "app-test-replay-linux"
 # candidate and release tiers, BEFORE the unit suites: the Mac and Windows lab jobs take its artifact and can be ready before the box's suites end.
 LAB_HELPER_JOB = "lab-helper"
 # Candidate / release, Linux: every lab FAMILY at least once (appci self-test r15_candidate_lab_matrix_covers_every_family reads this constant), in the quick
-# set's four shells at LAN and 150 ms, with every helper arm, the fault arms and the scenario users: 372 arms, 509 rows. The `full` matrix is 626 arms / 831
+# set's four shells (and zshc, zsh WITH compinit, which only lab_tab_remote_dir declares, #2196) at LAN and 150 ms, with every helper arm, the fault arms and the scenario users: 376 arms, 517 rows. The `full` matrix is 626 arms / 831
 # rows, about 10 h at the 43 s a row the committed lab runs took: more than the job's 6 h, so it stays a hand play.
-LAB_CANDIDATE_MATRIX = "shells=bash,zsh,fish,nu;lat=lan,150;helper=nohelper,helper,upload,upgrade,never;faults=1;scenarios=1"
+LAB_CANDIDATE_MATRIX = "shells=bash,zsh,zshc,fish,nu;lat=lan,150;helper=nohelper,helper,upload,upgrade,never;faults=1;scenarios=1"
 LAB_PLAT_MATRIX = "quick"                       # macOS and Windows: the client side of the same remote
 # Owner 2026-11-11 ("Mac/Win lab in candidate: PROVING_LAB only", for now; the same day, r16-declare: the release tier too): in these tiers the Mac and
 # Windows lab jobs get APPCI_CASES = the PROVING_LAB globs, exactly what the fix tier's Linux lab job plays (lab_fix_vars), instead of their own `lab_*`

@@ -14,7 +14,7 @@ No key, token, hostname or IP is in the repo: tokens and the box address come fr
 | servers | OpenSSH `sshd` on container :22 (host key A) and :2222 (host key B, the "changed host key" case) |
 | fault shaper | `tc` with `netem`, `ifb`, `prio` and `u32`, applied inside the container's own network namespace to ports 22/2222/7 only; `nftables` blocks new outbound connections for the lab users |
 | control daemon | `rootfs/usr/local/sbin/labd.py` (PID 1 under `--init`): stdlib HTTP on :7000 with a bearer token: `/health /lease /release /fault /drop /file /ctl /tree /helper /complete /sshdlog` |
-| users | `rootfs/usr/local/lib/sshlab/users.tsv` (`user shell profile sshd-Match`): `u_bash u_zsh u_fish u_nu u_pwsh u_dash u_ash u_rbash` plus scenario users `p_*`. `usersdb.py` turns it into useradd commands, `/etc/shells` and sshd `Match User` blocks |
+| users | `rootfs/usr/local/lib/sshlab/users.tsv` (`user shell profile sshd-Match`): `u_bash u_zsh u_zshc u_fish u_nu u_pwsh u_dash u_ash u_rbash` (`u_zshc`: zsh whose `.zshrc` runs compinit, #2196) plus scenario users `p_*`. `usersdb.py` turns it into useradd commands, `/etc/shells` and sshd `Match User` blocks |
 | host tool | `labctl.py`, the ONLY caller of podman: `build start stop gc list serve selftest` (and the legacy `remote`) |
 | client | `script/realapp/appci/lab.py` (modes `local`, `fixed`, legacy `remote`) and the `lab_*` cases in `appci/cases_lab.py` |
 
