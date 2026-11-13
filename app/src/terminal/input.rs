@@ -9366,6 +9366,19 @@ impl Input {
         self.note_typeahead_inserted(typeahead, ctx);
     }
 
+    /// #2208: [`Self::insert_typeahead_text`] with what the view knows about the shell's line.
+    /// (Stub of the tests-first commit: the facts are not judged yet.)
+    pub fn insert_legacy_reported_line(
+        &mut self,
+        num_typeahead_chars_inserted: CharOffset,
+        typeahead: &str,
+        _facts: ReportLineFacts,
+        ctx: &mut ViewContext<Self>,
+    ) -> HandoffInsert {
+        self.insert_typeahead_text(num_typeahead_chars_inserted, typeahead, ctx);
+        HandoffInsert::Inserted
+    }
+
     /// Puts the shell's typeahead report at the front of the buffer, replacing the
     /// `num_typeahead_chars_inserted` characters an earlier report put there, with the cursor
     /// where the user's last keystroke left it (#1089). The report holds what was typed before

@@ -21357,3 +21357,143 @@ fn test_tab_menu_hop_detail_format() {
     assert!(detail.starts_with("count=60 items=["), "{detail}");
     assert_eq!(detail.matches('"').count(), 2 * TAB_MENU_HOP_MAX_ITEMS);
 }
+
+// ---- #2208: the legacy report path is judged like the hand-off's ------------------------------
+
+/// #2208: a report that answers no hand-off request (`ReportDisposition::InsertLegacy`,
+/// `Input::insert_legacy_reported_line`) finishes the user's line too. `~` reported in front of
+/// the one escape character the editor holds, with the same facts from the view, is ssh's escape
+/// there as on the hand-off path: the editor is emptied and the two bytes are handed to the view.
+/// Without the facts (the hand-off off, or `insert_typeahead_text`) it is text, as before.
+#[test]
+fn test_legacy_report_tilde_in_front_of_a_typed_escape_char_is_the_ssh_escape() {
+    for (facts, outcome, buffer) in [
+        (
+            REPORT_OF_A_LINE_START_TILDE,
+            HandoffInsert::SshEscape(*b"~."),
+            "",
+        ),
+        (ReportLineFacts::default(), HandoffInsert::Inserted, "~."),
+    ] {
+        App::test((), move |mut app| async move {
+            initialize_app(&mut app);
+            let (input, editor, writes) =
+                pane_for_ssh_escape_test(&mut app, true, SHELL_INPUT_FOR_SSH_ESCAPE_TEST).await;
+            type_keys_for_ssh_escape_test(&mut app, &editor, &["."]);
+            let got = input.update(&mut app, |input, ctx| {
+                input.insert_legacy_reported_line(CharOffset::from(0), "~", facts, ctx)
+            });
+            assert_eq!(got, outcome, "{facts:?}");
+            input.read(&app, |input, ctx| {
+                assert_eq!(input.buffer_text(ctx), buffer, "{facts:?}");
+            });
+            assert!(
+                writes.borrow().is_empty(),
+                "the editor only judges; the view writes the two bytes"
+            );
+        });
+    }
+    // The unjudged wrapper its callers and tests use: text.
+    App::test((), move |mut app| async move {
+        initialize_app(&mut app);
+        let (input, editor, writes) =
+            pane_for_ssh_escape_test(&mut app, true, SHELL_INPUT_FOR_SSH_ESCAPE_TEST).await;
+        type_keys_for_ssh_escape_test(&mut app, &editor, &["."]);
+        input.update(&mut app, |input, ctx| {
+            input.insert_typeahead_text(CharOffset::from(0), "~", ctx);
+        });
+        input.read(&app, |input, ctx| {
+            assert_eq!(input.buffer_text(ctx), "~.");
+        });
+        assert!(writes.borrow().is_empty(), "nothing to the pty");
+    });
+}
+
+/// #2208, through the view: the editor owns input at a prompt whose legacy request was answered;
+/// a `~` typed with the terminal focused goes to the pty raw, right after a newline; the next
+/// legacy request is written; `.` lands in the editor; the report says `~`. The hand-off does not
+/// own that report (`InsertLegacy`), and it used to build the text `~.`. ssh receives `\r~.` in
+/// one write and the editor is left empty, as on the hand-off path. The view copies the report
+/// out and releases the model lock before the editor judges it (the judge reads the model).
+#[test]
+fn test_a_legacy_reported_ssh_escape_reaches_the_pty_behind_a_carriage_return() {
+    use crate::terminal::model::typeahead_handoff::HandoffState;
+    App::test((), move |mut app| async move {
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        initialize_app(&mut app);
+        let (terminal, input, editor, writes) =
+            pane_and_terminal_for_ssh_escape_test(&mut app, true, SHELL_INPUT_FOR_SSH_ESCAPE_TEST)
+                .await;
+        handoff_after_an_answered_empty_report(&app, &input, true);
+        // An Enter's newline was the last thing written; then the `~`, raw.
+        input.read(&app, |input, _| {
+            let mut model = input.model.lock();
+            model
+                .typeahead_handoff_mut()
+                .pty_write_count()
+                .note_write_bytes(b"\r");
+        });
+        terminal.update(&mut app, |view, ctx| {
+            view.write_user_bytes_for_test(b"~", ctx)
+        });
+        assert_eq!(
+            *writes.borrow(),
+            vec![b"~".to_vec()],
+            "test setup: the `~` went to the pty raw"
+        );
+        // The prompt's legacy request, written behind it.
+        input.read(&app, |input, _| {
+            let mut model = input.model.lock();
+            let mut handoff = model.typeahead_handoff_mut();
+            assert_eq!(
+                handoff.state(),
+                &HandoffState::EditorOwned,
+                "test setup: the hand-off does not own this prompt"
+            );
+            handoff.pty_write_count().note_write_bytes(b"~");
+            handoff.on_legacy_request_written();
+            handoff.pty_write_count().note_write_bytes(b"\x1bi");
+        });
+        type_keys_for_ssh_escape_test(&mut app, &editor, &["."]);
+
+        deliver_shell_report(&mut app, &terminal, &input, "~");
+        assert_eq!(
+            *writes.borrow(),
+            vec![b"~".to_vec(), b"\r~.".to_vec()],
+            "ssh receives `\\r~.`, once, in one write"
+        );
+        input.read(&app, |input, ctx| {
+            assert_eq!(input.buffer_text(ctx), "", "the editor is empty");
+        });
+    });
+}
+
+/// #2208 guard: with the typeahead hand-off off nothing records where a raw `~` was read, so a
+/// legacy report is text exactly as before: `~.` stays in the editor and nothing is written.
+#[test]
+fn test_a_legacy_report_with_the_handoff_off_stays_text() {
+    App::test((), move |mut app| async move {
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(false);
+        initialize_app(&mut app);
+        let (terminal, input, editor, writes) =
+            pane_and_terminal_for_ssh_escape_test(&mut app, true, SHELL_INPUT_FOR_SSH_ESCAPE_TEST)
+                .await;
+        input.read(&app, |input, _| {
+            let mut model = input.model.lock();
+            model
+                .typeahead_handoff_mut()
+                .pty_write_count()
+                .note_write_bytes(b"\r");
+        });
+        terminal.update(&mut app, |view, ctx| {
+            view.write_user_bytes_for_test(b"~", ctx)
+        });
+        let raw = writes.borrow().clone();
+        type_keys_for_ssh_escape_test(&mut app, &editor, &["."]);
+        deliver_shell_report(&mut app, &terminal, &input, "~");
+        input.read(&app, |input, ctx| {
+            assert_eq!(input.buffer_text(ctx), "~.", "text, as before");
+        });
+        assert_eq!(*writes.borrow(), raw, "nothing more reaches the pty");
+    });
+}
