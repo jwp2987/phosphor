@@ -11,13 +11,12 @@ All 9 suites green (50108 passed, 0 failed).
 - Linux lab 45 / 56: no regression. #2202 ssh escape race (APP, older); branch-chip exact OCR, lab_chips prompt count, helper-takeover line (TEST, fixed in fix/r29-labharness2 9d4d76a9e). #2156 and #2195 verified and closed.
 - macOS lab 17 / 64: 32 Tab->insert speed rows (TEST: fixed number, now a band in labharness2); the rest the same harness faults as Linux lab.
 - Windows 211 / 26: now PASS: ssh_gitbash_managed, ssh_gitbash_failing_not_local [terminal@gitbash], bootstrap_in_command, nested_typeahead, remote_tab_enter_no_helper [agent@gitbash].
-  - New since r26w (passed in r24a and r26w), under triage:
-    - gitbash_typeahead_reps [agent@gitbash]: tr13 lost 5 of 10 lines; tr14 the app's own pty write joined tr13's last line with tr14's ('…r_tr13.txtecho t518…'); some Enters routed to AI with split buffers ('xt', 'txt'). APP, suspect the input-path change set.
-    - history_survives_restart [terminal], [agent] (PowerShell pane): each typed command three times in the history file.
-    - routing_table [terminal@gitbash], [agent@gitbash]: most shell lines reported lost; recorder vs app not yet settled.
-    - ssh_gitbash_failing_not_local_managed [agent@gitbash]: HARNESS line (no TCP accept within 8 s).
-  - Older (also failed in r24a/r26w): ssh_gitbash_typeahead_managed (#2051/#2182 family), ssh_connect_typing_wrapper [gitbash] (since r26w), remote_session_legacy [gitbash], remote_tab_no_helper / remote_tab_enter_no_helper [terminal@gitbash], mode_proof [terminal], [terminal@gitbash], [terminal@pwsh7] (#2170), ui_completions_as_you_type_local, scroll_keys_position [agent@gitbash], cb_agent_pickers [agent@gitbash] (failed r24a, passed r26w), latency_key_log Git Bash bands (+0.02 / +0.12 ms).
-- Issue numbers for the Windows rows are added when the triage of the full job artifacts finishes.
+  - New since r26w (passed in r24a and r26w), triaged from the full job artifacts:
+    - gitbash_typeahead_reps [agent@gitbash]: APP #2203. A deferred young Enter got no verdict after the hand-off report rewrote its line ("xt" -> the full line); the 2 s backstop handed the text back, the hand-back guard ate the next Enter, and two lines went out joined. 1 of 24 reps; terminal@gitbash 24/24. Regression vs r26w not proven (r26w logs not kept).
+    - history_survives_restart [terminal], [agent]: TEST #2204 (seeded idents counted over the persistent PowerShell history file; the shell ran each line once).
+    - routing_table [terminal@gitbash], [agent@gitbash]: TEST #2205 (rec.log recorder dark for ~15 min; every line was written and preexec seen; 'went to agent' rows read the pre-decision input mode). The bare `date` routed by the model rule is APP #2200.
+    - ssh_gitbash_failing_not_local_managed [agent@gitbash] and its pane_switch row: #2206 (pane left with precmds_seen=0 after ssh_gitbash_managed; app vs harness not yet separated).
+  - Older (also failed in r24a/r26w), verdicts unchanged by r29a: ssh_gitbash_typeahead_managed, ssh_connect_typing_wrapper, remote_tab_no_helper / remote_tab_enter_no_helper [terminal@gitbash] (fake sshd, #2007/#2051); remote_session_legacy (also inside the #2205 window); mode_proof [terminal], [terminal@gitbash], [terminal@pwsh7] (#2170); ui_completions_as_you_type_local; scroll_keys_position [agent@gitbash] (#2145); cb_agent_pickers [agent@gitbash] (flaky, inside the #2205 window); latency_key_log Git Bash (thin provisional band, n=3).
 
 ## Bands
 Auto-widened (within the 0.5 ms / 0.3 s limit): wayland/agent@fake/agent_latency_key/idle 0.31->0.35; windows/agent@gitbash/latency_enter#app 1.75->2.09; windows/terminal@gitbash/latency_key_log 4.35->4.55; rcq_inner_line_after_enter_s gitbash 4.22->4.42 (agent), 4.26->4.55 (terminal).
