@@ -4906,6 +4906,11 @@ impl ansi::Handler for TerminalModel {
         }
     }
 
+    fn completions_started_nonce(&mut self, nonce: Option<String>) {
+        self.event_proxy
+            .send_terminal_event(Event::CompletionsStarted { nonce });
+    }
+
     fn start_completions_output(&mut self, data: CompletionsShellData) {
         self.is_receiving_completions_output = IsReceivingCompletionsOutput::Yes { pending: data };
     }

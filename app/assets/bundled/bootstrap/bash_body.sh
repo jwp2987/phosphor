@@ -1753,12 +1753,13 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
             local __c=$__warp_nc_byte __ok=
             case $__phase:$__c in
                 start:-) __phase=dash __ok=1 ;;
+                start:n|nonce:[0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz]) __phase=nonce __ok=1 ;;
                 start:[0123456789]|d1:[0123456789]) __phase=d1 __ok=1 ;;
                 d1:x) __phase=x1 __ok=1 ;;
                 x1:[0123456789]|d2:[0123456789]) __phase=d2 __ok=1 ;;
                 d2:x) __phase=x2 __ok=1 ;;
                 x2:[0123456789]|d3:[0123456789]) __phase=d3 __ok=1 ;;
-                d3:: | dash::) __phase=hex __ok=1 ;;
+                d3:: | dash:: | nonce::) __phase=hex __ok=1 ;;
                 hex:%) __phase=h1 __ok=1 ;;
                 h1:[0123456789ABCDEFabcdef]) __phase=h2 __ok=1 ;;
                 h2:[0123456789ABCDEFabcdef]) __phase=hex __ok=1 ;;
@@ -1816,6 +1817,11 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
         local __pc_hex __pc_line __pc_hexre='^(%[0-9A-Fa-f][0-9A-Fa-f])*$'
         local __pc_deadline=${PHOSPHOR_NC_DEADLINE:-20}
         [[ $__pc_deadline =~ ^[0-9]+$ ]] || __pc_deadline=20
+        # #2211 (v2, pipelined): the app writes its frame in the same write as the ^Y, so it is
+        # already in the tty. Silence the tty first (the shell is in a cooked tty while this
+        # function runs; a frame byte arriving now would be echoed), then name the exchange (the
+        # prompt OSC is informational for a v2 app, which does not wait for it) and read.
+        command stty -echo </dev/tty 2>/dev/null
         __warp_nc_seq=$(( ${__warp_nc_seq:-0} + 1 ))
         local __pc_tok="${RANDOM}x${__warp_nc_seq}x${RANDOM}"
         __warp_nc_undo_newline
@@ -1829,15 +1835,18 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
             return 0
         fi
         __warp_nc_read_frame_body || return 0
-        # Another exchange's frame, or the cancel frame: nothing to do.
-        [[ $__warp_nc_body == "$__pc_tok:"* ]] || return 0
+        # Another exchange's frame, or the cancel frame: nothing to do. A v2 app's own nonce
+        # (`n` + letters and digits) is accepted too: tty order is the guard, and the nonce is
+        # echoed in the answer's start mark so the app can drop a stale answer.
+        local __pc_nonce=${__warp_nc_body%%:*}
+        [[ $__warp_nc_body == "$__pc_tok:"* || $__pc_nonce =~ ^n[0-9A-Za-z]+$ ]] || return 0
         __pc_hex=${__warp_nc_body#*:}
         [[ $__pc_hex =~ $__pc_hexre ]] || return 0
         builtin printf -v __pc_line '%b' "${__pc_hex//\%/\\x}"
 
         __warp_native_candidates "$__pc_line" </dev/null >/dev/null 2>&1
 
-        builtin printf '\e]9280;A;incrementally_typed\a'
+        builtin printf '\e]9280;A;incrementally_typed;%s\a' "$__pc_nonce"
         local __pc_m
         for __pc_m in "${__warp_nc_out[@]}"; do
             # A candidate the OSC cannot carry (a control character) is left out.
@@ -3987,7 +3996,7 @@ fi'
         # after this hook). The app sends ^Y and frames only to a shell that reported this
         # pseudo option.
         if [[ -n ${__warp_nc_supported:-} ]]; then
-            shell_options="$shell_options"$'\n''!phosphor_nc_frames_v1'
+            shell_options="$shell_options"$'\n''!phosphor_nc_frames_v1'$'\n''!phosphor_nc_frames_v2'
         fi
 
         # Check if Starship is active for Bash. Note that another prompt could still be overriding Starship, however,

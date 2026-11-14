@@ -1231,6 +1231,7 @@ fn native_completions_watchdog_generation_guard_ignores_a_superseded_timer() {
             controller.in_flight_native_completions_state =
                 Some(NativeShellCompletionsState::AwaitingResults {
                     results_tx: second_results_tx,
+                    pipelined: None,
                 });
             controller.arm_native_completions_watchdog(Duration::from_millis(500), false, ctx);
         });
@@ -1570,6 +1571,7 @@ fn run_native_shell_completions_does_not_start_a_second_request_while_one_is_in_
             controller.in_flight_native_completions_state =
                 Some(NativeShellCompletionsState::AwaitingResults {
                     results_tx: a_results_tx,
+                    pipelined: None,
                 });
         });
 
@@ -1581,6 +1583,7 @@ fn run_native_shell_completions_does_not_start_a_second_request_while_one_is_in_
                 "request b".to_owned(),
                 NativeCompletionsRequestOptions {
                     remote_first: false,
+                    pipelined: false,
                 },
                 b_results_tx,
                 ctx,
@@ -4908,7 +4911,10 @@ fn start_exchange(
     let (results_tx, results_rx) = async_channel::unbounded();
     controller.run_native_shell_completions(
         text.to_owned(),
-        NativeCompletionsRequestOptions { remote_first: true },
+        NativeCompletionsRequestOptions {
+            remote_first: true,
+            pipelined: false,
+        },
         results_tx,
         ctx,
     );
@@ -5312,6 +5318,7 @@ fn prompt_timeout_of_a_fallback_request_asks_for_the_toast() {
                 "x".to_owned(),
                 NativeCompletionsRequestOptions {
                     remote_first: false,
+                    pipelined: false,
                 },
                 results_tx,
                 ctx,
@@ -5743,4 +5750,235 @@ fn only_a_nested_shells_bootstrap_clears_the_executing_flag() {
             controller.read(&app, |c, _| assert!(!c.is_user_command_executing));
         });
     }
+}
+
+/// Starts a PIPELINED remote-first exchange (#2211) through the real API.
+fn start_pipelined_exchange(
+    controller: &mut PtyController<TestEventLoopSender>,
+    text: &str,
+    ctx: &mut ModelContext<PtyController<TestEventLoopSender>>,
+) -> async_channel::Receiver<Vec<ShellCompletion>> {
+    let (results_tx, results_rx) = async_channel::unbounded();
+    controller.run_native_shell_completions(
+        text.to_owned(),
+        NativeCompletionsRequestOptions {
+            remote_first: true,
+            pipelined: true,
+        },
+        results_tx,
+        ctx,
+    );
+    results_rx
+}
+
+/// The nonce a pipelined write names: the frame's token, between its RS and its `:`.
+fn pipelined_nonce(write: &[u8]) -> String {
+    assert_eq!(write[0], 0x19, "the write starts with ^Y: {write:?}");
+    assert_eq!(
+        write[1], NATIVE_COMPLETIONS_FRAME_START,
+        "then the frame: {write:?}"
+    );
+    let colon = write.iter().position(|b| *b == b':').expect("a colon");
+    String::from_utf8(write[2..colon].to_vec()).expect("an ASCII nonce")
+}
+
+/// #2211: a pipelined request is ONE write, `^Y RS <nonce> : <%HH> US`, with the exchange in
+/// `AwaitingResults` at once (no prompt is awaited), and the nonce is `[A-Za-z0-9]+` and new
+/// for every exchange.
+#[test]
+fn a_pipelined_request_is_one_write_and_awaits_results_at_once() {
+    App::test((), |mut app| async move {
+        let (controller, model_events, _status, sender, _tx) =
+            native_completions_controller(&mut app);
+        let _first = controller.update(&mut app, |controller, ctx| {
+            start_pipelined_exchange(controller, "cd pro", ctx)
+        });
+        let out = written(&sender);
+        assert_eq!(out.len(), 1, "one write for ^Y and the frame: {out:?}");
+        let nonce = pipelined_nonce(&out[0]);
+        assert!(
+            !nonce.is_empty()
+                && nonce.len() <= 32
+                && nonce.bytes().all(|b| b.is_ascii_alphanumeric())
+                && nonce.starts_with('n'),
+            "nonce {nonce:?}"
+        );
+        let mut expected = vec![0x19];
+        expected.extend(native_completions_answer(&nonce, "cd pro"));
+        assert_eq!(out[0], expected);
+        controller.read(&app, |controller, _| {
+            assert!(matches!(
+                controller.in_flight_native_completions_state,
+                Some(NativeShellCompletionsState::AwaitingResults {
+                    pipelined: Some(_),
+                    ..
+                })
+            ));
+            assert!(!controller.native_cancel_owed);
+        });
+        // The answer ends the exchange; the next one has another nonce.
+        model_events.update(&mut app, |_dispatcher, ctx| {
+            ctx.emit(ModelEvent::CompletionsStarted {
+                nonce: Some(nonce.clone()),
+            });
+            ctx.emit(ModelEvent::CompletionsFinished(vec![]));
+        });
+        let _second = controller.update(&mut app, |controller, ctx| {
+            start_pipelined_exchange(controller, "cd pro", ctx)
+        });
+        let out = written(&sender);
+        assert_eq!(out.len(), 2, "{out:?}");
+        assert_ne!(
+            pipelined_nonce(&out[1]),
+            nonce,
+            "a fresh nonce per exchange"
+        );
+    });
+}
+
+/// #2211: a write after the frame is not cancelled and not held (the hook consumes exactly its
+/// frame; later bytes wait in the tty for the line editor), and the exchange stays in flight.
+#[test]
+fn a_write_after_the_pipelined_frame_is_not_cancelled() {
+    App::test((), |mut app| async move {
+        let (controller, _model_events, _status, sender, _tx) =
+            native_completions_controller(&mut app);
+        let _results = controller.update(&mut app, |controller, ctx| {
+            start_pipelined_exchange(controller, "cd pro", ctx)
+        });
+        controller.update(&mut app, |controller, ctx| {
+            controller.write_bytes(&b"k"[..], ctx);
+        });
+        let out = written(&sender);
+        assert_eq!(out.len(), 2, "the frame write, then the key: {out:?}");
+        assert!(
+            !out.iter().any(|w| *w == native_completions_cancel()),
+            "{out:?}"
+        );
+        assert_eq!(out[1], b"k".to_vec());
+        controller.read(&app, |controller, _| {
+            assert!(matches!(
+                controller.in_flight_native_completions_state,
+                Some(NativeShellCompletionsState::AwaitingResults { .. })
+            ));
+        });
+    });
+}
+
+/// #2211: the shell's prompt OSC is only an ack: it writes nothing and the exchange stays in
+/// flight past the ack watchdog.
+#[test]
+fn a_pipelined_ack_writes_nothing_and_keeps_the_exchange() {
+    App::test((), |mut app| async move {
+        let (controller, model_events, _status, sender, _tx) =
+            native_completions_controller(&mut app);
+        let results_rx = controller.update(&mut app, |controller, ctx| {
+            start_pipelined_exchange(controller, "cd pro", ctx)
+        });
+        model_events.update(&mut app, |_dispatcher, ctx| {
+            ctx.emit(ModelEvent::SendCompletionsPrompt {
+                token: Some("77x1x5".to_owned()),
+            });
+        });
+        Timer::after(NATIVE_COMPLETIONS_PROMPT_TIMEOUT + Duration::from_millis(300)).await;
+        assert_eq!(written(&sender).len(), 1, "the ack writes nothing");
+        assert!(
+            !results_rx.is_closed(),
+            "an acknowledged exchange is not given up"
+        );
+        controller.read(&app, |controller, _| {
+            assert!(controller.in_flight_native_completions_state.is_some());
+        });
+    });
+}
+
+/// #2211: no ack inside the prompt timeout gives up WITHOUT a write (the frame is in the tty
+/// already, nothing is owed), and a late prompt OSC writes nothing either.
+#[test]
+fn a_missed_pipelined_ack_gives_up_without_a_write() {
+    App::test((), |mut app| async move {
+        let (controller, model_events, _status, sender, _tx) =
+            native_completions_controller(&mut app);
+        let results_rx = controller.update(&mut app, |controller, ctx| {
+            start_pipelined_exchange(controller, "cd pro", ctx)
+        });
+        Timer::after(NATIVE_COMPLETIONS_PROMPT_TIMEOUT + Duration::from_millis(300)).await;
+        assert!(
+            results_rx.recv().await.is_err(),
+            "the requester sees no answer"
+        );
+        controller.read(&app, |controller, _| {
+            assert!(controller.in_flight_native_completions_state.is_none());
+            assert!(!controller.native_cancel_owed, "nothing is owed");
+        });
+        model_events.update(&mut app, |_dispatcher, ctx| {
+            ctx.emit(ModelEvent::SendCompletionsPrompt {
+                token: Some("77x1x5".to_owned()),
+            });
+        });
+        assert_eq!(
+            written(&sender).len(),
+            1,
+            "no write after the give-up: {:?}",
+            written(&sender)
+        );
+    });
+}
+
+/// #2211: an answer whose start mark names another exchange (a given-up one's late answer) is
+/// dropped; the exchange keeps waiting for its own.
+#[test]
+fn a_stale_nonce_answer_is_dropped() {
+    App::test((), |mut app| async move {
+        let (controller, model_events, _status, sender, _tx) =
+            native_completions_controller(&mut app);
+        let results_rx = controller.update(&mut app, |controller, ctx| {
+            start_pipelined_exchange(controller, "cd pro", ctx)
+        });
+        let nonce = pipelined_nonce(&written(&sender)[0]);
+        model_events.update(&mut app, |_dispatcher, ctx| {
+            ctx.emit(ModelEvent::CompletionsStarted {
+                nonce: Some("nstale0001".to_owned()),
+            });
+            ctx.emit(ModelEvent::CompletionsFinished(vec![]));
+        });
+        assert!(
+            results_rx.try_recv().is_err(),
+            "the stale answer is not delivered"
+        );
+        controller.read(&app, |controller, _| {
+            assert!(matches!(
+                controller.in_flight_native_completions_state,
+                Some(NativeShellCompletionsState::AwaitingResults { .. })
+            ));
+        });
+        model_events.update(&mut app, |_dispatcher, ctx| {
+            ctx.emit(ModelEvent::CompletionsStarted { nonce: Some(nonce) });
+            ctx.emit(ModelEvent::CompletionsFinished(vec![]));
+        });
+        assert!(results_rx.try_recv().is_ok(), "its own answer is delivered");
+        controller.read(&app, |controller, _| {
+            assert!(controller.in_flight_native_completions_state.is_none());
+        });
+    });
+}
+
+/// #2211: without `pipelined` (a shell that advertised only v1, or the kill switch) the request
+/// is the old protocol: `^Y` alone, waiting for the prompt.
+#[test]
+fn a_non_pipelined_request_is_the_old_protocol() {
+    App::test((), |mut app| async move {
+        let (controller, _model_events, _status, sender, _tx) =
+            native_completions_controller(&mut app);
+        let _results = controller.update(&mut app, |controller, ctx| {
+            start_exchange(controller, "cd pro", ctx)
+        });
+        assert_eq!(written(&sender), vec![vec![0x19]]);
+        controller.read(&app, |controller, _| {
+            assert!(matches!(
+                controller.in_flight_native_completions_state,
+                Some(NativeShellCompletionsState::AwaitingPrompt { .. })
+            ));
+        });
+    });
 }

@@ -13746,6 +13746,12 @@ impl Input {
         let native_completions_options =
             crate::terminal::writeable_pty::pty_controller::NativeCompletionsRequestOptions {
                 remote_first: native_use == native_completions::NativeCompletionsUse::Preferred,
+                // #2211: `^Y` and the frame in one write when the shell takes the pipelined
+                // frame (`PHOSPHOR_REMOTE_NATIVE_COMPLETIONS_V2=0` forces the old protocol).
+                pipelined: completion_context
+                    .session
+                    .shell()
+                    .supports_pipelined_native_completions(),
             };
 
         // The completer's file-path fallback stays on whenever the completer is the last word

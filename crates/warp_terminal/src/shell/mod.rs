@@ -46,6 +46,30 @@ const PATHEXT: [&str; 12] = [
 /// other pseudo options so it can never be a real option name.
 pub const NATIVE_COMPLETIONS_PROTOCOL_OPTION: &str = "!phosphor_nc_frames_v1";
 
+/// The pseudo shell option a bootstrap reports when its hook also takes the PIPELINED frame
+/// (#2211): the app writes `^Y` and the answer frame as ONE write, with its own nonce, so a
+/// remote Tab costs one round trip instead of two. Always reported together with
+/// [`NATIVE_COMPLETIONS_PROTOCOL_OPTION`].
+pub const NATIVE_COMPLETIONS_PIPELINED_OPTION: &str = "!phosphor_nc_frames_v2";
+
+/// `PHOSPHOR_REMOTE_NATIVE_COMPLETIONS_V2`: unset or anything but `0` keeps the pipelined (one
+/// round trip) native-completions request on; `0` forces the two-round-trip protocol (#2211).
+pub fn pipelined_native_completions_enabled_from_env(value: Option<&str>) -> bool {
+    value.map(str::trim) != Some("0")
+}
+
+/// The #2211 kill switch, read once per process.
+pub fn pipelined_native_completions_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        pipelined_native_completions_enabled_from_env(
+            std::env::var("PHOSPHOR_REMOTE_NATIVE_COMPLETIONS_V2")
+                .ok()
+                .as_deref(),
+        )
+    })
+}
+
 lazy_static! {
     static ref BASH_INPUT_REPORTING_MINIMUM_VERSION: Version<'static> =
         Version::from("4.0").expect("version parses successfully");
@@ -238,6 +262,31 @@ impl Shell {
             }
             _ => true,
         }
+    }
+
+    /// Whether the native-completions request may be PIPELINED (#2211): `^Y` and the answer
+    /// frame in one write. Needs the shell to support the exchange at all and to have advertised
+    /// [`NATIVE_COMPLETIONS_PIPELINED_OPTION`]; `PHOSPHOR_REMOTE_NATIVE_COMPLETIONS_V2=0` forces
+    /// the old two-step protocol.
+    pub fn supports_pipelined_native_completions(&self) -> bool {
+        self.supports_pipelined_native_completions_with(
+            pipelined_native_completions_enabled(),
+            bash3_native_completions_enabled(),
+        )
+    }
+
+    /// [`Self::supports_pipelined_native_completions`] with both kill switches given.
+    pub fn supports_pipelined_native_completions_with(
+        &self,
+        v2_enabled: bool,
+        bash3_enabled: bool,
+    ) -> bool {
+        v2_enabled
+            && self.supports_native_shell_completions_with(bash3_enabled)
+            && self
+                .options
+                .as_ref()
+                .is_some_and(|options| options.contains(NATIVE_COMPLETIONS_PIPELINED_OPTION))
     }
 
     /// Whether the shell supports "autocd" (`cd`ing into a directory without specifying

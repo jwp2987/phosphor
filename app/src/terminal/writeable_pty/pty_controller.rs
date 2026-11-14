@@ -341,6 +341,18 @@ enum PtyWrite {
 //   the hook's read short; the hook then just returns, and the frame lands at the prompt, where
 //   the RS widget drops it. Only that Tab's in-band answer is lost.
 //
+// The pipelined frame (#2211, v2; design in docs/design/2211-one-rtt-native-tab.md). Above, the
+// answer costs two round trips: ^Y out, prompt back, frame out, answer back. A shell whose
+// bootstrap also advertised `!phosphor_nc_frames_v2` takes the request in ONE write: `^Y` and
+// the frame together, the frame named by an app-generated nonce (`n` + letters and digits, new
+// per exchange). The exchange goes straight to `AwaitingResults`. The hook first silences the
+// tty, prints its prompt OSC (now only an ack, "the hook is alive": no ack in 2 s gives up with
+// no write and nothing owed), reads the frame already in the tty (tty order is the guard), and
+// echoes the nonce in the answer's start mark (`9280;A;incrementally_typed;<nonce>`), so a late
+// answer of a given-up exchange is dropped. A frame that finds the shell at its prompt is
+// dropped by the RS widget as before; later bytes behind the frame are not touched. The kill
+// switch `PHOSPHOR_REMOTE_NATIVE_COMPLETIONS_V2=0` forces the two-step protocol above.
+//
 // So a late prompt, a late answer or a timeout on either side can cost only that one Tab's
 // in-band answer (the completer answers instead); never a key and never a command.
 
@@ -383,9 +395,32 @@ pub struct NativeCompletionsRequestOptions {
     /// prompt that does not come is not "no shell integration" there (the session has it), so
     /// no such toast is shown.
     pub remote_first: bool,
+    /// The shell advertised the pipelined frame (#2211) and the kill switch is off: `^Y` and the
+    /// answer frame go out as ONE write, so the answer costs one round trip instead of two.
+    pub pipelined: bool,
+}
+
+/// A pipelined exchange (#2211) in flight, past the write.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PipelinedExchange {
+    /// The app-generated name of the exchange: `n` + letters and digits. The hook echoes it in
+    /// the answer's start mark; an answer that names another exchange is stale and dropped.
+    nonce: String,
+    /// The shell's informational prompt OSC (`9280;P`) was seen: its hook is alive.
+    ack_seen: bool,
+    remote_first: bool,
 }
 
 enum NativeShellCompletionsState {
+    /// A pipelined request (#2211), only ever carried by `PtyWrite::RunNativeShellCompletions`:
+    /// the dispatch writes `^Y` and the answer frame as one write and goes straight to
+    /// `AwaitingResults`.
+    Pipelined {
+        buffer_text: String,
+        results_tx: async_channel::Sender<Vec<ShellCompletion>>,
+        remote_first: bool,
+        nonce: String,
+    },
     /// `^Y` written; the next write of any kind first ends the exchange with the cancel frame.
     AwaitingPrompt {
         buffer_text: String,
@@ -396,6 +431,8 @@ enum NativeShellCompletionsState {
     /// consumed exactly its frame, and later bytes wait in the tty for the line editor.
     AwaitingResults {
         results_tx: async_channel::Sender<Vec<ShellCompletion>>,
+        /// Set for a pipelined exchange (#2211).
+        pipelined: Option<PipelinedExchange>,
     },
 }
 
@@ -488,6 +525,11 @@ pub struct PtyController<T: EventLoopSender> {
     /// Tab, Tab, Enter): they get its answer (candidates, or an empty one for a cancel) and are
     /// dropped (no answer) whenever the exchange ends without one. No new exchange is started.
     native_attached_waiters: Vec<async_channel::Sender<Vec<ShellCompletion>>>,
+    /// The nonce named by the last answer start mark (OSC 9280;A), until its end mark is taken
+    /// (#2211): `Some(None)` is an answer that named none.
+    native_started_nonce: Option<Option<String>>,
+    /// Counter half of the next pipelined exchange's nonce (#2211).
+    native_nonce_counter: u64,
     /// The prompt tokens taken in this pane (#1801 review M3).
     seen_native_prompt_tokens: std::collections::HashSet<String>,
     /// Delivers SIGINT to the pty's foreground process group (local ptys on Unix only); `None`
@@ -769,7 +811,27 @@ impl<T: EventLoopSender> PtyController<T> {
                     );
                     return;
                 }
-                let Some(NativeShellCompletionsState::AwaitingResults { results_tx }) =
+                // #2211: an answer whose start mark named another exchange than this pipelined
+                // one is stale (a given-up exchange's late answer): drop it, keep waiting.
+                let started = me.native_started_nonce.take();
+                if let (
+                    Some(NativeShellCompletionsState::AwaitingResults {
+                        pipelined: Some(exchange),
+                        ..
+                    }),
+                    Some(Some(answered)),
+                ) = (&me.in_flight_native_completions_state, &started)
+                {
+                    if *answered != exchange.nonce {
+                        log::warn!(
+                            "Dropping a native completions answer for another exchange \
+                             (generation {}); still waiting for this one.",
+                            me.native_completions_generation
+                        );
+                        return;
+                    }
+                }
+                let Some(NativeShellCompletionsState::AwaitingResults { results_tx, .. }) =
                     me.in_flight_native_completions_state.take()
                 else {
                     unreachable!("checked above");
@@ -779,7 +841,20 @@ impl<T: EventLoopSender> PtyController<T> {
                     let _ = block_on(waiter.send(data.clone()));
                 }
             }
+            ModelEvent::CompletionsStarted { nonce } => {
+                me.native_started_nonce = Some(nonce.clone());
+            }
             ModelEvent::SendCompletionsPrompt { token } => {
+                // #2211: the shell's prompt OSC for a pipelined exchange is only an ack that its
+                // hook is alive: the frame is already in the tty, so nothing is written.
+                if let Some(NativeShellCompletionsState::AwaitingResults {
+                    pipelined: Some(exchange),
+                    ..
+                }) = me.in_flight_native_completions_state.as_mut()
+                {
+                    exchange.ack_seen = true;
+                    return;
+                }
                 // Same peek-before-take reasoning as `CompletionsFinished` above. With no live
                 // `AwaitingPrompt` the app has already written this exchange's frame (the cancel,
                 // at the prompt timeout), which the shell's read will find: write NOTHING more
@@ -819,7 +894,10 @@ impl<T: EventLoopSender> PtyController<T> {
                     unreachable!("checked above");
                 };
                 me.in_flight_native_completions_state =
-                    Some(NativeShellCompletionsState::AwaitingResults { results_tx });
+                    Some(NativeShellCompletionsState::AwaitingResults {
+                        results_tx,
+                        pipelined: None,
+                    });
                 me.arm_native_completions_watchdog(NATIVE_COMPLETIONS_RESULTS_TIMEOUT, false, ctx);
 
                 // The answer frame, one write. The state is already `AwaitingResults`, so this
@@ -943,6 +1021,8 @@ impl<T: EventLoopSender> PtyController<T> {
             native_cancel_owed: false,
             native_inflight_buffer: String::new(),
             native_attached_waiters: Vec::new(),
+            native_started_nonce: None,
+            native_nonce_counter: 0,
             seen_native_prompt_tokens: Default::default(),
             foreground_sigint: None,
             pty_write_gate_blocked_since: None,
@@ -1694,6 +1774,61 @@ impl<T: EventLoopSender> PtyController<T> {
                 // Nothing is ever queued behind the exchange, so there is nothing to release.
                 me.in_flight_native_completions_state = None;
                 me.native_attached_waiters.clear();
+            },
+        );
+    }
+
+    /// #2211: the ack watchdog of a pipelined exchange. The shell's prompt OSC is the proof its
+    /// hook is alive; with none inside [`NATIVE_COMPLETIONS_PROMPT_TIMEOUT`] the app GIVES UP: it
+    /// stops waiting and closes the requester's channel (the completer answers). It WRITES
+    /// NOTHING: the frame is already in the tty, nothing is owed, and a late answer names its
+    /// exchange, so it is dropped.
+    fn arm_native_ack_watchdog(&mut self, nonce: String, ctx: &mut ModelContext<Self>) {
+        self.arm_native_ack_watchdog_after(NATIVE_COMPLETIONS_PROMPT_TIMEOUT, nonce, ctx);
+    }
+
+    fn arm_native_ack_watchdog_after(
+        &mut self,
+        timeout: Duration,
+        nonce: String,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        // give-up-net: closes the requester's channel; writes nothing, owes nothing
+        ctx.spawn(
+            async move {
+                Timer::after(timeout).await;
+            },
+            move |me, _, ctx| {
+                let silent = matches!(
+                    &me.in_flight_native_completions_state,
+                    Some(NativeShellCompletionsState::AwaitingResults {
+                        pipelined: Some(exchange),
+                        ..
+                    }) if exchange.nonce == nonce && !exchange.ack_seen
+                );
+                // Answer data cannot have arrived without the ack's OSC before it; a started
+                // answer of this exchange also counts as proof of life.
+                let started = matches!(&me.native_started_nonce, Some(Some(n)) if *n == nonce);
+                if !silent || started {
+                    return;
+                }
+                log::warn!(
+                    "Pipelined native shell completions not acknowledged after {timeout:?}; \
+                     giving up (the Tab falls back to the completer, nothing is written)"
+                );
+                let remote_first = matches!(
+                    &me.in_flight_native_completions_state,
+                    Some(NativeShellCompletionsState::AwaitingResults {
+                        pipelined: Some(exchange),
+                        ..
+                    }) if exchange.remote_first
+                );
+                me.in_flight_native_completions_state = None;
+                me.native_attached_waiters.clear();
+                me.last_native_cancel_toasted = !remote_first;
+                if !remote_first {
+                    me.report_native_completions_unavailable(ctx);
+                }
             },
         );
     }
@@ -3892,6 +4027,37 @@ impl<T: EventLoopSender> PtyController<T> {
                 );
                 (command.into_bytes().into(), false, None, true)
             }
+            PtyWrite::RunNativeShellCompletions(NativeShellCompletionsState::Pipelined {
+                buffer_text,
+                results_tx,
+                remote_first,
+                nonce,
+            }) => {
+                // #2211: `^Y` and the answer frame in ONE write. The exchange is awaiting
+                // results at once; the shell's prompt OSC is an ack only. The frame is
+                // already in the tty when the hook reads, and tty order is the guard.
+                self.native_inflight_buffer = buffer_text.clone();
+                self.native_attached_waiters.clear();
+                self.native_started_nonce = None;
+                let mut bytes = vec![0x19_u8];
+                bytes.extend(native_completions_answer(&nonce, &buffer_text));
+                self.in_flight_native_completions_state =
+                    Some(NativeShellCompletionsState::AwaitingResults {
+                        results_tx,
+                        pipelined: Some(PipelinedExchange {
+                            nonce: nonce.clone(),
+                            ack_seen: false,
+                            remote_first,
+                        }),
+                    });
+                self.arm_native_completions_watchdog(
+                    NATIVE_COMPLETIONS_RESULTS_TIMEOUT,
+                    false,
+                    ctx,
+                );
+                self.arm_native_ack_watchdog(nonce, ctx);
+                (bytes.into(), false, None, false)
+            }
             PtyWrite::RunNativeShellCompletions(state) => {
                 if let NativeShellCompletionsState::AwaitingPrompt { buffer_text, .. } = &state {
                     self.native_inflight_buffer = buffer_text.clone();
@@ -4096,6 +4262,25 @@ impl<T: EventLoopSender> PtyController<T> {
         }
         if let Err(why) = self.native_exchange_may_start(ctx) {
             log::info!("Native completions not started ({why}); the Tab uses the completer");
+            return;
+        }
+        if options.pipelined {
+            // #2211: one write, `^Y` + the frame, named by an app-generated nonce.
+            self.native_nonce_counter = self.native_nonce_counter.wrapping_add(1);
+            let nonce = format!(
+                "n{:x}{:08x}",
+                self.native_nonce_counter,
+                rand::random::<u32>()
+            );
+            self.send_write_to_event_loop(
+                PtyWrite::RunNativeShellCompletions(NativeShellCompletionsState::Pipelined {
+                    buffer_text,
+                    results_tx,
+                    remote_first: options.remote_first,
+                    nonce,
+                }),
+                ctx,
+            );
             return;
         }
         self.send_write_to_event_loop(

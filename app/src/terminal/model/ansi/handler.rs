@@ -419,6 +419,10 @@ pub trait Handler {
     /// considered as completions output.
     fn start_completions_output(&mut self, _format: CompletionsShellData) {}
 
+    /// The exchange name the shell's hook echoed in the start mark (`9280;A;<format>;<nonce>`,
+    /// #2211), called just before [`Self::start_completions_output`]; `None` when it echoed none.
+    fn completions_started_nonce(&mut self, _nonce: Option<String>) {}
+
     /// Callback to handle the OSC for finishing completions.
     ///
     /// Marks the end of the in-band command output payload.

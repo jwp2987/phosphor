@@ -1422,6 +1422,10 @@ where
                         );
                         return;
                     };
+                    // #2211: the hook echoes the exchange's nonce as a fourth parameter.
+                    self.handler.completions_started_nonce(
+                        params.get(3).and_then(|raw| completions_prompt_token(raw)),
+                    );
                     self.handler.start_completions_output(format);
                 }
                 Some(&WARP_COMPLETIONS_END_BYTE) => {

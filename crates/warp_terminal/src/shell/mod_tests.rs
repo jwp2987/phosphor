@@ -747,3 +747,44 @@ fn bash3_native_completions_kill_switch_reads_only_zero_as_off() {
     assert!(!bash3_native_completions_enabled_from_env(Some("0")));
     assert!(!bash3_native_completions_enabled_from_env(Some(" 0 ")));
 }
+
+/// #2211: the pipelined (one round trip) request needs the v2 option on top of the v1 one, and
+/// the kill switch forces the two-step protocol.
+#[test]
+fn pipelined_native_completions_need_the_v2_option_and_the_kill_switch_off() {
+    let shell = |options: &[&str]| {
+        Shell::new(
+            ShellType::Zsh,
+            Some("5.9".to_owned()),
+            Some(
+                options
+                    .iter()
+                    .map(|o| (*o).to_owned())
+                    .collect::<HashSet<_>>(),
+            ),
+            Default::default(),
+            None,
+        )
+    };
+    let v1 = NATIVE_COMPLETIONS_PROTOCOL_OPTION;
+    let v2 = NATIVE_COMPLETIONS_PIPELINED_OPTION;
+    assert!(shell(&[v1, v2]).supports_pipelined_native_completions_with(true, true));
+    assert!(
+        !shell(&[v1]).supports_pipelined_native_completions_with(true, true),
+        "a shell that advertised only v1 gets the two-step protocol"
+    );
+    assert!(shell(&[v1]).supports_native_shell_completions_with(true));
+    assert!(
+        !shell(&[v2]).supports_pipelined_native_completions_with(true, true),
+        "v2 without v1 is not a supported exchange at all"
+    );
+    assert!(
+        !shell(&[v1, v2]).supports_pipelined_native_completions_with(false, true),
+        "PHOSPHOR_REMOTE_NATIVE_COMPLETIONS_V2=0 forces v1"
+    );
+    assert!(shell(&[v1, v2]).supports_native_shell_completions_with(true));
+    assert!(pipelined_native_completions_enabled_from_env(None));
+    assert!(pipelined_native_completions_enabled_from_env(Some("1")));
+    assert!(!pipelined_native_completions_enabled_from_env(Some("0")));
+    assert!(!pipelined_native_completions_enabled_from_env(Some(" 0 ")));
+}
