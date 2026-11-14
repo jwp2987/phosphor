@@ -213,7 +213,7 @@ def c_msys_ssh_switch(ctx, r, arm):
 
 
 # ------------------------------------------------------------------ 4. Tab over ssh without the helper (remote_tab_no_helper, remote_tab_enter_no_helper)
-@lab_case("tab_no_helper", shells=("bash", "zsh"), lat=("lan", "150"), helper=("nohelper",))
+@lab_case("tab_no_helper", shells=("bash", "zsh", "zshc"), lat=("lan", "150"), helper=("nohelper",))
 def c_tab_no_helper(ctx, r, arm):
     """The old remote_tab_no_helper and remote_tab_enter_no_helper (#1801), against the lab host, and what lab_tab_remote_dir does not judge. `cd <prefix>` of a
     directory that exists only on the lab host + Tab + (1.5 s later) Enter: the exact command the REMOTE shell received is the completed `cd <dir>/`, the next
@@ -253,7 +253,15 @@ def c_tab_no_helper(ctx, r, arm):
     r.check(bool(pwd) and pwd[-1] == want_dir, "after the completed cd the remote cwd should be %s, got %r" % (want_dir, pwd))
     r.check(ctx.cmds_since(lmark) == [], "the LOCAL shell received commands while the remote shell was in front: %r" % ctx.cmds_since(lmark))
     hits = [m for m in (IN_BAND_RE.search(l) for l in ctx.log_since(off0).splitlines()) if m]
-    r.check(bool(hits), "the app log has no 'candidates from the remote shell' line: Tab did not take the in-band path (#1801)")
+    # #2196: zsh WITHOUT compinit answers an in-band Tab with nothing by design (#2174: the app never runs compinit for the user), so only the completer's answer
+    # lands there (the completed line below is still judged); bash and zshc (zsh WITH compinit) must have the remote shell's own candidates.
+    if CL.native_tab_expectation(arm) == "empty":
+        seg = ctx.log_since(off0)
+        r.check(not hits and CL.native_tab_empty(seg) >= 1, "zsh without compinit answers an in-band Tab with nothing by design (#2174), so the completer answers: "
+                "%d candidate line(s), %d empty answer(s)" % (len(hits), CL.native_tab_empty(seg)))
+        hits = []
+    else:
+        r.check(bool(hits), "the app log has no 'candidates from the remote shell' line: Tab did not take the in-band path (#1801)")
     if hits:
         r.metric("remote_tab_in_band_ms", int(hits[-1].group(1)))
     # (b) Tab + a fast Enter (remote_tab_enter_no_helper), three fresh directories

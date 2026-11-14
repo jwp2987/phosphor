@@ -73,7 +73,7 @@ def r30_lab_tab_remote_dir_matrix_has_the_zshc_arms_2196():
             assert "lab_tab_remote_dir.zshc.%s.%s" % (lat, h) in names, (lat, h)
     assert "zshc" in L.MATRIX_SHELLS and "zshc" not in L.ALL_SHELLS and "zshc" in L.matrix_selection("quick")["shells"]
     assert L.matrix_selection("shells=zshc;lat=lan")["shells"] == {"zshc"}
-    assert not [n for n in names if ".zshc." in n and not n.startswith("lab_tab_remote_dir.")], "only lab_tab_remote_dir declares zshc"
+    assert not [n for n in names if ".zshc." in n and not n.startswith(("lab_tab_remote_dir.", "lab_tab_no_helper."))], "only lab_tab_remote_dir and lab_tab_no_helper declare zshc (#2196)"
     arm = next(c["arm"] for c in cases.CASES if c["name"] == "lab_tab_remote_dir.zshc.lan.nohelper")
     assert arm["shell"] == "zshc" and arm["user"] == "u_zshc" and arm["fault"] is None
 
@@ -175,3 +175,16 @@ def r1918_ext_relaunch_settle_waits_for_the_new_instances_view_mode_hop():
     body = src[i:i + 1200]
     assert body.index("ctx.app.start()") > 0 and "ctx.app_log_window(t_launch)" in body and '"hop=view_mode"' in body
     assert "4.0, step=0.2" in body, "the give-up net stays 4 s"
+
+
+@check
+def r30_tab_no_helper_judges_the_in_band_answer_per_shell_2196():
+    """lab_tab_no_helper asked every no-helper zsh arm for 'candidates from the remote shell', but the lab's zsh user never runs compinit and the app never does
+    for anyone (#2174), so that arm's in-band answer is empty by design (r30c/r30d FAIL = a TEST fault). The case now has a zshc arm (compinit: must answer in-band),
+    keeps the zsh arm (the empty answer + the completer's correct completion), and judges the in-band line through native_tab_expectation"""
+    import cases  # noqa: F401
+    names = {c["name"] for c in cases.CASES if c.get("lab")}
+    for sh in ("bash", "zsh", "zshc"):
+        assert "lab_tab_no_helper.%s.lan.nohelper" % sh in names, sh
+    src = _src("script", "realapp", "appci", "cases_lab_winport.py")
+    assert 'CL.native_tab_expectation(arm) == "empty"' in src
