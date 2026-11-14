@@ -79,7 +79,8 @@ impl ReplyLedger {
             return;
         }
         if let Some(pty_writes) = &self.pty_writes {
-            pty_writes.note_tail(bytes);
+            // #1795 (1): counted as a reply too, so the ssh escape path knows one may be unread.
+            pty_writes.note_reply(bytes);
         }
         let text = String::from_utf8_lossy(bytes);
         let mut start = 0;

@@ -19319,9 +19319,11 @@ fn test_ssh_escape_on_a_proven_empty_remote_line_goes_out_behind_a_carriage_retu
     }
 }
 
-/// #2186: under the line-start rule only the user's own bytes in the remote line withhold the `\r`.
-/// A request still out (nu never answers the last one), or any other write behind the last newline
-/// (a terminal-query reply), does not: ssh last read those bytes, not a newline.
+/// #2186: under the line-start rule the user's own bytes in the remote line withhold the `\r`; a
+/// request still out (nu never answers the last one) or another write behind the last newline does
+/// not: ssh last read those bytes, not a newline. #1795 item 1 (owner decision 2026-11-14): a
+/// terminal-query REPLY queued since the line was known empty withholds it too, since what an
+/// unread reply leaves in the remote line would be run by the `\r`.
 #[test]
 fn test_ssh_escape_cr_rule_skips_only_for_user_bytes() {
     for blocker in ["untracked", "outstanding", "written", "reply"] {
@@ -19341,11 +19343,11 @@ fn test_ssh_escape_cr_rule_skips_only_for_user_bytes() {
                         handoff.pty_write_count().note_write_bytes(b"\x1bi");
                     }
                     "written" => handoff.pty_write_count().note_write_bytes(b"x\r\x1bi"),
-                    _ => handoff.pty_write_count().note_tail(b"\x1b[24;1R"),
+                    _ => handoff.pty_write_count().note_reply(b"\x1b[24;1R"),
                 }
             });
             type_keys_for_ssh_escape_test(&mut app, &editor, &["~", "."]);
-            let expected: &[u8] = if blocker == "untracked" {
+            let expected: &[u8] = if matches!(blocker, "untracked" | "reply") {
                 b"~."
             } else {
                 b"\r~."
@@ -19353,7 +19355,8 @@ fn test_ssh_escape_cr_rule_skips_only_for_user_bytes() {
             assert_eq!(
                 *writes.borrow(),
                 vec![expected.to_vec()],
-                "{blocker}: `\\r` only when no user bytes may be in the remote line"
+                "{blocker}: `\\r` only when neither user bytes nor an unread reply may be in \
+                 the remote line"
             );
         });
     }
