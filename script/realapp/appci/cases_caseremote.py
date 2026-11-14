@@ -21,6 +21,32 @@ def need_ssh(ctx, r):
 MSYS_MANAGED_SSH = "PHOSPHOR_MSYS_MANAGED_SSH"
 
 
+PANE_STATE_RE = re.compile(r"hop=hand_route .*?command_interactive=(true|false) enters_written=(\d+)")
+
+
+def pane_state_from_log(text):
+    """pure (#2206): the pane's input state as the LAST `hop=hand_route` line of the app log says it (command_interactive, enters_written, and precmds_seen
+    when the line carries it), or "no hand_route line" -- so a case that leaves the pane busy can say what the app believed at its start and end"""
+    last = None
+    for ln in text.splitlines():
+        if "hop=hand_route" in ln and "command_interactive=" in ln:
+            last = ln
+    if last is None:
+        return "no hand_route line"
+    m = re.search(r"command_interactive=(true|false)", last)
+    e = re.search(r"enters_written=(\d+)", last)
+    p = re.search(r"precmds_seen=(\d+)", last)
+    return "command_interactive=%s enters_written=%s precmds_seen=%s" % (m.group(1), e.group(1) if e else "?", p.group(1) if p else "?")
+
+
+def pane_state_now(ctx):
+    """the app's last logged pane state (pane_state_from_log over the last 200 KB of the app log); "unknown" without a log"""
+    try:
+        return pane_state_from_log(ctx.log_since(max(0, int(ctx.log_size()) - 200000)))
+    except Exception:
+        return "unknown"
+
+
 def msys_managed_ssh_lines(on):
     """pure: the line typed into the Git Bash pane's shell to switch the one-connection managed ssh on for that shell, and the one that restores the
     default (#2051, owner 2026-11-10: the path is OFF unless the shell has PHOSPHOR_MSYS_MANAGED_SSH=1)"""
@@ -34,6 +60,7 @@ def in_msys_managed_ssh(ctx, body):
     prompt, before the case takes its marks and after its own reset."""
     if not (getattr(ctx, "win", False) and getattr(ctx, "pane", None) == "gitbash"):
         return body()
+    ctx.pane_state_at_case_start = pane_state_now(ctx)      # #2206: logged so a pane left busy by the case before is told from one this case left busy
     ctx.be.type(msys_managed_ssh_lines(True), 12, enter=True)
     time.sleep(0.5)
     try:
@@ -65,6 +92,7 @@ def msys_managed_ssh_restore(ctx):
             MSYS_MANAGED_SSH, {"remote": "the REMOTE shell", "local": "the local shell", "none": "no shell"}[where], [t.split(":", 1)[-1] for t in toks])
         if attempt == 0:
             ctx.return_to_local()
+    why += " [app's pane state at case start: %s; now: %s]" % (getattr(ctx, "pane_state_at_case_start", "not taken"), pane_state_now(ctx))
     ctx.relaunch_wanted = why
     return why
 

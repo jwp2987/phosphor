@@ -261,7 +261,9 @@ def c_agent_remote_drop(ctx, r, arm):
         r.check(status != "running", "the tool result still says the command is running after the connection was lost: %.300r" % (res,))
         r.check(not re.search(r"^fin_%s\s*$" % tok, out, re.M), "the command's final output line appears although the connection was reset first: %.300r" % (res,))
     # the pane is usable again: local, and the agent answers a plain prompt
-    r.check(ctx.until(lambda: ctx.where_now() == "local", 20, step=0.5), "after the reset the pane is %r, expected local" % (ctx.where_now(),))
+    # #2124: the extra probe that fills the message runs only when the check FAILED (it used to run on a pass too, typing a second where-probe into a passing run)
+    is_local = ctx.until(lambda: ctx.where_now() == "local", 20, step=0.5)
+    r.check(bool(is_local), "after the reset the pane is %r, expected local" % (ctx.where_now() if not is_local else "local",))
     n = fake.requests
     AG.type_fast(ctx, "Reply with the word after_%s" % tok)
     r.check(ctx.until(lambda: fake.requests > n, 30, step=0.25), "the agent did not answer a new prompt after the connection was lost")
