@@ -622,7 +622,10 @@ class Profile:
                 time.sleep(0.05 * (attempt + 1))
 
     def commands(self, remote=False):
-        """the exact command lines the shell received, in order: [(epoch, cmd)]"""
+        """the exact command lines the shell received, in order: [(epoch, cmd)]. A lab remote (LabRemote) knows its shell and applies
+        lab.drop_internal_commands exactly once (#2213: the zsh ssh bootstrap line is not a typed command); same-machine and local reads are unfiltered."""
+        if remote and self.remote is not None and hasattr(self.remote, "commands"):
+            return self.remote.commands()
         out = []
         for l in self.read("rec.log", remote):
             p = l.split("\t", 2)
