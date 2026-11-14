@@ -4149,9 +4149,13 @@ fn a_result_a_pane_close_discarded_is_in_no_later_request() {
                 ctx,
             );
         });
-        for _ in 0..16 {
-            futures_lite::future::yield_now().await;
-        }
+        // Wait by wall clock, not a yield count (#2219).
+        crate::test_util::wait_for(|| {
+            controller.read(&app, |controller, ctx| {
+                prompts_sent(conversation_id, ctx) == vec!["what next".to_owned()]
+            })
+        })
+        .await;
         controller.update(&mut app, |controller, ctx| {
             assert_eq!(
                 prompts_sent(conversation_id, ctx),
@@ -4180,9 +4184,13 @@ fn a_result_a_pane_close_discarded_is_in_no_later_request() {
                 ctx,
             );
         });
-        for _ in 0..16 {
-            futures_lite::future::yield_now().await;
-        }
+        // Wait by wall clock, not a yield count (#2219).
+        crate::test_util::wait_for(|| {
+            controller.read(&app, |controller, ctx| {
+                prompts_sent(conversation_id, ctx).contains(&"and then".to_owned())
+            })
+        })
+        .await;
         controller.update(&mut app, |controller, ctx| {
             assert!(
                 prompts_sent(conversation_id, ctx).contains(&"and then".to_owned()),
@@ -4285,9 +4293,14 @@ fn the_note_of_a_restored_pane_is_in_no_request_and_no_export() {
                 ctx,
             );
         });
-        for _ in 0..16 {
-            futures_lite::future::yield_now().await;
-        }
+        // Wait by wall clock, not a yield count (#2219).
+        crate::test_util::wait_for(|| {
+            controller.read(&app, |controller, ctx| {
+                everything_sent_recorded_or_exported(controller, conversation_id, ctx)
+                    .contains("what next")
+            })
+        })
+        .await;
         controller.update(&mut app, |controller, ctx| {
             let text = everything_sent_recorded_or_exported(controller, conversation_id, ctx);
             assert!(
@@ -4305,9 +4318,14 @@ fn the_note_of_a_restored_pane_is_in_no_request_and_no_export() {
                 ctx,
             );
         });
-        for _ in 0..16 {
-            futures_lite::future::yield_now().await;
-        }
+        // Wait by wall clock, not a yield count (#2219).
+        crate::test_util::wait_for(|| {
+            controller.read(&app, |controller, ctx| {
+                everything_sent_recorded_or_exported(controller, conversation_id, ctx)
+                    .contains("and then")
+            })
+        })
+        .await;
         controller.update(&mut app, |controller, ctx| {
             let text = everything_sent_recorded_or_exported(controller, conversation_id, ctx);
             assert!(text.contains("and then"), "precondition: {text}");
@@ -4357,9 +4375,13 @@ fn without_a_close_the_finished_result_travels_with_the_next_prompt() {
                 ctx,
             );
         });
-        for _ in 0..16 {
-            futures_lite::future::yield_now().await;
-        }
+        // Wait by wall clock, not a yield count (#2219).
+        crate::test_util::wait_for(|| {
+            controller.read(&app, |controller, ctx| {
+                prompts_sent(conversation_id, ctx) == vec!["what next".to_owned()]
+            })
+        })
+        .await;
         controller.update(&mut app, |controller, ctx| {
             assert_eq!(
                 prompts_sent(conversation_id, ctx),

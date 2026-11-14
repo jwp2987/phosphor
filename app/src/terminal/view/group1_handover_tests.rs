@@ -189,9 +189,13 @@ fn nested_prompt_during_the_handover_drain_delivers_the_line_to_the_inner_shell(
             view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
             ssh_tty_owned_for_test(view, ctx);
         });
-        for _ in 0..16 {
-            futures_lite::future::yield_now().await;
-        }
+        crate::test_util::wait_for(|| {
+            String::from_utf8_lossy(&pty_writes.borrow().concat())
+                .matches("echo B")
+                .count()
+                == 1
+        })
+        .await;
         terminal.read(&app, |view, ctx| {
             let writes = String::from_utf8_lossy(&pty_writes.borrow().concat()).into_owned();
             if writes.matches("echo B").count() != 1 {
@@ -295,9 +299,13 @@ fn nested_prompt_then_the_inner_echo_still_delivers_the_line_to_the_inner_shell(
             view.model.lock().publish_key_facts();
             view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
         });
-        for _ in 0..16 {
-            futures_lite::future::yield_now().await;
-        }
+        crate::test_util::wait_for(|| {
+            String::from_utf8_lossy(&pty_writes.borrow().concat())
+                .matches("echo B")
+                .count()
+                == 1
+        })
+        .await;
         terminal.read(&app, |view, ctx| {
             let writes = String::from_utf8_lossy(&pty_writes.borrow().concat()).into_owned();
             if writes.matches("echo B").count() != 1 {
@@ -638,9 +646,8 @@ fn type_into_session_writes_the_kept_text_once() {
             &terminal,
             SshKeptTextBannerAction::TypeIntoSession,
         );
-        for _ in 0..16 {
-            futures_lite::future::yield_now().await;
-        }
+        crate::test_util::wait_for(|| pty_writes.borrow().concat() == b"echo hi\rls".to_vec())
+            .await;
         assert_eq!(
             pty_writes.borrow().concat(),
             b"echo hi\rls".to_vec(),

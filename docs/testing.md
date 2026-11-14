@@ -117,6 +117,14 @@ Hard rules:
   `mock_workspace_with_shared_session` in `workspace/view_test.rs`, `build_test_http_client` in
   `ai/agent_sdk/test_support.rs`, `void_enter_gate_for_test` in `terminal/input/enter_queue.rs`); no test was removed.
 
+- **Unit-test waits give up by wall clock, never by a yield count (#2212, #2219).** A `for _ in 0..N { yield_now().await }`
+  that waits for a condition measures how many executor turns the test got, which a loaded runner (Windows) does not
+  give in time. Wait with `crate::test_util::wait_for(|| cond).await` (10 s deadline, returns the moment `cond` holds,
+  then the test's own assertion judges the result) or `pump_until` in `terminal/view_test.rs`. A fixed count stays
+  only for a deliberate "N turns must NOT produce X" negative check. Converted in #2219: `history_model_test`,
+  `controller_tests` (5), `group1_handover_tests` (3), `group4_prompt_tests`, `view_test` (ssh drain), `notebooks/file/mod_tests`,
+  `file_tree/view/view_tests` (`settle_until`).
+
 - `app/src/terminal/bootstrap_test.rs` `bash_arm_of_the_ssh_remote_command_does_not_resolve_bash_through_path` (#2154): the ssh remote command execs the running shell by `$BASH`/`$SHELL`, never `bash` through PATH, and a failed exec falls back to the plain login shell.
 
 ### 2.2 Integration crates

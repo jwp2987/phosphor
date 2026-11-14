@@ -36,16 +36,19 @@ fn std_path(path: &std::path::Path) -> warp_util::standardized_path::Standardize
 /// The sleep matters: the tree build runs on the background executor, and a tight
 /// foreground yield-loop starves it. Mirrors `warp_tui`'s `settle_until`.
 async fn settle_until(app: &mut App, mut done: impl FnMut(&mut App) -> bool) {
-    for _ in 0..600 {
+    let started = std::time::Instant::now();
+    loop {
         for _ in 0..8 {
             futures_lite::future::yield_now().await;
         }
         if done(app) {
             return;
         }
+        if started.elapsed() >= crate::test_util::WAIT_DEADLINE {
+            panic!("settle_until: the awaited directory load never landed");
+        }
         std::thread::sleep(std::time::Duration::from_millis(1));
     }
-    panic!("settle_until: the awaited directory load never landed");
 }
 
 fn initialize_app(
