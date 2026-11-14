@@ -1501,6 +1501,8 @@ fn release_memory_drops_trees_and_stops_following_the_shared_buffer() {
         editor.read(&app, |editor, ctx| {
             assert!(editor.is_released());
             assert_eq!(editor.syntax_tree_count(ctx), 0);
+            // The diff base is a full copy of the file as loaded (#2224).
+            assert!(!editor.diff().as_ref(ctx).has_base());
         });
 
         // An edit made elsewhere is not parsed or laid out by the released editor.

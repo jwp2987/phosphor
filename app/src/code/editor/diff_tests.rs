@@ -457,3 +457,15 @@ fn test_coalesce_replacements() {
         assert_eq!(diff_model.diff_by_index(4), Some((10..11, true)));
     });
 }
+
+#[test]
+fn release_drops_the_base_copy_and_the_computed_hunks() {
+    // #1340 / #2224: the base is a second copy of the whole file; a closed editor must not keep it.
+    let mut diff = DiffModel::new();
+    diff.set_base(MultilineString::apply("a\nb\nc\n"));
+    assert!(diff.has_base());
+    diff.release();
+    assert!(!diff.has_base());
+    assert!(diff.base().is_none());
+    assert_eq!(diff.diff_hunk_count(), 0);
+}

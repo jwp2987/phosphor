@@ -79,6 +79,10 @@ Hard rules:
 - **Code-editor memory accounting (#1607)**. `crates/editor/tests/editor_memory.rs` (its own test binary with a counting global allocator) loads a generated
   7 MB file with `Buffer::replace_all` and asserts the buffer retains nothing but its content tree (`Buffer::memory_stats`), no undo entry, a bounded transient peak
   and nothing after the drop; it prints the breakdown. `script/agent-cargo <name> nextest run -p warp_editor --test editor_memory --no-capture`.
+  #1340 per-line pin (same test): at most 3 content-tree items per line and `size_of::<BufferText>() <= 136`. #2224 close-releases-everything pins:
+  `DiffModel::release` drops the base copy of the file (`release_drops_the_base_copy_and_the_computed_hunks`, `app/src/code/editor/diff_tests.rs`;
+  `release_memory_drops_trees_and_stops_following_the_shared_buffer` also asserts the editor's diff has no base), and `SyntaxTreeState::release` replaces the
+  thread's tree-sitter parser (`release_drops_every_tree_and_the_highlight_cache`, `crates/syntax_tree`). Not run on the laptop; they run in the box's unit tier.
 - **CLI-agent plugin source (GitLab move)**. `app/src/terminal/cli_agent_sessions/plugin_manager/{claude,codex,gemini,opencode,mod}_tests.rs`
   pin the install/update commands to the `gitlab.com/winters-phosphor` URLs and cover the migration of installs registered
   from `warpdotdev/` GitHub: fixtures written in each CLI's real on-disk shape (Claude `settings.json`

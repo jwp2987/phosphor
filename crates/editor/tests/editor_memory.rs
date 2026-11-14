@@ -148,6 +148,20 @@ fn opening_a_7mb_file_keeps_only_the_content_tree_and_frees_it_on_drop() {
             stats.undo_entries, 0,
             "a file load must leave no undo entry"
         );
+        // Per-line overhead (#1340): a ~80-byte line is one text fragment plus one newline item
+        // (a 128-byte fragment holds a whole line), so the item count stays within 3 per line, and
+        // an item stays at its measured 136 bytes (a larger enum variant would multiply the tree).
+        assert!(
+            stats.tree.items <= 3 * stats.lines,
+            "{} items for {} lines: the loader splits lines into more fragments than expected",
+            stats.tree.items,
+            stats.lines
+        );
+        assert!(
+            stats.item_bytes <= 136,
+            "BufferText grew to {} B per item (it was 136 B)",
+            stats.item_bytes
+        );
         // Everything retained is the tree itself (2 MB slack for the model, the app's own
         // bookkeeping and allocator-independent noise).
         let slack = 2 * 1024 * 1024;

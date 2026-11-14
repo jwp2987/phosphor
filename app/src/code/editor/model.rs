@@ -2167,6 +2167,8 @@ impl CodeEditorModel {
         self.pending_syntax_tree_bootstrap = false;
         self.syntax_tree
             .update(ctx, |syntax_tree, _| syntax_tree.release());
+        // The diff base is a full copy of the file as loaded (7 MB for a 7 MB file) (#2224).
+        self.diff.update(ctx, |diff, _| diff.release());
         self.render_state
             .update(ctx, |render_state, _| render_state.release_layout());
     }
