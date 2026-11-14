@@ -5786,6 +5786,29 @@ def zsh_recorder_logs_from_preexec_and_survives_a_dropped_hook_2162():
 
 
 @check
+def zsh_recorder_does_not_log_the_previous_sessions_last_line_r30f():
+    """r30f: HISTFILE is shared by every session of a lab user; the second session's FIRST precmd read the first session's last line (`exit`) from the loaded
+    history and logged it as a command it received, so every lab trial after the first saw "the remote shell received ['exit', 'echo T..']". Two real zsh
+    sessions on one HISTFILE: the second's rec.log part holds only what it ran (skipped only when there is no zsh binary)."""
+    if not shutil.which("zsh"):
+        print("  skip: no zsh binary on this machine")
+        return
+    d = tempfile.mkdtemp()
+    try:
+        os.makedirs(os.path.join(d, "w"))
+        with open(os.path.join(d, ".zshrc"), "w") as f:
+            f.write(profile.ZSHRC % {"ctl": d})
+        drv = ("zmodload zsh/zpty; export ZDOTDIR=$1 HOME=$1 APPCI_W=$1/w TERM=xterm\n"
+               "for l in 'echo one' 'echo two'; do zpty z zsh -di; sleep 1; zpty -w z \"$l\"; sleep 0.5; zpty -w z exit; sleep 0.7; zpty -d z 2>/dev/null; done\n")
+        subprocess.run(["zsh", "-f", "-c", drv, "_", d], timeout=60, capture_output=True)
+        rec = [l.split("\t", 2)[2] for l in open(os.path.join(d, "rec.log")).read().splitlines() if l.startswith("C\t")]
+        rec = [c for c in rec if c]
+        assert rec == ["echo one", "exit", "echo two", "exit"], "rec.log C lines %r: the previous session's last line was logged again by the next session" % rec
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+@check
 def tinypath_scenario_dir_is_built_into_the_image_without_bash_2154():
     """#2154: scenarios/tinypath.sh points PATH at a directory the image must create; the Containerfile builds it (busybox applets, never bash)."""
     import re as _re2

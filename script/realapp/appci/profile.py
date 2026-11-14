@@ -98,15 +98,21 @@ __pa_n=0
 # number. Keyed on $HISTCMD alone, that next line (`ls -la` right after an agent command) was never logged. __pa_pxh (preexec) sets
 # __pa_ran, so a line the shell ran is logged even when its number was reused; a precmd with neither (an empty Enter, ^C at the prompt) logs nothing.
 __pa_ran=
+# r30f: the FIRST precmd of a shell only adopts the loaded history (as the bash rc does): HISTFILE is shared by every session of the user, so a session's
+# first precmd saw the PREVIOUS session's last line (`exit`) as a new one and logged it again, and every lab trial after the first read "the remote shell
+# received ['exit', ...]". A line this shell ran before its first prompt (preexec set __pa_ran / __pa_pre) is still logged.
+__pa_first=1
 __pa_rec() {
   setopt localoptions noerrreturn noerrexit unset nopipefail noprintexitvalue noxtrace nowarncreateglobal noksharrays clobber appendcreate 2>/dev/null   # r25: as __pa_pxh
   local c; c=${history[$((HISTCMD-1))]};   # raw history text: `fc -l` prints a ZWJ / unprintable as the TEXT \\u200d (r18e4)
   [[ -n $c ]] || c=$(fc -ln -1 2>/dev/null)
   c=${c#"${c%%%%[![:space:]]*}"}; c=${c//$'\n'/\\n}
-  if [[ -n $__pa_pre ]]; then __pa_n=$HISTCMD   # #2162: preexec already logged this line itself (below); the history path is only the guard
+  if [[ -n $__pa_first && -z $__pa_pre && -z $__pa_ran ]]; then __pa_n=$HISTCMD   # r30f: the loaded history's last line was not received by this shell
+  elif [[ -n $__pa_pre ]]; then __pa_n=$HISTCMD   # #2162: preexec already logged this line itself (below); the history path is only the guard
   elif [[ $HISTCMD != $__pa_n || -n $__pa_ran ]]; then __pa_n=$HISTCMD; [[ -n $c ]] && print -r -- "C"$'\t'"$EPOCHREALTIME"$'\t'"$c" >> "$PA_CTL/rec.log"; fi   # #2213: no empty C record (the first precmd of a plain ssh has an empty history entry)
   __pa_ran=
   __pa_pre=
+  __pa_first=
   print -r -- "P"$'\t'"$EPOCHREALTIME" >> "$PA_CTL/prompt.log"
 }
 precmd_functions+=(__pa_rec)
