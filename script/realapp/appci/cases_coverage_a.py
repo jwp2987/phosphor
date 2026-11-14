@@ -484,6 +484,23 @@ def c_ssh_drop(ctx, r):
     ssh_drop_body(ctx, r, "fake", ("escape", "escape_connect_enter", "escape_connect_bare", "escape_after_cleared_line", "kill"))
 
 
+def wait_log_quiet(ctx, quiet=1.0, timeout=8.0, step=0.1):
+    """#1795 item 5: True once the app log has not grown for `quiet` s (False after `timeout` s of continuous growth). The first remote prompt's hand-off
+    writes its `ESC i` request and handles the shell's report within a few hundred ms and logs hops while it does; `~.` typed before that is
+    (correctly) sent without the `\\r` (hop=ssh_escape_cr skipped=request_outstanding / awaiting_report), which the arm would then fail as an app defect.
+    The app logs no 'report handled' line, so a quiet log is the harness's evidence that the hand-off is done."""
+    end = time.time() + timeout
+    last, since = ctx.log_size(), time.time()
+    while time.time() < end:
+        time.sleep(step)
+        now = ctx.log_size()
+        if now != last:
+            last, since = now, time.time()
+        elif time.time() - since >= quiet:
+            return True
+    return False
+
+
 def ssh_drop_body(ctx, r, host, variants):
     """the arms of ssh_drop_reconnect against ssh host alias `host` (the lab cases, cases_lab.py, run the same body against lab-<user>). Variants: the four above,
     plus 'rst' (lab only: the lab server resets the live connection, as a dropped link does; ctx.arm names the user)."""
@@ -525,7 +542,9 @@ def ssh_drop_body(ctx, r, host, variants):
             ctx.be.key("Return")
             ctx.be.type("~.", 40)
         elif variant == "escape_connect_bare":
-            # #1793: at the first remote prompt, `~.` with no Enter before it.
+            # #1793: at the first remote prompt, `~.` with no Enter before it. #1795 item 5: after the first prompt's report was handled (a quiet app
+            # log), or the arm fails on the app's own safe skip (request_outstanding) instead of the escape
+            r.metric("escape_connect_bare_log_quiet", wait_log_quiet(ctx))
             ctx.be.type("~.", 40)
         elif variant == "rst":
             ctx.lab.drop(ctx.arm["user"], "rst")
