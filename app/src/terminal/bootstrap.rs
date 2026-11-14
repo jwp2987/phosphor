@@ -499,9 +499,15 @@ fn system_has_stty_and_head() -> bool {
     false
 }
 
-/// The commands whose subshells run on this host's own filesystem and tty, and that are known to
-/// start the shell through a pty of their own (`sudo -s`, `su`, `ksu`, `doas`).
-const LOCAL_COUNTED_SUBSHELL_COMMANDS: &[&str] = &["sudo", "su", "ksu", "doas"];
+/// The commands whose subshells run on this host's own filesystem and tty: the ones that start the
+/// shell through a pty of their own (`sudo -s`, `su`, `ksu`, `doas`) and a plain `bash` / `zsh`
+/// typed into a local shell (#2190), which shares the pane's tty and so needs no relay care at all.
+///
+/// #2190: a plain nested `bash` / `zsh` used to be typed in 2 KB writes 25 ms apart (about 91 KB
+/// after comments are stripped: 45 writes, 1.1 s from `InitShell` to `Bootstrapped`), so every
+/// growth of the bootstrap showed up as startup time (about 25 ms per 2 KB: the +11 KB of
+/// r13a..r24a cost 0.25 s). The counted read sends the body in one write instead.
+const LOCAL_COUNTED_SUBSHELL_COMMANDS: &[&str] = &["sudo", "su", "ksu", "doas", "bash", "zsh"];
 
 /// Whether `session_info` describes a session whose bootstrap can go in as a counted read (#1226):
 /// a local bash or zsh on this machine, or a `sudo`/`su`/`ksu`/`doas` subshell of one, that is not
