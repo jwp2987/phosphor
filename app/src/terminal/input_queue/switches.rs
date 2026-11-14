@@ -15,6 +15,7 @@
 //! | `PHOSPHOR_SUBSHELL_LINE_EDITOR_PROOF` | #1991: a subshell setup line written to a line editor is judged by the echo filter again (the R9 flush on "nothing echoed", R7 blind, the filter armed) |
 //! | `PHOSPHOR_HOLD_KEYS_BEHIND_RECALL` | #2107: no `HistoryRecall` gate opens when the Up arrow opens the inline history menu on a long history; keys typed before the list lands are held only by the menu's own selection-key gate (Up, Down, Accept) and edit the empty buffer ahead of the recalled line, as before |
 //! | `PHOSPHOR_REMOTE_TAB_ENTER_WAIT` | #2188: no `RemoteTabCompletion` gate opens when a Tab in a remote (managed ssh) session starts a completion the remote side answers; an Enter typed before that answer runs the line as typed (uncompleted) and cancels the completion, and text typed before it drops the answer, as before |
+//! | `PHOSPHOR_HOLD_EDIT_KEYS_BEHIND_REPORT` | #2115: no `ReportEdit` gate opens when a cursor or deletion key is typed in the editor while the shell's report of the line is still on its way; the key acts at once on the partial buffer (a move past its start is clamped and lost) |
 //! | `PHOSPHOR_SSH_UNBOOTSTRAPPED_PLAIN` | #2120 (`docs/design/r19-shssh.md`): the `SSH` hook of a remote login shell the remote command does not bootstrap (sh, dash, ash, ksh, ...) announces a managed session again: the keys typed in that session are held for a first prompt that never comes |
 
 use std::sync::OnceLock;
@@ -41,6 +42,9 @@ pub const HOLD_KEYS_BEHIND_RECALL_ENV: &str = "PHOSPHOR_HOLD_KEYS_BEHIND_RECALL"
 
 /// #2188.
 pub const REMOTE_TAB_ENTER_WAIT_ENV: &str = "PHOSPHOR_REMOTE_TAB_ENTER_WAIT";
+
+/// #2115.
+pub const HOLD_EDIT_KEYS_BEHIND_REPORT_ENV: &str = "PHOSPHOR_HOLD_EDIT_KEYS_BEHIND_REPORT";
 
 /// Whether a kill switch with this value leaves its fix on: everything but `0`, `off`, `false`
 /// and `no` (any case, surrounding blanks ignored) does, an unset variable included.
@@ -120,6 +124,14 @@ pub fn hold_keys_behind_recall() -> bool {
 pub fn remote_tab_enter_wait() -> bool {
     static ON: OnceLock<bool> = OnceLock::new();
     read_switch(REMOTE_TAB_ENTER_WAIT_ENV, &ON)
+}
+
+/// #2115: a cursor or deletion key typed in the editor while the shell's report of the line is
+/// still on its way waits behind the `ReportEdit` gate, with every key after it, and is applied
+/// to the joined line. `0`: such keys act at once on the partial buffer, as before.
+pub fn hold_edit_keys_behind_report() -> bool {
+    static ON: OnceLock<bool> = OnceLock::new();
+    read_switch(HOLD_EDIT_KEYS_BEHIND_REPORT_ENV, &ON)
 }
 
 #[cfg(test)]

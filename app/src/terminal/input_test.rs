@@ -21743,8 +21743,18 @@ fn test_editor_keys_behind_a_reported_ssh_escape_are_written_in_order_when_ssh_i
             vec![b"~".to_vec(), b"\r~.".to_vec()],
             "test setup: the escape went out alone"
         );
+        // #2209 (owner decision 2026-11-14, Q1): "ssh is gone" is modelled the way the app
+        // meets it: the local prompt took input back with the hold still queued. (This test
+        // used `reset_on_exit`, which the app only calls when the PANE's pty died; then nothing
+        // reads what is written, and the keys become text in the input instead:
+        // `test_the_escape_hold_becomes_input_text_when_the_panes_pty_dies`.) The assertion is
+        // unchanged.
         input.read(&app, |input, _| {
-            input.model.lock().typeahead_handoff_mut().reset_on_exit();
+            let mut model = input.model.lock();
+            let mut handoff = model.typeahead_handoff_mut();
+            handoff.on_user_write_flushed();
+            handoff.force_editor_owned_for_test();
+            assert!(handoff.check_queued_young_hold());
         });
         terminal.update(&mut app, |view, ctx| {
             view.handle_typeahead_report_for_test(ctx)
@@ -21818,62 +21828,749 @@ fn test_a_reported_ssh_escape_with_an_enter_deferred_behind_it_goes_out_alone() 
 /// #2207 (owner decision 2026-11-13): `~.` ended the ssh session before any remote prompt came.
 /// The Enter and the keys typed behind it are written in typed order to whatever owns input now
 /// (the local shell), as a plain terminal delivers what was typed after ssh exits: never dropped,
-/// never put back into the editor. Both ways the hold can find its session gone: the session's
-/// end itself, and a state that left the pty's ownership while the hold was queued.
+/// never put back into the editor: the state left the pty's ownership while the hold was queued.
+///
+/// #2209 (owner decision 2026-11-14, Q1): this test also ran with `session_ended = true`, which
+/// called `reset_on_exit`. The app calls that only when the PANE's pty died, where a write
+/// reaches nobody; that arm is now
+/// `test_the_escape_hold_becomes_input_text_when_the_panes_pty_dies`. The arm the app takes
+/// when ssh ends is kept, with its assertions unchanged.
 #[test]
 fn test_the_enter_and_keys_behind_a_reported_ssh_escape_are_written_in_order_when_ssh_is_gone() {
     use crate::terminal::model::typeahead_handoff::HandoffState;
-    for session_ended in [true, false] {
-        App::test((), move |mut app| async move {
-            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
-            initialize_app(&mut app);
-            let (terminal, input, editor, writes) =
-                reported_escape_with_an_enter_deferred_behind_it(&mut app).await;
-            warpui::r#async::Timer::after(Duration::from_millis(250)).await;
-            assert_eq!(
-                *writes.borrow(),
-                vec![b"~".to_vec(), b"\r~.".to_vec()],
-                "session_ended={session_ended}: test setup: the escape went out alone"
-            );
+    App::test((), move |mut app| async move {
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        initialize_app(&mut app);
+        let (terminal, input, editor, writes) =
+            reported_escape_with_an_enter_deferred_behind_it(&mut app).await;
+        warpui::r#async::Timer::after(Duration::from_millis(250)).await;
+        assert_eq!(
+            *writes.borrow(),
+            vec![b"~".to_vec(), b"\r~.".to_vec()],
+            "test setup: the escape went out alone"
+        );
 
-            input.read(&app, |input, _| {
-                let mut model = input.model.lock();
-                let mut handoff = model.typeahead_handoff_mut();
-                if session_ended {
-                    handoff.reset_on_exit();
-                } else {
-                    // The local prompt took input back with the hold still queued; the next key
-                    // (or any hand-off event) finds the hold stale.
-                    handoff.on_user_write_flushed();
-                    handoff.force_editor_owned_for_test();
-                    assert_eq!(handoff.state(), &HandoffState::EditorOwned);
-                    assert!(handoff.check_queued_young_hold());
-                }
-            });
-            // The next hand-off event the view handles applies the end the hand-off recorded.
-            terminal.update(&mut app, |view, ctx| {
-                view.handle_typeahead_report_for_test(ctx)
-            });
+        input.read(&app, |input, _| {
+            let mut model = input.model.lock();
+            let mut handoff = model.typeahead_handoff_mut();
+            // The local prompt took input back with the hold still queued; the next key (or
+            // any hand-off event) finds the hold stale.
+            handoff.on_user_write_flushed();
+            handoff.force_editor_owned_for_test();
+            assert_eq!(handoff.state(), &HandoffState::EditorOwned);
+            assert!(handoff.check_queued_young_hold());
+        });
+        // The next hand-off event the view handles applies the end the hand-off recorded.
+        terminal.update(&mut app, |view, ctx| {
+            view.handle_typeahead_report_for_test(ctx)
+        });
 
+        assert_eq!(
+            writes.borrow().concat(),
+            b"~\r~.\rpwd\r".to_vec(),
+            "the Enter, then the keys typed behind it, are written in typed order, once: {:?}",
+            writes.borrow()
+        );
+        input.read(&app, |input, ctx| {
             assert_eq!(
-                writes.borrow().concat(),
-                b"~\r~.\rpwd\r".to_vec(),
-                "session_ended={session_ended}: the Enter, then the keys typed behind it, are \
-                 written in typed order, once: {:?}",
-                writes.borrow()
+                input.buffer_text(ctx),
+                "",
+                "nothing was put back into the editor"
             );
+        });
+        let queue = editor.read(&app, |editor, _| editor.paste_hold().queue());
+        assert!(queue.peek().is_idle(), "nothing is left held");
+    });
+}
+
+// ---- #2209: no typed key is dropped when a hold ends -------------------------------------------
+//
+// What the VIEW does with each end the hand-off records (the hand-off's own tests only pin the
+// labels): to the reader, with its line, or flushed by a signal. Every case checks the pty writes
+// and the input's text exactly, and that nothing is left held.
+
+/// #2209 fixture: `make` was submitted; `ls` is typed before its prompt is seen (raw to the pty),
+/// then Enter (a young Enter, held under a `PromptSeen` gate), then `pwd`, Enter behind it (held
+/// behind that gate). The pane's writes hold only `ls`.
+async fn young_enter_held_with_keys_behind_it(
+    app: &mut App,
+) -> (
+    ViewHandle<TerminalView>,
+    ViewHandle<Input>,
+    ViewHandle<EditorView>,
+    Rc<RefCell<Vec<Vec<u8>>>>,
+) {
+    use crate::terminal::input_queue::GateKind;
+    let (terminal, input, editor, writes) =
+        pane_and_terminal_for_ssh_escape_test(app, false, SHELL_INPUT_FOR_SSH_ESCAPE_TEST).await;
+    input.read(app, |input, _| {
+        let mut model = input.model.lock();
+        let mut handoff = model.typeahead_handoff_mut();
+        handoff.on_command_written();
+        handoff.note_written_command_text("make");
+        // Unparsed output: the command's Precmd may be in it (#933).
+        handoff.stream_undrained_for_test();
+    });
+    terminal.update(app, |view, ctx| view.write_user_bytes_for_test(b"ls", ctx));
+    input.read(app, |input, _| {
+        input
+            .model
+            .lock()
+            .typeahead_handoff_mut()
+            .on_user_write_flushed();
+    });
+    terminal.update(app, |view, ctx| {
+        view.write_user_bytes_for_test(b"\r", ctx);
+        view.write_user_bytes_for_test(b"pwd", ctx);
+        view.write_user_bytes_for_test(b"\r", ctx);
+    });
+    assert_eq!(
+        *writes.borrow(),
+        vec![b"ls".to_vec()],
+        "test setup: only `ls` reached the pty; the Enter and the keys behind it are held"
+    );
+    let (held, one_gate) = held_pty_bytes(app, &editor, GateKind::PromptSeen);
+    assert_eq!(
+        held,
+        b"\rpwd\r".to_vec(),
+        "test setup: the young hold's keys"
+    );
+    assert!(one_gate, "test setup: one `PromptSeen` gate holds them");
+    (terminal, input, editor, writes)
+}
+
+/// The state left the pty's ownership with the young hold still queued (what a queue / hand-off
+/// disagreement leaves): the next hand-off event finds the hold stale.
+fn make_the_young_hold_stale(app: &App, input: &ViewHandle<Input>) {
+    input.read(app, |input, _| {
+        let mut model = input.model.lock();
+        let mut handoff = model.typeahead_handoff_mut();
+        handoff.force_editor_owned_for_test();
+        assert!(
+            handoff.check_queued_young_hold(),
+            "test setup: the stale hold's end is recorded"
+        );
+    });
+}
+
+/// Whether nothing is left in the pane's queue.
+fn pane_queue_is_idle(app: &App, editor: &ViewHandle<EditorView>) -> bool {
+    let queue = editor.read(app, |editor, _| editor.paste_hold().queue());
+    let idle = queue.peek().is_idle();
+    idle
+}
+
+/// #2209 (path 1a, and the window of the refute's finding 1): the pane's pty died while a young
+/// Enter and the keys behind it were held. The model has exited (the hand-off knows the session
+/// is gone) but the view has NOT handled the exit event yet. The keys are not written to the dead
+/// pty (that write is lost, not refused) and not dropped (they were, silently, until #2209): they
+/// become text in this pane's input, in typed order.
+#[test]
+fn test_young_hold_keys_become_input_text_when_the_shell_exits() {
+    App::test((), move |mut app| async move {
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        initialize_app(&mut app);
+        let (terminal, input, editor, writes) =
+            young_enter_held_with_keys_behind_it(&mut app).await;
+        input.read(&app, |input, _| {
+            input.model.lock().typeahead_handoff_mut().reset_on_exit();
+        });
+        terminal.update(&mut app, |view, ctx| {
+            view.handle_typeahead_report_for_test(ctx)
+        });
+        assert_eq!(
+            *writes.borrow(),
+            vec![b"ls".to_vec()],
+            "nothing is written to a pty nobody reads"
+        );
+        input.read(&app, |input, ctx| {
+            assert_eq!(
+                input.buffer_text(ctx),
+                "\npwd\n",
+                "the held Enter and the keys behind it are text in the input, in typed order"
+            );
+        });
+        assert!(pane_queue_is_idle(&app, &editor), "nothing is left held");
+    });
+}
+
+/// #2209 (owner decision 2026-11-14, Q6): something was reading a secret when the pty died. The
+/// keys held then may be part of it: they are discarded (counted in the log), never shown as text
+/// in the input and never written. The one discard #2209 adds.
+#[test]
+fn test_keys_held_when_the_shell_dies_reading_a_secret_are_not_shown() {
+    App::test((), move |mut app| async move {
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        initialize_app(&mut app);
+        let (terminal, input, editor, writes) =
+            young_enter_held_with_keys_behind_it(&mut app).await;
+        input.read(&app, |input, _| {
+            let mut model = input.model.lock();
+            let mut handoff = model.typeahead_handoff_mut();
+            handoff.note_session_ended_reading_secret();
+            handoff.reset_on_exit();
+        });
+        terminal.update(&mut app, |view, ctx| {
+            view.handle_typeahead_report_for_test(ctx)
+        });
+        assert_eq!(*writes.borrow(), vec![b"ls".to_vec()], "nothing is written");
+        input.read(&app, |input, ctx| {
+            assert_eq!(input.buffer_text(ctx), "", "nothing is shown");
+        });
+        assert!(pane_queue_is_idle(&app, &editor), "nothing is left held");
+    });
+}
+
+/// #2209 (owner decision 2026-11-14, Q1): the hold made for a reported ssh escape (#2207) when
+/// the PANE's pty dies. It used to be "written" to the dead pty, where it vanished. It ends like
+/// every other hold: its Enter and keys are text in the input, in typed order.
+#[test]
+fn test_the_escape_hold_becomes_input_text_when_the_panes_pty_dies() {
+    App::test((), move |mut app| async move {
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        initialize_app(&mut app);
+        let (terminal, input, editor, writes) =
+            reported_escape_with_an_enter_deferred_behind_it(&mut app).await;
+        warpui::r#async::Timer::after(Duration::from_millis(250)).await;
+        assert_eq!(
+            *writes.borrow(),
+            vec![b"~".to_vec(), b"\r~.".to_vec()],
+            "test setup: the escape went out alone"
+        );
+        input.read(&app, |input, _| {
+            input.model.lock().typeahead_handoff_mut().reset_on_exit();
+        });
+        terminal.update(&mut app, |view, ctx| {
+            view.handle_typeahead_report_for_test(ctx)
+        });
+        assert_eq!(
+            *writes.borrow(),
+            vec![b"~".to_vec(), b"\r~.".to_vec()],
+            "nothing more is written to a pty nobody reads"
+        );
+        input.read(&app, |input, ctx| {
+            assert_eq!(
+                input.buffer_text(ctx),
+                "\npwd\n",
+                "the Enter and the keys behind it are text in the input, in typed order"
+            );
+        });
+        assert!(pane_queue_is_idle(&app, &editor), "nothing is left held");
+    });
+}
+
+/// #2209 (path 1b): a young hold the hand-off's state no longer owns, with the pty alive. Its
+/// Enter and the keys behind it reach the pty once, in typed order (they were dropped until
+/// #2209), nothing is put into the editor, and the write is counted by the hand-off like any
+/// typed key (no write is left "in flight", none is retired twice).
+#[test]
+fn test_a_stale_young_hold_reaches_the_pty_once_in_typed_order() {
+    App::test((), move |mut app| async move {
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        initialize_app(&mut app);
+        let (terminal, input, editor, writes) =
+            young_enter_held_with_keys_behind_it(&mut app).await;
+        make_the_young_hold_stale(&app, &input);
+        let in_flight_before = input.read(&app, |input, _| {
+            input.model.lock().typeahead_handoff().writes_in_flight()
+        });
+        terminal.update(&mut app, |view, ctx| {
+            view.handle_typeahead_report_for_test(ctx)
+        });
+        assert_eq!(
+            writes.borrow().concat(),
+            b"ls\rpwd\r".to_vec(),
+            "the Enter, then the keys typed behind it, in typed order, once: {:?}",
+            writes.borrow()
+        );
+        input.read(&app, |input, ctx| {
+            assert_eq!(
+                input.buffer_text(ctx),
+                "",
+                "nothing was put into the editor"
+            );
+        });
+        assert!(pane_queue_is_idle(&app, &editor), "nothing is left held");
+        // The test pane has no pty controller to retire a counted write, so a counted write
+        // stays in flight; an uncounted one must not have been retired by anything.
+        let in_flight_after = input.read(&app, |input, _| {
+            input.model.lock().typeahead_handoff().writes_in_flight()
+        });
+        assert!(
+            in_flight_after >= in_flight_before,
+            "no write was retired that was never counted: {in_flight_before} -> {in_flight_after}"
+        );
+    });
+}
+
+/// #2209 (owner decisions 2026-11-14, Q4 and "keep every key"): the stale hold's segment holds an
+/// editor key with no byte form (a Left typed in the input box). The keys before it are written
+/// to the pty, once; the Left and EVERY key after it, typed in the box or on the terminal, are
+/// replayed in the input editor in typed order, at its cursor: nothing is written for them,
+/// nothing is submitted, no key is dropped, and no line break or cursor jump is put in front.
+#[test]
+fn test_an_arrow_in_the_segment_splits_the_hold_and_every_key_after_it_is_replayed() {
+    App::test((), move |mut app| async move {
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        initialize_app(&mut app);
+        let (terminal, input, editor, writes) =
+            young_enter_held_with_keys_behind_it(&mut app).await;
+        // Behind `\r`, `pwd`, `\r`: `ab` and a Left in the input box, `X` there too, then a
+        // Left and `Y` typed on the terminal (its bytes).
+        type_keys_for_ssh_escape_test(&mut app, &editor, &["a", "b"]);
+        editor.update(&mut app, |editor, ctx| {
+            editor.handle_action(&EditorAction::Left, ctx);
+        });
+        type_keys_for_ssh_escape_test(&mut app, &editor, &["X"]);
+        terminal.update(&mut app, |view, ctx| {
+            view.write_user_bytes_for_test(b"\x1b[D", ctx);
+            view.write_user_bytes_for_test(b"Y", ctx);
+        });
+        input.read(&app, |input, ctx| {
+            assert_eq!(
+                input.buffer_text(ctx),
+                "",
+                "test setup: every key typed behind the hold is held, none applied"
+            );
+        });
+        make_the_young_hold_stale(&app, &input);
+        terminal.update(&mut app, |view, ctx| {
+            view.handle_typeahead_report_for_test(ctx)
+        });
+        assert_eq!(
+            writes.borrow().concat(),
+            b"ls\rpwd\rab".to_vec(),
+            "the keys before the Left are written once, in typed order: {:?}",
+            writes.borrow()
+        );
+        // The Left (no-op on the empty line), `X`, the terminal's Left (before `X`), `Y`.
+        wait_until(&app, |app| {
+            input.read(app, |input, ctx| input.buffer_text(ctx) == "YX")
+        })
+        .await;
+        input.read(&app, |input, ctx| {
+            assert_eq!(
+                input.buffer_text(ctx),
+                "YX",
+                "the Left and every key after it were replayed in the editor, in typed order"
+            );
+        });
+        assert_eq!(
+            writes.borrow().concat(),
+            b"ls\rpwd\rab".to_vec(),
+            "nothing of the tail was written or submitted"
+        );
+        assert!(pane_queue_is_idle(&app, &editor), "nothing is left held");
+    });
+}
+
+/// #2209 (path 2, owner decision 2026-11-14, Q2): a command is written while a young Enter waits
+/// behind its request (a submit that was not a queued key: a click). The held Enter and the keys
+/// behind it are NOT dropped (they were) and NOT written behind the command (its kill prefix has
+/// wiped the head of their line): they stay in the input as text, in typed order, unrun.
+#[test]
+fn test_a_command_written_behind_a_request_keeps_the_enter_and_keys_as_input_text() {
+    use crate::terminal::model::typeahead_handoff::ActiveDecision;
+    App::test((), move |mut app| async move {
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        initialize_app(&mut app);
+        let (terminal, input, editor, writes) =
+            young_enter_held_with_keys_behind_it(&mut app).await;
+        input.read(&app, |input, _| {
+            let mut model = input.model.lock();
+            let mut handoff = model.typeahead_handoff_mut();
+            handoff.on_precmd();
+            assert_eq!(
+                handoff.on_line_editor_active(true, true),
+                ActiveDecision::SendRequest,
+                "test setup: the hold waits behind its request"
+            );
+            // The clicked command.
+            handoff.on_command_written();
+        });
+        terminal.update(&mut app, |view, ctx| {
+            view.handle_typeahead_report_for_test(ctx)
+        });
+        assert_eq!(
+            *writes.borrow(),
+            vec![b"ls".to_vec()],
+            "nothing is written behind the command"
+        );
+        input.read(&app, |input, ctx| {
+            assert_eq!(
+                input.buffer_text(ctx),
+                "\npwd\n",
+                "the held Enter and the keys behind it are kept as text, in typed order"
+            );
+        });
+        assert!(pane_queue_is_idle(&app, &editor), "nothing is left held");
+    });
+}
+
+/// #2209 (path 3a): the pane's pty died with an Enter deferred behind the shell's report and
+/// keys held behind it. Its line is in the editor, unrun; the keys stay WITH it, as text on the
+/// lines after it, in typed order (they were dropped, or kept, depending on which timer won).
+#[test]
+fn test_keys_behind_a_deferred_enter_stay_with_its_line_when_the_shell_exits() {
+    App::test((), move |mut app| async move {
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        initialize_app(&mut app);
+        let (terminal, input, editor, writes) =
+            pane_and_terminal_for_ssh_escape_test(&mut app, false, SHELL_INPUT_FOR_SSH_ESCAPE_TEST)
+                .await;
+        type_raw_before_the_prompt_then_request(&mut app, &terminal, &input, &[b"ec"]);
+        type_keys_for_ssh_escape_test(&mut app, &editor, &["h", "o"]);
+        input.update(&mut app, |input, ctx| input.input_enter(ctx));
+        assert!(
+            enter_is_deferred_behind_the_report(&app, &input),
+            "test setup: the Enter waits for the report"
+        );
+        terminal.update(&mut app, |view, ctx| {
+            view.write_user_bytes_for_test(b"pwd", ctx);
+            view.write_user_bytes_for_test(b"\r", ctx);
+        });
+        assert_eq!(
+            *writes.borrow(),
+            vec![b"ec".to_vec()],
+            "test setup: only the raw keys reached the pty"
+        );
+        input.read(&app, |input, _| {
+            input.model.lock().typeahead_handoff_mut().reset_on_exit();
+        });
+        terminal.update(&mut app, |view, ctx| {
+            view.handle_typeahead_report_for_test(ctx)
+        });
+        assert_eq!(
+            *writes.borrow(),
+            vec![b"ec".to_vec()],
+            "nothing is written to a pty nobody reads"
+        );
+        input.read(&app, |input, ctx| {
+            assert_eq!(
+                input.buffer_text(ctx),
+                "ho\npwd\n",
+                "the keys typed behind the deferred Enter stay with its line, in typed order"
+            );
+        });
+        assert!(pane_queue_is_idle(&app, &editor), "nothing is left held");
+    });
+}
+
+/// #2209 guard (path 5): a Ctrl-C still flushes a young hold, as the tty flushes its typeahead on
+/// an interrupt: the held Enter and the keys behind it are not written, the `^C` is.
+#[test]
+fn test_ctrl_c_still_voids_a_young_hold() {
+    App::test((), move |mut app| async move {
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        initialize_app(&mut app);
+        let (terminal, input, editor, writes) =
+            young_enter_held_with_keys_behind_it(&mut app).await;
+        terminal.update(&mut app, |view, ctx| {
+            view.write_user_bytes_for_test(b"\x03", ctx);
+        });
+        assert_eq!(
+            writes.borrow().concat(),
+            b"ls\x03".to_vec(),
+            "the interrupt goes out; the held keys are flushed with it: {:?}",
+            writes.borrow()
+        );
+        input.read(&app, |input, ctx| {
+            assert_eq!(
+                input.buffer_text(ctx),
+                "",
+                "nothing was put into the editor"
+            );
+        });
+        assert!(pane_queue_is_idle(&app, &editor), "nothing is left held");
+    });
+}
+
+/// #2209 (H5, the #1016 editor-first race, end to end): a young Enter waits behind its request
+/// with `pwd`, Enter held behind it, and one more Enter reaches the EDITOR before the terminal
+/// takes it. It is not deferred over the hold (that stranded the hold, and its keys were
+/// dropped): it queues behind the hold's gate, after everything typed before it. After the
+/// report, the Enter typed last is still last: `pwd`, Enter, Enter, in typed order, once, whether
+/// the keys are still held behind the deferred Enter or were released.
+#[test]
+fn test_an_editor_enter_behind_a_young_hold_stays_in_typed_order() {
+    use crate::terminal::input_queue::EntryKind;
+    use crate::terminal::model::typeahead_handoff::{ActiveDecision, HandoffState};
+    /// The keys the pane queue holds, in order, as the bytes they stand for.
+    fn held_keys(app: &App, editor: &ViewHandle<EditorView>) -> Vec<u8> {
+        let queue = editor.read(app, |editor, _| editor.paste_hold().queue());
+        let queue = queue.peek();
+        let mut bytes = Vec::new();
+        for entry in queue.entries() {
+            match &entry.kind {
+                EntryKind::PtyBytes { bytes: held, .. } => bytes.extend_from_slice(held),
+                EntryKind::Enter => bytes.push(b'\r'),
+                other => panic!("an unexpected entry is held: {other:?}"),
+            }
+        }
+        bytes
+    }
+    App::test((), move |mut app| async move {
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        initialize_app(&mut app);
+        let (terminal, input, editor, writes) =
+            young_enter_held_with_keys_behind_it(&mut app).await;
+        input.read(&app, |input, _| {
+            let mut model = input.model.lock();
+            let mut handoff = model.typeahead_handoff_mut();
+            handoff.on_precmd();
+            assert_eq!(
+                handoff.on_line_editor_active(true, true),
+                ActiveDecision::SendRequest,
+                "test setup: the hold waits behind its request"
+            );
+        });
+        // The racing Enter, in the editor.
+        input.update(&mut app, |input, ctx| input.input_enter(ctx));
+        assert_eq!(
+            handoff_state(&app, &input),
+            HandoffState::AwaitingReport,
+            "the Enter is not deferred over the young hold"
+        );
+        input.read(&app, |input, _| {
+            assert!(
+                input.model.lock().typeahead_handoff().young_hold_queued(),
+                "the young hold is still live"
+            );
+        });
+        assert_eq!(
+            held_keys(&app, &editor),
+            b"\rpwd\r\r".to_vec(),
+            "the Enter waits behind the hold's keys, in arrival order"
+        );
+        assert_eq!(
+            *writes.borrow(),
+            vec![b"ls".to_vec()],
+            "nothing was written or submitted for it"
+        );
+
+        // The shell's report runs the held Enter on the line `ls`; what was typed behind it
+        // follows, the editor's Enter last.
+        deliver_shell_report(&mut app, &terminal, &input, "ls");
+        warpui::r#async::Timer::after(Duration::from_millis(250)).await;
+        let written: Vec<u8> = writes.borrow()[1..].concat();
+        let written = written.strip_prefix(b"ls\r").unwrap_or(&written).to_vec();
+        let mut in_order = written;
+        in_order.extend(held_keys(&app, &editor));
+        assert_eq!(
+            in_order,
+            b"pwd\r\r".to_vec(),
+            "`pwd`, Enter, then the Enter typed into the editor: in typed order, once (written: \
+             {:?})",
+            writes.borrow()
+        );
+    });
+}
+
+// ---- #2115: editing keys behind a pending report apply to the joined line ----------------------
+
+/// #2115 (r30d, Windows Git Bash, `expert_fuzz`: typed `fz1ywjnt`, ran `fz1wyjnt`), the logged
+/// hop sequence: `echo fz1wjn` is in the shell's line; the hand-off decides `SendRequest`
+/// (`ESC i`), the editor is focused; `t` is inserted into the EMPTY editor; two Lefts arrive
+/// BEFORE the `input_report`; the report `echo fz1wjn` is inserted in front (`handoff_insert`);
+/// two more Lefts; `y`. The first two Lefts used to act on the one-character buffer `t`, where
+/// the second was clamped at position 0 and lost, so `y` landed one place late. They now wait
+/// for the report and are applied to the joined line.
+#[test]
+fn test_cursor_keys_typed_before_the_report_apply_to_the_joined_line() {
+    App::test((), move |mut app| async move {
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        initialize_app(&mut app);
+        let (terminal, input, editor, writes) =
+            pane_and_terminal_for_ssh_escape_test(&mut app, false, SHELL_INPUT_FOR_SSH_ESCAPE_TEST)
+                .await;
+        // `echo fz1wjn` typed before the prompt (raw to the pty), then the prompt's request.
+        type_raw_before_the_prompt_then_request(&mut app, &terminal, &input, &[b"echo fz1wjn"]);
+        // `t` lands in the editor, which holds only what is typed after the request.
+        type_keys_for_ssh_escape_test(&mut app, &editor, &["t"]);
+        input.read(&app, |input, ctx| {
+            assert_eq!(
+                input.buffer_text(ctx),
+                "t",
+                "test setup: typed text is not held"
+            );
+        });
+        // Two Lefts before the report.
+        for _ in 0..2 {
+            editor.update(&mut app, |editor, ctx| {
+                editor.handle_action(&EditorAction::Left, ctx);
+            });
+        }
+        // The report, then two more Lefts and `y`, typed at once.
+        deliver_shell_report(&mut app, &terminal, &input, "echo fz1wjn");
+        for _ in 0..2 {
+            editor.update(&mut app, |editor, ctx| {
+                editor.handle_action(&EditorAction::Left, ctx);
+            });
+        }
+        type_keys_for_ssh_escape_test(&mut app, &editor, &["y"]);
+        wait_until(&app, |app| {
+            input.read(app, |input, ctx| input.buffer_text(ctx) == "echo fz1ywjnt")
+        })
+        .await;
+        input.read(&app, |input, ctx| {
+            assert_eq!(
+                input.buffer_text(ctx),
+                "echo fz1ywjnt",
+                "four Lefts from the end of the JOINED line, then `y`: no Left was clamped at \
+                 the start of the partial buffer"
+            );
+        });
+        assert_eq!(
+            *writes.borrow(),
+            vec![b"echo fz1wjn".to_vec()],
+            "nothing more reached the pty"
+        );
+        assert!(pane_queue_is_idle(&app, &editor), "nothing is left held");
+    });
+}
+
+/// #2115 guard: text typed while the report is pending, with no cursor or deletion key, is NOT
+/// held: it is inserted at once and the report goes in front of it, as before. Plain typing is
+/// never delayed by the gate.
+#[test]
+fn test_text_typed_before_the_report_is_not_held() {
+    App::test((), move |mut app| async move {
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        initialize_app(&mut app);
+        let (terminal, input, editor, _writes) =
+            pane_and_terminal_for_ssh_escape_test(&mut app, false, SHELL_INPUT_FOR_SSH_ESCAPE_TEST)
+                .await;
+        type_raw_before_the_prompt_then_request(&mut app, &terminal, &input, &[b"echo "]);
+        type_keys_for_ssh_escape_test(&mut app, &editor, &["h", "i"]);
+        input.read(&app, |input, ctx| {
+            assert_eq!(
+                input.buffer_text(ctx),
+                "hi",
+                "typed text is applied at once"
+            );
+        });
+        assert!(
+            pane_queue_is_idle(&app, &editor),
+            "no gate is opened for typed text"
+        );
+        deliver_shell_report(&mut app, &terminal, &input, "echo ");
+        input.read(&app, |input, ctx| {
+            assert_eq!(input.buffer_text(ctx), "echo hi");
+        });
+    });
+}
+
+// ---- #2223: an Enter declined because a command runs is not dropped ----------------------------
+
+/// #2223 (r30d, Windows Git Bash, `selection_modes`), the logged hop sequence: `sh sm_stream.sh`
+/// was submitted and is running; after `ctrl_c_handoff_give_up` the keys go to the EDITOR, which
+/// still holds the submitted command's text (it is cleared when the block completes); four
+/// lines + Enter are typed while the program runs; each Enter logged `submit`,
+/// `try_execute_done executed=false`, `enter_declined deferred=false held_as_pending=false` and
+/// was DROPPED, so the four lines merged behind the already-run command into one wrong command
+/// and none ran.
+///
+/// Each declined Enter now sends its line and the Enter to the pty, in typed order, as a plain
+/// terminal sends what is typed into a running program. The editor keeps only the running
+/// command's text, which is never written again; no line is merged with the next.
+#[test]
+fn test_enters_declined_while_a_command_runs_send_each_line_to_the_pty() {
+    App::test((), move |mut app| async move {
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        initialize_app(&mut app);
+        let (terminal, input, _editor, writes) =
+            pane_and_terminal_for_ssh_escape_test(&mut app, false, SHELL_INPUT_FOR_SSH_ESCAPE_TEST)
+                .await;
+        const RUNNING: &str = "sh sm_stream.sh";
+        terminal.update(&mut app, |view, _| {
+            view.model
+                .lock()
+                .simulate_long_running_block(RUNNING, "tick 1\r\n");
+        });
+        // The editor as a submit leaves it while its block runs.
+        input.update(&mut app, |input, ctx| {
+            input.clear_buffer_and_reset_undo_stack(ctx);
+            input.user_insert(RUNNING, ctx);
+            input.editor_submission = Some(RUNNING.to_owned());
+        });
+        let lines = [
+            "echo t293 >> r_after_selection.txt",
+            "echo t294 >> r_after_selection.txt",
+            "echo t295 >> r_after_selection.txt",
+            "echo t296 >> r_after_selection.txt",
+        ];
+        for line in lines {
+            input.update(&mut app, |input, ctx| {
+                input.user_insert(line, ctx);
+                let buffer = input.buffer_text(ctx);
+                assert_eq!(
+                    buffer,
+                    format!("{RUNNING}{line}"),
+                    "test setup: the line is typed behind the running command's text"
+                );
+                // `submit`, `try_execute_done executed=false`, `enter_declined`.
+                assert!(!input.try_execute_command(&buffer, ctx));
+                input.hold_refused_unready_enter(ctx);
+            });
             input.read(&app, |input, ctx| {
                 assert_eq!(
                     input.buffer_text(ctx),
-                    "",
-                    "session_ended={session_ended}: nothing was put back into the editor"
+                    RUNNING,
+                    "the editor keeps only the running command's text: the line left with its \
+                     Enter and is not merged with the next"
+                );
+                assert!(
+                    !input.has_pending_command(),
+                    "nothing is held to run later as a stale command"
                 );
             });
-            let queue = editor.read(&app, |editor, _| editor.paste_hold().queue());
-            assert!(
-                queue.peek().is_idle(),
-                "session_ended={session_ended}: nothing is left held"
-            );
+        }
+        let expected: Vec<u8> = lines
+            .iter()
+            .flat_map(|line| format!("{line}\r").into_bytes())
+            .collect();
+        assert_eq!(
+            writes.borrow().concat(),
+            expected,
+            "each line and its Enter reached the pty, in typed order, once; the command that \
+             already ran was not written again: {:?}",
+            writes.borrow()
+        );
+    });
+}
+
+/// #2223: a bare Enter declined while a command runs is a key too: it goes to the pty. And with
+/// nothing submitted from this editor (the shell started the command itself), the whole buffer
+/// is the typed line.
+#[test]
+fn test_a_bare_enter_declined_while_a_command_runs_reaches_the_pty() {
+    App::test((), move |mut app| async move {
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        initialize_app(&mut app);
+        let (terminal, input, _editor, writes) =
+            pane_and_terminal_for_ssh_escape_test(&mut app, false, SHELL_INPUT_FOR_SSH_ESCAPE_TEST)
+                .await;
+        terminal.update(&mut app, |view, _| {
+            view.model.lock().simulate_long_running_block("cat", "");
         });
-    }
+        input.update(&mut app, |input, ctx| {
+            input.clear_buffer_and_reset_undo_stack(ctx);
+            assert!(!input.try_execute_command("", ctx));
+            input.hold_refused_unready_enter(ctx);
+        });
+        assert_eq!(writes.borrow().concat(), b"\r".to_vec(), "the bare Enter");
+        input.update(&mut app, |input, ctx| {
+            input.user_insert("hello", ctx);
+            assert!(!input.try_execute_command("hello", ctx));
+            input.hold_refused_unready_enter(ctx);
+        });
+        assert_eq!(
+            writes.borrow().concat(),
+            b"\rhello\r".to_vec(),
+            "the typed line and its Enter"
+        );
+        input.read(&app, |input, ctx| {
+            assert_eq!(input.buffer_text(ctx), "", "the line left the editor");
+        });
+    });
 }

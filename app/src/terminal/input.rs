@@ -1374,6 +1374,13 @@ pub enum Event {
     /// (typed after it, possibly none) to the pty in typed order
     /// (`write_unready_line_and_keys_to_pty`).
     GivenUpLineAndKeysToPty(Vec<crate::terminal::input_queue::InputEntry>),
+    /// #2223: an Enter was pressed in the editor while a command is running, so the editor
+    /// could not submit it. The line it ended was typed into the running command, as on a plain
+    /// terminal: the view writes this text and its Enter to the pty, in typed order, for
+    /// whatever reads the tty (the program, or the shell once the program ends). The editor
+    /// keeps only the text of the command that is running. Never dropped, never merged with
+    /// the next line.
+    DeclinedEnterLineToPty(String),
     /// #1638: `~` and one of ssh's escape characters were typed as the first two characters of an
     /// empty line in a managed ssh session. The editor has been cleared; the view writes these
     /// two bytes to the pty, where the local ssh client reads its escape, as plain ssh would.
@@ -7569,6 +7576,10 @@ impl Input {
             )
         });
         if !hold {
+            // #2223: a running program refused the submit. The Enter is still a typed key.
+            if !shared {
+                self.send_declined_enter_line_to_pty(ctx);
+            }
             return;
         }
         // The requested text is the buffer as typed: when it is still the buffer the pending
@@ -7578,6 +7589,63 @@ impl Input {
         self.has_pending_command = true;
         self.held_unready_enter = true;
         self.gate_unready_enter(ctx);
+    }
+
+    /// #2223 (r30d, Windows Git Bash: four typed lines merged into one wrong command): an Enter
+    /// was declined because a command is RUNNING (the editor had the keys although the program
+    /// was still running: after a Ctrl-C hand-off that gave up). It used to be dropped: the
+    /// text stayed, the next line was appended to it, and nothing ran.
+    ///
+    /// The line and its Enter are typed input for whatever reads the tty, exactly as on a plain
+    /// terminal: they are handed to the view, which writes them to the pty in typed order
+    /// (`Event::DeclinedEnterLineToPty`). The program reads them, or the shell runs them, one
+    /// line per Enter, once the program has ended.
+    ///
+    /// "The line" is what was typed SINCE the running command was submitted. The editor still
+    /// holds that command's own text (it is cleared when the command's block completes, not
+    /// when it is submitted: `editor_submission`), and that text already ran: it stays in the
+    /// editor, untouched, and is never written again. Without a submission from this editor
+    /// (the shell started the command itself), or when the text in front was edited, the whole
+    /// buffer is the line. A bare Enter is written too: it is a key.
+    ///
+    /// Only for the refusal "a command is running"; every other refusal keeps its own handling.
+    /// Returns whether the line was handed over.
+    fn send_declined_enter_line_to_pty(&mut self, ctx: &mut ViewContext<Self>) -> bool {
+        if !matches!(
+            self.can_execute_command(ctx),
+            CanExecuteCommand::No(DenyExecutionReason::ExistingActiveCommand)
+        ) {
+            return false;
+        }
+        let buffer = self.editor.as_ref(ctx).buffer_text(ctx);
+        let (ran, line) = match self.editor_submission.as_deref() {
+            Some(submitted) if !submitted.is_empty() && buffer.starts_with(submitted) => {
+                (submitted.to_owned(), buffer[submitted.len()..].to_owned())
+            }
+            _ => (String::new(), buffer.clone()),
+        };
+        warpui::input_order::log_hop("enter_declined_line_to_pty", || {
+            format!(
+                "line_chars={} already_ran_chars={}",
+                line.chars().count(),
+                ran.chars().count()
+            )
+        });
+        if ran.is_empty() {
+            if !buffer.is_empty() {
+                self.clear_buffer_and_reset_undo_stack(ctx);
+            }
+        } else if !line.is_empty() {
+            // The editor goes back to exactly the running command's text, which its block's
+            // completion clears as for any submit.
+            // The cursor ends behind it, where the next line is typed.
+            self.editor.update(ctx, |editor, ctx| {
+                editor.set_buffer_text(&ran, ctx);
+                editor.move_to_buffer_end(ctx);
+            });
+        }
+        ctx.emit(Event::DeclinedEnterLineToPty(line));
+        true
     }
 
     /// #1558: an Enter is held as the pending command because the shell was not ready for it.
@@ -17441,13 +17509,11 @@ impl Input {
         // can reach the focused editor before the terminal takes them). It follows everything
         // typed before it, as an entry behind the same gate (arrival order is the order), and
         // never submits the buffer, which holds the first line.
-        if self
-            .model
-            .lock()
-            .typeahead_handoff()
-            .holds_keys_behind_deferred_enter()
-        {
-            self.queue_enter_behind_deferred_enter(ctx);
+        // #2209: the same when a young Enter waits behind the request (it used to be deferred
+        // here, which stranded the young hold and dropped its keys). The Enter counts as
+        // deferred only once it IS in the queue or its mailbox; when the hand-off holds no Enter
+        // any more the decision below is made from the hand-off as it now is.
+        if self.queue_enter_behind_handoff_gate(ctx) {
             return true;
         }
         let deferred = self.model.lock().typeahead_handoff_mut().defer_enter();

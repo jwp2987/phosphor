@@ -1,4 +1,4 @@
-# #2209: no typed key is dropped when a hold ends (design, phase 1, round 3, UNREVIEWED)
+# #2209: no typed key is dropped when a hold ends (design; APPROVED by the owner 2026-11-14, built: section 9)
 
 Status: design only. No code changed. Written by reading the code at `36efe34b5`
 (`integ/r15`); nothing here was compiled or run. Round 2 answers the refute of `ad21f0890`
@@ -428,3 +428,73 @@ New, in `cases.PROVING`, agent and terminal mode:
 | N4 | Stated in H5: an inversion in a net, not a loss; H5 removes the way in, not the inversion |
 | finding 5 residual | Not settled by reading; listed in section 6 with a phase-2 test |
 | finding 9 | No guard found on the path read; inner `edit` unread; V3 ordering and its test stay |
+
+## 9. Owner answers (2026-11-14, "Go") and what was built
+
+Answers to the questions of section 3:
+
+| question | answer | where it is in the code |
+|---|---|---|
+| Q1 escape hold at a pty exit -> input text | yes | `view/paste_queue.rs`, the `Typeahead` arm asks `pane_pty_gone()` |
+| Q2 a clicked command keeps the held Enter and keys as input text | yes | `h` `on_command_written` -> `WithLine`; `view/give_up_to_pty.rs` `keep_unowned_hold_with_line` |
+| Q3 Stop / dismissed block / rewind still flush | keep | unchanged |
+| Q4 plain typing goes with the hold; from the first arrow or Tab on, the input box | yes | `release_unowned_hold_to_reader`, `replay_hold_tail_in_editor` |
+| Q5 keep the last write until the pty loop confirms it | no | not built |
+| Q6 discard keys held when the pty died reading a secret | yes, counted log line; the only new discard | `terminal_model.rs` `exit`, `h` `session_gone_reading_secret`, `give_up_to_pty.rs` `discard_*_of_dead_secret_reader` |
+| Q7 (added by the owner) KEEP EVERY KEY in the split tail | arrows, function keys, Esc, `^C`, Up / Down are replayed in order, never dropped; no leading line break, no cursor jump | below |
+
+**Q7 changes V1.** Round 3 sent the tail to `keep_given_up_keys_with_line`, which moves the
+cursor to the end of the buffer, puts a line break in front, and builds its text with
+`text_for_editor`, which drops Up / Down, a lone ESC, `^C` and every sequence it does not know.
+The tail now goes to `replay_hold_tail_in_editor`: every key is applied in the input editor, in
+typed order, at the editor's cursor. Bytes typed on the terminal are named key by key by the new
+pure function `editor_keys_of_bytes` (`h`), which names where `line_for_editor` applies and
+drops. An Enter is still a line break under the hand-back guard (Q4). What cannot be replayed:
+bytes of a key the input editor has no action for (a function key or a modified cursor key TYPED
+ON THE TERMINAL after an arrow typed in the input box, inside one hold). They are counted in a
+warning and in the `hold_tail_replayed_in_editor` hop, not dropped silently; the same key typed
+in the input box is an editor key and is replayed as itself. `text_for_editor` itself is not
+changed: its other callers hand text back as text.
+
+**Design items as built.** H1-H4 and H6 as designed. H5 as designed (`Input::
+queue_enter_behind_handoff_gate`, `TypeaheadHandoff::enter_queues_behind`, `defer_enter` refuses
+with a young hold queued); one detail differs: a gate the view has not opened yet is opened
+through the queue's mailbox (the open, then the Enter), not by the input directly, so the
+view's host arms the gate's net and its give-up stays the hand-off's own. V1 with the Q7 change. V1b, V2, V3, V4 as designed; V2's
+`pane_pty_gone()` is also asked by the `Typeahead` arm. Not built: nothing of the design was
+left out; of the TEST plan, see `docs/testing.md` "Round 31" for what was not written.
+
+### Two additions to the change set (same class: no typed key lost across the hand-off)
+
+**#2115: cursor keys before the report are applied to the joined line.** Between the request
+for the shell's line and its report the editor holds only what was typed after the request. A
+cursor or deletion key applied then acts on that partial buffer and is clamped at its start
+(r30d: `echo fz1wjn` in the shell, `t` in the editor, four Lefts, `y`: `fz1wyjnt`). Built like
+#2107's history-recall gate: a new gate kind `GateKind::ReportEdit`. The first cursor or
+deletion key typed in the editor while `report_pending_before_editor_text()` holds asks for the
+gate (through the queue's mailbox, so the view's host arms the gate's net) and waits behind it;
+from then on the queue holds every key of the pane behind it, in order. The report's insertion
+closes it (`TerminalView::release_report_edit_gate_if_settled` -> `Input::
+release_report_edit_gate`), as does the hand-off leaving the wait without a report, and the keys
+are applied to the joined line. Typed text before any such key is not held, so plain typing is
+not delayed. Net: the gate's own cap (3 s), which replays the keys in order on the buffer as it
+is and opens no second gate for that report. `^C` discards the edits with the line, `^D` waits
+in order (the history-recall rules). Kill switch `PHOSPHOR_HOLD_EDIT_KEYS_BEHIND_REPORT=0`.
+Enter and Tab keep their own waits for the report (#1016, #1659); Up and Down are not held (they
+recall history, they do not act on the line).
+
+**#2223: an Enter declined because a command runs is not dropped.** After a Ctrl-C hand-off
+that gave up with the program still running, the editor had the keys. Each Enter was refused
+(`try_execute_done executed=false`, `enter_declined ... held_as_pending=false`) and dropped;
+the text stayed and the next line was appended to it. The "seed" is not a restore: the editor
+keeps a submitted command's text until its block completes (`Input::editor_submission`), so the
+text of the command that was RUNNING was still in the buffer and every typed line landed behind
+it. Built: `Input::send_declined_enter_line_to_pty`. For the refusal "a command is running" the
+text typed since the submission and the Enter are handed to the view
+(`Event::DeclinedEnterLineToPty`), which writes them to the pty in typed order through the
+guarded give-up writer, as a plain terminal sends what is typed into a running program; the
+editor goes back to exactly the running command's text, which is never written again. A bare
+Enter is written too. Not changed: WHY the editor had the keys while the program ran (the
+hand-off's state after `ctrl_c_handoff_give_up`); the r30d app log was not available on this
+machine, and that routing is not touched. With it unfixed the keys still take the editor's
+route, but no Enter and no line is lost and no lines merge.

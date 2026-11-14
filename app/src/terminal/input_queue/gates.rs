@@ -62,6 +62,15 @@ pub enum GateKind {
     /// completer runs over the link (`Input::open_remote_tab_gate`); a local Tab and the remote
     /// shell's in-band answer (#1801) hold the Enter themselves (`TabCompletion`).
     RemoteTabCompletion,
+    /// #2115: the hand-off asked the shell for its line and the report is still on its way, so
+    /// the editor holds only the keys typed AFTER the request: the head of the line is not in
+    /// its buffer yet. A cursor or deletion key applied now acts on that partial buffer and is
+    /// clamped at its start (`echo fz1wjn` in the shell, `t` in the editor, Left x4: two of the
+    /// four were lost and the next character landed in the wrong place). From the first such key
+    /// on, every key waits here, in order, and is applied to the joined line once the report has
+    /// been inserted. Text typed before any such key is not held (it is inserted at once and
+    /// the report goes in front of it, as before), so plain typing is not delayed.
+    ReportEdit,
 }
 
 /// #1571: the key flag of an `EnterVerdict` gate that holds the keys typed behind an Enter the
@@ -106,7 +115,7 @@ pub enum SignalPlan {
 }
 
 impl GateKind {
-    pub const ALL: [GateKind; 14] = [
+    pub const ALL: [GateKind; 15] = [
         GateKind::PasteReading,
         GateKind::EnterVerdict,
         GateKind::TabCompletion,
@@ -121,6 +130,7 @@ impl GateKind {
         GateKind::EditorDisplayMap,
         GateKind::HistoryRecall,
         GateKind::RemoteTabCompletion,
+        GateKind::ReportEdit,
     ];
 
     pub fn name(self) -> &'static str {
@@ -139,6 +149,7 @@ impl GateKind {
             GateKind::EditorDisplayMap => "editor_display_map",
             GateKind::HistoryRecall => "history_recall",
             GateKind::RemoteTabCompletion => "remote_tab_completion",
+            GateKind::ReportEdit => "report_edit",
         }
     }
 
@@ -159,6 +170,7 @@ impl GateKind {
             GateKind::EditorDisplayMap => "editor_key_needs_fresh_display_map",
             GateKind::HistoryRecall => "history_menu_opened_with_pending_list",
             GateKind::RemoteTabCompletion => "tab_with_remote_completer",
+            GateKind::ReportEdit => "edit_key_with_report_pending",
         }
     }
 
@@ -186,6 +198,9 @@ impl GateKind {
             // The completer's answer was applied to the buffer (or had nothing to apply); also
             // the completion being superseded or cancelled, or ^C.
             GateKind::RemoteTabCompletion => "remote_completion_answered_or_cancelled",
+            // The report was inserted into the editor; also no report coming any more (the
+            // hand-off left the wait), or ^C.
+            GateKind::ReportEdit => "report_inserted_or_no_report_coming",
         }
     }
 
@@ -206,7 +221,9 @@ impl GateKind {
             | GateKind::HistoryRecall
             // #2188: as the local Tab hold (`TabCompletion`): ^C voids the completion and the
             // keys typed behind the Tab are discarded with the line.
-            | GateKind::RemoteTabCompletion => SignalPlan::DiscardThenSignal,
+            | GateKind::RemoteTabCompletion
+            // #2115: ^C discards the line, and with it the edits typed behind the report.
+            | GateKind::ReportEdit => SignalPlan::DiscardThenSignal,
             GateKind::HandoffReport
             | GateKind::PromptSeen
             | GateKind::LineEditorActive
@@ -256,6 +273,12 @@ impl GateKind {
             // as typed, which is what plain ssh runs when the remote shell completes nothing);
             // none is dropped or reordered, and it is logged.
             GateKind::RemoteTabCompletion => Some(Duration::from_secs(5)),
+            // #2115: the report answers within one round trip (milliseconds locally, the link's
+            // round trip over ssh) and ends the wait in every normal case. This only guards a
+            // report that never comes (a program ate the request): the give-up replays the held
+            // keys in order on the buffer as it is, which is what happened before the gate
+            // existed; none is dropped or reordered, and it is logged.
+            GateKind::ReportEdit => Some(Duration::from_secs(3)),
         }
     }
 }
@@ -312,6 +335,10 @@ pub fn signal_plan(gate: GateKind, signal: SignalKind) -> GateSignalPlan {
         // #2188: every signal the editor offers voids the completion and discards the keys typed
         // behind the Tab, exactly as at the local Tab hold (`TabCompletion`).
         GateKind::RemoteTabCompletion => GateSignalPlan::DiscardThenSignal,
+        // #2115: as the history-recall gate: ^D waits in order, the other signals discard the
+        // edits with the line.
+        GateKind::ReportEdit if eof => GateSignalPlan::WaitInOrder,
+        GateKind::ReportEdit => GateSignalPlan::DiscardThenSignal,
         GateKind::HandoffReport if eof => GateSignalPlan::WaitInOrder,
         GateKind::HandoffReport => GateSignalPlan::CancelDeferredEnterThenSignal,
         GateKind::PromptSeen | GateKind::LineEditorActive if eof => GateSignalPlan::FlushThenSignal,

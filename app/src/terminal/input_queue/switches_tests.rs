@@ -53,4 +53,8 @@ fn the_switch_names_are_stable() {
         "PHOSPHOR_HOLD_KEYS_BEHIND_RECALL"
     );
     assert_eq!(REMOTE_TAB_ENTER_WAIT_ENV, "PHOSPHOR_REMOTE_TAB_ENTER_WAIT");
+    assert_eq!(
+        HOLD_EDIT_KEYS_BEHIND_REPORT_ENV,
+        "PHOSPHOR_HOLD_EDIT_KEYS_BEHIND_REPORT"
+    );
 }

@@ -1674,7 +1674,16 @@ impl TerminalModel {
         self.handled_exit = true;
         if FeatureFlag::TypeaheadHandoff.is_enabled() {
             // Nothing can answer an outstanding typeahead request or run held keys any more.
-            self.typeahead_handoff.write().reset_on_exit();
+            // #2209 (owner decision 2026-11-14): whether something was reading a secret when
+            // the pty died is read BEFORE the reset; keys held then are discarded (counted),
+            // never shown as text in the input.
+            let reading_secret = self.tty_reading_secret();
+            let mut handoff = self.typeahead_handoff.write();
+            if reading_secret || handoff.prompt_reader_asks() {
+                handoff.note_session_ended_reading_secret();
+            }
+            handoff.reset_on_exit();
+            drop(handoff);
         }
         // Forcibly exit the alt screen so that we can show the user the
         // banner informing them that the shell process exited.

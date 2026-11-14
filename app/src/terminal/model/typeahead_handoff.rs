@@ -1225,6 +1225,16 @@ pub struct TypeaheadHandoff {
     /// ([`TypeaheadHandoff::end_unowned_young_hold`]). Hold ids only grow, so a stale id names
     /// no later hold.
     escape_hold_id: Option<u64>,
+    /// #2209: the pane's pty is gone ([`TypeaheadHandoff::reset_on_exit`]). Never cleared: a
+    /// restarted shell is a new pane with a new hand-off.
+    session_gone: bool,
+    /// #2209: a secret was being read from the tty when the pty died
+    /// ([`TypeaheadHandoff::note_session_ended_reading_secret`]).
+    session_gone_reading_secret: bool,
+    /// #2209: the young hold a signal took synchronously
+    /// ([`TypeaheadHandoff::take_queued_young_hold_for_signal`]): the only hold
+    /// [`TypeaheadHandoff::restore_flushed_young_hold`] records a flush for.
+    signal_took_young_hold: Option<u64>,
     /// Test seam: see [`TypeaheadHandoff::refuse_deferred_enter_hold_for_test`].
     #[cfg(test)]
     refuse_deferred_enter_hold_for_test: bool,
@@ -1302,9 +1312,25 @@ pub enum StreamApplied {
 /// decides, the view applies it to the gate's entries; no timer is involved.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum YoungHoldEnd {
-    /// The held Enter and the keys behind it are void (a signal, a command that took the line, a
-    /// state that ended the hold): the view discards the gate's entries.
-    Dropped,
+    /// #2209: a signal flushed the held Enter and the keys behind it, as the tty flushes its
+    /// typeahead on INTR / QUIT / SUSP (and the cancel of a deferred Enter, which is an
+    /// interrupt). The ONLY end that discards keys: the view discards the gate's entries. It
+    /// carries a [`SignalFlush`], which only the signal functions of this module can build
+    /// ([`TypeaheadHandoff::flush_young_hold_for_signal`],
+    /// [`TypeaheadHandoff::flush_deferred_gate_for_signal`], and
+    /// [`TypeaheadHandoff::restore_flushed_young_hold`] for the hold a signal just took), so no
+    /// other path can record it.
+    FlushedBySignal(SignalFlush),
+    /// #2209: the hold ended with nothing left to own it (the pane's pty died, or the state left
+    /// `PtyOwned` / `AwaitingReport` with the hold still queued): the Enter and the keys behind
+    /// it go to whatever reads the pty, in typed order, through the guarded give-up writer; text
+    /// in this pane's input when the pty is gone or refuses the write. Never discarded.
+    ToReader,
+    /// #2209: the line the held Enter belongs to did not run and will not be run by these keys
+    /// (a command was written from a state that could not own the hold; a deferred Enter whose
+    /// pty died): the Enter and the keys behind it are kept WITH that line as text in the input,
+    /// in typed order, nothing written ("keep them together", owner decision 2026-11-09).
+    WithLine,
     /// The editor's command was written with the pty owning input: the held keys follow it as
     /// typeahead. The view writes them and reports them back
     /// ([`TypeaheadHandoff::count_followed_young_hold`]).
@@ -1332,6 +1358,26 @@ pub enum YoungHoldReaderLook {
     /// A platform that samples the tty: it is canonical with echo off (#2050's fact, one
     /// `tcgetattr`: [`TypeaheadHandoff::tty_reads_secret`]).
     Tty,
+}
+
+/// #2209: the proof that a signal flushed held keys. The field is private to this module and
+/// the value is built only by [`TypeaheadHandoff::flush_young_hold_for_signal`],
+/// [`TypeaheadHandoff::flush_deferred_gate_for_signal`] and
+/// [`TypeaheadHandoff::restore_flushed_young_hold`] (which records it only for the hold a signal
+/// just took), so [`YoungHoldEnd::FlushedBySignal`] cannot be recorded by any path that is not a
+/// signal: the compiler enforces "only a signal discards a held key".
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SignalFlush(());
+
+/// #2209: the hand-off gate an Enter that reached the editor queues behind
+/// ([`TypeaheadHandoff::enter_queues_behind`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EnterQueuesBehind {
+    /// A young Enter waits behind the request: its `PromptSeen` gate, keyed by `hold_id`;
+    /// `give_up` is the cap the view opens that gate with.
+    YoungHold { hold_id: u64, give_up: Duration },
+    /// An Enter is deferred behind the report (#1016): its `HandoffReport` gate.
+    DeferredEnter { gate: u64 },
 }
 
 /// What a queued young hold's give-up cap should do.
@@ -1460,15 +1506,57 @@ impl TypeaheadHandoff {
         self.young_hold_ends.insert(0, (id, end));
     }
 
-    /// Ends the young hold with the keys void. Returns whether there was one. The hold's keys
-    /// are in the view's queue, which is told with [`YoungHoldEnd::Dropped`].
-    fn drop_young_hold(&mut self) -> bool {
+    /// #2209: a signal (`^C`, `^Z`, `^\`, an EOF the view did not take first, the cancel of a
+    /// deferred Enter) ends the young hold with its keys flushed, as the tty flushes typeahead.
+    /// Returns whether there was one. The hold's keys are in the view's queue, which is told
+    /// with [`YoungHoldEnd::FlushedBySignal`]. One of the two builders of [`SignalFlush`]: no
+    /// path that is not a signal may call it.
+    fn flush_young_hold_for_signal(&mut self) -> bool {
         let queued = mem::take(&mut self.young_hold_queued);
         if queued {
-            self.young_hold_ends
-                .push((self.young_hold_id, YoungHoldEnd::Dropped));
+            self.young_hold_evidence = None;
+            self.young_hold_ends.push((
+                self.young_hold_id,
+                YoungHoldEnd::FlushedBySignal(SignalFlush(())),
+            ));
         }
         queued
+    }
+
+    /// #2209: the view took the keys of young hold `id` for a signal but its queue was busy
+    /// (`TerminalView::settle_queued_young_hold_for_signal`): the flush is recorded for the next
+    /// attempt, ahead of anything recorded since. Only for a hold a signal already ended
+    /// ([`Self::take_queued_young_hold_for_signal`]).
+    pub fn restore_flushed_young_hold(&mut self, id: u64) {
+        // Only the hold a signal just took: no other caller can make this record a flush.
+        if self.signal_took_young_hold.take() != Some(id) {
+            log::warn!(
+                "typeahead hand-off: a flush was asked for young hold {id}, which no signal took; \
+                 ignored"
+            );
+            return;
+        }
+        self.young_hold_ends
+            .insert(0, (id, YoungHoldEnd::FlushedBySignal(SignalFlush(()))));
+    }
+
+    /// #2209: whether the pane's pty is gone ([`Self::reset_on_exit`] ran): nothing reads what is
+    /// written from here on. Read by the view's give-up writer before it has handled the exit
+    /// event itself, so a hold that ends in between is never written to a dead pty.
+    pub fn session_gone(&self) -> bool {
+        self.session_gone
+    }
+
+    /// #2209 (owner decision 2026-11-14): something was reading a secret from the tty when the
+    /// pane's pty died. Keys held at that moment may be part of that secret: they are discarded
+    /// (counted in the log), never shown as text in the input.
+    pub fn note_session_ended_reading_secret(&mut self) {
+        self.session_gone_reading_secret = true;
+    }
+
+    /// Whether [`Self::note_session_ended_reading_secret`] was called for this pane.
+    pub fn session_gone_reading_secret(&self) -> bool {
+        self.session_gone_reading_secret
     }
 
     /// The view is about to queue a key behind a live young hold: ends a hold the state has
@@ -1649,27 +1737,36 @@ impl TypeaheadHandoff {
         {
             return false;
         }
-        self.end_unowned_young_hold()
+        self.end_unowned_young_hold("escape_edge")
     }
 
-    /// Ends a young hold the state no longer owns (the session ended, or the state left
-    /// `PtyOwned` / `AwaitingReport` with the hold still queued). Its keys are void
-    /// ([`YoungHoldEnd::Dropped`]), as before -- except the hold made for a reported ssh escape
-    /// (#2207, owner decision 2026-11-13): after `~.` the session is expected to go, and the Enter
-    /// and the keys typed behind it are written in typed order to whatever owns input now
-    /// ([`YoungHoldEnd::Typeahead`]), as a plain terminal delivers what was typed after ssh
-    /// exits. Returns whether there was a hold.
-    fn end_unowned_young_hold(&mut self) -> bool {
+    /// Ends a young hold the state no longer owns (the pane's pty died, or the state left
+    /// `PtyOwned` / `AwaitingReport` with the hold still queued). #2209: its keys are NEVER void.
+    /// The hold made for a reported ssh escape (#2207, owner decision 2026-11-13) is written in
+    /// typed order to whatever owns input now ([`YoungHoldEnd::Typeahead`]), as before; every
+    /// other hold goes to the reader through the guarded give-up writer
+    /// ([`YoungHoldEnd::ToReader`]): the pty in typed order, or text in the input when the pty is
+    /// gone. `why` names the path in the log. Returns whether there was a hold.
+    fn end_unowned_young_hold(&mut self, why: &'static str) -> bool {
         let queued = mem::take(&mut self.young_hold_queued);
         if queued {
-            let end = if self.escape_hold_id == Some(self.young_hold_id) {
-                self.young_hold_evidence = None;
-                warpui::input_order::log_hop("young_hold_end", || {
-                    format!("why=ssh_escape_session_gone hold_id={}", self.young_hold_id)
-                });
+            self.young_hold_evidence = None;
+            let escape = self.escape_hold_id == Some(self.young_hold_id);
+            warpui::input_order::log_hop("young_hold_end", || {
+                format!(
+                    "why={} hold_id={}",
+                    if escape {
+                        "ssh_escape_session_gone"
+                    } else {
+                        why
+                    },
+                    self.young_hold_id
+                )
+            });
+            let end = if escape {
                 YoungHoldEnd::Typeahead
             } else {
-                YoungHoldEnd::Dropped
+                YoungHoldEnd::ToReader
             };
             self.young_hold_ends.push((self.young_hold_id, end));
         }
@@ -3340,7 +3437,8 @@ impl TypeaheadHandoff {
         self.report_deferral_id = None;
         self.uncovered_deferral_id = None;
         self.deferred_young = false;
-        self.drop_young_hold();
+        // #2209: a young hold stranded behind this deferral (the #1016 race) is never void.
+        self.end_unowned_young_hold("report_deferral_give_up");
         self.keys_follow_editor = false;
         self.state = HandoffState::EditorOwned;
         self.deferred_gate.take()
@@ -3361,7 +3459,8 @@ impl TypeaheadHandoff {
         self.report_deferral_id = None;
         self.uncovered_deferral_id = None;
         self.deferred_young = false;
-        self.drop_young_hold();
+        // #2209: as in `give_up_report_deferral`.
+        self.end_unowned_young_hold("deferred_gate_give_up");
         self.keys_follow_editor = false;
         self.state = HandoffState::EditorOwned;
         self.deferred_gate = None;
@@ -3511,8 +3610,8 @@ impl TypeaheadHandoff {
         // #1615: the editor wrote the next command, so a delivered Enter's line is settled.
         self.settle_unsampled_enter("editor_command");
         // An Enter held behind the request follows the command as typeahead (#933): the view
-        // writes the keys of the hold once it is told (below); in every state but `PtyOwned` the
-        // hold is void.
+        // writes the keys of the hold once it is told (below); in every other state the hold's
+        // keys stay with their line (#2209), never void.
         let queued_hold = mem::take(&mut self.young_hold_queued);
         self.young_hold_evidence = None;
         let mut queued_hold_follows = false;
@@ -3560,7 +3659,16 @@ impl TypeaheadHandoff {
                 // keys are written behind this command, in typed order.
                 self.young_hold_ends.push((id, YoungHoldEnd::Typeahead));
             } else {
-                self.young_hold_ends.push((id, YoungHoldEnd::Dropped));
+                // #2209: the command was written from a state that cannot own the hold (a
+                // submit that was not a queued key, while the hold waited behind its request).
+                // The head of the held Enter's line is in the shell's line, where this
+                // command's kill prefix wipes it, so the Enter written after the command would
+                // run later lines without the line before them. The Enter and the keys behind
+                // it stay WITH their line, as text in the input, nothing written.
+                warpui::input_order::log_hop("young_hold_end", || {
+                    format!("why=command_written_unowned hold_id={id}")
+                });
+                self.young_hold_ends.push((id, YoungHoldEnd::WithLine));
             }
         }
         if let Some(id) = deferred_follows {
@@ -3636,7 +3744,7 @@ impl TypeaheadHandoff {
     /// reached with one all the same (`PHOSPHOR_INBAND_WAIT_FOR_KEYS=0` lets an in-band command
     /// out over held keys), the keys follow the command to the pty in typed order, as they
     /// follow a command of the user's ([`YoungHoldEnd::FollowCommand`]); they used to be told
-    /// [`YoungHoldEnd::Dropped`] and the view threw them away. Behind an outstanding request
+    /// a dropped end and the view threw them away. Behind an outstanding request
     /// (`AwaitingReport`) the hold is left as it is: the request is ahead of this command in the
     /// tty, so its report still brings the line back and runs the held Enter in the editor.
     pub fn on_uncounted_command_written(&mut self) {
@@ -4168,7 +4276,7 @@ impl TypeaheadHandoff {
         // it, in typed order (the gate table's `HandoffReport` + EOF = `WaitInOrder`); the view
         // cancels the deferred Enter before a ^C reaches here (`TerminalView::ctrl_c`).
         if bytes.iter().any(is_signal_byte) {
-            self.drop_young_hold();
+            self.flush_young_hold_for_signal();
             self.log_route_decision("signal_unheld", bytes, None);
             return self.route_user_bytes_unheld(bytes, reaches_shell_line);
         }
@@ -4467,15 +4575,15 @@ impl TypeaheadHandoff {
         }
     }
 
-    /// A hold only lives in `PtyOwned` and `AwaitingReport`; any other state has run, flushed
-    /// or dropped it.
+    /// A hold only lives in `PtyOwned` and `AwaitingReport`. One still queued in any other state
+    /// is ended here with its keys delivered ([`Self::end_unowned_young_hold`]), never dropped.
     fn drop_stale_hold(&mut self) {
         if !matches!(
             self.state,
             HandoffState::PtyOwned { .. } | HandoffState::AwaitingReport
         ) {
-            // #2207: the hold made for a reported ssh escape is written, not dropped.
-            self.end_unowned_young_hold();
+            // #2207 / #2209: written out, never dropped.
+            self.end_unowned_young_hold("state_left_pty");
         }
     }
 
@@ -4873,6 +4981,8 @@ impl TypeaheadHandoff {
             && !bytes.iter().any(|b| matches!(b, 0x03 | 0x1a | 0x1c))
             && matches!(self.state, HandoffState::PtyOwned { .. });
         self.young_hold_queued = false;
+        // #2209: what `restore_flushed_young_hold` may record a flush for.
+        self.signal_took_young_hold = Some(self.young_hold_id);
         Some((self.young_hold_id, before_eof))
     }
 
@@ -5191,6 +5301,17 @@ impl TypeaheadHandoff {
         if self.state != HandoffState::AwaitingReport && !behind_uncovered_report {
             return false;
         }
+        // #2209 (the #1016 editor-first race): a young Enter waits behind the request and this
+        // Enter reached the editor before the terminal took it. It was typed AFTER the held
+        // Enter and the keys behind it, so it is not deferred here (that stranded the hold in
+        // `HoldAfterEnter`, where every later path dropped its keys): the input queues it behind
+        // the hold's gate, in arrival order (`Input::queue_enter_behind_handoff_gate`).
+        if self.young_hold_queued {
+            warpui::input_order::log_hop("defer_enter_refused", || {
+                format!("why=young_hold_queued hold_id={}", self.young_hold_id)
+            });
+            return false;
+        }
         if behind_uncovered_report {
             self.arm_uncovered_deferral();
             self.report_deferral_id = None;
@@ -5217,6 +5338,26 @@ impl TypeaheadHandoff {
     /// (the hand-off keeps no bytes).
     pub fn deferred_gate(&self) -> Option<u64> {
         self.deferred_gate
+    }
+
+    /// #2209: the gate an Enter that reached the editor must queue behind, read by
+    /// `Input::queue_enter_behind_handoff_gate`: a young Enter waiting behind the request (its
+    /// `PromptSeen` gate, keyed by the hold's id, with the hold's give-up as the gate's cap), or
+    /// an Enter deferred behind the report whose submit has not run (its `HandoffReport` gate).
+    /// `None`: neither is live, the Enter is an ordinary one.
+    pub fn enter_queues_behind(&self, now: Instant) -> Option<EnterQueuesBehind> {
+        if self.holds_young_enter_behind_request() {
+            return Some(EnterQueuesBehind::YoungHold {
+                hold_id: self.young_hold_id,
+                give_up: self.young_hold_give_up(now),
+            });
+        }
+        if self.holds_keys_behind_deferred_enter() {
+            return self
+                .deferred_gate
+                .map(|gate| EnterQueuesBehind::DeferredEnter { gate });
+        }
+        None
     }
 
     /// Takes the "a key reached the hand-off while an Enter is deferred, unqueued" flag, returning
@@ -5314,15 +5455,22 @@ impl TypeaheadHandoff {
 
     /// The session ended: nothing can answer an outstanding request or run held keys.
     pub fn reset_on_exit(&mut self) {
-        // A young hold whose keys are in the view's queue ends with the session: the view drops
-        // them, and the ids keep growing so a later hold never reuses the gate's key. So do the
-        // keys held behind a deferred Enter. (#2207: except the hold made for a reported ssh
-        // escape, whose keys are written in typed order: `end_unowned_young_hold`.)
-        self.end_unowned_young_hold();
+        // #2209: a young hold whose keys are in the view's queue ends with the pane's pty, and
+        // so do the keys held behind a deferred Enter. Neither is dropped: the view is told
+        // (`ToReader` / `Typeahead` for the hold, `WithLine` for the deferred Enter's keys, whose
+        // line is in the editor, unrun) and, the pty being gone, makes them text in the input.
+        // The ids keep growing so a later hold never reuses the gate's key.
+        self.end_unowned_young_hold("session_gone");
         if let Some(gate) = self.deferred_gate.take() {
-            self.young_hold_ends.push((gate, YoungHoldEnd::Dropped));
+            warpui::input_order::log_hop("deferred_gate_end", || {
+                format!("why=session_gone gate={gate}")
+            });
+            self.young_hold_ends.push((gate, YoungHoldEnd::WithLine));
         }
         *self = Self {
+            // #2209: nothing reads this pane's pty from here on; the view's writer asks.
+            session_gone: true,
+            session_gone_reading_secret: self.session_gone_reading_secret,
             tracks_view_precmds: self.tracks_view_precmds,
             young_hold_id: self.young_hold_id,
             // #2207: the view still asks whether the hold whose end is recorded above was the
@@ -5436,7 +5584,7 @@ impl TypeaheadHandoff {
     /// stream order after anything the interrupt made it emit -- hands it back.
     pub fn on_interrupt_for_shell(&mut self, prompt_cycle_expected: bool) -> InterruptOutcome {
         self.end_keys_follow_editor("interrupt");
-        self.drop_young_hold();
+        self.flush_young_hold_for_signal();
         self.interrupt_barrier = false;
         self.interrupt_settle_pending = false;
         self.interrupt_awaiting_cycle = false;
@@ -5488,27 +5636,30 @@ impl TypeaheadHandoff {
                 self.report_deferral_id = None;
                 self.keys_follow_editor = false;
                 self.state = HandoffState::AwaitingReport;
-                self.drop_deferred_gate();
+                self.flush_deferred_gate_for_signal();
                 true
             }
             // The deferred submit already ran without writing a command.
             Owner::Hold { released: true } => {
                 self.keys_follow_editor = false;
                 self.state = HandoffState::EditorOwned;
-                self.drop_deferred_gate();
+                self.flush_deferred_gate_for_signal();
                 true
             }
             // #933: an Enter held behind the request is cancelled with its keys.
-            Owner::AwaitingReport => self.drop_young_hold(),
+            Owner::AwaitingReport => self.flush_young_hold_for_signal(),
             Owner::Editor | Owner::Pty { .. } => false,
         }
     }
 
-    /// The keys held behind a deferred Enter are void: the view drops the gate's entries
-    /// ([`YoungHoldEnd::Dropped`]).
-    fn drop_deferred_gate(&mut self) {
+    /// #2209: an interrupt cancelled the deferred Enter ([`Self::cancel_deferred_enter`], its
+    /// only caller): the keys held behind it are flushed with it, as the tty flushes typeahead;
+    /// the view discards the gate's entries ([`YoungHoldEnd::FlushedBySignal`]). The second of
+    /// the two builders of [`SignalFlush`].
+    fn flush_deferred_gate_for_signal(&mut self) {
         if let Some(gate) = self.deferred_gate.take() {
-            self.young_hold_ends.push((gate, YoungHoldEnd::Dropped));
+            self.young_hold_ends
+                .push((gate, YoungHoldEnd::FlushedBySignal(SignalFlush(()))));
         }
     }
 
@@ -5687,6 +5838,114 @@ pub fn line_for_editor(bytes: &[u8]) -> HandedBackLine {
         cursor_back: out.len() - cursor,
         text: out.into_iter().collect(),
     }
+}
+
+/// #2209 (owner decision 2026-11-14, "keep every key"): one key of bytes that were typed for the
+/// pty and are replayed in the input editor instead ([`editor_keys_of_bytes`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum EditorReplayKey {
+    /// Printable characters, inserted at the editor's cursor.
+    Text(String),
+    /// An Enter (`\r`, `\n`): a line break in the input, never a submit.
+    LineBreak,
+    /// DEL / `^H`.
+    Backspace,
+    /// `ESC [ D`, `ESC O D`, `^B`.
+    Left,
+    /// `ESC [ C`, `ESC O C`, `^F`.
+    Right,
+    /// `ESC [ A`, `ESC O A`.
+    Up,
+    /// `ESC [ B`, `ESC O B`.
+    Down,
+    /// `ESC [ H`, `ESC O H`, `ESC [ 1 ~`, `ESC [ 7 ~`, `^A`.
+    Home,
+    /// `ESC [ F`, `ESC O F`, `ESC [ 4 ~`, `ESC [ 8 ~`, `^E`.
+    End,
+    /// `ESC [ 3 ~`, `^D`.
+    Delete,
+    /// `^K`.
+    KillToEnd,
+    /// `^U`.
+    KillToStart,
+    /// `^W`.
+    KillWord,
+    /// Tab.
+    Tab,
+    /// A lone ESC.
+    Escape,
+    /// `^C`.
+    Interrupt,
+    /// A well-formed sequence or control character the input editor has no key for (a function
+    /// key, a cursor key with a modifier, an OSC, `^Z` ...), with its length in bytes. Never
+    /// dropped silently: the caller counts and logs it.
+    NoEditorKey(usize),
+}
+
+/// #2209: the keys `bytes` stand for, in typed order, for replay in the input editor. Where
+/// [`line_for_editor`] APPLIES the keys to a line of its own and drops what it cannot apply
+/// (Up / Down, a lone ESC, `^C`), this only NAMES them: the editor applies each one itself, at
+/// its own cursor, against the buffer it holds (the reported line included), so nothing is
+/// clamped at the start of a partial line and no key is lost. Adjacent printable characters
+/// are one [`EditorReplayKey::Text`].
+pub fn editor_keys_of_bytes(bytes: &[u8]) -> Vec<EditorReplayKey> {
+    let text = String::from_utf8_lossy(bytes);
+    let chars: Vec<char> = text.chars().collect();
+    let mut keys: Vec<EditorReplayKey> = Vec::new();
+    let mut run = String::new();
+    let mut i = 0;
+    while i < chars.len() {
+        let ch = chars[i];
+        i += 1;
+        let key = match ch {
+            '\u{1b}' => {
+                let after = skip_escape_sequence(&chars, i);
+                let sequence = &chars[i..after];
+                let key = match sequence {
+                    [] => EditorReplayKey::Escape,
+                    ['[', 'A'] | ['O', 'A'] => EditorReplayKey::Up,
+                    ['[', 'B'] | ['O', 'B'] => EditorReplayKey::Down,
+                    _ => match line_key_of_escape(sequence) {
+                        Some(LineKey::Left) => EditorReplayKey::Left,
+                        Some(LineKey::Right) => EditorReplayKey::Right,
+                        Some(LineKey::Home) => EditorReplayKey::Home,
+                        Some(LineKey::End) => EditorReplayKey::End,
+                        Some(LineKey::DeleteForward) => EditorReplayKey::Delete,
+                        None => EditorReplayKey::NoEditorKey(
+                            1 + sequence.iter().map(|ch| ch.len_utf8()).sum::<usize>(),
+                        ),
+                    },
+                };
+                i = after;
+                key
+            }
+            '\u{1}' => EditorReplayKey::Home,
+            '\u{5}' => EditorReplayKey::End,
+            '\u{2}' => EditorReplayKey::Left,
+            '\u{6}' => EditorReplayKey::Right,
+            '\u{4}' => EditorReplayKey::Delete,
+            '\u{7f}' | '\u{8}' => EditorReplayKey::Backspace,
+            '\u{15}' => EditorReplayKey::KillToStart,
+            '\u{b}' => EditorReplayKey::KillToEnd,
+            '\u{17}' => EditorReplayKey::KillWord,
+            '\u{3}' => EditorReplayKey::Interrupt,
+            '\r' | '\n' => EditorReplayKey::LineBreak,
+            '\t' => EditorReplayKey::Tab,
+            ch if ch.is_control() => EditorReplayKey::NoEditorKey(ch.len_utf8()),
+            ch => {
+                run.push(ch);
+                continue;
+            }
+        };
+        if !run.is_empty() {
+            keys.push(EditorReplayKey::Text(mem::take(&mut run)));
+        }
+        keys.push(key);
+    }
+    if !run.is_empty() {
+        keys.push(EditorReplayKey::Text(run));
+    }
+    keys
 }
 
 /// The line-editor key a well-formed escape sequence stands for, if it is one of the cursor keys
