@@ -4158,6 +4158,25 @@ def agent_code_recycle_log_parse():
 
 
 @check
+def ssh_escape_connect_bare_waits_for_the_first_report():
+    """#1795 item 5: escape_connect_bare types `~.` only after the app log has gone quiet (the first prompt's report handled)"""
+    import cases_coverage_a as cov
+    class Ctx:
+        def __init__(self, sizes): self.sizes = list(sizes); self.last = self.sizes[-1]
+        def log_size(self):
+            if self.sizes: self.last = self.sizes.pop(0)
+            return self.last
+    assert cov.wait_log_quiet(Ctx([1] * 3), quiet=0.15, timeout=3, step=0.05) is True
+    growing = iter(range(10 ** 6))
+    class Busy:
+        def log_size(self): return next(growing)
+    assert cov.wait_log_quiet(Busy(), quiet=0.15, timeout=0.3, step=0.05) is False
+    src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "cases_coverage_a.py")).read()
+    arm = src[src.index('elif variant == "escape_connect_bare":'):src.index('elif variant == "rst":')]
+    assert arm.index("wait_log_quiet(ctx)") < arm.index('ctx.be.type("~."'), arm
+
+
+@check
 def agent_lrc_takeover_log_parse():
     """#1796: agent_lrc_no_false_takeover reads the detector's hand-over / kept-with-agent lines and counts the LRC hand-back ERROR from the app log;
     the needles must match the app's own wording (interaction_mode.rs PromptDetector, cli_controller.rs handoff_active_command_control_to_agent)"""
