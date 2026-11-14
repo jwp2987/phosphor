@@ -570,6 +570,10 @@ pub struct PtyWriteCount {
     /// byte the app wrote (the user's own keys included: the app writes them), so this is exactly
     /// whether ssh is at its line start. Unknown (a new session) reads as `false`.
     tail_is_newline: Arc<AtomicBool>,
+    /// #1795 (1): how many terminal-query replies the event loop queued for the pty. A reply is
+    /// not a counted write, but it is bytes in the remote tty: one the asking program never read
+    /// is read by the remote line editor, and a `\r` would run what it leaves there.
+    replies: Arc<AtomicU64>,
 }
 
 impl PtyWriteCount {
@@ -593,6 +597,21 @@ impl PtyWriteCount {
             self.tail_is_newline
                 .store(matches!(last, b'\r' | b'\n'), Ordering::Relaxed);
         }
+    }
+
+    /// #1795 (1): a terminal-query reply of `bytes` was queued for the pty: counted as a reply,
+    /// and the tail follows it. What the reply ledger calls where it records the reply.
+    pub fn note_reply(&self, bytes: &[u8]) {
+        if bytes.is_empty() {
+            return;
+        }
+        self.replies.fetch_add(1, Ordering::Relaxed);
+        self.note_tail(bytes);
+    }
+
+    /// Replies queued so far.
+    pub fn replies(&self) -> u64 {
+        self.replies.load(Ordering::Relaxed)
     }
 
     /// Whether the last byte the app wrote to the pty was `\r` or `\n`.
@@ -624,6 +643,11 @@ pub enum SshEscapeLineStart {
     /// ssh's last input was an escape this pane sent at its line start (`~?` before `~.`). ssh
     /// stays at its line start after an escape it consumed (OpenSSH `process_escapes` does not
     /// update `last_was_cr` for one), so no `\r` is needed.
+    ///
+    /// #1795 (4): not dead. After `AddCr` the pty owns input and later keys are raw, but since
+    /// #2186 [`Self::TailIsNewline`] records the line start and leaves the editor the owner, so
+    /// `~?` then `~.` at the prompt of a shell with no request (nu) takes this arm; without it
+    /// the second escape would get a `\r` and run an extra empty line.
     AlreadyAtLineStart,
     /// #2186: the last byte the app wrote to the pty was `\r` or `\n`, so ssh is at its line start
     /// and reads the escape as typed; no `\r` is added.
@@ -1211,6 +1235,15 @@ pub struct TypeaheadHandoff {
     /// #1793: the write count right after an ssh escape this pane wrote at ssh's line start. While
     /// the count is still this, ssh's last input was that escape, which it consumed.
     ssh_line_start_at_writes: Option<u64>,
+    /// #1795 (1): [`PtyWriteCount::replies`] when the remote line was last known empty (the
+    /// report of the last request, as of that request; a command start; a new session). A reply
+    /// queued since may sit in the remote line, so no `\r` is written ahead of an ssh escape.
+    replies_at_line_empty: u64,
+    /// #1795 (1): the reply count when the last request was written; the baseline its report sets.
+    replies_at_last_request: u64,
+    /// #1795 (2): `~C` was written at ssh's line start: ssh's own `ssh>` prompt reads the next
+    /// line, so the Enter that ends it is not a remote line and is not counted.
+    ssh_command_line_open: bool,
     /// #2186: the escape `\r` rule this pane uses, overriding `PHOSPHOR_SSH_ESCAPE_CR_RULE`:
     /// `Some(false)` is the old proof-based rule. Kept across a session's end like the env switch.
     ssh_escape_cr_rule_override: Option<bool>,
@@ -1689,6 +1722,7 @@ impl TypeaheadHandoff {
         // The write itself, counted as any routed user write to the pty (the view emits it
         // straight to the pty: it must not queue behind the gate).
         let _ = self.route_user_bytes_unheld(&[b'\r', escape[0], escape[1]], true);
+        self.note_ssh_escape_written(escape[1]);
         self.young_line = false;
         self.raw_tilde_at_ssh_line_start = false;
         // The deferred Enter and the keys behind it: a young hold.
@@ -1836,11 +1870,60 @@ impl TypeaheadHandoff {
         self.ssh_escape_cr_rule_override = Some(on);
     }
 
+    /// #1795: what withholds the `\r` under either rule.
+    ///
+    /// * (3) The shell shows a continuation prompt (PS2): a `\r` would add a line to an open
+    ///   quote, not submit an empty one. Requests are not written at PS2, but the line-start rule
+    ///   needs no report and the stale-count give-up can leave the editor the owner there.
+    /// * (1) A terminal-query reply was queued since the remote line was last known empty. If
+    ///   the program that asked never read it, the remote line editor did, and the `\r` would run
+    ///   what it left (`R`, `0;276;0c`). A shell that reports its line re-baselines at every
+    ///   prompt's report; one that cannot (nu) only at a command start, so there the first
+    ///   escape after a program that queried the terminal goes without the `\r` (owner decision
+    ///   2026-11-14: a leftover reply is never run).
+    fn ssh_escape_cr_blocker_common(&self) -> Option<&'static str> {
+        if self.shell_activity == ShellActivity::Continuation {
+            return Some("continuation_prompt");
+        }
+        if self.pty_writes.replies() != self.replies_at_line_empty {
+            return Some("reply_since_line_empty");
+        }
+        None
+    }
+
+    /// #1795 (2): the view wrote the ssh escape `~<escape>` at ssh's line start (it asked
+    /// [`Self::ssh_escape_line_start`] and was not told `Skipped`), after routing its bytes. For
+    /// `~C` ssh opens its own `ssh>` command line: the next Enter the user types ends THAT line
+    /// and never reaches the remote shell. It used to be counted as a remote line, which no
+    /// Precmd answers, so the pty kept input until the stale-count give-up (a timer as the
+    /// normal end). Where the server has the command line disabled, ssh prints a notice and the
+    /// Enter does reach the remote: one Precmd more than counted Enters, which already reads as
+    /// answered.
+    pub fn note_ssh_escape_written(&mut self, escape: u8) {
+        if escape == b'C' {
+            self.ssh_command_line_open = true;
+            warpui::input_order::log_hop("ssh_command_line_open", String::new);
+        }
+    }
+
+    /// #1795 (6): bytes of several writes went to the pty as ONE counted write (the flush of
+    /// tmux control mode's pending buffer: a request and the keys typed after it). The write
+    /// count no longer says what reached the shell's line after the request, so nothing is
+    /// proven by it until the next report.
+    pub fn on_writes_flushed_as_one(&mut self) {
+        self.line_empty_at_writes = None;
+        self.writes_at_last_request = None;
+        self.ssh_line_start_at_writes = None;
+    }
+
     /// #2186: why a `\r` ahead of the escape could submit the user's bytes or reach a program,
     /// if it could. ssh is not at its line start (the last byte written was not a newline), so
     /// the `\r` is what makes the escape count; it is withheld only where the remote line may hold
     /// the user's own bytes (adopted or not), or bytes are still on their way to it.
     fn ssh_escape_cr_blocker_line_start(&self) -> Option<&'static str> {
+        if let Some(reason) = self.ssh_escape_cr_blocker_common() {
+            return Some(reason);
+        }
         match self.state {
             HandoffState::EditorOwned => {}
             HandoffState::PtyOwned {
@@ -1870,6 +1953,9 @@ impl TypeaheadHandoff {
     /// The #1793 rule (the kill switch's): why the remote line is not proven empty for
     /// [`Self::ssh_escape_line_start`], if it is not.
     fn ssh_escape_cr_blocker(&self, writes: u64) -> Option<&'static str> {
+        if let Some(reason) = self.ssh_escape_cr_blocker_common() {
+            return Some(reason);
+        }
         match self.state {
             HandoffState::EditorOwned => {}
             HandoffState::PtyOwned { .. } => return Some("pty_owned"),
@@ -2891,6 +2977,9 @@ impl TypeaheadHandoff {
         // #1793: the new shell's line is proven empty only by its own report.
         self.line_empty_at_writes = None;
         self.ssh_line_start_at_writes = None;
+        // #1795: the new shell starts with an empty line, and no `ssh>` prompt is open in it.
+        self.replies_at_line_empty = self.pty_writes.replies();
+        self.ssh_command_line_open = false;
         self.rtt_pending.clear();
         self.command_written_at = None;
         // A new shell may signal where the last one did not (and must earn the per-prompt give-up
@@ -3147,6 +3236,7 @@ impl TypeaheadHandoff {
         self.requests_written_total = self.requests_written_total.saturating_add(1);
         // #1793: the request is the next write; its report proves the line empty only as of it.
         self.writes_at_last_request = Some(self.pty_writes.get());
+        self.replies_at_last_request = self.pty_writes.replies();
         self.line_empty_at_writes = None;
         if self.untracked_line_bytes && self.untracked_cover_after_reports.is_none() {
             self.untracked_cover_after_reports = Some(self.requests_outstanding);
@@ -3167,6 +3257,8 @@ impl TypeaheadHandoff {
         // write (the shell reports its line and clears it).
         if outstanding_before == 1 {
             self.line_empty_at_writes = self.writes_at_last_request.map(|at| at.saturating_add(1));
+            // #1795 (1): and no reply queued up to that request is left in it.
+            self.replies_at_line_empty = self.replies_at_last_request;
         }
         if let Some(remaining) = self.untracked_cover_after_reports.as_mut() {
             *remaining = remaining.saturating_sub(1);
@@ -3566,6 +3658,8 @@ impl TypeaheadHandoff {
     /// as typeahead: the end is recorded for the view, which writes them behind the command and
     /// counts them ([`Self::count_followed_young_hold`]).
     pub fn on_command_written(&mut self) {
+        // #1795 (2): a command's own Enter is never ssh's `ssh>` line.
+        self.ssh_command_line_open = false;
         self.end_keys_follow_editor("command_written");
         self.forget_untracked_line_bytes();
         // #2202: the command's own newline starts a new line for ssh; a `~` before it was text.
@@ -3984,6 +4078,8 @@ impl TypeaheadHandoff {
         self.note_fresh_activity_for_test();
         // #1573: an enter window whose command started is not overdue while it runs.
         self.last_preexec_at = Some(now);
+        // #1795 (1): a command start consumed the shell's line, replies in it included.
+        self.replies_at_line_empty = self.pty_writes.replies();
         self.follow_unsampled_enter_on_preexec(shell_started, now);
         // The editor's command reached the shell: one write-to-preexec loop measured. A line the
         // shell started itself ran ahead of that command, so its preexec is not the command's and
@@ -5321,8 +5417,16 @@ impl TypeaheadHandoff {
                     if first_byte_young {
                         self.young_line = true;
                     }
-                    let (enters, dirty) =
+                    let (mut enters, dirty) =
                         scan_line_terminators(bytes, *wrote_user_bytes, ctrl_u_kills);
+                    // #1795 (2): the first Enter after `~C` ends ssh's own command line.
+                    if self.ssh_command_line_open && (enters > 0 || bytes.contains(&0x03)) {
+                        self.ssh_command_line_open = false;
+                        if enters > 0 {
+                            enters -= 1;
+                            warpui::input_order::log_hop("ssh_command_line_enter", String::new);
+                        }
+                    }
                     *enters_written = enters_written.saturating_add(enters);
                     *wrote_user_bytes = dirty;
                     wrote_an_enter = enters > 0;

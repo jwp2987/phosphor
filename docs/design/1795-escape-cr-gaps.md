@@ -1,4 +1,7 @@
-# #1795: ssh escape `\r` gaps, items 1-4 and 6 (design, UNREVIEWED, no code)
+# #1795: ssh escape `\r` gaps, items 1-4 and 6
+
+Status: approved by the owner 2026-11-14, owner question answered (a); implemented in one commit on
+`fix/2209-no-dropped-keys`, written without a compiler, not yet run. See "As built" at the end.
 
 Read at integ `d6c6b8d0b`; nothing compiled or run. `th` = `app/src/terminal/model/typeahead_handoff.rs`,
 `el` = `local_tty/event_loop.rs`, `rl` = `model/reply_ledger.rs`, `pc` = `writeable_pty/pty_controller.rs`.
@@ -92,3 +95,22 @@ Enter, so it may not disconnect until you press Enter once (safe: a leftover ter
 never be run as a command), or (b) keep today's behaviour (always works, with a very small chance
 of running a stray one-letter command such as `R`)? Recommended: (a). Shells that do report
 (bash, zsh, fish, PowerShell) are unaffected either way.
+
+**Owner answer (2026-11-14): (a).** On shells that cannot report their line, after a full-screen
+program the first `~.` goes without the hidden Enter; a leftover terminal reply is never run.
+
+## As built
+
+- (1) `PtyWriteCount::note_reply` / `replies`; `ReplyLedger::note_replies` calls it. Baselines:
+  the report of the last request (as of that request), `on_preexec`, `on_new_session`. Reason
+  `reply_since_line_empty`. Two existing #2186 expectations changed with the owner's answer: a
+  reply written last used to get `\r~.`, now `~.` (`test_ssh_escape_cr_rule_skips_only_for_user_bytes`,
+  case `reply`).
+- (2) No signature change: the view calls `note_ssh_escape_written(byte)` after it wrote an
+  escape that was not `Skipped` (and the #2207 deferred-Enter path does). The flag is cleared by
+  the Enter it skips, a `^C`, a command written, or a new session; NOT by a Precmd as the text
+  above says (the Precmd of the `\r` ahead of `~C` arrives before the user finishes the `ssh>` line).
+- (3) `continuation_prompt`, first in both rules (`ssh_escape_cr_blocker_common`).
+- (4) Doc comment only; the chain test is `escapes_chained_after_a_newline_stay_at_sshs_line_start`.
+- (6) `TypeaheadHandoff::on_writes_flushed_as_one`, called after the tmux pending flush; it also
+  voids the request's own count so its report cannot re-create the proof.

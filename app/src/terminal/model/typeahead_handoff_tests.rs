@@ -7329,8 +7329,11 @@ fn old_rule_ssh_escape_gets_no_carriage_return_unless_the_remote_line_is_proven_
 }
 
 /// #2186: ssh honours `~` only right after a `\r` or `\n` it read, and the app wrote every byte it
-/// read. After the last `ESC i` request with no report (nu), after a terminal-query reply written
-/// behind the last newline, the escape gets a `\r` whatever the report bookkeeping says.
+/// read. After the last `ESC i` request with no report (nu), or with bytes that are not a newline
+/// written last, the escape gets a `\r` whatever the report bookkeeping says. (#1795 item 1: a
+/// terminal-query REPLY written last is the exception; it withholds the `\r`, see
+/// `a_reply_queued_since_the_line_was_known_empty_withholds_the_carriage_return`. The middle
+/// case below moves only the tail, as a non-reply write does.)
 #[test]
 fn an_ssh_escape_after_a_request_or_reply_with_no_report_gets_a_carriage_return() {
     // A request written, its report never comes (nu).
@@ -8996,5 +8999,219 @@ fn a_dropped_parked_command_takes_its_enter_back() {
         !handoff.has_unanswered_lines(),
         "only the side call's Enter was counted, and its prompt came: {:?}",
         handoff.state()
+    );
+}
+
+// ---- #1795: ssh escape `\r` gaps -------------------------------------------------------------
+
+/// #1795 (1): a terminal-query reply queued since the remote line was last known empty may sit in
+/// that line (the program that asked never read it): no `\r` is written ahead of the escape,
+/// under either rule. The report of a request written after the reply, or a command start, makes
+/// the line known empty again.
+#[test]
+fn a_reply_queued_since_the_line_was_known_empty_withholds_the_carriage_return() {
+    for legacy_rule in [false, true] {
+        let (mut handoff, pty) = if legacy_rule {
+            legacy_rule_after_answered_empty_report()
+        } else {
+            after_answered_empty_report()
+        };
+        pty.note_reply(b"\x1b[24;1R");
+        assert_eq!(pty.replies(), 1);
+        assert_eq!(
+            handoff.ssh_escape_line_start(),
+            SshEscapeLineStart::Skipped("reply_since_line_empty"),
+            "legacy_rule={legacy_rule}"
+        );
+        assert_eq!(
+            handoff.state(),
+            &HandoffState::EditorOwned,
+            "a skipped escape changes nothing"
+        );
+
+        // A request written after the reply, and its report: the shell reported and cleared
+        // whatever the reply left.
+        handoff.on_legacy_request_written();
+        pty.note_write_bytes(b"\x1bi");
+        handoff.on_report_parsed();
+        let _ = handoff.on_report();
+        assert_eq!(
+            handoff.ssh_escape_line_start(),
+            SshEscapeLineStart::AddCr,
+            "legacy_rule={legacy_rule}: the report after the reply proves the line empty"
+        );
+    }
+
+    // A reply queued after the request is not covered by that request's report.
+    let (mut handoff, pty) = after_answered_empty_report();
+    handoff.on_legacy_request_written();
+    pty.note_write_bytes(b"\x1bi");
+    pty.note_reply(b"\x1b[?62;c");
+    handoff.on_report_parsed();
+    let _ = handoff.on_report();
+    assert_eq!(
+        handoff.ssh_escape_line_start(),
+        SshEscapeLineStart::Skipped("reply_since_line_empty")
+    );
+
+    // A shell that cannot report: a command start is what empties the line.
+    let (mut handoff, pty) = after_answered_empty_report();
+    pty.note_reply(b"\x1b[24;1R");
+    let _ = handoff.on_preexec(true);
+    handoff.on_precmd();
+    assert_ne!(
+        handoff.ssh_escape_line_start(),
+        SshEscapeLineStart::Skipped("reply_since_line_empty"),
+        "a reply from before the command start is not in the next prompt's line"
+    );
+}
+
+/// #1795 (1): the counter moves only for replies; a tail-only note and a counted write leave it.
+#[test]
+fn only_replies_move_the_reply_count() {
+    let handoff = TypeaheadHandoff::default();
+    let pty = handoff.pty_write_count();
+    pty.note_write_bytes(b"ls\r");
+    pty.note_tail(b"x");
+    pty.note_reply(b"");
+    assert_eq!(pty.replies(), 0);
+    pty.note_reply(b"\x1b[24;1R");
+    assert_eq!(pty.replies(), 1);
+    assert!(!pty.tail_is_newline(), "the tail follows the reply");
+}
+
+/// #1795 (2): `~C` opens ssh's own `ssh>` command line. The Enter that ends the line typed there
+/// never reaches the remote shell and is not counted, so the one Precmd of the `\r` ahead of the
+/// escape answers everything: no line is left for the stale-count give-up to answer.
+#[test]
+fn the_enter_of_sshs_command_line_is_not_counted_as_a_remote_line() {
+    let (mut handoff, pty) = after_answered_empty_report();
+    assert_eq!(handoff.ssh_escape_line_start(), SshEscapeLineStart::AddCr);
+    assert_eq!(
+        type_and_flush(&mut handoff, b"\r~C"),
+        UserBytesRoute::WriteCounted
+    );
+    pty.note_write_bytes(b"\r~C");
+    handoff.note_ssh_escape_written(b'C');
+    handoff.age_last_activity_for_test();
+
+    assert_eq!(
+        type_and_flush(&mut handoff, b"-L 8080:localhost:80\r"),
+        UserBytesRoute::WriteCounted
+    );
+    assert!(
+        matches!(
+            handoff.state(),
+            HandoffState::PtyOwned {
+                enters_written: 1,
+                ..
+            }
+        ),
+        "only the `\\r` ahead of the escape is a remote line: {:?}",
+        handoff.state()
+    );
+    handoff.on_precmd();
+    assert!(!handoff.has_unanswered_lines());
+
+    // The next Enter is the remote shell's again.
+    handoff.age_last_activity_for_test();
+    assert_eq!(
+        type_and_flush(&mut handoff, b"ls\r"),
+        UserBytesRoute::WriteCounted
+    );
+    assert!(handoff.has_unanswered_lines());
+}
+
+/// #1795 (2): any other escape leaves the count as it was.
+#[test]
+fn an_escape_other_than_the_command_line_counts_the_next_enter() {
+    let (mut handoff, pty) = after_answered_empty_report();
+    assert_eq!(handoff.ssh_escape_line_start(), SshEscapeLineStart::AddCr);
+    assert_eq!(
+        type_and_flush(&mut handoff, b"\r~?"),
+        UserBytesRoute::WriteCounted
+    );
+    pty.note_write_bytes(b"\r~?");
+    handoff.note_ssh_escape_written(b'?');
+    handoff.age_last_activity_for_test();
+    assert_eq!(
+        type_and_flush(&mut handoff, b"ls\r"),
+        UserBytesRoute::WriteCounted
+    );
+    assert!(
+        matches!(
+            handoff.state(),
+            HandoffState::PtyOwned {
+                enters_written: 2,
+                ..
+            }
+        ),
+        "{:?}",
+        handoff.state()
+    );
+}
+
+/// #1795 (3): at a continuation prompt (PS2) a `\r` would add a line to an open quote: withheld
+/// under either rule, even with the editor the owner.
+#[test]
+fn an_ssh_escape_at_a_continuation_prompt_gets_no_carriage_return() {
+    for legacy_rule in [false, true] {
+        let (mut handoff, _pty) = if legacy_rule {
+            legacy_rule_after_answered_empty_report()
+        } else {
+            after_answered_empty_report()
+        };
+        let _ = handoff.on_continuation_prompt();
+        assert_eq!(
+            handoff.ssh_escape_line_start(),
+            SshEscapeLineStart::Skipped("continuation_prompt"),
+            "legacy_rule={legacy_rule}"
+        );
+    }
+}
+
+/// #1795 (4): `AlreadyAtLineStart` is live since #2186: a newline written last leaves the editor
+/// the owner (`TailIsNewline`), and every further escape typed with nothing written in between
+/// goes out alone, never with a `\r` that would run an extra empty line.
+#[test]
+fn escapes_chained_after_a_newline_stay_at_sshs_line_start() {
+    let (mut handoff, pty) = after_answered_empty_report();
+    pty.note_write_bytes(b"\r");
+    assert_eq!(
+        handoff.ssh_escape_line_start(),
+        SshEscapeLineStart::TailIsNewline
+    );
+    for escape in [&b"~?"[..], &b"~V"[..]] {
+        pty.note_write_bytes(escape);
+        assert_eq!(
+            handoff.ssh_escape_line_start(),
+            SshEscapeLineStart::AlreadyAtLineStart
+        );
+        assert_eq!(handoff.state(), &HandoffState::EditorOwned);
+    }
+}
+
+/// #1795 (6): the flush of tmux control mode's pending buffer writes a request and the keys
+/// typed after it as ONE counted write. Under the proof rule the count then proves nothing: no
+/// `\r` until the next report.
+#[test]
+fn writes_flushed_as_one_prove_nothing_about_the_line() {
+    let (mut handoff, _pty) = legacy_rule_after_answered_empty_report();
+    handoff.on_writes_flushed_as_one();
+    assert_eq!(
+        handoff.ssh_escape_line_start(),
+        SshEscapeLineStart::Skipped("no_report_since_prompt")
+    );
+
+    // A request buffered with the keys: its report does not re-create the proof either.
+    let (mut handoff, pty) = legacy_rule_after_answered_empty_report();
+    handoff.on_legacy_request_written();
+    handoff.on_writes_flushed_as_one();
+    pty.note_write_bytes(b"\x1bix");
+    handoff.on_report_parsed();
+    let _ = handoff.on_report();
+    assert_eq!(
+        handoff.ssh_escape_line_start(),
+        SshEscapeLineStart::Skipped("no_report_since_prompt")
     );
 }

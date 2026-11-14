@@ -14397,6 +14397,10 @@ impl TerminalView {
         }
         escape.extend_from_slice(&bytes);
         self.write_user_bytes_to_pty(escape, ctx);
+        // #1795 (2): ssh takes the escape (it is at its line start): `~C` opens its `ssh>` line.
+        if !matches!(line_start, SshEscapeLineStart::Skipped(_)) {
+            self.handoff.write().note_ssh_escape_written(bytes[1]);
+        }
         if line_start == SshEscapeLineStart::AddCr {
             // The pty owns input now, as after a bare Enter's command (focus, queue).
             self.handle_typeahead_handoff_changed(ctx);

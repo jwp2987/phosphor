@@ -742,6 +742,9 @@ impl<T: EventLoopSender> PtyController<T> {
                         },
                         ctx,
                     );
+                    // #1795 (6): every write buffered while pending just went as ONE counted
+                    // write; the count proves nothing about the shell's line until a report.
+                    me.handoff.write().on_writes_flushed_as_one();
                 }
             }
             ModelEvent::CompletionsFinished(data) => {
