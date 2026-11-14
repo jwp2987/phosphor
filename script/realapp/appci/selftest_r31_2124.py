@@ -111,3 +111,16 @@ def r31_phosphor_scheme_handler_1546():
     assert CI.received_urls("received url scheme=phosphor host=action path=/new_tab") == [("phosphor", "action", "/new_tab")]
     names = [c["name"] for c in cases.CASES]
     assert names.count("phosphor_scheme_handler") == 1 and "phosphor_scheme_handler" in cases.PROVING
+
+
+@check
+def r31_wave5_targeted_file_is_valid_2076():
+    import json, cases
+    sys.path.insert(0, os.path.join(HERE, "..", "..", "ci"))
+    import ci_seq
+    d = json.load(open(os.path.join(HERE, "..", "..", "ci", "targeted", "wave5-never-played.json")))
+    names = {c["name"] for c in cases.CASES}
+    missing = [n for p in d["platforms"].values() for n in p["cases"] if n not in names]
+    assert not missing, "not in the registry: %s" % missing
+    assert set(ci_seq.targeted_spec(d)["apps"]) == {"linux-wayland", "macos", "windows"}
+    assert not [n for p in d["platforms"].values() for n in p["cases"] if n in ("soak", "scale_matrix") or n.startswith("lab_")]
