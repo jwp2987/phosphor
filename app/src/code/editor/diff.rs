@@ -583,6 +583,17 @@ impl DiffModel {
         }
     }
 
+    /// Drops the base text (a full second copy of the file as loaded), the computed hunks and any
+    /// diff in flight. For a closed editor only (#1340, #2224): the state stays valid, it just
+    /// has nothing to compare to.
+    pub fn release(&mut self) {
+        if let Some((abort_handle, _)) = self.abort_handle.take() {
+            abort_handle.abort();
+        }
+        self.base = None;
+        self.status = DiffStatus::default();
+    }
+
     pub fn base(&self) -> Option<Arc<MultilineString<LF>>> {
         self.base.clone()
     }

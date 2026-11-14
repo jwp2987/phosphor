@@ -61,6 +61,14 @@ fn exceeds_highlight_cap(byte_len: usize, cap: Option<usize>) -> bool {
 thread_local! {
     static PARSER: RefCell<Parser> = RefCell::new(Parser::new());
 }
+
+/// Replaces this thread's tree-sitter parser with a fresh one. A parser keeps the stack, node
+/// pool and lookahead buffers of its last parse (megabytes after a big file) for as long as the
+/// thread lives; a closed editor must not leave them behind (#2224).
+fn reset_thread_parser() {
+    PARSER.with(|parser| *parser.borrow_mut() = Parser::new());
+}
+
 pub enum DecorationStateEvent {
     DecorationUpdated { version: BufferVersion },
 }
@@ -178,6 +186,7 @@ impl SyntaxTreeState {
         *self.syntax_tree.lock() = HashMap::new();
         *self.highlight_cache.borrow_mut() = None;
         self.language_queries = None;
+        reset_thread_parser();
     }
 
     /// Number of syntax trees currently held (for tests and memory diagnostics).
@@ -561,7 +570,10 @@ mod tests {
                 let tree = parser.parse("fn a() {}", None).expect("parse");
                 state.syntax_tree.lock().insert(BufferVersion::new(), tree);
                 assert_eq!(state.tree_count(), 1);
+                // The thread's parser keeps its last parse's buffers; release replaces it (#2224).
+                PARSER.with(|p| p.borrow_mut().set_language(&language.grammar).expect("grammar"));
                 state.release();
+                assert!(PARSER.with(|p| p.borrow().language().is_none()));
                 assert_eq!(state.tree_count(), 0);
                 assert!(state.highlight_cache.borrow().is_none());
                 assert!(!state.has_supported_highlighting());
