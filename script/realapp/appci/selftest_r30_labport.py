@@ -159,9 +159,54 @@ def r30_raw_program_line_and_expected_bytes():
     (text, rest), want = WP.raw_keys_expected("abc123")
     assert text == "ihello remote abc123" and rest == ":wq" and want == b"ihello remote abc123\x1b:wq\r" and len(want) == len(text) + 1 + len(rest) + 1
     line = WP.raw_program_line("rs_lab_raw.txt", len(want))
-    assert "head -c %d" % len(want) in line and "stty raw -echo" in line and "stty sane" in line and "timeout 25" in line and "?1049h" in line and "?1049l" in line
+    assert "head -c %d" % len(want) in line and "stty raw -echo" in line and "stty sane" in line and "timeout --foreground 25" in line and "?1049h" in line and "?1049l" in line
     assert line.startswith("sh -c '") and line.endswith("'") and "!" not in line and "$HOME/rs_lab_raw.txt" in line
     assert line.count("'") == 2, "a single quote inside the quoted program would end it"
+
+
+@check
+def r30_raw_program_reads_the_tty_from_an_interactive_shell():
+    """#2217: run the stand-in line in a REAL pty under an interactive bash, type the pager keys, and require the program to receive them (GNU timeout without
+    --foreground made `head` a background process-group member: SIGTTIN, empty file, keys in the shell line). Skipped where there is no pty or GNU timeout."""
+    import cases_lab_winport as WP, subprocess, tempfile, time, select
+    try:
+        import pty
+        if "--foreground" not in subprocess.run(["timeout", "--help"], capture_output=True, text=True).stdout:
+            return
+    except Exception:
+        return
+    d = tempfile.mkdtemp()
+    pid, fd = pty.fork()
+    if pid == 0:
+        os.environ["HOME"] = d
+        os.execvp("bash", ["bash", "--norc", "--noprofile", "-i"])
+    try:
+        time.sleep(0.5)
+        os.write(fd, (WP.raw_program_line("out.txt", 3, secs=6) + "\n").encode())
+        time.sleep(1.0)
+        os.write(fd, b" Gq")
+        end = time.time() + 5
+        got = b""
+        while time.time() < end and not got:
+            time.sleep(0.2)
+            try:
+                got = open(os.path.join(d, "out.txt"), "rb").read()
+            except OSError:
+                pass
+        assert got == b" Gq", "the stand-in stored %r (keys did not reach it)" % got
+    finally:
+        try:
+            os.write(fd, b"exit\n")
+        except OSError:
+            pass
+        try:
+            os.kill(pid, 9)
+        except OSError:
+            pass
+        try:
+            os.waitpid(pid, 0)
+        except OSError:
+            pass
 
 
 @check
