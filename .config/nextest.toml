@@ -46,6 +46,16 @@ threads-required = 8
 slow-timeout = { period = "60s", terminate-after = 3 }
 
 [[profile.default.overrides]]
+# #2194: on Windows these tests passed but the runner flagged them LEAK (the set varied from run to run: r27a, r30b, r30e). They are the tests whose app code
+# starts a real child process and does not wait for it before the test returns: the agent fuzz rig gives its session a `bash` found on PATH (git-bash)
+# that runs the app's own `git rev-parse` probes (rig.rs give_the_session_a_shell_this_machine_has), the prompt chips run `git` for the branch chip, the
+# workspace and input view tests build a terminal with a real session. Starting git / bash on Windows takes more than the default 100 ms leak
+# window, so the child still held the output pipe when the test returned. The children are short-lived; a longer window lets them finish while a child
+# that never ends is still reported as LEAK after it. Only these tests get the longer window; every other test keeps the default, and no assertion changed.
+filter = 'test(/agent_fuzz::matrix::pairs_/) | test(/agent_fuzz::matrix::triples_/) | test(/context_chips::current_prompt::tests::/) | test(/workspace::view::tests::test_(closing_a_code_pane|reopening_a_file_whose_code_pane|code_editor_entry_points|active_tab_bar_position)/) | test(test_history_file_does_not_route_requests_or_bare_english_words_to_the_shell)'
+leak-timeout = "3s"
+
+[[profile.default.overrides]]
 filter = 'package(warpui) & test(/windowing::winit::.*clipboard::tests::clipboard_tests::/)'
 test-group = 'system-clipboard'
 
