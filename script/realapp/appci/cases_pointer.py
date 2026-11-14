@@ -901,6 +901,7 @@ def c_selection_modes(ctx, r):
     its last line is rewritten ten times a second = those words. The clipboard is set to a sentinel before every copy. Windows: after the double
     click, Ctrl-C at the idle prompt copies the word and drops the selection (#2131); with the program running, the first Ctrl-C copies and the
     second ends it (#2117)."""
+    ctx.sm_stream_cmd = None                               # set by stream_arm; never carried over from an earlier pass
     # Linux; Windows since r15 wave 4 (#2060: SendInput, positions from the find hook only); macOS since #2061 (mptr; selection_modes is in
     # MAC_POINTER_CASES). Not through linux_pointer_or_skip: that one SKIPs on Windows, where this case is ported.
     m = U.mouse_or_skip(ctx, r, mac=True)
@@ -965,7 +966,68 @@ def c_selection_modes(ctx, r):
         stream_arm(ctx, r, m, ls, words[12:], tok)
     finally:
         WV.back_to_input(ctx, r)
-    U.exact_burst(ctx, r, "after_selection", 4)
+    # #2228: the stream command may still be running (a Ctrl-C that did not end it, #2117); its rec.log line lands late and is not a typed line
+    U.exact_burst(ctx, r, "after_selection", 4, running=[c for c in (getattr(ctx, "sm_stream_cmd", None),) if c])
+
+
+WIN_PROCESS_LIST = ("Get-CimInstance Win32_Process | Where-Object { $_.Name -match '^(sh|bash|sleep|mintty|conhost|OpenConsole|phosphor.*)\\.exe$' } "
+                    "| Sort-Object ProcessId | ForEach-Object { '{0} ppid={1} {2} {3}' -f $_.ProcessId, $_.ParentProcessId, $_.Name, $_.CommandLine }")
+
+
+def win_process_snapshot():
+    """Windows: the sh/bash/sleep/conhost/Phosphor processes with their parents (Get-CimInstance), '' when the query fails. Harness-side, outside the pane."""
+    try:
+        out = subprocess.run(["powershell", "-NoProfile", "-Command", WIN_PROCESS_LIST], capture_output=True, text=True, timeout=20)
+        return out.stdout
+    except Exception as e:
+        return "(process list failed: %s)" % e
+
+
+def ctrl_c_not_ended_diagnostics(ctx, r, script, prompts0):
+    """#2117, Windows Git Bash: the second Ctrl-C reached the pty (`ctrl_c_route route=pty`, 0x03 written) and `sh <script>` kept running to its natural end,
+    while ctrl_c_d's `bash -c 'trap ... INT; yes'` in the same pane stops. The app's write path is the same for both, so what separates them is outside
+    the app: msys's own handling of the console's CTRL_C_EVENT (which processes of the foreground group get SIGINT), or a non-interactive `sh` loop that
+    does not exit on a child's SIGINT. Two pieces of evidence the next Windows run records (metrics/notes, no verdict of their own):
+      1. the process tree while the program still runs (which sh/sleep pids exist, whose children they are): `win_process_tree_after_ctrl_c` in the case log dir;
+      2. a CONTROL on a fresh program of the same shape, no selection, no copy, ONE Ctrl-C: `ctrl_c_control_sh_loop_ended`. True: the msys sh loop is
+         interruptible and the copy / selection / drag state is what broke the interrupt (APP side). False: a plain `sh` loop is not ended by Ctrl-C in this
+         pane at all (ENVIRONMENT: msys/ConPTY; the stream script is then not a valid Ctrl-C probe, use `bash -c 'trap ...'` as ctrl_c_d does)."""
+    if U.is_windows(ctx):
+        tree = win_process_snapshot()
+        try:
+            ld = os.path.join(ctx.run, "logs", ctx.label)
+            os.makedirs(ld, exist_ok=True)
+            open(os.path.join(ld, "win_process_tree_after_ctrl_c.txt"), "w", encoding="utf-8", errors="replace").write(tree)
+        except Exception:
+            pass
+        r.metric("win_process_tree_after_ctrl_c", tree.strip().splitlines()[:40])
+    if not ctx.until(lambda: ctx.prof.prompts() > prompts0, 45):                  # the program ends by itself (~33 s); the control needs the prompt
+        r.note("#2117 control not run: the prompt did not come back within 45 s of the second Ctrl-C")
+        return
+    ctl, tick = "sm_ctl_%s.sh" % ctx.tok(6).lower(), "sm_ctl_tick.txt"
+    ctx.rm(tick)
+    with open(os.path.join(ctx.W, ctl), "w", newline="\n") as f:
+        f.write(stream_script("control", tick, ticks=200))
+    p0 = ctx.prof.prompts()
+    ctx.be.type("sh %s" % ctl, 12, enter=True)
+
+    def ticks():
+        try:
+            return int((ctx.lines(tick) or ["-1"])[0])
+        except ValueError:
+            return -1
+    if not ctx.until(lambda: ticks() >= 3, 10):
+        r.note("#2117 control did not start streaming: not judged")
+        return
+    ctx.be.key("ctrl+c")
+    ended = bool(ctx.until(lambda: ctx.prof.prompts() > p0, 8))
+    r.metric("ctrl_c_control_sh_loop_ended", ended)
+    r.note("#2117 control: a fresh `sh` loop of the same shape, no selection, no copy, ONE Ctrl-C %s within 8 s: %s" % (
+        "ENDED it" if ended else "did NOT end it",
+        "the msys sh loop is interruptible, so the selection/copy/drag state is what kept the interrupt from the program (APP side)" if ended else
+        "a plain `sh` loop is not ended by Ctrl-C in this pane at all (ENVIRONMENT: msys/ConPTY; use `bash -c 'trap ...'` like ctrl_c_d for a Ctrl-C probe)"))
+    if not ended:
+        ctx.until(lambda: ctx.prof.prompts() > p0, 45)
 
 
 def stream_arm(ctx, r, m, line, ws, tok):
@@ -978,6 +1040,7 @@ def stream_arm(ctx, r, m, line, ws, tok):
     seen = ctx.log_size()
     mark, prompts0 = ctx.cmd_mark(), ctx.prof.prompts()
     ctx.be.type("sh %s" % script, ctx.rng.randint(10, 25), enter=True)
+    ctx.sm_stream_cmd = "sh %s" % script
 
     def ticks():
         try:
@@ -1024,6 +1087,8 @@ def stream_arm(ctx, r, m, line, ws, tok):
         ended = bool(ctx.until(lambda: ctx.prof.prompts() > prompts0, 8))
         r.check(ended, "Ctrl-C did not end the streaming program: no prompt within 8 s%s" % (
             " (the SECOND Ctrl-C: the first copied the selection; if this one copied too, the copy did not drop the selection, #2117)" if two_step else ""))
+        if not ended and two_step:
+            ctrl_c_not_ended_diagnostics(ctx, r, script, prompts0)
         time.sleep(1.6 if ctx.mode == "agent" else 0.4)        # past the agent view's exit-confirmation window before any later Ctrl-C
         if ctx.prof.commands():
             have = ctx.await_commands(mark, 1)

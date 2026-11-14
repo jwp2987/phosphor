@@ -51,9 +51,10 @@ def run_cmd(ctx, text, wait=10):
     return bool(ctx.until(lambda: len(ctx.cmds_since(mark)) >= 1, wait))
 
 
-def exact_burst(ctx, r, tag, n=6):
-    """n typed append-commands; effect file AND shell-received commands must match exactly (cases.effect_run)"""
-    return C.effect_run(ctx, r, tag, n, 0.0)
+def exact_burst(ctx, r, tag, n=6, running=()):
+    """n typed append-commands; effect file AND shell-received commands must match exactly (cases.effect_run). running: commands still running when the
+    burst starts (#2228); their late rec.log entry is excluded, nothing else is."""
+    return C.effect_run(ctx, r, tag, n, 0.0, running=running)
 
 
 PILLOW_MSG = "Pillow not installed on this runner (owner: install?)"

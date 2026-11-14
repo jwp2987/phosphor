@@ -76,3 +76,25 @@ def t_kill_arm_not_ended_types_nothing_more():
     assert ctx.typed == ["kill -s 9 $nu.pid"], ctx.typed
     assert any(not ok and "no local prompt" in m for ok, m in checks), checks
     assert ctx.resets >= 1 and any("proven" in n for n in notes), notes
+
+
+@check
+def t_2228_running_stream_entry_is_excluded_not_the_typed_lines():
+    """#2228: the still-running stream command's late rec.log entry is not a typed line; a missing / merged / reordered / duplicated typed line still fails"""
+    import cases as C
+    run = ["sh sm_stream_x.sh"]
+    want = ["echo t1 >> f", "echo t2 >> f", "echo t3 >> f", "echo t4 >> f"]
+    for have in (run + want, want[:2] + run + want[2:], want + run):          # the stream entry before, between, after: all pass
+        got, gone = C.drop_running(have, run)
+        assert got == want and gone == run, (have, got, gone)
+    got, _ = C.drop_running(run + want[:1] + want[2:], run)                   # missing line
+    assert got != want
+    got, _ = C.drop_running(run + [want[0] + want[1]] + want[2:], run)        # merged
+    assert got != want and len(got) == 3
+    got, _ = C.drop_running(run + [want[1], want[0]] + want[2:], run)         # reordered
+    assert got != want
+    got, _ = C.drop_running(run + want + [want[3]], run)                      # duplicated
+    assert got != want
+    got, _ = C.drop_running(run + run + want, run)                            # a second run of the stream is NOT excluded
+    assert got != want
+    assert C.drop_running(want, ()) == (want, [])                             # no running command: the old exact comparison

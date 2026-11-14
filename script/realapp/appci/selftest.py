@@ -2636,7 +2636,7 @@ def audit6_7_harness_probe_lines_are_not_the_cases_commands_and_comparisons_wait
     here = os.path.dirname(os.path.abspath(__file__))
     src = open(os.path.join(here, "cases.py")).read()
     er = src[src.index("def effect_run("):src.index("def ", src.index("def effect_run(") + 10)]
-    assert "ctx.await_commands(mark, n)" in er and er.index("ctx.await_commands(mark, n)") < er.index("have = ctx.cmds_since(mark)"), "effect_run compares rec.log without waiting for it"
+    assert "ctx.await_commands(mark, n)" in er and er.index("ctx.await_commands(mark, n)") < er.index("drop_running(ctx.cmds_since(mark), running)"), "effect_run compares rec.log without waiting for it"
     assert "ctx.await_commands(mark, len(cmds))" in src and "ctx.await_commands(mark, len(typed))" in src and "ctx.await_commands(mark, len(want))" in src
     assert "ctx.await_commands(mark, lambda cs: want_cmd in cs)" in open(os.path.join(here, "cases_caseintl.py")).read()
     assert "ctx.await_commands(mark, lambda cs: line in cs)" in open(os.path.join(here, "cases_coverage_a.py")).read()
