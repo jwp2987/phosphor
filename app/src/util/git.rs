@@ -91,13 +91,27 @@ impl GitRunner for LocalGitRunner {
                     cmd.stdin(Stdio::piped());
                     match cmd.spawn() {
                         Ok(mut child) => {
-                            if let Some(mut pipe) = child.stdin.take() {
-                                if let Err(e) = pipe.write_all(bytes).await {
-                                    log::debug!("git stdin write failed: {e}");
+                            // `close` (not a bare drop): on Windows async-process feeds the
+                            // child through a buffering thread, and a drop without close can
+                            // lose bytes not yet handed over; git then reads an empty commit
+                            // message or a truncated patch (#2226).
+                            let fed = match child.stdin.take() {
+                                Some(mut pipe) => match pipe.write_all(bytes).await {
+                                    Ok(()) => pipe.close().await,
+                                    Err(e) => Err(e),
+                                },
+                                None => Ok(()),
+                            };
+                            let output = child.output().await;
+                            match (fed, output) {
+                                (Err(e), Ok(out))
+                                    if e.kind() != std::io::ErrorKind::BrokenPipe
+                                        || out.status.success() =>
+                                {
+                                    Err(e)
                                 }
-                                drop(pipe);
+                                (_, output) => output,
                             }
-                            child.output().await
                         }
                         Err(e) => Err(e),
                     }

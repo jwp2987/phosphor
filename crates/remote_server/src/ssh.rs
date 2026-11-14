@@ -271,7 +271,10 @@ pub async fn run_ssh_command(
             use futures_lite::io::AsyncWriteExt;
             // A command that exits without reading its script (ssh failed) closes the pipe; the
             // exit status is the report then, not the broken pipe.
-            let _ = stdin.write_all(script.as_bytes()).await;
+            // `close` flushes before EOF (a bare drop can lose buffered bytes on Windows, #2226).
+            if stdin.write_all(script.as_bytes()).await.is_ok() {
+                let _ = stdin.close().await;
+            }
             drop(stdin);
         }
         child.output().await
@@ -339,7 +342,11 @@ pub async fn run_ssh_script_with_payload(
                     .await
                     .map_err(|e| anyhow!("Failed to write payload to stdin: {e}"))?;
             }
-            // Close stdin so the remote bash exits after reading the script.
+            // Close stdin (flushing it, #2226) so the remote bash exits after reading the script.
+            stdin
+                .close()
+                .await
+                .map_err(|e| anyhow!("Failed to close stdin: {e}"))?;
             drop(stdin);
         }
         child

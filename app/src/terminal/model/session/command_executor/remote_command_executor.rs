@@ -316,7 +316,12 @@ async fn run_over_master(
         let pipe = child.stdin.take();
         let feed = async move {
             match pipe {
-                Some(mut pipe) => pipe.write_all(stdin).await,
+                // `close` flushes: on Windows async-process buffers stdin through a thread and a
+                // bare drop can lose the tail of the feed (#2226).
+                Some(mut pipe) => match pipe.write_all(stdin).await {
+                    Ok(()) => pipe.close().await,
+                    Err(e) => Err(e),
+                },
                 None => Ok(()),
             }
         };

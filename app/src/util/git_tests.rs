@@ -252,6 +252,35 @@ async fn commit_chain_commit_only_creates_a_commit_and_reports_delta() {
     );
 }
 
+/// #2226: the commit message reaches git on stdin; every byte must arrive (on Windows a stdin
+/// handle dropped without `close` could lose buffered bytes, and git aborted on an empty message).
+/// A message far larger than any pipe buffer makes a lost tail fail every time, not sometimes.
+#[tokio::test]
+async fn commit_chain_delivers_a_large_message_over_stdin_whole() {
+    let (_dir, repo) = init_repo().await;
+    tokio::fs::write(repo.join("big.txt"), "x\n")
+        .await
+        .expect("write file");
+    let body: String = (0..4000)
+        .map(|i| format!("line {i:05} of the commit body\n"))
+        .collect();
+    let message = format!("big message subject\n\n{body}");
+
+    run_commit_chain(
+        &repo,
+        CommitChainMode::CommitOnly,
+        &message,
+        true,
+        "main",
+        None,
+    )
+    .await
+    .expect("commit chain with a large message should succeed");
+
+    let stored = git(&repo, &["log", "-1", "--format=%B"]).await;
+    assert_eq!(stored.trim_end(), message.trim_end());
+}
+
 #[tokio::test]
 async fn compute_unpushed_state_tracks_upstream_and_unpushed_commits() {
     let (_dir, repo) = init_repo().await;
