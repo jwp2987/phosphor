@@ -3597,8 +3597,11 @@ fi' RETURN
         #   __WARP_EXEC_ZSH  this shell's pid, the session id and what ZDOTDIR was
         #   ZDOTDIR          ~/.phosphor/zsh-exec, whose .zshenv (written below, on the
         #                    first such exec) is the only thing that acts on the first
-        # A zsh that IS this process (same pid: the exec replaced the shell), interactive
-        # and on the tty, announces itself with InitShell under the same session id and
+        # A zsh that IS this process (same pid: the exec replaced the shell), interactive,
+        # started without a command or a script (not `zsh -ic cmd`, which keeps the pid too
+        # when an exec'd `sh -c` hands its last command the process, as bash does;
+        # SHIN_STDIN is not set yet while .zshenv runs, the two parameters are) and on the
+        # tty, announces itself with InitShell under the same session id and
         # waits for its own bootstrap, as the zsh arm of the ssh remote command does.
         # Everything else that gets these two variables (a zsh under an `exec tmux`, a
         # `zsh -c`) puts ZDOTDIR back and reads the user's own .zshenv; a program that is
@@ -3623,7 +3626,7 @@ fi' RETURN
   else
     unset ZDOTDIR
   fi
-  if [[ $__warp_x_pid == $$ && -n $__warp_x_sid && -z ${__warp_x_sid//[0-9]/} && -o interactive && -t 0 && -t 1 ]]; then
+  if [[ $__warp_x_pid == $$ && -n $__warp_x_sid && -z ${__warp_x_sid//[0-9]/} && -o interactive && ${+ZSH_EXECUTION_STRING} == 0 && ${+ZSH_SCRIPT} == 0 && -t 0 && -t 1 ]]; then
     unsetopt ZLE RCS GLOBAL_RCS
     setopt HIST_IGNORE_SPACE
     export TMPPREFIX="$HOME/.zshtmp-"

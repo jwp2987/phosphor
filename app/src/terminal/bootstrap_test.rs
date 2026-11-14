@@ -6255,8 +6255,11 @@ fn fish_bootstrap_treats_an_unset_honor_ps1_as_not_honoring() {
 ///   startup files (the bootstrap sources them), ZDOTDIR is what it was and nothing is left in
 ///   the environment;
 /// - `exec 7>file` (redirection only): the descriptor stays open in the shell, nothing leaks;
-/// - an exec that is not an interactive zsh in place (`zsh -c`, a zsh under an exec'd `sh`, an
-///   exec in a subshell): no InitShell, the zsh reads the user's own `.zshenv`;
+/// - an exec that is not an interactive zsh reading the tty in place (`zsh -c`, `zsh -ic`, a
+///   `zsh -ic` under an exec'd `sh` or `bash`, an exec in a subshell): no InitShell, the zsh
+///   reads the user's own `.zshenv`. `inplacei` and `bashchild` are the macOS failure of r31a
+///   on every platform: a `sh -c` that is bash gives its last command its own process, so that
+///   `zsh -ic` has the replaced shell's pid and only "started with a command" tells it apart;
 /// - the kill switch (in the environment: `exec` is untouched; as a line of the profile: the
 ///   exec hands ZDOTDIR through) and a shell that is not a managed ssh session.
 #[test]
@@ -6429,6 +6432,28 @@ sys.stdout.write(out.hex())
             typed: "",
             hook: false,
             expect: &["USER_ZSHENV zd=unset", "CHILD zd=unset i=unset"],
+            absent: &["SURVIVED"],
+            zshenv_written: true,
+        },
+        Case {
+            name: "inplacei",
+            profile: "exec zsh -ic 'echo INPLACEI zd=${ZDOTDIR-unset} i=${__WARP_EXEC_ZSH-unset}'\n",
+            env: None,
+            trigger: "",
+            typed: "",
+            hook: false,
+            expect: &["USER_ZSHENV zd=unset", "INPLACEI zd=unset i=unset"],
+            absent: &["SURVIVED"],
+            zshenv_written: true,
+        },
+        Case {
+            name: "bashchild",
+            profile: "exec bash -c 'zsh -ic \"echo BASHCHILD zd=\\${ZDOTDIR-unset} i=\\${__WARP_EXEC_ZSH-unset}\"'\n",
+            env: None,
+            trigger: "",
+            typed: "",
+            hook: false,
+            expect: &["USER_ZSHENV zd=unset", "BASHCHILD zd=unset i=unset"],
             absent: &["SURVIVED"],
             zshenv_written: true,
         },
