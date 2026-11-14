@@ -30,3 +30,14 @@ def r31_pane_state_from_log_2206():
     assert R.pane_state_from_log(a) == "command_interactive=false enters_written=1 precmds_seen=2"
     assert R.pane_state_from_log("nothing here") == "no hand_route line"
     assert R.pane_state_now(object()) == "unknown"
+
+
+@check
+def r31_no_tcp_accept_verdict_carries_pane_state_2206():
+    import cases
+    class C: pass
+    c = C()
+    assert cases._pane_state_note(c) == ""
+    c.pane_state_at_case_start = "command_interactive=true enters_written=3 precmds_seen=0"
+    n = cases._pane_state_note(c)
+    assert "at case start: command_interactive=true enters_written=3 precmds_seen=0" in n and "now: unknown" in n, n
