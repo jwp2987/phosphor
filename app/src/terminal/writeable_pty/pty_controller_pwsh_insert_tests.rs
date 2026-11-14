@@ -80,6 +80,7 @@ fn command(text: &str, counter: Option<Arc<AtomicUsize>>) -> PtyWrite {
         command: text.to_owned(),
         shell_type: ShellType::PowerShell,
         in_band_command_id: None,
+        park: CommandPark::None,
         before_write_fn: counter.map(|counter| {
             Box::new(move || {
                 counter.fetch_add(1, Ordering::SeqCst);
@@ -268,6 +269,7 @@ fn in_band_commands_and_non_local_powershell_are_typed() {
                     command: "Get-Date".to_owned(),
                     shell_type: ShellType::PowerShell,
                     in_band_command_id: Some("id".to_owned()),
+                    park: CommandPark::None,
                     before_write_fn: None,
                 },
                 ctx,
@@ -366,6 +368,7 @@ fn a_refused_write_leaves_no_outstanding_chord() {
                     command: "Get-Date".to_owned(),
                     shell_type: ShellType::PowerShell,
                     in_band_command_id: None,
+                    park: CommandPark::None,
                     before_write_fn: Some(Box::new(|| StartCommandOutcome::RejectedExecuting)),
                 },
                 ctx,

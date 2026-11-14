@@ -1,4 +1,8 @@
-# #2182 (b): a submitted command is never dropped behind the app's own side calls (design, UNREVIEWED, no code)
+# #2182 (b): a submitted command is never dropped behind the app's own side calls
+
+Status: design approved by the owner 2026-11-14 (answer: "Wait", see the end); implemented on
+`fix/2209-no-dropped-keys`, written without a compiler, not yet run. "As built" at the end
+lists what the code does beyond the text below.
 
 Owner direction 2026-11-14 ("a"): a command the user submits is always written to the pty ahead
 of, or between, the app's own in-band side calls; never dropped, never left in the editor; no
@@ -108,3 +112,53 @@ If one of the app's own background commands is already running in the shell when
 Enter, your command runs as soon as that one finishes (typically well under a second; longer
 only if that background command is slow). The alternative is to interrupt the background
 command so yours runs at once. Recommended: wait; interrupting sends Ctrl-C into your shell.
+
+**Owner answer (2026-11-14): "Wait".** A user command refused because the app's own in-band
+command occupies the active block waits until that command finishes, then is written first. No
+Ctrl-C is sent to the shell.
+
+## As built
+
+Everything above, plus what reading the code for the implementation turned up:
+
+- **What the user saw in r30f was `handle_command_not_run`** (`writeable_pty/terminal_manager_util.rs`):
+  a refused user command is given back to the editor with a "command already running" toast
+  (#1125). That is where the `exit` in the editor came from. A parked command returns
+  `Accepted`, so nothing is given back.
+- **The marker** is `PtyWrite::Command { park: CommandPark }`: `None`, `BehindUserLine` (the
+  agent / queued-panel command held behind the user's line; `is_held_handoff_command` and
+  `young_hold_holds_front_command` now ask for exactly this) and `BehindInBand` (this change).
+- **A second submit while one is parked** parks behind the first, ahead of the side calls,
+  without trying the start: submitted order is kept whatever the block says by then.
+- **Nothing else clears a parked command.** The three places that emptied `pending_writes`
+  (an accepted command's `clear()`, its "keep the held command" `retain`, and
+  `clear_pending_writes_cancelling_in_band`) keep it. `discard_pending_command_writes` (the
+  pane closed, #848) still drops it, and the shell's exit drops it with
+  `parked_user_command_dropped reason=shell_exit`.
+- **The request decision of the prompt it is written at is skipped** when the hand-off will
+  engage for it (`front_parked_command_expects_handoff`), exactly as for an editor command
+  queued behind an inactive line editor (`handoff_command_pending`): otherwise `ESC i` would be
+  written in front of the command and its report would arrive after the hand-off engaged.
+- **Refused at the write** (the line editor opened while the side call's block was still the
+  active one): back to the front, `write_command_refused ... at_write=true reparked=true`, and
+  the drain stops instead of popping it again.
+- **The block annotation** (`write_command_annotating_block`, the cloud workflow id) is applied
+  to the block the command starts, when it starts. It used to be applied before the start to
+  whichever block was active, so a parked command would have annotated the side call's block
+  (and a refused one annotated the running command's block). This is a behaviour change for
+  every command on the hand-off path: annotate after an accepted start instead of before it.
+- **Log hops:** `write_command_refused source= outcome= in_band_block=` (every refusal),
+  `write_command_parked_behind_in_band source= reason= at= queued=`,
+  `parked_user_command_written source= engaged= did_write=`, `parked_user_command_dropped`,
+  `parked_user_command_not_started`.
+
+Not changed, and worth knowing:
+
+- Keys typed between the Enter and the parked command's write are routed by the facts of that
+  moment (the hand-off is not engaged yet): in terminal mode they land in the editor as the
+  next line. They are not lost and not reordered at the pty. A deferred Enter's gate holds them
+  as before and is settled by `TypeaheadHandoffChanged` at the write; its 10 s net is unchanged.
+- A Ctrl-C typed while a command is parked interrupts the side call (it is written straight to
+  the pty); the parked command still runs at the prompt that follows. It is not cancelled.
+- `SharedSession` and agent (`AI`) commands are not parked: their refusal is unchanged, and now
+  logged.
