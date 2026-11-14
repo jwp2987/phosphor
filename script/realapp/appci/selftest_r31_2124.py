@@ -51,3 +51,36 @@ def r31_soak_rss_drops_1780():
     assert d and d[0][1:] == (365, 157), d
     assert CR.rss_drops([300, 340, 350] + [369] * 5 + [378] * 5 + [383] * 5) == []
     assert CR.rss_drops([1, 2]) == []
+
+
+@check
+def r31_display_matrix_2078():
+    import baseline, run, os
+    # the meta of a run carries the display it used; a scaled or two-output run is not a baseline
+    old = {k: os.environ.get(k) for k in ("APPCI_DISPLAY_SCALE", "APPCI_OUTPUTS")}
+    try:
+        os.environ["APPCI_DISPLAY_SCALE"], os.environ["APPCI_OUTPUTS"] = "1.5", "2"
+        cmd = run.report_cmd("/x", type("A", (), dict(platform="linux", backend="b", app_display="d", seed=1))(), "n")
+        assert "display_scale=1.5" in cmd and "outputs=2" in cmd and "scale=1" in cmd, cmd
+        os.environ.pop("APPCI_DISPLAY_SCALE"); os.environ.pop("APPCI_OUTPUTS")
+        cmd = run.report_cmd("/x", type("A", (), dict(platform="linux", backend="b", app_display="d", seed=1))(), "n")
+        assert "display_scale=1" in cmd and "outputs=1" in cmd
+    finally:
+        for k, v in old.items():
+            if v is None: os.environ.pop(k, None)
+            else: os.environ[k] = v
+    doc = lambda **m: {"meta": dict({"tier": "full", "scale": "1"}, **m), "summary": {"fail": 0}, "cases": []}
+    assert not any("display_scale" in w for w in baseline.eligibility(doc()))
+    assert any("display_scale=2" in w for w in baseline.eligibility(doc(display_scale="2", outputs="1")))
+    assert any("outputs=2" in w for w in baseline.eligibility(doc(display_scale="1", outputs="2")))
+    # the session script validates and applies both knobs, and refuses a scale it cannot set instead of running at 1
+    sh = open(os.path.join(HERE, "..", "linux", "wayland_session.sh")).read()
+    assert "scale ${DSCALE}" in sh and "Xft.dpi" in sh and "create_output" in sh and "exit 2" in sh and "APPCI_SECOND_OUTPUT_SCALE" in sh
+
+
+@check
+def r31_display_matrix_vars_pass_a_targeted_run_2078():
+    sys.path.insert(0, os.path.join(HERE, "..", "..", "ci"))
+    import ci_seq
+    v = ci_seq.targeted_vars("linux-wayland", {"cases": ["scale_matrix"], "vars": {"APPCI_DISPLAY_SCALE": "1.5", "APPCI_SECOND_OUTPUT_SCALE": "2"}})
+    assert v["APPCI_DISPLAY_SCALE"] == "1.5" and v["APPCI_SECOND_OUTPUT_SCALE"] == "2", v
