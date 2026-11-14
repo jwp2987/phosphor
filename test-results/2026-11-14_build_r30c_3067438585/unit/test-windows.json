@@ -1,0 +1,83 @@
+{
+ "summary_line": "Summary [ 821.405s] 12033 tests run: 12032 passed (10 slow, 9 leaky), 1 failed, 47 skipped",
+ "duration_s": 821.405,
+ "run": 12033,
+ "passed": 12032,
+ "failed": 1,
+ "timed_out": 0,
+ "skipped": 47,
+ "slow": 10,
+ "flaky": 0,
+ "failures": [
+  {
+   "kind": "LEAK",
+   "crate": "warp",
+   "test": "ai::blocklist::agent_fuzz::matrix::pairs_command::off",
+   "seconds": 52.082
+  },
+  {
+   "kind": "LEAK",
+   "crate": "warp",
+   "test": "ai::blocklist::agent_fuzz::matrix::triples_command::on",
+   "seconds": 131.77
+  },
+  {
+   "kind": "FAIL",
+   "crate": "warp",
+   "test": "ai::blocklist::history_model::tests::forget_terminal_view_evicts_a_done_conversation_once_sqlite_has_written_it",
+   "seconds": 0.12
+  },
+  {
+   "kind": "LEAK",
+   "crate": "warp",
+   "test": "context_chips::current_prompt::tests::test_chips_rerun_when_the_blocks_session_registers",
+   "seconds": 0.398
+  },
+  {
+   "kind": "LEAK",
+   "crate": "warp",
+   "test": "context_chips::current_prompt::tests::test_unchanged_chip_refetch_does_not_respawn_on_click_command",
+   "seconds": 0.514
+  },
+  {
+   "kind": "LEAK",
+   "crate": "warp",
+   "test": "terminal::input::tests::test_history_file_does_not_route_requests_or_bare_english_words_to_the_shell",
+   "seconds": 0.735
+  },
+  {
+   "kind": "LEAK",
+   "crate": "warp",
+   "test": "workspace::view::tests::test_closing_a_code_pane_drops_its_editor_and_buffer",
+   "seconds": 2.418
+  },
+  {
+   "kind": "LEAK",
+   "crate": "warp",
+   "test": "workspace::view::tests::test_closing_a_code_pane_releases_a_retained_editors_heavy_state",
+   "seconds": 1.968
+  },
+  {
+   "kind": "LEAK",
+   "crate": "warp",
+   "test": "workspace::view::tests::test_code_editor_entry_points_refuse_a_file_past_the_size_limit",
+   "seconds": 2.723
+  },
+  {
+   "kind": "LEAK",
+   "crate": "warp",
+   "test": "workspace::view::tests::test_reopening_a_file_whose_code_pane_was_moved_away_still_opens_it",
+   "seconds": 2.098
+  }
+ ],
+ "regressions": [
+  "ai::blocklist::history_model::tests::forget_terminal_view_evicts_a_done_conversation_once_sqlite_has_written_it"
+ ],
+ "notes": [
+  "REGRESSION -- this change broke test(s). Fix the code.",
+  "error: test(s) failed that are not in script/known_test_failures_windows.txt:"
+ ],
+ "job": "test-windows",
+ "status": "failed",
+ "duration": 2831.01128
+}

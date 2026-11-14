@@ -1,0 +1,6 @@
+Returns at the session tap: 0; Phosphor app_send_event lines: 0; Phosphor pids: unknown
+targeted at Phosphor but never reached its NSApplication: 0 (of which UNCOVERED, no app_send_event within 3 s = app-log gap, cause not established: 0; LOST with neighbours logged: 0)
+targeted at another process: 0
+seen by Phosphor but not by the tap (join check, expect 0): 0
+no run/inject.log: injector-vs-macOS check skipped
+all-keys accounting skipped: no inject.log or ktap.log

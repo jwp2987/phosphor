@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="appci-macos" tests="2" failures="2" skipped="0">
+<testcase classname="terminal" name="case_selection" time="0.00">
+<failure message="unknown case name(s) lab_managed_connect.zsh.*, lab_msys_ssh_switch.zsh.*, lab_remote_session.zsh.* (not in the registry: renamed or misspelled?)">unknown case name(s) lab_managed_connect.zsh.*, lab_msys_ssh_switch.zsh.*, lab_remote_session.zsh.* (not in the registry: renamed or misspelled?)</failure>
+</testcase>
+<testcase classname="agent" name="case_selection" time="0.00">
+<failure message="unknown case name(s) lab_managed_connect.zsh.*, lab_msys_ssh_switch.zsh.*, lab_remote_session.zsh.* (not in the registry: renamed or misspelled?)">unknown case name(s) lab_managed_connect.zsh.*, lab_msys_ssh_switch.zsh.*, lab_remote_session.zsh.* (not in the registry: renamed or misspelled?)</failure>
+</testcase>
+</testsuite>

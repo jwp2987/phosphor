@@ -1,0 +1,40 @@
+{
+ "meta": {
+  "platform": "macos",
+  "backend": "mac",
+  "app_display": "macos",
+  "seed": "1",
+  "commit": "36efe34b",
+  "sha": "36efe34b59c0378f96e67a64dc5dba3c58acdf0b",
+  "owner_settings": "None",
+  "tier": "targeted",
+  "scale": "1"
+ },
+ "generated": "2026-11-13T22:34:53-0600",
+ "summary": {
+  "pass": 0,
+  "fail": 2,
+  "skip": 0,
+  "noref": 0
+ },
+ "cases": [
+  {
+   "name": "case_selection",
+   "mode": "terminal",
+   "status": "fail",
+   "seconds": 0,
+   "detail": [
+    "unknown case name(s) lab_managed_connect.zsh.*, lab_msys_ssh_switch.zsh.*, lab_remote_session.zsh.* (not in the registry: renamed or misspelled?)"
+   ]
+  },
+  {
+   "name": "case_selection",
+   "mode": "agent",
+   "status": "fail",
+   "seconds": 0,
+   "detail": [
+    "unknown case name(s) lab_managed_connect.zsh.*, lab_msys_ssh_switch.zsh.*, lab_remote_session.zsh.* (not in the registry: renamed or misspelled?)"
+   ]
+  }
+ ]
+}
