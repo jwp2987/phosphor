@@ -1239,3 +1239,77 @@ fn with_the_kill_switch_the_chips_are_not_batched() {
     }
     assert_eq!(sh.count(), 0);
 }
+
+/// A host whose execs never finish; it counts the execs in flight (a dropped exec future is no
+/// longer in flight, as a dropped ssh client frees its slot).
+#[derive(Debug, Default)]
+struct Stuck {
+    live: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl OutOfBandExecutor for Stuck {
+    fn channel_kind(&self) -> ChannelKind {
+        ChannelKind::LocalSh
+    }
+    fn shell_kind(&self) -> ShellKind {
+        ShellKind::Posix
+    }
+    fn execute(&self, _request: ExecRequest) -> BoxFuture<'_, Result<ExecOutput, ExecError>> {
+        struct Live(Arc<std::sync::atomic::AtomicUsize>);
+        impl Drop for Live {
+            fn drop(&mut self) {
+                self.0.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+        self.live.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let live = Live(self.live.clone());
+        Box::pin(async move {
+            let _live = live;
+            futures::future::pending::<()>().await;
+            unreachable!()
+        })
+    }
+}
+
+/// #2216 / #2188 (r30e): a chip request that started the prompt's batch and was then dropped (the
+/// next refresh superseded it) left the batch's exec suspended in the generation map, holding one
+/// of the host's few exec slots for the whole of `KEEP`; with enough of them the Tab completer's
+/// own exec never got a slot and the Tab went unanswered. A generation nobody awaits any more
+/// must not keep its exec.
+#[test]
+fn a_batch_started_by_a_dropped_chip_request_releases_its_exec() {
+    use futures::FutureExt as _;
+    let host = Arc::new(Stuck::default());
+    let store = Arc::new(GitBatchStore::with_join_window(JOIN_WINDOW).with_prompt_keying(true));
+    let be = ShellBackend::new(Some(host.clone()))
+        .with_git_batch(Arc::clone(&store))
+        .with_git_batching(true);
+    store.begin_prompt();
+    let dir = tempfile::tempdir().unwrap();
+    let path = canonical(&dir);
+    for _ in 0..3 {
+        // The chip asks, the exec starts, and the chip's request is dropped before it ends.
+        let mut request = Box::pin(be.batched_chip_shell(&path, BatchedChip::DiffShortstat));
+        assert!(request.as_mut().now_or_never().is_none());
+        drop(request);
+        assert_eq!(
+            host.live.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "the dropped request's exec is released at once"
+        );
+    }
+    // A request that is still awaited keeps its exec, and a later joiner shares it.
+    let mut first = Box::pin(be.batched_chip_shell(&path, BatchedChip::DiffShortstat));
+    assert!(first.as_mut().now_or_never().is_none());
+    let mut second = Box::pin(be.batched_chip_shell(&path, BatchedChip::BranchDropdown));
+    assert!(second.as_mut().now_or_never().is_none());
+    assert_eq!(host.live.load(std::sync::atomic::Ordering::SeqCst), 1);
+    drop(first);
+    assert_eq!(
+        host.live.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "one waiter is left, the exec stays"
+    );
+    drop(second);
+    assert_eq!(host.live.load(std::sync::atomic::Ordering::SeqCst), 0);
+}
