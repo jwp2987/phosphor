@@ -363,12 +363,25 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
         # The subshell setup lines (#1372) leave a PSConsoleHostReadLine wrapper that prints a
         # "reading again" marker while `$global:_phMk` is set; the first command ends that.
         $global:_phMk = $null
+        # #1280: Warp-Idle-Maintenance scrubs the history with seven Clear-History calls (each a
+        # cmdlet call plus a wildcard scan of the whole history) at every prompt. The scrub only
+        # has work after one of our own lines ran, so flag those here: a superset test of what the
+        # scrubs match (generator wrapper, agent wrapper, bootstrap lines), a few IndexOf calls.
+        if ($command.StartsWith('.', [System.StringComparison]::Ordinal) -or
+            $command.IndexOf('Warp-Run-GeneratorCommand', [System.StringComparison]::OrdinalIgnoreCase) -ge 0 -or
+            $command.IndexOf('__phosphor_ap', [System.StringComparison]::OrdinalIgnoreCase) -ge 0 -or
+            $command.IndexOf('PSReadline', [System.StringComparison]::OrdinalIgnoreCase) -ge 0 -or
+            $command.IndexOf('WARP_BOOTSTRAPPED', [System.StringComparison]::OrdinalIgnoreCase) -ge 0) {
+            $script:warpHistoryDirty = $true
+        }
         # Phosphor (#935): title a multi-line command with its first line and an ellipsis.
         # Clamped: Windows PowerShell 5.1's console host throws above ~1023 characters, and a throw
         # here would keep PSConsoleHostReadLine from returning the line (#1106).
         try {
             $titleSource = $command
-            $title = ($titleSource -replace "(?s)\r?\n.*", [string][char]0x2026)
+            # #1280: the regex only changes a command that has a newline; skip it (and its operator
+            # overhead on Windows PowerShell 5.1) for the usual single-line command.
+            $title = if ($titleSource.IndexOf([char]10) -ge 0) { $titleSource -replace "(?s)\r?\n.*", [string][char]0x2026 } else { $titleSource }
             if ($title.Length -gt 200) { $title = $title.Substring(0, 200) + [string][char]0x2026 }
         } catch { }
         # Phosphor (#1353): one per-session counter for every Precmd and Preexec this shell sends.
@@ -423,11 +436,16 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
             # commands
             Warp-Clean-CompletedThread
 
-            # Remove any instance of the 'Warp-Run-GeneratorCommand' call from the user's history
-            Microsoft.PowerShell.Core\Clear-History -CommandLine 'Warp-Run-GeneratorCommand*'
-            # ... and the agent-command wrapper (agent_shell_wrap.rs HISTORY_MARKER; #942)
-            Microsoft.PowerShell.Core\Clear-History -CommandLine ([System.Management.Automation.WildcardPattern]::Escape('. { $__phosphor_ap = @{}; foreach ($__phosphor_ap_v in @(') + '*')
-            Warp-Clear-BootstrapHistory
+            # #1280: only when one of our own lines ran since the last scrub (flagged in Warp-Preexec;
+            # unset at the first prompt, so the first pass always scrubs).
+            if ($script:warpHistoryDirty -ne $false) {
+                $script:warpHistoryDirty = $false
+                # Remove any instance of the 'Warp-Run-GeneratorCommand' call from the user's history
+                Microsoft.PowerShell.Core\Clear-History -CommandLine 'Warp-Run-GeneratorCommand*'
+                # ... and the agent-command wrapper (agent_shell_wrap.rs HISTORY_MARKER; #942)
+                Microsoft.PowerShell.Core\Clear-History -CommandLine ([System.Management.Automation.WildcardPattern]::Escape('. { $__phosphor_ap = @{}; foreach ($__phosphor_ap_v in @(') + '*')
+                Warp-Clear-BootstrapHistory
+            }
 
             Warp-Configure-PSReadLine-IfChanged
         } catch {
@@ -725,8 +743,16 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
 
     # What Warp-Configure-PSReadLine leaves behind that PSReadLine can report: edit mode, the
     # prediction and prompt-text options, and (kept separately, by reference) the history handler.
+    function Warp-Get-PSReadLineOptionObject {
+        $o = $null
+        try { $o = [Microsoft.PowerShell.PSConsoleReadLine]::GetOptions() } catch { $o = $null }
+        if ($null -eq $o) { $o = PSReadLine\Get-PSReadLineOption }
+        $o
+    }
+
     function Warp-Get-PSReadLineState {
-        $psrlOption = PSReadLine\Get-PSReadLineOption
+        # #1280: GetOptions() returns the object Get-PSReadLineOption returns, without a cmdlet call.
+        $psrlOption = Warp-Get-PSReadLineOptionObject
         "$($psrlOption.EditMode)|$($psrlOption.PredictionSource)|$($psrlOption.PredictionViewStyle)|$($psrlOption.PromptText -join ',')"
     }
 
@@ -738,7 +764,7 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
     function Warp-Configure-PSReadLine-IfChanged {
         if ($null -ne $script:psrlConfiguredState -and
             $script:psrlConfiguredState -ceq (Warp-Get-PSReadLineState) -and
-            [object]::ReferenceEquals((PSReadLine\Get-PSReadLineOption).AddToHistoryHandler, $script:psrlConfiguredHandler)) {
+            [object]::ReferenceEquals((Warp-Get-PSReadLineOptionObject).AddToHistoryHandler, $script:psrlConfiguredHandler)) {
             return
         }
         Warp-Configure-PSReadLine
