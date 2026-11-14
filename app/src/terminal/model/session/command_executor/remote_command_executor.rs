@@ -182,6 +182,17 @@ impl CommandExecutor for RemoteCommandExecutor {
         )
         .await
         .map(|output| output.into());
+        // One line per exec channel, like the shell backend's (#2156, #2216): this executor opens
+        // ssh exec channels on the same master and had no line, so a lab count above the app's
+        // batched execs could not be attributed. Logged under the shell backend's target, which the
+        // harness already enables. Only the generator text (truncated), never `command_str`.
+        log::debug!(
+            target: "remote_server::backend::legacy_exec",
+            "shell exec: producer=legacy_generator command={:?} elapsed_ms={} ok={}",
+            warp_util::slow_log::truncate_for_log(logged_command, 80),
+            slow_start.elapsed().as_millis(),
+            result.is_ok()
+        );
         // Only the generator text (truncated), never `command_str`, which embeds env values.
         SLOW_REMOTE_COMMAND.finish(slow_start, || {
             format!(
