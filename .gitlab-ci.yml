@@ -1623,6 +1623,28 @@ app-test-replay-linux:
     APPCI_LAB_MATRIX: "quick"
     APPCI_REPLAY_MINUTES: "15"
 
+# #2063: the same replay on the Mac and Windows machines, against the box's fixed lab slot (the quick matrix has the 150 ms arm; the replay is
+# one arm of one family, bash on the remote side). MANUAL, played by hand or from a targeted file (`linux-lab`-style names are not needed: play the job).
+# Windows plays the Git Bash pane only: the replay's steps are POSIX shell lines (`cd .. && echo >> file`, /tmp), which the PowerShell pane cannot run.
+app-test-replay-macos:
+  extends: app-test-lab-macos
+  variables:
+    APPCI_CASES: "lab_replay*"
+    APPCI_FAKE_EMBEDDINGS: "0"
+    APPCI_FAKE_MODEL: "1"
+    APPCI_LAB_MATRIX: "quick"
+    APPCI_REPLAY_MINUTES: "15"
+
+app-test-replay-windows:
+  extends: app-test-lab-windows
+  variables:
+    APPCI_CASES: "lab_replay*"
+    APPCI_FAKE_EMBEDDINGS: "0"
+    APPCI_FAKE_MODEL: "1"
+    APPCI_LAB_MATRIX: "quick"
+    APPCI_REPLAY_MINUTES: "15"
+    APPCI_WIN_SHELLS: "gitbash"
+
 # ---------------------------------------------------------------------------
 # Reuse variants (app-test-*-reuse): test an EARLIER pipeline's build of an app-identical commit instead of rebuilding
 # (script/ci/ci_seq.py decides; fix tier only). They have NO `needs` on the build job: `needs:pipeline:job` takes a

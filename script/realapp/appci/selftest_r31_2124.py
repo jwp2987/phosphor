@@ -84,3 +84,18 @@ def r31_display_matrix_vars_pass_a_targeted_run_2078():
     import ci_seq
     v = ci_seq.targeted_vars("linux-wayland", {"cases": ["scale_matrix"], "vars": {"APPCI_DISPLAY_SCALE": "1.5", "APPCI_SECOND_OUTPUT_SCALE": "2"}})
     assert v["APPCI_DISPLAY_SCALE"] == "1.5" and v["APPCI_SECOND_OUTPUT_SCALE"] == "2", v
+
+
+@check
+def r31_replay_jobs_on_mac_and_windows_2063():
+    root = os.path.join(HERE, "..", "..", "..")
+    yml = open(os.path.join(root, ".gitlab-ci.yml")).read()
+    for job, ext, win in (("app-test-replay-macos", "app-test-lab-macos", False), ("app-test-replay-windows", "app-test-lab-windows", True)):
+        i = yml.index("\n%s:\n" % job)
+        blk = yml[i + 1:].split("\n\n", 1)[0]
+        assert "extends: %s" % ext in blk and 'APPCI_CASES: "lab_replay*"' in blk and 'APPCI_FAKE_MODEL: "1"' in blk, blk
+        assert ('APPCI_WIN_SHELLS: "gitbash"' in blk) == win, blk
+    sys.path.insert(0, os.path.join(HERE, "..", "..", "ci"))
+    import ci_seq
+    assert ci_seq.APP_RESULT_DIR["app-test-replay-macos"] == "macos" and ci_seq.APP_RESULT_DIR["app-test-replay-windows"] == "windows"
+    assert ci_seq.is_lab_job("app-test-replay-macos") and ci_seq.is_lab_job("app-test-replay-windows")

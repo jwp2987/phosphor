@@ -2023,7 +2023,7 @@ def classify_network_job(job_id):
 
 APP_RESULT_DIR = {"app-test-lab-linux": "wayland", "app-test-linux-wayland": "wayland", "app-test-linux-x11": "x11", "app-test-macos": "macos", "app-test-windows": "windows"}
 # round 15 (#2063): the lab jobs of the other platforms and the replay are judged like an app job too (a green job that judged nothing is a FAIL)
-APP_RESULT_DIR.update({"app-test-lab-macos": "macos", "app-test-lab-windows": "windows", "app-test-replay-linux": "wayland"})
+APP_RESULT_DIR.update({"app-test-lab-macos": "macos", "app-test-lab-windows": "windows", "app-test-replay-linux": "wayland", "app-test-replay-macos": "macos", "app-test-replay-windows": "windows"})
 # round 15: and so are the fix tier's reused jobs, which this check never looked at (their names were not in the table)
 APP_RESULT_DIR.update({n + "-reuse": d for n, d in list(APP_RESULT_DIR.items()) if n in ("app-test-linux-wayland", "app-test-linux-x11", "app-test-lab-linux", "app-test-macos", "app-test-windows")})
 
