@@ -7625,6 +7625,8 @@ numeric range (`1..10`) as `shell-syntax` in a PowerShell session, before the qu
 Unit tests: `crates/input_classifier/src/util/routing_tests.rs`, `powershell_type_and_range_heads_are_shell_syntax_in_a_powershell_session`
 and `powershell_expression_rule_takes_nothing_else` (what must not match, and every other shell family). App case:
 `routing_table_powershell` (PROVING) gained three shell rows, `[math]::Sqrt(2)`, `[IO.File]::Exists('log.txt')` and `1..3`, in both modes.
+
+`routing_table_powershell` (#2220): an ambiguous line (`make a PR`, `find the bug in main.rs`) is pinned to the shell in plain-terminal mode only when its head is an installed program (owner rule #1981). The case now passes `installed=` to `ambiguous_want`, judged by asking the PowerShell pane (`Get-Command <head>`, answer written to a file the case reads), not by the harness Python's `shutil.which`. Unanswered probe = no verdict, never a shell expectation. The expectation is unchanged when the head is installed. Self-check `r31_2220_*` (`selftest_r31_2220.py`) fails if any `ambiguous_want(` call in a `cases*.py` file lacks `installed=`.
 The rows that showed the defect and should pass on the next Windows run: `intl_wide_type` [agent], `intl_wide_paste` [terminal, agent],
 `intl_altgr_ps` [agent] (every `enter_route` line `Shell` only) and `soak` [agent] (the minute-5 sentinel arrives; the flood line
 `1..300000` is no longer an agent prompt).
