@@ -869,3 +869,153 @@ fn preexec_moves_the_hold_block_to_the_running_ssh_block() {
         });
     })
 }
+
+// ---- #2227: held input is delivered on fresh facts ------------------------------------------------
+
+/// The #2227 fixture: `ssh host` submitted, `echo QW` typed during the connect (held), the remote
+/// prompt seen and its first Precmd processed, the connect window released: the hand-over is due.
+fn ssh_handover_due_for_test(view: &mut TerminalView, ctx: &mut ViewContext<TerminalView>) {
+    register_local_session_for_ssh_test(view, ctx);
+    submit_command(view, "ssh host", ctx);
+    view.typed_characters_on_terminal("echo QW", ctx);
+    assert!(view.ssh_typeahead_holding);
+    view.ssh_remote_prompt_seen = true;
+    first_precmd_processed_for_test(view, ctx);
+    release_ssh_gate_for_test(view);
+}
+
+/// #2227 (r30f `lab_connect_typeahead`, owner decision 2026-11-14): the ssh hand-over is due but
+/// the model is busy (the pty reader holds it, parsing the remote's output), so its facts could
+/// only be read from the published copy. The hand-over does not run on those: the keys stay
+/// held, and a key typed meanwhile stays behind them. The next event that finds the model free
+/// delivers them all to ONE place, in typed order (here the editor, which owns the remote
+/// prompt); nothing reaches the pty.
+#[test]
+fn the_ssh_handover_waits_for_an_exact_model_read() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_all_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            ssh_handover_due_for_test(view, ctx);
+            view.ssh_handover_model_busy_for_test = true;
+            assert!(
+                !view.deliver_ssh_typeahead_if_ready("precmd", ctx),
+                "no hand-over on a model that could not be read exactly"
+            );
+            assert!(view.ssh_typeahead_holding, "the keys stay held");
+            assert_eq!(view.ssh_handover_exact_model_waits, 1);
+            assert!(
+                view.ssh_handover_after_release,
+                "the next key or turn hands over first"
+            );
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
+            // A key typed while the hand-over waits is typed behind the held keys.
+            view.typed_characters_on_terminal("ER", ctx);
+            assert!(view.ssh_typeahead_holding);
+            assert_eq!(
+                view.input.as_ref(ctx).buffer_text(ctx),
+                "",
+                "the key did not overtake the held keys"
+            );
+            // The reader's wakeup after the burst: the model is free.
+            view.ssh_handover_model_busy_for_test = false;
+            assert!(view.deliver_ssh_typeahead_if_ready("output", ctx));
+            assert!(!view.ssh_typeahead_holding);
+            assert_eq!(view.ssh_handover_exact_model_waits, 0);
+            assert!(ssh_queue_is_idle(view));
+        });
+        terminal.read(&app, |view, ctx| {
+            assert_eq!(
+                view.input.as_ref(ctx).buffer_text(ctx),
+                "echo QWER",
+                "every held key landed in one place, in typed order"
+            );
+        });
+        let written = String::from_utf8_lossy(&pty_writes.borrow().concat()).into_owned();
+        assert_eq!(written, "", "nothing of the line reaches the pty");
+    })
+}
+
+/// #2227: a delivery decides on the hand-off as it IS. When the non-blocking facts carry this
+/// view's cached copy (the hand-off was busy: `handoff_known` false), and that copy still says
+/// "the pty takes keys" from before the prompt's commit, the delivery reads the hand-off itself
+/// and gets the committed state. (The design's "hand-off write-locked by a second thread" test:
+/// the stale copy is set directly, which is what a failed `try_read` leaves, instead of racing
+/// a thread for the lock.)
+#[test]
+fn a_delivery_reads_the_handoff_exactly_when_its_cached_copy_is_stale() {
+    App::test((), |mut app| async move {
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            let mut facts =
+                view.build_route_facts(crate::terminal::input_queue::QueueFacts::default(), ctx);
+            assert!(
+                !view.make_handoff_facts_exact(&mut facts),
+                "facts read from a free hand-off are exact already"
+            );
+            // The editor owns input (the prompt was committed); the cached copy is older.
+            facts.handoff_known = false;
+            facts.handoff_routes = true;
+            assert!(view.make_handoff_facts_exact(&mut facts));
+            assert!(facts.handoff_known);
+            assert!(
+                !facts.handoff_routes,
+                "the committed state, not the cached copy from before the commit"
+            );
+            // And the other way: the pty owns input, the cached copy says it does not.
+            view.handoff.write().on_command_written();
+            facts.handoff_known = false;
+            facts.handoff_routes = false;
+            assert!(view.make_handoff_facts_exact(&mut facts));
+            assert!(facts.handoff_routes);
+        });
+    })
+}
+
+/// #2227 with a811316f4 as the net: the model is NEVER free at an event, so the hold's own
+/// give-up ends it (no new timer). The held keys are written to the pty in typed order, and
+/// they take the line for the pty: the keys typed next follow them there, so the line is not
+/// split between the pty and the editor.
+#[test]
+fn a_model_that_is_never_free_ends_in_the_holds_give_up_and_the_line_is_not_split() {
+    App::test((), |mut app| async move {
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_all_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            ssh_handover_due_for_test(view, ctx);
+            view.ssh_handover_model_busy_for_test = true;
+            assert!(!view.deliver_ssh_typeahead_if_ready("precmd", ctx));
+            assert!(!view.deliver_ssh_typeahead_if_ready("output", ctx));
+            assert_eq!(view.ssh_handover_exact_model_waits, 2);
+            assert!(view.ssh_typeahead_holding);
+            // The hold's give-up fires.
+            view.ssh_give_up_fired(ctx);
+            assert!(!view.ssh_typeahead_holding, "the give-up ended the hold");
+            assert!(
+                view.handoff.read().routes_keys_to_pty(),
+                "the line is the pty's: the rest of it follows the keys written"
+            );
+            view.ssh_handover_model_busy_for_test = false;
+            view.typed_characters_on_terminal("ERTY", ctx);
+        });
+        terminal.read(&app, |view, ctx| {
+            assert_eq!(
+                view.input.as_ref(ctx).buffer_text(ctx),
+                "",
+                "nothing of the line landed in the editor"
+            );
+        });
+        let written = String::from_utf8_lossy(&pty_writes.borrow().concat()).into_owned();
+        assert_eq!(
+            written, "echo QWERTY",
+            "the held keys, then the keys typed next, in typed order, at the pty"
+        );
+    })
+}
