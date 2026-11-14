@@ -29455,18 +29455,20 @@ fn a_precmd_reads_marker_is_found_at_the_wakeup_of_its_question() {
     })
 }
 
-/// #2053 (owner decision 2026-11-10; round 12 agent pass: `question_on_screen_hp0 = false`): an
-/// agent conversation shows the question a precmd function asks only while its reader has the
-/// keys. The question is early output in a background block that belongs to no conversation, so
-/// the conversation's scope hides it. The wakeup's look (`show_question_of_tty_reader`) shows it
-/// there once the hand-off notes the reader, keeps it while the PIN is typed, and hides it again
-/// at the look after the line editor's signal ended the reader. Before the reader is noted
-/// nothing is shown (printed text alone is no reader).
+/// #2053 (owner decision 2026-11-10) made a conversation show the question a precmd function
+/// asks ONLY while its reader has the keys. #2145 (owner decision 2026-11-13: the agent view shows
+/// background-job output, as the terminal view does) changed that: the question is early output in
+/// a background block WITH content, which `Block::should_hide_block` now shows in a conversation's
+/// scope (`shows_background_output`) before, during and after the reader. Old -> new: hidden before
+/// the reader is noted -> shown; hidden again once the reader is over -> stays shown. What the
+/// reader still decides is the view's bookkeeping (`show_question_of_tty_reader`: the block marked
+/// as shown to the reader, `reader_question_shown`) and, above all, the keys: they go to the reader.
 ///
 /// The control arm is the kill switch (`PHOSPHOR_READER_QUESTION_IN_AGENT_VIEW=0`, the pane's
-/// `reader_question_in_agent_view`): the keys still go to the reader, the block stays hidden.
+/// `reader_question_in_agent_view`): no bookkeeping, the keys still go to the reader, and the block
+/// is shown all the same (it is background output).
 #[test]
-fn a_precmd_question_is_shown_in_an_agent_conversation_while_its_reader_has_the_keys() {
+fn a_precmd_question_is_shown_in_an_agent_conversation_with_or_without_its_reader() {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -29514,30 +29516,31 @@ fn a_precmd_question_is_shown_in_an_agent_conversation_while_its_reader_has_the_
                 };
                 view.show_question_of_tty_reader("output", ctx);
                 assert!(
-                    !on_screen(view),
-                    "{what}: no reader is noted yet: the conversation hides the block"
+                    on_screen(view),
+                    "{what}: no reader is noted yet: a background block with content is shown (#2145)"
                 );
+                assert!(!view.reader_question_shown, "{what}");
 
                 // The wakeup of the question's output: the reader is noted, then its question shown.
                 assert!(view.hand_keys_to_a_secret_reader("output", ctx), "{what}");
                 view.show_question_of_tty_reader("output", ctx);
-                assert_eq!(on_screen(view), enabled, "{what}: while the reader waits");
+                assert!(on_screen(view), "{what}: while the reader waits");
                 assert_eq!(view.reader_question_shown, enabled, "{what}");
 
                 for key in [&b"4"[..], b"2"] {
                     view.write_user_bytes_to_pty(key.to_vec(), ctx);
                     view.show_question_of_tty_reader("key", ctx);
                 }
-                assert_eq!(on_screen(view), enabled, "{what}: while the PIN is typed");
+                assert!(on_screen(view), "{what}: while the PIN is typed");
                 view.write_user_bytes_to_pty(b"\r".to_vec(), ctx);
 
                 // The read returned; the line editor's signal ends the reader, and the wakeup
-                // that follows hides the block in the conversation again.
+                // that follows drops the reader's bookkeeping; the block stays shown (#2145).
                 secret.store(false, Ordering::SeqCst);
                 line_editor_signal(view, ctx);
                 assert!(!view.handoff.read().prompt_reader_asks(), "{what}");
                 view.show_question_of_tty_reader("output", ctx);
-                assert!(!on_screen(view), "{what}: the reader is over");
+                assert!(on_screen(view), "{what}: the reader is over, the block stays shown");
                 assert!(!view.reader_question_shown, "{what}");
                 assert!(!view.reader_question_looked_for, "{what}");
                 assert!(
