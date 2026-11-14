@@ -980,3 +980,262 @@ fn a_navigation_without_a_precmd_does_not_swallow_the_next_prompts_bump_forever(
     store.begin_prompt();
     assert_eq!(store.prompt.load(Ordering::SeqCst), 3);
 }
+
+// ---------------------------------------------------------------------------------------------
+// #2216: the prompt chips' own commands (branch dropdown, diff --shortstat, Kubernetes context)
+// are sections of the prompt's ONE exec. The app ran each through the legacy generator executor,
+// one more ssh exec channel per prompt (r30d lab: 2 channels per prompt on bash/zsh, 3 on fish).
+
+/// What the chip generator's own exec prints: its command run by `sh` in `dir`.
+fn generator_output(dir: &str, chip: BatchedChip) -> (String, bool) {
+    let out = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(chip.sh_command())
+        .current_dir(dir)
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .unwrap();
+    (
+        String::from_utf8_lossy(&out.stdout).trim_end().to_owned(),
+        out.status.success(),
+    )
+}
+
+fn batched_chip(be: &ShellBackend, dir: &str, chip: BatchedChip) -> Option<(String, bool)> {
+    block_on(be.batched_chip_shell(dir, chip))
+        .unwrap()
+        .map(|out| {
+            (
+                String::from_utf8_lossy(&out.stdout).trim_end().to_owned(),
+                out.success,
+            )
+        })
+}
+
+#[test]
+fn a_chip_command_maps_to_its_batched_chip_and_nothing_else_does() {
+    for chip in BatchedChip::ALL {
+        assert_eq!(BatchedChip::for_sh_command(chip.sh_command()), Some(chip));
+    }
+    assert_eq!(BatchedChip::for_sh_command("git status"), None);
+    assert_eq!(BatchedChip::for_sh_command(""), None);
+    // The dropdown's record separator is printed by the host's printf, not by Rust.
+    assert!(
+        BatchedChip::BranchDropdown
+            .sh_command()
+            .contains("; printf '\\036\\n'; git --no-optional-locks worktree list --porcelain")
+    );
+}
+
+#[test]
+fn the_chip_sections_are_valid_sh_and_kubectl_is_only_there_once_asked_for() {
+    let runner = ShellGitRunner::new(Sh::new());
+    let without = build_script(&runner, "/some/it's repo")
+        .and_then(|s| add_chip_sections(s, "/some/it's repo", false))
+        .unwrap();
+    assert!(without.section_names().contains(&"chipbranches"));
+    assert!(without.section_names().contains(&"chipshortstat"));
+    assert!(!without.section_names().contains(&"chipkube"));
+    let with = build_script(&runner, "/some/it's repo")
+        .and_then(|s| add_chip_sections(s, "/some/it's repo", true))
+        .unwrap();
+    assert!(with.section_names().contains(&"chipkube"));
+    let source = with.render_posix();
+    for shell in ["sh", "dash"] {
+        let Ok(mut child) = std::process::Command::new(shell)
+            .arg("-n")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+        else {
+            continue;
+        };
+        use std::io::Write as _;
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(source.as_bytes())
+            .unwrap();
+        let out = child.wait_with_output().unwrap();
+        assert!(
+            out.status.success(),
+            "{shell} -n: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+}
+
+#[test]
+fn a_batched_chip_answer_is_the_generators_own_output() {
+    if !git_available() {
+        return;
+    }
+    let dir = repo_with(&[("a.txt", "one\n"), ("src/b.rs", "fn main() {}\n")]);
+    git(dir.path(), &["branch", "feature-x"]);
+    std::fs::write(dir.path().join("a.txt"), "one\ntwo\n").unwrap();
+    let path = canonical(&dir);
+    let sh = Sh::new();
+    let be = backend(&sh);
+    for chip in [BatchedChip::BranchDropdown, BatchedChip::DiffShortstat] {
+        let want = generator_output(&path, chip);
+        assert!(want.1, "{chip:?}: the generator's command works here");
+        assert_eq!(batched_chip(&be, &path, chip), Some(want), "{chip:?}");
+    }
+    let (branches, _) = batched_chip(&be, &path, BatchedChip::BranchDropdown).unwrap();
+    assert!(branches.contains("feature-x"), "{branches}");
+    assert!(branches.contains('\u{1e}'), "the record separator line");
+    assert!(branches.contains("worktree "), "{branches}");
+    let (stat, _) = batched_chip(&be, &path, BatchedChip::DiffShortstat).unwrap();
+    assert!(stat.contains("1 file changed"), "{stat}");
+    assert_eq!(sh.count(), 1, "every chip from the one exec");
+
+    // Outside a repository the commands fail, as the generator's own exec does.
+    let plain = tempfile::tempdir().unwrap();
+    let plain_path = canonical(&plain);
+    for chip in [BatchedChip::BranchDropdown, BatchedChip::DiffShortstat] {
+        let want = generator_output(&plain_path, chip);
+        assert_eq!(batched_chip(&be, &plain_path, chip), Some(want), "{chip:?}");
+    }
+}
+
+#[test]
+fn the_chips_of_a_prompt_join_the_prompts_one_exec() {
+    if !git_available() {
+        return;
+    }
+    let dir = repo_with(&[("a.txt", "one\n"), ("src/b.rs", "fn main() {}\n")]);
+    let path = canonical(&dir);
+    let sh = Sh::new();
+    let (be, store) = prompt_backend(&sh);
+    // A cd: the navigation, the branch dropdown (the chip's value just changed), the Precmd that
+    // claims the navigation's bump, then the status chip, the diff state and the tree refresh.
+    store.begin_navigation();
+    block_on(be.navigate_to_directory_shell(path.clone())).unwrap();
+    assert!(batched_chip(&be, &path, BatchedChip::BranchDropdown).is_some());
+    store.begin_prompt();
+    block_on(be.git_status_shell(&path, None)).unwrap();
+    assert!(batched_chip(&be, &path, BatchedChip::DiffShortstat).is_some());
+    block_on(be.refresh_repo_tree(&path)).unwrap();
+    assert_eq!(sh.count(), 1, "the cd's side work and its chips: one exec");
+
+    // The next prompt, the chips asking first and spelling the directory with a trailing slash.
+    git(dir.path(), &["branch", "later"]);
+    store.begin_prompt();
+    let (branches, _) =
+        batched_chip(&be, &format!("{path}/"), BatchedChip::BranchDropdown).unwrap();
+    assert!(
+        branches.contains("later"),
+        "a new prompt reads again: {branches}"
+    );
+    block_on(be.git_status_shell(&path, None)).unwrap();
+    block_on(be.refresh_repo_tree(&path)).unwrap();
+    assert!(batched_chip(&be, &path, BatchedChip::DiffShortstat).is_some());
+    assert_eq!(sh.count(), 2, "one prompt, one exec");
+}
+
+#[test]
+fn a_chip_asked_in_a_subdirectory_joins_the_repositorys_exec() {
+    if !git_available() {
+        return;
+    }
+    let dir = repo_with(&[("a.txt", "one\n"), ("src/b.rs", "fn main() {}\n")]);
+    let root = canonical(&dir);
+    let sub = format!("{root}/src");
+    let sh = Sh::new();
+    let (be, store) = prompt_backend(&sh);
+    store.begin_navigation();
+    let nav = block_on(be.navigate_to_directory_shell(sub.clone())).unwrap();
+    assert_eq!(nav.indexed_path, root);
+    store.begin_prompt();
+    let after_cd = sh.count();
+
+    // A later prompt in the subdirectory: the status chip and the tree ask for the ROOT, the
+    // prompt chips know only the working directory. The navigation resolved it to the root, so
+    // they share the root's exec instead of starting one for the subdirectory.
+    store.begin_prompt();
+    block_on(be.git_status_shell(&root, None)).unwrap();
+    let want = generator_output(&sub, BatchedChip::BranchDropdown);
+    assert_eq!(
+        batched_chip(&be, &sub, BatchedChip::BranchDropdown),
+        Some(want)
+    );
+    assert!(batched_chip(&be, &sub, BatchedChip::DiffShortstat).is_some());
+    block_on(be.refresh_repo_tree(&root)).unwrap();
+    assert_eq!(sh.count(), after_cd + 1, "one prompt, one exec");
+}
+
+#[test]
+fn the_kubernetes_chip_runs_by_itself_once_and_rides_in_the_batch_from_then_on() {
+    if !git_available() {
+        return;
+    }
+    let dir = repo_with(&[("a.txt", "one\n")]);
+    let path = canonical(&dir);
+    let sh = Sh::new();
+    let (be, store) = prompt_backend(&sh);
+    store.begin_prompt();
+    block_on(be.git_status_shell(&path, None)).unwrap();
+    // The first ask on the host: no script so far ran kubectl. The caller runs the chip's own
+    // command this once; nothing is exec'd here.
+    assert_eq!(batched_chip(&be, &path, BatchedChip::KubeContext), None);
+    assert_eq!(sh.count(), 1);
+    assert!(
+        !sh.seen.lock().unwrap()[0].contains("kubectl config current-context"),
+        "kubectl is not run for a prompt whose chips never asked for it"
+    );
+
+    // From the next prompt on it is a section of the prompt's one exec, with the generator's
+    // own answer (whether or not this machine has kubectl).
+    store.begin_prompt();
+    block_on(be.git_status_shell(&path, None)).unwrap();
+    let want = generator_output(&path, BatchedChip::KubeContext);
+    assert_eq!(
+        batched_chip(&be, &path, BatchedChip::KubeContext),
+        Some(want)
+    );
+    assert_eq!(sh.count(), 2, "status chip and Kubernetes chip: one exec");
+    assert!(sh.seen.lock().unwrap()[1].contains("kubectl config current-context"));
+}
+
+#[test]
+fn a_chip_whose_batch_failed_gets_no_answer_and_no_exec_of_its_own() {
+    if !git_available() {
+        return;
+    }
+    let dir = repo_with(&[("a.txt", "one\n")]);
+    let path = canonical(&dir);
+    let sh = Arc::new(Sh {
+        fail_first: true,
+        ..Sh::default()
+    });
+    let (be, store) = prompt_backend(&sh);
+    store.begin_prompt();
+    for chip in [BatchedChip::BranchDropdown, BatchedChip::DiffShortstat] {
+        let err = block_on(be.batched_chip_shell(&path, chip)).unwrap_err();
+        assert!(
+            matches!(err, crate::backend::BackendError::Unavailable(_)),
+            "{chip:?}: {err:?}"
+        );
+    }
+    assert_eq!(sh.count(), 1, "the failed batch is the prompt's only exec");
+    // The next prompt's batch answers.
+    store.begin_prompt();
+    assert!(batched_chip(&be, &path, BatchedChip::BranchDropdown).is_some());
+    assert_eq!(sh.count(), 2);
+}
+
+#[test]
+fn with_the_kill_switch_the_chips_are_not_batched() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = canonical(&dir);
+    let sh = Sh::new();
+    let be = ShellBackend::new(Some(sh.clone())).with_git_batching(false);
+    for chip in BatchedChip::ALL {
+        // `None`: the caller runs the chip's own command, as before #2216.
+        assert_eq!(batched_chip(&be, &path, chip), None, "{chip:?}");
+    }
+    assert_eq!(sh.count(), 0);
+}

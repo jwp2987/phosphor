@@ -294,3 +294,52 @@ fn direct_powershell_invocation_leaves_every_other_command_to_the_shell() {
         .unwrap();
     assert!(super::direct_powershell_invocation(text).is_none());
 }
+
+/// #2216: on a no-helper remote session `CurrentPrompt` recognises these three chip commands by
+/// their text and reads them from the prompt's batched exec. The POSIX / fish text is therefore
+/// the batch's own; the PowerShell text is not batched (the batch does not run on those hosts).
+#[test]
+fn the_per_prompt_chip_commands_are_the_ones_the_no_helper_batch_carries() {
+    use remote_server::backend::BatchedChip;
+
+    use crate::terminal::shell::ShellType;
+
+    for (generator, chip) in [
+        (
+            super::shell_other_git_branches(),
+            BatchedChip::BranchDropdown,
+        ),
+        (super::shell_git_line_changes(), BatchedChip::DiffShortstat),
+        (
+            super::kubernetes_current_context(),
+            BatchedChip::KubeContext,
+        ),
+    ] {
+        for shell in [ShellType::Bash, ShellType::Zsh, ShellType::Fish] {
+            let command = generator.command().for_shell(shell).expect("a command");
+            assert_eq!(
+                BatchedChip::for_sh_command(command),
+                Some(chip),
+                "{shell:?}: {command}"
+            );
+        }
+    }
+    for generator in [
+        super::shell_other_git_branches(),
+        super::shell_git_line_changes(),
+    ] {
+        let command = generator
+            .command()
+            .for_shell(ShellType::PowerShell)
+            .expect("a command");
+        assert_eq!(BatchedChip::for_sh_command(command), None, "{command}");
+    }
+    // The chips that are answered some other way on such a session are not batched by text.
+    for generator in [super::shell_git_branch(), super::shell_git_branch_status()] {
+        let command = generator
+            .command()
+            .for_shell(ShellType::Bash)
+            .expect("a command");
+        assert_eq!(BatchedChip::for_sh_command(command), None, "{command}");
+    }
+}

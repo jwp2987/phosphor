@@ -703,6 +703,21 @@ impl RoutedBackend {
             .map(Requested::Computed)
     }
 
+    /// What a prompt chip's own command prints in `dir`, from the prompt's batched exec, when the
+    /// shell serves the git chips of this host (no helper): see
+    /// [`ShellBackend::batched_chip_shell`]. `Ok(None)`: not answered by a batch (a helper serves
+    /// the host, or the batch is off), so the caller runs the chip's command as before.
+    pub async fn batched_chip(
+        &self,
+        dir: &str,
+        chip: super::BatchedChip,
+    ) -> Result<Option<super::ChipCommandOutput>, super::BackendError> {
+        if self.kind(Family::GitStatus) != BackendKind::Shell {
+            return Ok(None);
+        }
+        self.shell.batched_chip_shell(dir, chip).await
+    }
+
     /// Asks for PR info of `repo_path`'s current branch. The helper is told and pushes (it looks
     /// again by itself when the branch changes). On the shell it is looked up now: always with
     /// `force`, otherwise only when the branch differs from `known_branch`.

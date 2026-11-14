@@ -40,8 +40,8 @@ pub use router::{
     executor_route_line, route_log_line,
 };
 pub use shell::{
-    AgentContextCache, GitBatchStore, PrLookup, ShellBackend, ShellBuffers, ShellIndex, ShellPush,
-    TreeCache,
+    AgentContextCache, BatchedChip, ChipCommandOutput, GitBatchStore, PrLookup, ShellBackend,
+    ShellBuffers, ShellIndex, ShellPush, TreeCache,
 };
 pub use shell_git_runner::ShellGitRunner;
 

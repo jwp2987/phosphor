@@ -1,6 +1,7 @@
 //! Context chips built into Zap
 
 use chrono::Local;
+use remote_server::backend::BatchedChip;
 use warp_util::path::user_friendly_path;
 
 use crate::terminal::shell::ShellType;
@@ -127,9 +128,9 @@ pub fn shell_git_branch() -> ShellCommandGenerator {
 }
 
 pub fn shell_other_git_branches() -> ShellCommandGenerator {
-    const SH_COMMAND: &str = "git --no-optional-locks branch --no-color --sort=-committerdate; \
-        printf '\\036\\n'; \
-        git --no-optional-locks worktree list --porcelain";
+    // The text lives with the no-helper batch (#2216), which runs this same command as a section
+    // of the prompt's one exec; `CurrentPrompt` recognises the chip by this text.
+    const SH_COMMAND: &str = BatchedChip::BranchDropdown.sh_command();
     let pwsh_command = pwsh_other_git_branches_command();
 
     let command = ShellCommand::shell_specific([
@@ -216,8 +217,8 @@ pub fn shell_git_branch_status() -> ShellCommandGenerator {
 ///
 /// Used as a remote-session fallback when GitRepoStatusModel is unavailable.
 pub fn shell_git_line_changes() -> ShellCommandGenerator {
-    const GIT_COMMAND: &str =
-        "GIT_OPTIONAL_LOCKS=0 git -c diff.autoRefreshIndex=false diff --shortstat HEAD";
+    // Shared with the no-helper batch (#2216), like the branch dropdown's command.
+    const GIT_COMMAND: &str = BatchedChip::DiffShortstat.sh_command();
 
     let command = ShellCommand::shell_specific([
         (ShellType::Bash, GIT_COMMAND.to_string()),
@@ -239,7 +240,7 @@ const GIT_LINE_CHANGES_ARGS: &[&str] = &[
 ];
 
 /// The program and arguments of the Kubernetes context chip command.
-const KUBECTL_CURRENT_CONTEXT_COMMAND: &str = "kubectl config current-context";
+const KUBECTL_CURRENT_CONTEXT_COMMAND: &str = BatchedChip::KubeContext.sh_command();
 
 fn pwsh_git_line_changes_command() -> String {
     safe_git_powershell(&format!("git {}", GIT_LINE_CHANGES_ARGS.join(" ")))

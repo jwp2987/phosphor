@@ -22,6 +22,8 @@ use crate::{
 use futures::{FutureExt as _, pin_mut};
 use itertools::Itertools;
 use parking_lot::FairMutex;
+use remote_server::backend::{BatchedChip, ChipCommandOutput, RoutedBackend};
+use remote_server::manager::RemoteServerManager;
 use warp_completer::completer::CommandExitStatus;
 use warp_core::user_preferences::GetUserPreferences;
 
@@ -345,6 +347,20 @@ impl ActiveChipSurfaces {
 }
 
 #[derive(Clone)]
+/// A batched chip section's output in the shape a chip command's own exec returns.
+fn chip_command_output(output: ChipCommandOutput) -> warp_completer::completer::CommandOutput {
+    warp_completer::completer::CommandOutput {
+        stdout: output.stdout,
+        stderr: Vec::new(),
+        status: if output.success {
+            CommandExitStatus::Success
+        } else {
+            CommandExitStatus::Failure
+        },
+        exit_code: None,
+    }
+}
+
 struct ShellCommandExecutionContext {
     session: Arc<Session>,
     command: String,
@@ -868,6 +884,80 @@ impl CurrentPrompt {
         }
     }
 
+    /// Whether this chip command is answered by the prompt's batched exec (#2216): on a remote
+    /// session with no helper, the branch dropdown, the diff `--shortstat` fallback and the
+    /// Kubernetes context are sections of the ONE exec the session's side calls share per prompt
+    /// (#2156). Run through the session's executor they were one more ssh exec channel each, per
+    /// prompt. `None`: any other command, a local session, or a session a helper serves.
+    fn batched_chip_backend(
+        exec_ctx: &ShellCommandExecutionContext,
+        ctx: &AppContext,
+    ) -> Option<(RoutedBackend, BatchedChip)> {
+        let chip = BatchedChip::for_sh_command(&exec_ctx.command)?;
+        if exec_ctx.session.is_local()
+            || exec_ctx.current_dir_path.is_none()
+            || !ctx.has_singleton_model::<RemoteServerManager>()
+        {
+            return None;
+        }
+        let manager = RemoteServerManager::as_ref(ctx);
+        let session_id = exec_ctx.session.id();
+        manager
+            .is_shell_mode_session(session_id)
+            .then(|| (manager.backend_for_session(session_id), chip))
+    }
+
+    /// Runs a chip's command: from the prompt's batched exec when `batched` says the batch
+    /// carries it (see [`Self::batched_chip_backend`]), else through the session's executor
+    /// ([`Self::execute_session_command_with_timeout`]). Same result shape and the same timeout.
+    ///
+    /// When the batch should have answered and did not (its exec failed), the command is NOT run
+    /// by itself: that would be a second exec channel for the prompt. The chip gets no output,
+    /// as from a failed command, and asks again at the next prompt.
+    async fn execute_chip_command(
+        batched: Option<(RoutedBackend, BatchedChip)>,
+        session: Arc<Session>,
+        command: String,
+        current_dir_path: Option<String>,
+        environment_variables: Option<HashMap<String, String>>,
+        timeout: Option<Duration>,
+    ) -> (Option<warp_completer::completer::CommandOutput>, bool) {
+        if let (Some((backend, chip)), Some(dir)) = (batched, current_dir_path.as_deref()) {
+            let answer = {
+                let request = backend.batched_chip(dir, chip).fuse();
+                let timeout_future = Timer::after(effective_command_timeout(timeout)).fuse();
+                pin_mut!(request);
+                pin_mut!(timeout_future);
+                futures::select! {
+                    answer = request => Some(answer),
+                    _ = timeout_future => None,
+                }
+            };
+            match answer {
+                None => return (None, true),
+                Some(Ok(Some(output))) => return (Some(chip_command_output(output)), false),
+                // Not answered by a batch here (batching off, or the Kubernetes chip's first
+                // ask on this host): the chip's own command, as before.
+                Some(Ok(None)) => {}
+                Some(Err(e)) => {
+                    log::debug!(
+                        "[chips] {chip:?}: no answer in the prompt's batched exec, and no exec \
+                         of its own: {e}"
+                    );
+                    return (None, false);
+                }
+            }
+        }
+        Self::execute_session_command_with_timeout(
+            session,
+            command,
+            current_dir_path,
+            environment_variables,
+            timeout,
+        )
+        .await
+    }
+
     fn filter_git_branch_on_click_values(
         &self,
         values_opt: Option<Vec<String>>,
@@ -991,9 +1081,11 @@ impl CurrentPrompt {
                 let chip_title = chip.title().to_owned();
                 let current_fingerprint = fingerprint;
                 let logger = self.prompt_chip_logger.clone();
+                let batched = Self::batched_chip_backend(&exec_ctx, ctx);
                 let handle = ctx.spawn(
                     async move {
-                        let (value, timed_out) = Self::execute_session_command_with_timeout(
+                        let (value, timed_out) = Self::execute_chip_command(
+                            batched,
                             exec_ctx.session.clone(),
                             exec_ctx.command.clone(),
                             exec_ctx.current_dir_path.clone(),
@@ -1171,9 +1263,11 @@ impl CurrentPrompt {
         let timeout = chip.runtime_policy().shell_command_timeout();
         let chip_title = chip.title().to_owned();
         let logger = self.prompt_chip_logger.clone();
+        let batched = Self::batched_chip_backend(&exec_ctx, ctx);
         let handle = ctx.spawn(
             async move {
-                let (value, timed_out) = Self::execute_session_command_with_timeout(
+                let (value, timed_out) = Self::execute_chip_command(
+                    batched,
                     exec_ctx.session.clone(),
                     exec_ctx.command.clone(),
                     exec_ctx.current_dir_path.clone(),
