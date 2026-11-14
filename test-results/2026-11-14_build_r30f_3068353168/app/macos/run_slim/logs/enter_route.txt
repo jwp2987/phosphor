@@ -1,0 +1,10 @@
+Returns at the session tap: 259; Phosphor app_send_event lines: 185; Phosphor pids: [56042, 58774]
+targeted at Phosphor but never reached its NSApplication: 0 (of which UNCOVERED, no app_send_event within 3 s = app-log gap, cause not established: 0; LOST with neighbours logged: 0)
+  app log logs/agent/phosphor.log: 2026-11-14T15:00:06Z .. 2026-11-14T15:02:04Z (7689145 bytes)
+  app log logs/terminal/phosphor.log: 2026-11-14T14:56:02Z .. 2026-11-14T15:00:05Z (8912860 bytes)
+targeted at another process: 74
+  pid 56732 (?): 61, first wall=1794668226.338
+  pid 56519 (?): 13, first wall=1794668198.592
+seen by Phosphor but not by the tap (join check, expect 0): 0
+injector posted 249 Returns; never seen by macOS (no tap event within 200 ms): 0
+ALL KEYS: injector sent 8677; macOS delivered 6153 to Phosphor, 2650 to other processes; never in macOS (sent - delivered) 0

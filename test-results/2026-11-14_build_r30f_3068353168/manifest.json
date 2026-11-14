@@ -1,0 +1,2433 @@
+{
+ "pipeline": 3068353168,
+ "web_url": "https://gitlab.com/winters-phosphor/phosphor/-/pipelines/3068353168",
+ "ref": "build/r30f",
+ "commit": "8476d176d4144966c556c88f45e3613f142f5a75",
+ "created_at": "2026-11-14T13:42:56.117Z",
+ "date": "2026-11-14",
+ "tier": "targeted",
+ "pipeline_status": "success",
+ "jobs": {
+  "app-test-windows-reuse": {
+   "status": "manual",
+   "duration": null,
+   "id": 18032492782,
+   "runner": null,
+   "note": "not run"
+  },
+  "app-test-macos-reuse": {
+   "status": "manual",
+   "duration": null,
+   "id": 18032492781,
+   "runner": null,
+   "note": "not run"
+  },
+  "app-test-lab-linux-reuse": {
+   "status": "manual",
+   "duration": null,
+   "id": 18032492780,
+   "runner": null,
+   "note": "not run"
+  },
+  "app-test-linux-x11-reuse": {
+   "status": "manual",
+   "duration": null,
+   "id": 18032492779,
+   "runner": null,
+   "note": "not run"
+  },
+  "app-test-linux-wayland-reuse": {
+   "status": "manual",
+   "duration": null,
+   "id": 18032492778,
+   "runner": null,
+   "note": "not run"
+  },
+  "collect-windows-run": {
+   "status": "manual",
+   "duration": null,
+   "id": 18032492777,
+   "runner": null,
+   "note": "not run"
+  },
+  "collect-macos-run": {
+   "status": "manual",
+   "duration": null,
+   "id": 18032492776,
+   "runner": null,
+   "note": "not run"
+  },
+  "app-test-replay-linux": {
+   "status": "manual",
+   "duration": null,
+   "id": 18032492775,
+   "runner": null,
+   "note": "not run"
+  },
+  "app-test-lab-windows": {
+   "status": "failed",
+   "duration": 1699.143387,
+   "id": 18032492774,
+   "runner": "phosphor-windows-vm"
+  },
+  "app-test-lab-macos": {
+   "status": "failed",
+   "duration": 587.026333,
+   "id": 18032492773,
+   "runner": "MacBookPro-gitrunner"
+  },
+  "app-test-lab-linux": {
+   "status": "success",
+   "duration": 430.253879,
+   "id": 18032492772,
+   "runner": ""
+  },
+  "lab-helper": {
+   "status": "success",
+   "duration": 42.975296,
+   "id": 18032492771,
+   "runner": ""
+  },
+  "sshlab-image": {
+   "status": "success",
+   "duration": 21.349221,
+   "id": 18032492770,
+   "runner": ""
+  },
+  "app-test-windows": {
+   "status": "failed",
+   "duration": 1092.179663,
+   "id": 18032492769,
+   "runner": "phosphor-windows-vm"
+  },
+  "app-test-macos": {
+   "status": "success",
+   "duration": 401.281483,
+   "id": 18032492768,
+   "runner": "MacBookPro-gitrunner"
+  },
+  "app-test-linux-x11": {
+   "status": "manual",
+   "duration": null,
+   "id": 18032492767,
+   "runner": null,
+   "note": "not run"
+  },
+  "app-test-linux-wayland": {
+   "status": "success",
+   "duration": 377.530193,
+   "id": 18032492766,
+   "runner": ""
+  },
+  "build-windows-profiling": {
+   "status": "manual",
+   "duration": null,
+   "id": 18032492765,
+   "runner": null,
+   "note": "not run"
+  },
+  "build-macos-profiling": {
+   "status": "manual",
+   "duration": null,
+   "id": 18032492764,
+   "runner": null,
+   "note": "not run"
+  },
+  "build-linux-profiling": {
+   "status": "manual",
+   "duration": null,
+   "id": 18032492763,
+   "runner": null,
+   "note": "not run"
+  },
+  "build-windows-x86_64": {
+   "status": "success",
+   "duration": 2235.734666,
+   "id": 18032492762,
+   "runner": "phosphor-windows-vm"
+  },
+  "build-linux-x86_64": {
+   "status": "success",
+   "duration": 1871.504041,
+   "id": 18032492761,
+   "runner": ""
+  },
+  "build-macos-arm64": {
+   "status": "success",
+   "duration": 1126.583636,
+   "id": 18032492760,
+   "runner": "MacBookPro-gitrunner"
+  },
+  "guards-helper-deps": {
+   "status": "success",
+   "duration": 5.001166,
+   "id": 18032492759,
+   "runner": ""
+  },
+  "bench-remote-server": {
+   "status": "manual",
+   "duration": null,
+   "id": 18032492758,
+   "runner": null,
+   "note": "not run"
+  },
+  "usage-test-macos": {
+   "status": "manual",
+   "duration": null,
+   "id": 18032492757,
+   "runner": null,
+   "note": "not run"
+  },
+  "usage-test-linux": {
+   "status": "manual",
+   "duration": null,
+   "id": 18032492756,
+   "runner": null,
+   "note": "not run"
+  },
+  "bench-windows": {
+   "status": "manual",
+   "duration": null,
+   "id": 18032492755,
+   "runner": null,
+   "note": "not run"
+  },
+  "mutants-warpui-core-windows": {
+   "status": "manual",
+   "duration": null,
+   "id": 18032492754,
+   "runner": null,
+   "note": "not run"
+  },
+  "mutants-windows": {
+   "status": "manual",
+   "duration": null,
+   "id": 18032492753,
+   "runner": null,
+   "note": "not run"
+  },
+  "fuzz-smoke-windows": {
+   "status": "manual",
+   "duration": null,
+   "id": 18032492752,
+   "runner": null,
+   "note": "not run"
+  },
+  "test-shuttle-loom-windows": {
+   "status": "manual",
+   "duration": null,
+   "id": 18032492751,
+   "runner": null,
+   "note": "not run"
+  },
+  "test-workspace-rest-windows": {
+   "status": "success",
+   "duration": 421.323465,
+   "id": 18032492750,
+   "runner": "phosphor-windows-vm"
+  },
+  "test-warpui-core-windows": {
+   "status": "success",
+   "duration": 298.414159,
+   "id": 18032492749,
+   "runner": "phosphor-windows-vm"
+  },
+  "test-windows": {
+   "status": "success",
+   "duration": 2730.00956,
+   "id": 18032492748,
+   "runner": "phosphor-windows-vm"
+  },
+  "bench-macos": {
+   "status": "manual",
+   "duration": null,
+   "id": 18032492747,
+   "runner": null,
+   "note": "not run"
+  },
+  "mutants-warpui-core-macos": {
+   "status": "manual",
+   "duration": null,
+   "id": 18032492746,
+   "runner": null,
+   "note": "not run"
+  },
+  "mutants-macos": {
+   "status": "manual",
+   "duration": null,
+   "id": 18032492745,
+   "runner": null,
+   "note": "not run"
+  },
+  "fuzz-smoke-macos": {
+   "status": "manual",
+   "duration": null,
+   "id": 18032492744,
+   "runner": null,
+   "note": "not run"
+  },
+  "test-shuttle-loom-macos": {
+   "status": "manual",
+   "duration": null,
+   "id": 18032492743,
+   "runner": null,
+   "note": "not run"
+  },
+  "test-workspace-rest-macos": {
+   "status": "success",
+   "duration": 214.981101,
+   "id": 18032492742,
+   "runner": "MacBookPro-gitrunner"
+  },
+  "test-warpui-core-macos": {
+   "status": "success",
+   "duration": 66.992406,
+   "id": 18032492741,
+   "runner": "MacBookPro-gitrunner"
+  },
+  "test-macos": {
+   "status": "success",
+   "duration": 1751.05683,
+   "id": 18032492740,
+   "runner": "MacBookPro-gitrunner"
+  },
+  "bench": {
+   "status": "manual",
+   "duration": null,
+   "id": 18032492739,
+   "runner": null,
+   "note": "not run"
+  },
+  "mutants-warpui-core": {
+   "status": "manual",
+   "duration": null,
+   "id": 18032492738,
+   "runner": null,
+   "note": "not run"
+  },
+  "mutants": {
+   "status": "manual",
+   "duration": null,
+   "id": 18032492737,
+   "runner": null,
+   "note": "not run"
+  },
+  "fuzz-smoke": {
+   "status": "manual",
+   "duration": null,
+   "id": 18032492736,
+   "runner": null,
+   "note": "not run"
+  },
+  "test-shuttle-loom": {
+   "status": "manual",
+   "duration": null,
+   "id": 18032492735,
+   "runner": null,
+   "note": "not run"
+  },
+  "input-timers-strict": {
+   "status": "manual",
+   "duration": null,
+   "id": 18032492734,
+   "runner": null,
+   "note": "not run"
+  },
+  "integration-linux-pwsh": {
+   "status": "manual",
+   "duration": null,
+   "id": 18032492733,
+   "runner": null,
+   "note": "not run"
+  },
+  "integration-linux: [3]": {
+   "status": "manual",
+   "duration": null,
+   "id": 18032492732,
+   "runner": null,
+   "note": "not run"
+  },
+  "integration-linux: [2]": {
+   "status": "manual",
+   "duration": null,
+   "id": 18032492731,
+   "runner": null,
+   "note": "not run"
+  },
+  "integration-linux: [1]": {
+   "status": "manual",
+   "duration": null,
+   "id": 18032492730,
+   "runner": null,
+   "note": "not run"
+  },
+  "test-workspace-rest": {
+   "status": "success",
+   "duration": 95.938247,
+   "id": 18032492729,
+   "runner": ""
+  },
+  "insta-snapshots": {
+   "status": "manual",
+   "duration": null,
+   "id": 18032492728,
+   "runner": null,
+   "note": "not run"
+  },
+  "test-warpui-core": {
+   "status": "success",
+   "duration": 70.904718,
+   "id": 18032492727,
+   "runner": ""
+  },
+  "test-linux": {
+   "status": "success",
+   "duration": 1343.829408,
+   "id": 18032492726,
+   "runner": ""
+  },
+  "advisories": {
+   "status": "success",
+   "duration": 8.039245,
+   "id": 18032492725,
+   "runner": ""
+  },
+  "licenses": {
+   "status": "success",
+   "duration": 7.123497,
+   "id": 18032492724,
+   "runner": ""
+  },
+  "check-windows": {
+   "status": "manual",
+   "duration": null,
+   "id": 18032492723,
+   "runner": null,
+   "note": "not run"
+  },
+  "guards-windows": {
+   "status": "manual",
+   "duration": null,
+   "id": 18032492722,
+   "runner": null,
+   "note": "not run"
+  },
+  "diag-windows": {
+   "status": "manual",
+   "duration": null,
+   "id": 18032492721,
+   "runner": null,
+   "note": "not run"
+  },
+  "check-macos": {
+   "status": "manual",
+   "duration": null,
+   "id": 18032492720,
+   "runner": null,
+   "note": "not run"
+  },
+  "diag-mac": {
+   "status": "manual",
+   "duration": null,
+   "id": 18032492719,
+   "runner": null,
+   "note": "not run"
+  },
+  "check-linux": {
+   "status": "success",
+   "duration": 492.877736,
+   "id": 18032492718,
+   "runner": ""
+  },
+  "guards": {
+   "status": "success",
+   "duration": 520.279208,
+   "id": 18032492717,
+   "runner": ""
+  }
+ },
+ "unit": {
+  "test-workspace-rest-windows": {
+   "summary_line": "Summary [  40.578s] 3552 tests run: 3552 passed, 24 skipped",
+   "duration_s": 40.578,
+   "run": 3552,
+   "passed": 3552,
+   "failed": 0,
+   "timed_out": 0,
+   "skipped": 24,
+   "slow": 0,
+   "flaky": 0,
+   "failures": [],
+   "regressions": [],
+   "notes": [
+    "tests: ok (0 known failure(s), no regressions)"
+   ],
+   "job": "test-workspace-rest-windows",
+   "status": "success",
+   "duration": 421.323465
+  },
+  "test-warpui-core-windows": {
+   "summary_line": "Summary [   5.542s] 864 tests run: 864 passed, 7 skipped",
+   "duration_s": 5.542,
+   "run": 864,
+   "passed": 864,
+   "failed": 0,
+   "timed_out": 0,
+   "skipped": 7,
+   "slow": 0,
+   "flaky": 0,
+   "failures": [],
+   "regressions": [],
+   "notes": [
+    "tests: ok (0 known failure(s), no regressions)"
+   ],
+   "job": "test-warpui-core-windows",
+   "status": "success",
+   "duration": 298.414159
+  },
+  "test-windows": {
+   "summary_line": "Summary [ 799.564s] 12062 tests run: 12062 passed (10 slow, 10 leaky), 47 skipped",
+   "duration_s": 799.564,
+   "run": 12062,
+   "passed": 12062,
+   "failed": 0,
+   "timed_out": 0,
+   "skipped": 47,
+   "slow": 10,
+   "flaky": 0,
+   "failures": [
+    {
+     "kind": "LEAK",
+     "crate": "warp",
+     "test": "ai::blocklist::agent_fuzz::matrix::pairs_failing_command::off",
+     "seconds": 51.805
+    },
+    {
+     "kind": "LEAK",
+     "crate": "warp",
+     "test": "ai::blocklist::agent_fuzz::matrix::triples_command::off",
+     "seconds": 131.089
+    },
+    {
+     "kind": "LEAK",
+     "crate": "warp",
+     "test": "context_chips::current_prompt::tests::test_chips_rerun_when_the_blocks_session_registers",
+     "seconds": 0.457
+    },
+    {
+     "kind": "LEAK",
+     "crate": "warp",
+     "test": "context_chips::current_prompt::tests::test_unchanged_chip_refetch_does_not_respawn_on_click_command",
+     "seconds": 0.509
+    },
+    {
+     "kind": "LEAK",
+     "crate": "warp",
+     "test": "terminal::input::tests::test_history_file_does_not_route_requests_or_bare_english_words_to_the_shell",
+     "seconds": 0.768
+    },
+    {
+     "kind": "LEAK",
+     "crate": "warp",
+     "test": "workspace::view::tests::test_active_tab_bar_position_id_tracks_layout",
+     "seconds": 0.655
+    },
+    {
+     "kind": "LEAK",
+     "crate": "warp",
+     "test": "workspace::view::tests::test_closing_a_code_pane_drops_its_editor_and_buffer",
+     "seconds": 2.305
+    },
+    {
+     "kind": "LEAK",
+     "crate": "warp",
+     "test": "workspace::view::tests::test_closing_a_code_pane_releases_a_retained_editors_heavy_state",
+     "seconds": 2.137
+    },
+    {
+     "kind": "LEAK",
+     "crate": "warp",
+     "test": "workspace::view::tests::test_code_editor_entry_points_refuse_a_file_past_the_size_limit",
+     "seconds": 2.185
+    },
+    {
+     "kind": "LEAK",
+     "crate": "warp",
+     "test": "workspace::view::tests::test_reopening_a_file_whose_code_pane_was_moved_away_still_opens_it",
+     "seconds": 2.178
+    }
+   ],
+   "regressions": [],
+   "notes": [
+    "tests: ok (0 known failure(s), no regressions)"
+   ],
+   "job": "test-windows",
+   "status": "success",
+   "duration": 2730.00956
+  },
+  "test-workspace-rest-macos": {
+   "summary_line": "Summary [  48.155s] 3654 tests run: 3654 passed, 11 skipped",
+   "duration_s": 48.155,
+   "run": 3654,
+   "passed": 3654,
+   "failed": 0,
+   "timed_out": 0,
+   "skipped": 11,
+   "slow": 0,
+   "flaky": 0,
+   "failures": [],
+   "regressions": [],
+   "notes": [
+    "tests: ok (0 known failure(s), no regressions)"
+   ],
+   "job": "test-workspace-rest-macos",
+   "status": "success",
+   "duration": 214.981101
+  },
+  "test-warpui-core-macos": {
+   "summary_line": "Summary [   6.862s] 857 tests run: 857 passed, 7 skipped",
+   "duration_s": 6.862,
+   "run": 857,
+   "passed": 857,
+   "failed": 0,
+   "timed_out": 0,
+   "skipped": 7,
+   "slow": 0,
+   "flaky": 0,
+   "failures": [],
+   "regressions": [],
+   "notes": [
+    "tests: ok (0 known failure(s), no regressions)"
+   ],
+   "job": "test-warpui-core-macos",
+   "status": "success",
+   "duration": 66.992406
+  },
+  "test-macos": {
+   "summary_line": "Summary [1251.300s] 12307 tests run: 12307 passed (10 slow), 34 skipped",
+   "duration_s": 1251.3,
+   "run": 12307,
+   "passed": 12307,
+   "failed": 0,
+   "timed_out": 0,
+   "skipped": 34,
+   "slow": 10,
+   "flaky": 0,
+   "failures": [],
+   "regressions": [],
+   "notes": [
+    "tests: ok (0 known failure(s), no regressions)"
+   ],
+   "job": "test-macos",
+   "status": "success",
+   "duration": 1751.05683
+  },
+  "test-workspace-rest": {
+   "summary_line": "Summary [  32.783s] 3813 tests run: 3813 passed, 19 skipped",
+   "duration_s": 32.783,
+   "run": 3813,
+   "passed": 3813,
+   "failed": 0,
+   "timed_out": 0,
+   "skipped": 19,
+   "slow": 0,
+   "flaky": 0,
+   "failures": [],
+   "regressions": [],
+   "notes": [
+    "tests: ok (0 known failure(s), no regressions)"
+   ],
+   "job": "test-workspace-rest",
+   "status": "success",
+   "duration": 95.938247
+  },
+  "test-warpui-core": {
+   "summary_line": "Summary [   5.112s] 864 tests run: 864 passed, 7 skipped",
+   "duration_s": 5.112,
+   "run": 864,
+   "passed": 864,
+   "failed": 0,
+   "timed_out": 0,
+   "skipped": 7,
+   "slow": 0,
+   "flaky": 0,
+   "failures": [],
+   "regressions": [],
+   "notes": [
+    "tests: ok (0 known failure(s), no regressions)"
+   ],
+   "job": "test-warpui-core",
+   "status": "success",
+   "duration": 70.904718
+  },
+  "test-linux": {
+   "summary_line": "Summary [1020.697s] 12346 tests run: 12346 passed (9 slow), 35 skipped",
+   "duration_s": 1020.697,
+   "run": 12346,
+   "passed": 12346,
+   "failed": 0,
+   "timed_out": 0,
+   "skipped": 35,
+   "slow": 9,
+   "flaky": 0,
+   "failures": [],
+   "regressions": [],
+   "notes": [
+    "tests: ok (0 known failure(s), no regressions)"
+   ],
+   "job": "test-linux",
+   "status": "success",
+   "duration": 1343.829408
+  }
+ },
+ "app": {
+  "lab-windows": {
+   "job": "app-test-lab-windows",
+   "job_id": 18032492774,
+   "status": "failed",
+   "reuse": false,
+   "cases": [
+    {
+     "mode": "terminal",
+     "name": "lab_chips.bash.lan.nohelper",
+     "status": "skip",
+     "seconds": 0,
+     "detail": [
+      "not run in the PowerShell pane: the lab cases use the local shell's rec.log / prompt.log and bash syntax: they run in the Git Bash pane"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "lab_connect_typeahead.bash.lan.nohelper",
+     "status": "skip",
+     "seconds": 0,
+     "detail": [
+      "not run in the PowerShell pane: the lab cases use the local shell's rec.log / prompt.log and bash syntax: they run in the Git Bash pane"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "lab_connect_typeahead.bash.150.nohelper",
+     "status": "skip",
+     "seconds": 0,
+     "detail": [
+      "not run in the PowerShell pane: the lab cases use the local shell's rec.log / prompt.log and bash syntax: they run in the Git Bash pane"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "lab_connect_typeahead.zsh.lan.nohelper",
+     "status": "skip",
+     "seconds": 0,
+     "detail": [
+      "not run in the PowerShell pane: the lab cases use the local shell's rec.log / prompt.log and bash syntax: they run in the Git Bash pane"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "lab_connect_typeahead.zsh.150.nohelper",
+     "status": "skip",
+     "seconds": 0,
+     "detail": [
+      "not run in the PowerShell pane: the lab cases use the local shell's rec.log / prompt.log and bash syntax: they run in the Git Bash pane"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "lab_connect_typeahead.bash.lan.helper",
+     "status": "skip",
+     "seconds": 0,
+     "detail": [
+      "not run in the PowerShell pane: the lab cases use the local shell's rec.log / prompt.log and bash syntax: they run in the Git Bash pane"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "lab_connect_typeahead.bash.150.helper",
+     "status": "skip",
+     "seconds": 0,
+     "detail": [
+      "not run in the PowerShell pane: the lab cases use the local shell's rec.log / prompt.log and bash syntax: they run in the Git Bash pane"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "lab_connect_typeahead.zsh.lan.helper",
+     "status": "skip",
+     "seconds": 0,
+     "detail": [
+      "not run in the PowerShell pane: the lab cases use the local shell's rec.log / prompt.log and bash syntax: they run in the Git Bash pane"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "lab_connect_typeahead.zsh.150.helper",
+     "status": "skip",
+     "seconds": 0,
+     "detail": [
+      "not run in the PowerShell pane: the lab cases use the local shell's rec.log / prompt.log and bash syntax: they run in the Git Bash pane"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal@gitbash",
+     "name": "key_delivery",
+     "status": "pass",
+     "seconds": 0,
+     "detail": [
+      "marker typed and received via SendInput vk"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal@gitbash",
+     "name": "lab_chips.bash.lan.nohelper",
+     "status": "fail",
+     "seconds": 31.3,
+     "detail": [
+      "the app log has no update_chip_value ShellGitBranch -> brt35by1a2 line: the chip never took the branch",
+      "no side call at all with no helper: where did the branch chip come from?",
+      "`exit` did not return to the local shell (None)",
+      "side-call producers (#2156): shell exec lines by producer: none; prompts the app ran a batch for: []",
+      "injector accounting: injector sent 406; app saw 406; lost-before-app 0 (Enter: sent 12, app saw 12); of the app's: 391 unbound keydown/typed, 4 taken by a key binding, 11 Enter by a binding",
+      "pty writes: 28, of which carrying a CR (\\r): 1; Enter(s) the input editor started: 11 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal@gitbash",
+     "name": "lab_connect_typeahead.bash.lan.nohelper",
+     "status": "fail",
+     "seconds": 82.9,
+     "detail": [
+      "trial 3 (gap 0.0 s): the remote shell received ['exitssh lab-u_bash', 'echo T15_259owo >> ~/rl.txt'], want exactly ['echo T15_259owo >> ~/rl.txt']",
+      "trial 3 (gap 0.0 s): the session was not managed (no ManagedSSHSessionStarting hook and no `verdict managed=true` in the app log of this connect)",
+      "trial 3 (gap 0.0 s): one-connection stages in the app log: [], want auth, auth_done, managed (a final `plain` is the old #1959 behaviour)",
+      "trial 3 (gap 0.0 s): the wrapper's verdict was managed=true (round 8: managed=false, #1933)",
+      "trial 3 (gap 0.0 s): the wrapper announcement was not handled on the connect window (hop ssh_wrapper announced; 0 wrapper hops)",
+      "trial 4 (gap 0.1 s): the session was not managed (no ManagedSSHSessionStarting hook and no `verdict managed=true` in the app log of this connect)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal@gitbash",
+     "name": "entered_agent_view_in_lab_connect_typeahead.bash.lan.nohelper",
+     "status": "fail",
+     "seconds": 0,
+     "detail": [
+      "after the TERMINAL case lab_connect_typeahead.bash.lan.nohelper the pane shows AGENT view: something the case typed was sent to the agent instead of the shell (candidate APP finding: input routing), or the case enters agent view on purpose and must say so (enters_agent=True). The mode guard puts the"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal@gitbash",
+     "name": "lab_connect_typeahead.bash.150.nohelper",
+     "status": "fail",
+     "seconds": 84.6,
+     "detail": [
+      "trial 2 (gap 0.0 s): the line typed behind `ssh lab-u_bash` never reached the remote shell. Test host: sshd.log: 07:55:55 auth publickey user=Winters key=ssh-ed25519 c61037273003a7b72ee329010e27c736 -> ok | 07:55:55 auth publickey user=Winters key=ssh-ed25519 c61037273003a7b72ee329010e27c736 -> ok |",
+      "trial 2 (gap 0.0 s): the remote shell received [], want exactly ['echo T31_x9xf26 >> ~/rl.txt']",
+      "trial 2 (gap 0.0 s): the session was not managed (no ManagedSSHSessionStarting hook and no `verdict managed=true` in the app log of this connect)",
+      "trial 2 (gap 0.0 s): one-connection stages in the app log: [], want auth, auth_done, managed (a final `plain` is the old #1959 behaviour)",
+      "trial 2 (gap 0.0 s): the wrapper's verdict was managed=true (round 8: managed=false, #1933)",
+      "trial 2 (gap 0.0 s): the wrapper announcement was not handled on the connect window (hop ssh_wrapper announced; 0 wrapper hops)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal@gitbash",
+     "name": "entered_agent_view_in_lab_connect_typeahead.bash.150.nohelper",
+     "status": "fail",
+     "seconds": 0,
+     "detail": [
+      "after the TERMINAL case lab_connect_typeahead.bash.150.nohelper the pane shows AGENT view: something the case typed was sent to the agent instead of the shell (candidate APP finding: input routing), or the case enters agent view on purpose and must say so (enters_agent=True). The mode guard puts the"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal@gitbash",
+     "name": "lab_connect_typeahead.zsh.lan.nohelper",
+     "status": "fail",
+     "seconds": 32.6,
+     "detail": [
+      "trial 2 (gap 0.0 s): the remote shell received ['exit', 'echo T40_4ctzkk >> ~/rl.txt'], want exactly ['echo T40_4ctzkk >> ~/rl.txt']",
+      "trial 3 (gap 0.0 s): the remote shell received ['exit', 'echo T42_6oam89 >> ~/rl.txt'], want exactly ['echo T42_6oam89 >> ~/rl.txt']",
+      "trial 4 (gap 0.1 s): the remote shell received ['exit', 'echo T44_z6ww3r >> ~/rl.txt'], want exactly ['echo T44_z6ww3r >> ~/rl.txt']",
+      "trial 5 (gap 0.2 s): the remote shell received ['exit', 'echo T46_9ay6i7 >> ~/rl.txt'], want exactly ['echo T46_9ay6i7 >> ~/rl.txt']",
+      "trial 6 (gap 0.3 s): the remote shell received ['exit', 'echo T48_9n1d4x >> ~/rl.txt'], want exactly ['echo T48_9n1d4x >> ~/rl.txt']",
+      "mode guard: the pane was in agent before this terminal case; put back with escape"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal@gitbash",
+     "name": "lab_connect_typeahead.zsh.150.nohelper",
+     "status": "fail",
+     "seconds": 47.9,
+     "detail": [
+      "trial 1 (gap 0.0 s): the remote shell received ['exit', 'echo T53_9m605w >> ~/rl.txt'], want exactly ['echo T53_9m605w >> ~/rl.txt']",
+      "trial 2 (gap 0.0 s): the remote shell received ['exit', 'echo T55_wa88v3 >> ~/rl.txt'], want exactly ['echo T55_wa88v3 >> ~/rl.txt']",
+      "trial 3 (gap 0.0 s): the remote shell received ['exit', 'echo T57_bol9lf >> ~/rl.txt'], want exactly ['echo T57_bol9lf >> ~/rl.txt']",
+      "trial 4 (gap 0.1 s): the remote shell received ['exit', 'echo T59_cefb2a >> ~/rl.txt'], want exactly ['echo T59_cefb2a >> ~/rl.txt']",
+      "trial 5 (gap 0.2 s): the remote shell received ['exit', 'echo T61_rprhlw >> ~/rl.txt'], want exactly ['echo T61_rprhlw >> ~/rl.txt']",
+      "trial 6 (gap 0.3 s): the remote shell received ['exit', 'echo T63_sekkq7 >> ~/rl.txt'], want exactly ['echo T63_sekkq7 >> ~/rl.txt']"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal@gitbash",
+     "name": "lab_connect_typeahead.bash.lan.helper",
+     "status": "fail",
+     "seconds": 170.4,
+     "detail": [
+      "trial 2 (gap 0.0 s): the session was not managed (no ManagedSSHSessionStarting hook and no `verdict managed=true` in the app log of this connect)",
+      "trial 2 (gap 0.0 s): one-connection stages in the app log: [], want auth, auth_done, managed (a final `plain` is the old #1959 behaviour)",
+      "trial 2 (gap 0.0 s): the wrapper's verdict was managed=true (round 8: managed=false, #1933)",
+      "trial 2 (gap 0.0 s): the wrapper announcement was not handled on the connect window (hop ssh_wrapper announced; 0 wrapper hops)",
+      "trial 3 (gap 0.0 s): the session was not managed (no ManagedSSHSessionStarting hook and no `verdict managed=true` in the app log of this connect)",
+      "trial 3 (gap 0.0 s): one-connection stages in the app log: [], want auth, auth_done, managed (a final `plain` is the old #1959 behaviour)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal@gitbash",
+     "name": "pane_switch_left_on_after_lab_connect_typeahead.bash.lan.helper",
+     "status": "fail",
+     "seconds": 0,
+     "detail": [
+      "after lab_connect_typeahead.bash.lan.helper: the `unset PHOSPHOR_MSYS_MANAGED_SSH` after the case is not proven in the pane's local shell: the proof line ran in the REMOTE shell and answered ['off'] [app's pane state at case start: no hand_route line; now: no hand_route line]; the app is relaunched "
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal@gitbash",
+     "name": "key_delivery",
+     "status": "pass",
+     "seconds": 0,
+     "detail": [
+      "marker typed and received via SendInput vk"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal@gitbash",
+     "name": "lab_connect_typeahead.bash.150.helper",
+     "status": "fail",
+     "seconds": 155.3,
+     "detail": [
+      "trial 2 (gap 0.0 s): the line typed behind `ssh lab-u_bash` never reached the remote shell. Test host: sshd.log: 07:55:55 connect from ('127.0.0.1', 63899) | 07:55:55 auth publickey user=Winters key=ssh-ed25519 c61037273003a7b72ee329010e27c736 -> ok | 07:55:55 auth publickey user=Winters key=ssh-ed2",
+      "trial 2 (gap 0.0 s): the remote shell received [], want exactly ['echo T93_9cn3k6 >> ~/rl.txt']",
+      "trial 2 (gap 0.0 s): the session was not managed (no ManagedSSHSessionStarting hook and no `verdict managed=true` in the app log of this connect)",
+      "trial 2 (gap 0.0 s): one-connection stages in the app log: [], want auth, auth_done, managed (a final `plain` is the old #1959 behaviour)",
+      "trial 2 (gap 0.0 s): the wrapper's verdict was managed=true (round 8: managed=false, #1933)",
+      "trial 2 (gap 0.0 s): the wrapper announcement was not handled on the connect window (hop ssh_wrapper announced; 0 wrapper hops)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal@gitbash",
+     "name": "pane_switch_left_on_after_lab_connect_typeahead.bash.150.helper",
+     "status": "fail",
+     "seconds": 0,
+     "detail": [
+      "after lab_connect_typeahead.bash.150.helper: the `unset PHOSPHOR_MSYS_MANAGED_SSH` after the case is not proven in the pane's local shell: the proof line ran in the REMOTE shell and answered ['off'] [app's pane state at case start: command_interactive=false enters_written=1 precmds_seen=1; now: no h"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal@gitbash",
+     "name": "key_delivery",
+     "status": "pass",
+     "seconds": 0,
+     "detail": [
+      "marker typed and received via SendInput vk"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal@gitbash",
+     "name": "lab_connect_typeahead.zsh.lan.helper",
+     "status": "fail",
+     "seconds": 31.1,
+     "detail": [
+      "trial 1 (gap 0.0 s): the remote shell received ['exit', 'echo T105_ys65bu >> ~/rl.txt'], want exactly ['echo T105_ys65bu >> ~/rl.txt']",
+      "trial 2 (gap 0.0 s): the remote shell received ['exit', 'echo T107_sbkmui >> ~/rl.txt'], want exactly ['echo T107_sbkmui >> ~/rl.txt']",
+      "trial 3 (gap 0.0 s): the remote shell received ['exit', 'echo T109_v1nrgy >> ~/rl.txt'], want exactly ['echo T109_v1nrgy >> ~/rl.txt']",
+      "trial 4 (gap 0.1 s): the remote shell received ['exit', 'echo T111_858pec >> ~/rl.txt'], want exactly ['echo T111_858pec >> ~/rl.txt']",
+      "trial 5 (gap 0.2 s): the remote shell received ['exit', 'echo T113_fikk8n >> ~/rl.txt'], want exactly ['echo T113_fikk8n >> ~/rl.txt']",
+      "trial 6 (gap 0.3 s): the remote shell received ['exit', 'echo T115_rv6qxv >> ~/rl.txt'], want exactly ['echo T115_rv6qxv >> ~/rl.txt']"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal@gitbash",
+     "name": "lab_connect_typeahead.zsh.150.helper",
+     "status": "fail",
+     "seconds": 46.7,
+     "detail": [
+      "trial 1 (gap 0.0 s): the remote shell received ['exit', 'echo T120_vhsp5i >> ~/rl.txt'], want exactly ['echo T120_vhsp5i >> ~/rl.txt']",
+      "trial 2 (gap 0.0 s): the remote shell received ['exit', 'echo T122_uc0eyj >> ~/rl.txt'], want exactly ['echo T122_uc0eyj >> ~/rl.txt']",
+      "trial 3 (gap 0.0 s): the remote shell received ['exit', 'echo T124_ivhye9 >> ~/rl.txt'], want exactly ['echo T124_ivhye9 >> ~/rl.txt']",
+      "trial 4 (gap 0.1 s): the remote shell received ['exit', 'echo T126_frxs8h >> ~/rl.txt'], want exactly ['echo T126_frxs8h >> ~/rl.txt']",
+      "trial 5 (gap 0.2 s): the remote shell received ['exit', 'echo T128_3rgcsa >> ~/rl.txt'], want exactly ['echo T128_3rgcsa >> ~/rl.txt']",
+      "trial 6 (gap 0.3 s): the remote shell received ['exit', 'echo T130_af0hcm >> ~/rl.txt'], want exactly ['echo T130_af0hcm >> ~/rl.txt']"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "lab_chips.bash.lan.nohelper",
+     "status": "skip",
+     "seconds": 0,
+     "detail": [
+      "not run in the PowerShell pane: the lab cases use the local shell's rec.log / prompt.log and bash syntax: they run in the Git Bash pane"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "lab_connect_typeahead.bash.lan.nohelper",
+     "status": "skip",
+     "seconds": 0,
+     "detail": [
+      "not run in the PowerShell pane: the lab cases use the local shell's rec.log / prompt.log and bash syntax: they run in the Git Bash pane"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "lab_connect_typeahead.bash.150.nohelper",
+     "status": "skip",
+     "seconds": 0,
+     "detail": [
+      "not run in the PowerShell pane: the lab cases use the local shell's rec.log / prompt.log and bash syntax: they run in the Git Bash pane"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "lab_connect_typeahead.zsh.lan.nohelper",
+     "status": "skip",
+     "seconds": 0,
+     "detail": [
+      "not run in the PowerShell pane: the lab cases use the local shell's rec.log / prompt.log and bash syntax: they run in the Git Bash pane"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "lab_connect_typeahead.zsh.150.nohelper",
+     "status": "skip",
+     "seconds": 0,
+     "detail": [
+      "not run in the PowerShell pane: the lab cases use the local shell's rec.log / prompt.log and bash syntax: they run in the Git Bash pane"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "lab_connect_typeahead.bash.lan.helper",
+     "status": "skip",
+     "seconds": 0,
+     "detail": [
+      "not run in the PowerShell pane: the lab cases use the local shell's rec.log / prompt.log and bash syntax: they run in the Git Bash pane"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "lab_connect_typeahead.bash.150.helper",
+     "status": "skip",
+     "seconds": 0,
+     "detail": [
+      "not run in the PowerShell pane: the lab cases use the local shell's rec.log / prompt.log and bash syntax: they run in the Git Bash pane"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "lab_connect_typeahead.zsh.lan.helper",
+     "status": "skip",
+     "seconds": 0,
+     "detail": [
+      "not run in the PowerShell pane: the lab cases use the local shell's rec.log / prompt.log and bash syntax: they run in the Git Bash pane"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "lab_connect_typeahead.zsh.150.helper",
+     "status": "skip",
+     "seconds": 0,
+     "detail": [
+      "not run in the PowerShell pane: the lab cases use the local shell's rec.log / prompt.log and bash syntax: they run in the Git Bash pane"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent@gitbash",
+     "name": "key_delivery",
+     "status": "pass",
+     "seconds": 0,
+     "detail": [
+      "marker typed and received via SendInput vk"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent@gitbash",
+     "name": "lab_chips.bash.lan.nohelper",
+     "status": "fail",
+     "seconds": 102.0,
+     "detail": [
+      "the app log has no update_chip_value ShellGitBranch -> brt35by1a2 line: the chip never took the branch",
+      "no side call at all with no helper: where did the branch chip come from?",
+      "`exit` did not return to the local shell (None)",
+      "side-call producers (#2156): shell exec lines by producer: none; prompts the app ran a batch for: []",
+      "injector accounting: injector sent 611; app saw 611; lost-before-app 0 (Enter: sent 20, app saw 20); of the app's: 582 unbound keydown/typed, 9 taken by a key binding, 20 Enter by a binding",
+      "pty writes: 39, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 20 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent@gitbash",
+     "name": "pane_switch_left_on_after_lab_chips.bash.lan.nohelper",
+     "status": "fail",
+     "seconds": 0,
+     "detail": [
+      "after lab_chips.bash.lan.nohelper: the `unset PHOSPHOR_MSYS_MANAGED_SSH` after the case is not proven in the pane's local shell: the proof line ran in the REMOTE shell and answered ['off'] [app's pane state at case start: command_interactive=false enters_written=1 precmds_seen=1; now: no hand_route "
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent@gitbash",
+     "name": "key_delivery",
+     "status": "pass",
+     "seconds": 0,
+     "detail": [
+      "marker typed and received via SendInput vk"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent@gitbash",
+     "name": "lab_connect_typeahead.bash.lan.nohelper",
+     "status": "fail",
+     "seconds": 78.5,
+     "detail": [
+      "trial 2 (gap 0.0 s): the session was not managed (no ManagedSSHSessionStarting hook and no `verdict managed=true` in the app log of this connect)",
+      "trial 2 (gap 0.0 s): one-connection stages in the app log: [], want auth, auth_done, managed (a final `plain` is the old #1959 behaviour)",
+      "trial 2 (gap 0.0 s): the wrapper's verdict was managed=true (round 8: managed=false, #1933)",
+      "trial 2 (gap 0.0 s): the wrapper announcement was not handled on the connect window (hop ssh_wrapper announced; 0 wrapper hops)",
+      "trial 3 (gap 0.0 s): the session was not managed (no ManagedSSHSessionStarting hook and no `verdict managed=true` in the app log of this connect)",
+      "trial 3 (gap 0.0 s): one-connection stages in the app log: [], want auth, auth_done, managed (a final `plain` is the old #1959 behaviour)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent@gitbash",
+     "name": "lab_connect_typeahead.bash.150.nohelper",
+     "status": "fail",
+     "seconds": 176.5,
+     "detail": [
+      "trial 2 (gap 0.0 s): the session was not managed (no ManagedSSHSessionStarting hook and no `verdict managed=true` in the app log of this connect)",
+      "trial 2 (gap 0.0 s): one-connection stages in the app log: [], want auth, auth_done, managed (a final `plain` is the old #1959 behaviour)",
+      "trial 2 (gap 0.0 s): the wrapper's verdict was managed=true (round 8: managed=false, #1933)",
+      "trial 2 (gap 0.0 s): the wrapper announcement was not handled on the connect window (hop ssh_wrapper announced; 0 wrapper hops)",
+      "trial 4 (gap 0.1 s): the line typed behind `ssh lab-u_bash` never reached the remote shell. Test host: sshd.log: 08:08:48 auth publickey user=Winters key=ssh-ed25519 c61037273003a7b72ee329010e27c736 -> ok | 08:08:48 auth publickey user=Winters key=ssh-ed25519 c61037273003a7b72ee329010e27c736 -> ok |",
+      "trial 4 (gap 0.1 s): the remote shell received [], want exactly ['echo T37_89oz6w >> ~/rl.txt']"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent@gitbash",
+     "name": "pane_switch_left_on_after_lab_connect_typeahead.bash.150.nohelper",
+     "status": "fail",
+     "seconds": 0,
+     "detail": [
+      "after lab_connect_typeahead.bash.150.nohelper: the `unset PHOSPHOR_MSYS_MANAGED_SSH` after the case is not proven in the pane's local shell: the proof line ran in the REMOTE shell and answered ['off'] [app's pane state at case start: no hand_route line; now: no hand_route line]; the app is relaunche"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent@gitbash",
+     "name": "key_delivery",
+     "status": "pass",
+     "seconds": 0,
+     "detail": [
+      "marker typed and received via SendInput vk"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent@gitbash",
+     "name": "lab_connect_typeahead.zsh.lan.nohelper",
+     "status": "fail",
+     "seconds": 31.9,
+     "detail": [
+      "trial 2 (gap 0.0 s): the remote shell received ['exit', 'echo T51_605w0w >> ~/rl.txt'], want exactly ['echo T51_605w0w >> ~/rl.txt']",
+      "trial 3 (gap 0.0 s): the remote shell received ['exit', 'echo T53_a88v3b >> ~/rl.txt'], want exactly ['echo T53_a88v3b >> ~/rl.txt']",
+      "trial 4 (gap 0.1 s): the remote shell received ['exit', 'echo T55_l9lf9q >> ~/rl.txt'], want exactly ['echo T55_l9lf9q >> ~/rl.txt']",
+      "trial 5 (gap 0.2 s): the remote shell received ['exit', 'echo T57_cefb2a >> ~/rl.txt'], want exactly ['echo T57_cefb2a >> ~/rl.txt']",
+      "trial 6 (gap 0.3 s): the remote shell received ['exit', 'echo T59_rprhlw >> ~/rl.txt'], want exactly ['echo T59_rprhlw >> ~/rl.txt']",
+      "lab_connect_typeahead loss: 0 of 6 typed-ahead commands lost (observed 0.0 %); 95 % upper confidence bound 39.3 %; this n cannot exclude a 1/40 (2.5 %) rate: needs 119 clean trials"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent@gitbash",
+     "name": "lab_connect_typeahead.zsh.150.nohelper",
+     "status": "fail",
+     "seconds": 46.4,
+     "detail": [
+      "trial 1 (gap 0.0 s): the remote shell received ['exit', 'echo T64_sekkq7 >> ~/rl.txt'], want exactly ['echo T64_sekkq7 >> ~/rl.txt']",
+      "trial 2 (gap 0.0 s): the remote shell received ['exit', 'echo T66_rs3u54 >> ~/rl.txt'], want exactly ['echo T66_rs3u54 >> ~/rl.txt']",
+      "trial 3 (gap 0.0 s): the remote shell received ['exit', 'echo T68_hbtyv0 >> ~/rl.txt'], want exactly ['echo T68_hbtyv0 >> ~/rl.txt']",
+      "trial 4 (gap 0.1 s): the remote shell received ['exit', 'echo T70_qgq6n1 >> ~/rl.txt'], want exactly ['echo T70_qgq6n1 >> ~/rl.txt']",
+      "trial 5 (gap 0.2 s): the remote shell received ['exit', 'echo T72_bobzjc >> ~/rl.txt'], want exactly ['echo T72_bobzjc >> ~/rl.txt']",
+      "trial 6 (gap 0.3 s): the remote shell received ['exit', 'echo T74_k2618o >> ~/rl.txt'], want exactly ['echo T74_k2618o >> ~/rl.txt']"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent@gitbash",
+     "name": "lab_connect_typeahead.bash.lan.helper",
+     "status": "fail",
+     "seconds": 131.1,
+     "detail": [
+      "trial 2 (gap 0.0 s): the session was not managed (no ManagedSSHSessionStarting hook and no `verdict managed=true` in the app log of this connect)",
+      "trial 2 (gap 0.0 s): one-connection stages in the app log: [], want auth, auth_done, managed (a final `plain` is the old #1959 behaviour)",
+      "trial 2 (gap 0.0 s): the wrapper's verdict was managed=true (round 8: managed=false, #1933)",
+      "trial 2 (gap 0.0 s): the wrapper announcement was not handled on the connect window (hop ssh_wrapper announced; 0 wrapper hops)",
+      "trial 4 (gap 0.1 s): the session was not managed (no ManagedSSHSessionStarting hook and no `verdict managed=true` in the app log of this connect)",
+      "trial 4 (gap 0.1 s): one-connection stages in the app log: [], want auth, auth_done, managed (a final `plain` is the old #1959 behaviour)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent@gitbash",
+     "name": "lab_connect_typeahead.bash.150.helper",
+     "status": "fail",
+     "seconds": 87.6,
+     "detail": [
+      "trial 2 (gap 0.0 s): the session was not managed (no ManagedSSHSessionStarting hook and no `verdict managed=true` in the app log of this connect)",
+      "trial 2 (gap 0.0 s): one-connection stages in the app log: [], want auth, auth_done, managed (a final `plain` is the old #1959 behaviour)",
+      "trial 2 (gap 0.0 s): the wrapper's verdict was managed=true (round 8: managed=false, #1933)",
+      "trial 2 (gap 0.0 s): the wrapper announcement was not handled on the connect window (hop ssh_wrapper announced; 0 wrapper hops)",
+      "trial 3 (gap 0.0 s): the session was not managed (no ManagedSSHSessionStarting hook and no `verdict managed=true` in the app log of this connect)",
+      "trial 3 (gap 0.0 s): one-connection stages in the app log: [], want auth, auth_done, managed (a final `plain` is the old #1959 behaviour)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent@gitbash",
+     "name": "lab_connect_typeahead.zsh.lan.helper",
+     "status": "fail",
+     "seconds": 32.7,
+     "detail": [
+      "trial 1 (gap 0.0 s): the remote shell received ['exit', 'echo T114_xvvhsp >> ~/rl.txt'], want exactly ['echo T114_xvvhsp >> ~/rl.txt']",
+      "trial 2 (gap 0.0 s): the remote shell received ['exit', 'echo T116_i9guc0 >> ~/rl.txt'], want exactly ['echo T116_i9guc0 >> ~/rl.txt']",
+      "trial 3 (gap 0.0 s): the remote shell received ['exit', 'echo T118_eyjivh >> ~/rl.txt'], want exactly ['echo T118_eyjivh >> ~/rl.txt']",
+      "trial 4 (gap 0.1 s): the remote shell received ['exit', 'echo T120_e9ofrx >> ~/rl.txt'], want exactly ['echo T120_e9ofrx >> ~/rl.txt']",
+      "trial 5 (gap 0.2 s): the remote shell received ['exit', 'echo T122_s8h3rg >> ~/rl.txt'], want exactly ['echo T122_s8h3rg >> ~/rl.txt']",
+      "trial 6 (gap 0.3 s): the remote shell received ['exit', 'echo T124_csaaf0 >> ~/rl.txt'], want exactly ['echo T124_csaaf0 >> ~/rl.txt']"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent@gitbash",
+     "name": "lab_connect_typeahead.zsh.150.helper",
+     "status": "fail",
+     "seconds": 48.3,
+     "detail": [
+      "trial 1 (gap 0.0 s): the remote shell received ['exit', 'echo T128_hcmp0k >> ~/rl.txt'], want exactly ['echo T128_hcmp0k >> ~/rl.txt']",
+      "trial 2 (gap 0.0 s): the remote shell received ['exit', 'echo T130_2kpkg1 >> ~/rl.txt'], want exactly ['echo T130_2kpkg1 >> ~/rl.txt']",
+      "trial 3 (gap 0.0 s): the remote shell received ['exit', 'echo T132_y8s9q4 >> ~/rl.txt'], want exactly ['echo T132_y8s9q4 >> ~/rl.txt']",
+      "trial 4 (gap 0.1 s): the remote shell received ['exit', 'echo T134_gnucba >> ~/rl.txt'], want exactly ['echo T134_gnucba >> ~/rl.txt']",
+      "trial 5 (gap 0.2 s): the remote shell received ['exit', 'echo T136_su2zuz >> ~/rl.txt'], want exactly ['echo T136_su2zuz >> ~/rl.txt']",
+      "trial 6 (gap 0.3 s): the remote shell received ['exit', 'echo T138_eeu3hq >> ~/rl.txt'], want exactly ['echo T138_eeu3hq >> ~/rl.txt']"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "-",
+     "name": "restore",
+     "status": "pass",
+     "seconds": 0,
+     "detail": [
+      "all 10 restore steps ok (data md5 identical, version v0.1.15, PATH/handler/uninstall/shortcuts restored)"
+     ],
+     "lat": {}
+    }
+   ],
+   "files": [
+    "lab-windows/run_slim/logs/agent/fakesshd.stderr",
+    "lab-windows/run_slim/logs/agent/app.stdout",
+    "lab-windows/summary.md",
+    "lab-windows/junit.xml",
+    "lab-windows/results.json",
+    "lab-windows/run_slim/logs/agent@gitbash/app.stdout",
+    "lab-windows/run_slim/logs/agent@gitbash/fakesshd.stderr",
+    "lab-windows/run_slim/logs/terminal/app.stdout",
+    "lab-windows/run_slim/logs/terminal/fakesshd.stderr",
+    "lab-windows/run_slim/logs/terminal@gitbash/app.stdout",
+    "lab-windows/run_slim/logs/terminal@gitbash/fakesshd.stderr"
+   ],
+   "meta": {
+    "platform": "windows",
+    "backend": "windows",
+    "app_display": "windows",
+    "seed": "1",
+    "commit": "8476d176",
+    "sha": "8476d176d4144966c556c88f45e3613f142f5a75",
+    "owner_settings": "sha256 81d188e9844d",
+    "tier": "targeted",
+    "scale": "1"
+   },
+   "summary": {
+    "pass": 7,
+    "fail": 24,
+    "skip": 18,
+    "noref": 0
+   },
+   "screenshots_in_ci_artifacts": [
+    "shots\\terminal@gitbash_lab_chips.bash.lan.nohelper_FAIL.png",
+    "shots\\terminal@gitbash_lab_connect_typeahead.bash.lan.nohelper_FAIL.png",
+    "shots\\terminal@gitbash_entered_agent_after_lab_connect_typeahead.bash.lan.nohelper.png",
+    "shots\\terminal@gitbash_lab_connect_typeahead.bash.150.nohelper_FAIL.png",
+    "shots\\terminal@gitbash_entered_agent_after_lab_connect_typeahead.bash.150.nohelper.png",
+    "shots\\terminal@gitbash_lab_connect_typeahead.zsh.lan.nohelper_FAIL.png",
+    "shots\\terminal@gitbash_lab_connect_typeahead.zsh.150.nohelper_FAIL.png",
+    "shots\\terminal@gitbash_lab_connect_typeahead.bash.lan.helper_FAIL.png",
+    "shots\\terminal@gitbash_lab_connect_typeahead.bash.150.helper_FAIL.png",
+    "shots\\terminal@gitbash_lab_connect_typeahead.zsh.lan.helper_FAIL.png",
+    "shots\\terminal@gitbash_lab_connect_typeahead.zsh.150.helper_FAIL.png",
+    "shots\\agent@gitbash_lab_chips.bash.lan.nohelper_FAIL.png",
+    "shots\\agent@gitbash_lab_connect_typeahead.bash.lan.nohelper_FAIL.png",
+    "shots\\agent@gitbash_lab_connect_typeahead.bash.150.nohelper_FAIL.png",
+    "shots\\agent@gitbash_lab_connect_typeahead.zsh.lan.nohelper_FAIL.png",
+    "shots\\agent@gitbash_lab_connect_typeahead.zsh.150.nohelper_FAIL.png",
+    "shots\\agent@gitbash_lab_connect_typeahead.bash.lan.helper_FAIL.png",
+    "shots\\agent@gitbash_lab_connect_typeahead.bash.150.helper_FAIL.png",
+    "shots\\agent@gitbash_lab_connect_typeahead.zsh.lan.helper_FAIL.png",
+    "shots\\agent@gitbash_lab_connect_typeahead.zsh.150.helper_FAIL.png"
+   ]
+  },
+  "lab-macos": {
+   "job": "app-test-lab-macos",
+   "job_id": 18032492773,
+   "status": "failed",
+   "reuse": false,
+   "cases": [
+    {
+     "mode": "terminal",
+     "name": "lab_connect_typeahead.zsh.lan.nohelper",
+     "status": "pass",
+     "seconds": 32.0,
+     "detail": [
+      "lab_connect_typeahead loss: 0 of 6 typed-ahead commands lost (observed 0.0 %); 95 % upper confidence bound 39.3 %; this n cannot exclude a 1/40 (2.5 %) rate: needs 119 clean trials",
+      "ssh trial verdicts: exact=6",
+      "typed-during-connect: in 0 of 6 trials keys were in the console before the session and were held at the front (typeahead_front adopted=true)",
+      "injector accounting: injector sent 500; app saw 500; lost-before-app 0 (Enter: sent 24, app saw 24); of the app's: 472 unbound keydown/typed, 2 taken by a key binding, 24 Enter by a binding; macOS: 500 key-down(s) reached NSApplication, 500 dispatched as key events (2 of them a menu key equivalent),",
+      "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 24 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "lab_connect_typeahead.zsh.150.nohelper",
+     "status": "pass",
+     "seconds": 51.1,
+     "detail": [
+      "lab_connect_typeahead loss: 0 of 6 typed-ahead commands lost (observed 0.0 %); 95 % upper confidence bound 39.3 %; this n cannot exclude a 1/40 (2.5 %) rate: needs 119 clean trials",
+      "ssh trial verdicts: exact=6",
+      "typed-during-connect: in 0 of 6 trials keys were in the console before the session and were held at the front (typeahead_front adopted=true)",
+      "injector accounting: injector sent 508; app saw 508; lost-before-app 0 (Enter: sent 24, app saw 24); of the app's: 486 unbound keydown/typed, 2 taken by a key binding, 18 Enter by a binding; macOS: 508 key-down(s) reached NSApplication, 508 dispatched as key events (2 of them a menu key equivalent),",
+      "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 24 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "lab_ctrl_c_no_esc_i.zsh.lan.helper",
+     "status": "pass",
+     "seconds": 45.2,
+     "detail": [
+      "SETTINGS LEFT CHANGED: the settings file differs from the one this case started on, in: warpify.ssh.remote_helper_denied_hosts",
+      "injector accounting: injector sent 583; app saw 583; lost-before-app 0 (Enter: sent 21, app saw 21); of the app's: 539 unbound keydown/typed, 12 taken by a key binding, 21 Enter by a binding; macOS: 583 key-down(s) reached NSApplication, 583 dispatched as key events (11 of them a menu key equivalent",
+      "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 21 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "lab_connect_typeahead.zsh.lan.helper",
+     "status": "pass",
+     "seconds": 35.0,
+     "detail": [
+      "lab_connect_typeahead loss: 0 of 6 typed-ahead commands lost (observed 0.0 %); 95 % upper confidence bound 39.3 %; this n cannot exclude a 1/40 (2.5 %) rate: needs 119 clean trials",
+      "ssh trial verdicts: exact=6",
+      "typed-during-connect: in 0 of 6 trials keys were in the console before the session and were held at the front (typeahead_front adopted=true)",
+      "injector accounting: injector sent 557; app saw 557; lost-before-app 0 (Enter: sent 25, app saw 25); of the app's: 528 unbound keydown/typed, 2 taken by a key binding, 25 Enter by a binding; macOS: 557 key-down(s) reached NSApplication, 557 dispatched as key events (2 of them a menu key equivalent),",
+      "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 25 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "lab_connect_typeahead.zsh.150.helper",
+     "status": "pass",
+     "seconds": 51.2,
+     "detail": [
+      "lab_connect_typeahead loss: 0 of 6 typed-ahead commands lost (observed 0.0 %); 95 % upper confidence bound 39.3 %; this n cannot exclude a 1/40 (2.5 %) rate: needs 119 clean trials",
+      "ssh trial verdicts: exact=6",
+      "typed-during-connect: in 0 of 6 trials keys were in the console before the session and were held at the front (typeahead_front adopted=true)",
+      "injector accounting: injector sent 508; app saw 508; lost-before-app 0 (Enter: sent 24, app saw 24); of the app's: 486 unbound keydown/typed, 2 taken by a key binding, 18 Enter by a binding; macOS: 508 key-down(s) reached NSApplication, 508 dispatched as key events (2 of them a menu key equivalent),",
+      "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 24 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "lab_connect_typeahead.zsh.lan.nohelper",
+     "status": "fail",
+     "seconds": 41.4,
+     "detail": [
+      "trial 2 (gap 0.0 s): the line typed behind `ssh lab-u_zsh` never reached the remote shell. Test host: sshd.log: debug1: session_by_pid: pid 65055 | debug1: session_exit_message: session 0 channel 0 pid 65055 exit 0 | debug1: session_exit_message: release channel 0 | Received disconnect from 127.0.0.",
+      "trial 2 (gap 0.0 s): the remote shell received ['> ~/rl.txt'], want exactly ['echo T4_yng5by >> ~/rl.txt']",
+      "lab_connect_typeahead (trial 2 (gap 0.0 s)): T4_yng5by never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log). Test host: sshd.log: debug1: session_by_pid: pid 65585 | debug1: session_exit_message: session 0 channel 0 pid 65585 e",
+      "lab_connect_typeahead trial 2 (gap 0.0 s): #1400: keys lost: chars 1-16 'echo T4_yng5by >' of 26; held 11 key(s)/11 byte(s), hand-over precmd@11, finish delivered=remote; the app saw every key of the line; remote got '> ~/rl.txt'",
+      "lab_connect_typeahead loss: 2 of 2 typed-ahead commands lost (observed 100.0 %); 95 % upper confidence bound 100.0 %; this n cannot exclude a 1/40 (2.5 %) rate: needs 119 clean trials",
+      "ssh trial verdicts: #1400=1, exact=1"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "pane_not_local_after_lab_connect_typeahead.zsh.lan.nohelper",
+     "status": "fail",
+     "seconds": 0,
+     "detail": [
+      "after lab_connect_typeahead.zsh.lan.nohelper the pane's shell was not the root shell (none; root pid 65065); the app is relaunched so later cases start clean"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "lab_connect_typeahead.zsh.150.nohelper",
+     "status": "pass",
+     "seconds": 50.0,
+     "detail": [
+      "lab_connect_typeahead loss: 0 of 6 typed-ahead commands lost (observed 0.0 %); 95 % upper confidence bound 39.3 %; this n cannot exclude a 1/40 (2.5 %) rate: needs 119 clean trials",
+      "ssh trial verdicts: exact=6",
+      "typed-during-connect: in 0 of 6 trials keys were in the console before the session and were held at the front (typeahead_front adopted=true)",
+      "injector accounting: injector sent 506; app saw 506; lost-before-app 0 (Enter: sent 24, app saw 24); of the app's: 484 unbound keydown/typed, 2 taken by a key binding, 18 Enter by a binding; macOS: 506 key-down(s) reached NSApplication, 506 dispatched as key events (2 of them a menu key equivalent),",
+      "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 24 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "lab_ctrl_c_no_esc_i.zsh.lan.helper",
+     "status": "pass",
+     "seconds": 45.4,
+     "detail": [
+      "SETTINGS LEFT CHANGED: the settings file differs from the one this case started on, in: warpify.ssh.remote_helper_denied_hosts",
+      "injector accounting: injector sent 583; app saw 583; lost-before-app 0 (Enter: sent 21, app saw 21); of the app's: 539 unbound keydown/typed, 12 taken by a key binding, 21 Enter by a binding; macOS: 583 key-down(s) reached NSApplication, 583 dispatched as key events (11 of them a menu key equivalent",
+      "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 21 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "agent_view_not_restored_after_lab_ctrl_c_no_esc_i.zsh.lan.helper",
+     "status": "pass",
+     "seconds": 0,
+     "detail": [
+      "lab_ctrl_c_no_esc_i.zsh.lan.helper relaunched the app itself (pid 65746 -> 66806); a relaunched app starts in a terminal session, so this is not an app finding. The app is relaunched again (fresh agent session) so the cases after it run in agent mode."
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "lab_connect_typeahead.zsh.lan.helper",
+     "status": "fail",
+     "seconds": 51.9,
+     "detail": [
+      "trial 4 (gap 0.1 s): the line typed behind `ssh lab-u_zsh` never reached the remote shell. Test host: sshd.log: debug1: session_by_pid: pid 65598 | debug1: session_exit_message: session 0 channel 0 pid 65598 exit 0 | debug1: session_exit_message: release channel 0 | Received disconnect from 127.0.0.",
+      "trial 4 (gap 0.1 s): the remote shell received ['jck261 >> ~/rl.txt'], want exactly ['echo T39_jck261 >> ~/rl.txt']",
+      "lab_connect_typeahead (trial 4 (gap 0.1 s)): T39_jck261 never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log). Test host: sshd.log: debug1: session_by_pid: pid 68007 | debug1: session_exit_message: session 0 channel 0 pid 68007 ",
+      "lab_connect_typeahead trial 4 (gap 0.1 s): #1400: keys lost: chars 1-9 'echo T39_' of 27; held 9 key(s)/9 byte(s), hand-over session_bootstrapped@9, finish delivered=remote; the app saw every key of the line; remote got 'jck261 >> ~/rl.txt'",
+      "lab_connect_typeahead loss: 1 of 4 typed-ahead commands lost (observed 25.0 %); 95 % upper confidence bound 75.1 %; this n cannot exclude a 1/40 (2.5 %) rate: needs 119 clean trials",
+      "ssh trial verdicts: #1400=1, exact=3"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "pane_not_local_after_lab_connect_typeahead.zsh.lan.helper",
+     "status": "fail",
+     "seconds": 0,
+     "detail": [
+      "after lab_connect_typeahead.zsh.lan.helper the pane's shell was not the root shell (none; root pid 67392); the app is relaunched so later cases start clean"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "lab_connect_typeahead.zsh.150.helper",
+     "status": "pass",
+     "seconds": 49.8,
+     "detail": [
+      "lab_connect_typeahead loss: 0 of 6 typed-ahead commands lost (observed 0.0 %); 95 % upper confidence bound 39.3 %; this n cannot exclude a 1/40 (2.5 %) rate: needs 119 clean trials",
+      "ssh trial verdicts: exact=6",
+      "typed-during-connect: in 0 of 6 trials keys were in the console before the session and were held at the front (typeahead_front adopted=true)",
+      "injector accounting: injector sent 508; app saw 508; lost-before-app 0 (Enter: sent 24, app saw 24); of the app's: 486 unbound keydown/typed, 2 taken by a key binding, 18 Enter by a binding; macOS: 508 key-down(s) reached NSApplication, 508 dispatched as key events (2 of them a menu key equivalent),",
+      "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 24 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+     ],
+     "lat": {}
+    }
+   ],
+   "files": [
+    "lab-macos/summary.md",
+    "lab-macos/results.json",
+    "lab-macos/junit.xml",
+    "lab-macos/run_slim/logs/agent/ctl/hook.enter",
+    "lab-macos/run_slim/logs/agent/ctl/hook.err",
+    "lab-macos/run_slim/logs/enter_route.txt",
+    "lab-macos/run_slim/logs/ssh-client-probe.txt",
+    "lab-macos/run_slim/logs/terminal/ctl/hook.enter",
+    "lab-macos/run_slim/logs/terminal/ctl/hook.err"
+   ],
+   "meta": {
+    "platform": "macos",
+    "backend": "mac",
+    "app_display": "macos",
+    "seed": "1",
+    "commit": "8476d176",
+    "sha": "8476d176d4144966c556c88f45e3613f142f5a75",
+    "owner_settings": "sha256 81d188e9844d",
+    "tier": "targeted",
+    "scale": "1"
+   },
+   "summary": {
+    "pass": 9,
+    "fail": 4,
+    "skip": 0,
+    "noref": 0
+   },
+   "screenshots_in_ci_artifacts": [
+    "shots/agent_lab_connect_typeahead.zsh.lan.nohelper_FAIL.png",
+    "/Users/<user>/builds/CR7LvsOfu/0/winters-phosphor/phosphor/appci-out/macos/run/shots/agent_not_local_after_lab_connect_typeahead.zsh.lan.nohelper.png",
+    "shots/agent_lab_connect_typeahead.zsh.lan.helper_FAIL.png",
+    "/Users/<user>/builds/CR7LvsOfu/0/winters-phosphor/phosphor/appci-out/macos/run/shots/agent_not_local_after_lab_connect_typeahead.zsh.lan.helper.png"
+   ]
+  },
+  "lab-wayland": {
+   "job": "app-test-lab-linux",
+   "job_id": 18032492772,
+   "status": "success",
+   "reuse": false,
+   "cases": [
+    {
+     "mode": "terminal",
+     "name": "lab_connect_typeahead.bash.lan.nohelper",
+     "status": "pass",
+     "seconds": 23.9,
+     "detail": [
+      "lab_connect_typeahead loss: 0 of 6 typed-ahead commands lost (observed 0.0 %); 95 % upper confidence bound 39.3 %; this n cannot exclude a 1/40 (2.5 %) rate: needs 119 clean trials",
+      "ssh trial verdicts: exact=6",
+      "typed-during-connect: in 0 of 6 trials keys were in the console before the session and were held at the front (typeahead_front adopted=true)",
+      "injector accounting: injector sent 506; app saw 506; lost-before-app 0 (Enter: sent 24, app saw 24); of the app's: 478 unbound keydown/typed, 4 taken by a key binding, 24 Enter by a binding",
+      "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 24 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "lab_connect_typeahead.bash.150.nohelper",
+     "status": "pass",
+     "seconds": 41.7,
+     "detail": [
+      "lab_connect_typeahead loss: 0 of 6 typed-ahead commands lost (observed 0.0 %); 95 % upper confidence bound 39.3 %; this n cannot exclude a 1/40 (2.5 %) rate: needs 119 clean trials",
+      "ssh trial verdicts: exact=6",
+      "typed-during-connect: in 0 of 6 trials keys were in the console before the session and were held at the front (typeahead_front adopted=true)",
+      "injector accounting: injector sent 514; app saw 514; lost-before-app 0 (Enter: sent 24, app saw 24); of the app's: 492 unbound keydown/typed, 4 taken by a key binding, 18 Enter by a binding",
+      "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 24 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "lab_ctrl_c_no_esc_i.zsh.lan.helper",
+     "status": "pass",
+     "seconds": 41.8,
+     "detail": [
+      "SETTINGS LEFT CHANGED: the settings file differs from the one this case started on, in: warpify.ssh.remote_helper_denied_hosts",
+      "injector accounting: injector sent 583; app saw 583; lost-before-app 0 (Enter: sent 21, app saw 21); of the app's: 539 unbound keydown/typed, 23 taken by a key binding, 21 Enter by a binding",
+      "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 21 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "lab_connect_typeahead.bash.lan.helper",
+     "status": "pass",
+     "seconds": 24.7,
+     "detail": [
+      "lab_connect_typeahead loss: 0 of 6 typed-ahead commands lost (observed 0.0 %); 95 % upper confidence bound 39.3 %; this n cannot exclude a 1/40 (2.5 %) rate: needs 119 clean trials",
+      "ssh trial verdicts: exact=6",
+      "typed-during-connect: in 0 of 6 trials keys were in the console before the session and were held at the front (typeahead_front adopted=true)",
+      "injector accounting: injector sent 563; app saw 563; lost-before-app 0 (Enter: sent 25, app saw 25); of the app's: 534 unbound keydown/typed, 4 taken by a key binding, 25 Enter by a binding",
+      "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 25 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "lab_connect_typeahead.bash.150.helper",
+     "status": "pass",
+     "seconds": 39.0,
+     "detail": [
+      "lab_connect_typeahead loss: 0 of 6 typed-ahead commands lost (observed 0.0 %); 95 % upper confidence bound 39.3 %; this n cannot exclude a 1/40 (2.5 %) rate: needs 119 clean trials",
+      "ssh trial verdicts: exact=6",
+      "typed-during-connect: in 0 of 6 trials keys were in the console before the session and were held at the front (typeahead_front adopted=true)",
+      "injector accounting: injector sent 514; app saw 514; lost-before-app 0 (Enter: sent 24, app saw 24); of the app's: 492 unbound keydown/typed, 4 taken by a key binding, 18 Enter by a binding",
+      "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 24 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "lab_connect_typeahead.bash.lan.nohelper",
+     "status": "pass",
+     "seconds": 24.0,
+     "detail": [
+      "lab_connect_typeahead loss: 0 of 6 typed-ahead commands lost (observed 0.0 %); 95 % upper confidence bound 39.3 %; this n cannot exclude a 1/40 (2.5 %) rate: needs 119 clean trials",
+      "ssh trial verdicts: exact=6",
+      "typed-during-connect: in 0 of 6 trials keys were in the console before the session and were held at the front (typeahead_front adopted=true)",
+      "injector accounting: injector sent 506; app saw 506; lost-before-app 0 (Enter: sent 24, app saw 24); of the app's: 478 unbound keydown/typed, 4 taken by a key binding, 24 Enter by a binding",
+      "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 24 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "lab_connect_typeahead.bash.150.nohelper",
+     "status": "pass",
+     "seconds": 41.3,
+     "detail": [
+      "lab_connect_typeahead loss: 0 of 6 typed-ahead commands lost (observed 0.0 %); 95 % upper confidence bound 39.3 %; this n cannot exclude a 1/40 (2.5 %) rate: needs 119 clean trials",
+      "ssh trial verdicts: exact=6",
+      "typed-during-connect: in 0 of 6 trials keys were in the console before the session and were held at the front (typeahead_front adopted=true)",
+      "injector accounting: injector sent 514; app saw 514; lost-before-app 0 (Enter: sent 24, app saw 24); of the app's: 492 unbound keydown/typed, 4 taken by a key binding, 18 Enter by a binding",
+      "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 24 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "lab_ctrl_c_no_esc_i.zsh.lan.helper",
+     "status": "pass",
+     "seconds": 41.5,
+     "detail": [
+      "SETTINGS LEFT CHANGED: the settings file differs from the one this case started on, in: warpify.ssh.remote_helper_denied_hosts",
+      "injector accounting: injector sent 583; app saw 583; lost-before-app 0 (Enter: sent 21, app saw 21); of the app's: 539 unbound keydown/typed, 23 taken by a key binding, 21 Enter by a binding",
+      "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 21 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "agent_view_not_restored_after_lab_ctrl_c_no_esc_i.zsh.lan.helper",
+     "status": "pass",
+     "seconds": 0,
+     "detail": [
+      "lab_ctrl_c_no_esc_i.zsh.lan.helper relaunched the app itself (pid 1110813 -> 1114246); a relaunched app starts in a terminal session, so this is not an app finding. The app is relaunched again (fresh agent session) so the cases after it run in agent mode."
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "lab_connect_typeahead.bash.lan.helper",
+     "status": "pass",
+     "seconds": 23.7,
+     "detail": [
+      "lab_connect_typeahead loss: 0 of 6 typed-ahead commands lost (observed 0.0 %); 95 % upper confidence bound 39.3 %; this n cannot exclude a 1/40 (2.5 %) rate: needs 119 clean trials",
+      "ssh trial verdicts: exact=6",
+      "typed-during-connect: in 0 of 6 trials keys were in the console before the session and were held at the front (typeahead_front adopted=true)",
+      "injector accounting: injector sent 514; app saw 514; lost-before-app 0 (Enter: sent 24, app saw 24); of the app's: 486 unbound keydown/typed, 4 taken by a key binding, 24 Enter by a binding",
+      "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 24 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "lab_connect_typeahead.bash.150.helper",
+     "status": "pass",
+     "seconds": 38.6,
+     "detail": [
+      "lab_connect_typeahead loss: 0 of 6 typed-ahead commands lost (observed 0.0 %); 95 % upper confidence bound 39.3 %; this n cannot exclude a 1/40 (2.5 %) rate: needs 119 clean trials",
+      "ssh trial verdicts: exact=6",
+      "typed-during-connect: in 0 of 6 trials keys were in the console before the session and were held at the front (typeahead_front adopted=true)",
+      "injector accounting: injector sent 514; app saw 514; lost-before-app 0 (Enter: sent 24, app saw 24); of the app's: 492 unbound keydown/typed, 4 taken by a key binding, 18 Enter by a binding",
+      "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 24 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+     ],
+     "lat": {}
+    }
+   ],
+   "files": [
+    "lab-wayland/run_slim/logs/agent/app.stdout",
+    "lab-wayland/results.json",
+    "lab-wayland/results.jsonl",
+    "lab-wayland/junit.xml",
+    "lab-wayland/summary.md",
+    "lab-wayland/run_slim/logs/gpu.txt",
+    "lab-wayland/run_slim/logs/terminal/app.stdout"
+   ],
+   "meta": {
+    "platform": "linux-wayland",
+    "backend": "wayland",
+    "app_display": "wayland",
+    "seed": "1",
+    "commit": "8476d176",
+    "sha": "8476d176d4144966c556c88f45e3613f142f5a75",
+    "owner_settings": "sha256 81d188e9844d",
+    "tier": "targeted",
+    "scale": "1"
+   },
+   "summary": {
+    "pass": 11,
+    "fail": 0,
+    "skip": 0,
+    "noref": 0
+   },
+   "screenshots_in_ci_artifacts": []
+  },
+  "windows": {
+   "job": "app-test-windows",
+   "job_id": 18032492769,
+   "status": "failed",
+   "reuse": false,
+   "cases": [
+    {
+     "mode": "terminal",
+     "name": "mode_proof",
+     "status": "pass",
+     "seconds": 3.3,
+     "detail": [
+      "injector accounting: injector sent 1 keys (0 Enter); app key trace not available, so nothing to compare"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "key_delivery",
+     "status": "pass",
+     "seconds": 0,
+     "detail": [
+      "marker typed and received via SendInput vk"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "enter_loss_control",
+     "status": "pass",
+     "seconds": 98.7,
+     "detail": [
+      "reference conhost (powershell.exe) gap 0.00s: 0/30 lines missing (merged/lost Enter), None lines not received exactly, injector posted 30 Enters",
+      "reference conhost (powershell.exe) gap 0.25s: 1/30 lines missing (merged/lost Enter), None lines not received exactly, injector posted 30 Enters",
+      "the injector/OS loses instant Enters even in the reference: fast_typing reports such a loss as 'injector/OS lost Enter (reference too)', not an app bug",
+      "injector accounting: injector sent 2; app saw 2; lost-before-app 0 (Enter: sent 0, app saw 0); of the app's: 0 unbound keydown/typed, 2 taken by a key binding, 0 Enter by a binding"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "expert_fuzz",
+     "status": "skip",
+     "seconds": 0,
+     "detail": [
+      "not run in the PowerShell pane: BackSpace / Left / Ctrl-W editing of `echo ... >>` lines; PSReadLine's Ctrl-W differs: runs in the Git Bash pane"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "routing_table_powershell",
+     "status": "pass",
+     "seconds": 69.1,
+     "detail": [
+      "'make a PR' (ambiguous): no verdict, went to agent: no routing line was logged, so there is no rule to check",
+      "injector accounting: injector sent 1319; app saw 1319; lost-before-app 0 (Enter: sent 35, app saw 35); of the app's: 1206 unbound keydown/typed, 78 taken by a key binding, 35 Enter by a binding",
+      "pty writes: 46, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 35 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "selection_modes",
+     "status": "skip",
+     "seconds": 0,
+     "detail": [
+      "not run in the PowerShell pane: T31 (r14 T22): `cat` of the fixture files, the `sh` stream program and rec.log: runs in the Git Bash pane (pointer and held Shift by SendInput, positions from the app's find hook)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "gitbash_typeahead_reps",
+     "status": "skip",
+     "seconds": 0,
+     "detail": [
+      "not run in the PowerShell pane: bash precmd_functions and rec.log of the pane's bash, the ConPTY prompt hold of a bash pane (#1393): runs in the Git Bash pane"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal@gitbash",
+     "name": "mode_proof",
+     "status": "pass",
+     "seconds": 2.7,
+     "detail": [
+      "injector accounting: injector sent 1 keys (0 Enter); app key trace not available, so nothing to compare"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal@gitbash",
+     "name": "key_delivery",
+     "status": "pass",
+     "seconds": 0,
+     "detail": [
+      "marker typed and received via SendInput vk"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal@gitbash",
+     "name": "enter_loss_control",
+     "status": "pass",
+     "seconds": 58.7,
+     "detail": [
+      "reference conhost (bash) gap 0.00s: 0/30 lines missing (merged/lost Enter), 0 lines not received exactly, injector posted 30 Enters",
+      "reference conhost (bash) gap 0.25s: 0/30 lines missing (merged/lost Enter), 0 lines not received exactly, injector posted 30 Enters",
+      "injector accounting: injector sent 2; app saw 2; lost-before-app 0 (Enter: sent 0, app saw 0); of the app's: 0 unbound keydown/typed, 2 taken by a key binding, 0 Enter by a binding"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal@gitbash",
+     "name": "expert_fuzz",
+     "status": "pass",
+     "seconds": 15.2,
+     "detail": [
+      "injector accounting: injector sent 718; app saw 718; lost-before-app 0 (Enter: sent 25, app saw 25); of the app's: 651 unbound keydown/typed, 42 taken by a key binding, 25 Enter by a binding",
+      "pty writes: 87, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 25 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal@gitbash",
+     "name": "routing_table_powershell",
+     "status": "skip",
+     "seconds": 0,
+     "detail": [
+      "not run in the Git Bash pane: #2072: the routing table judged from PSReadLine's history file; the Git Bash pane has routing_table (rec.log)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal@gitbash",
+     "name": "selection_modes",
+     "status": "fail",
+     "seconds": 50.7,
+     "detail": [
+      "Ctrl-C did not end the streaming program: no prompt within 8 s (the SECOND Ctrl-C: the first copied the selection; if this one copied too, the copy did not drop the selection, #2117)",
+      "`sh sm_stream_t63_q6s0r.sh` did not reach the shell as typed (received [])",
+      "after_selection: shell received 5 commands, not the typed ones (first mismatch: 'sh sm_stream_t63_q6s0r.sh') -- differs (44 typed, 25 received characters): typed 'echo t64_5z1feinjob >> r_after_selection.txt', shell received 'sh sm_stream_t63_q6s0r.sh'; the app's log shows every character of the lin",
+      "injector accounting: injector sent 292; app saw 292; lost-before-app 0 (Enter: sent 8, app saw 8); of the app's: 270 unbound keydown/typed, 17 taken by a key binding, 5 Enter by a binding",
+      "pty writes: 142, of which carrying a CR (\\r): 4; Enter(s) the input editor started: 5 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal@gitbash",
+     "name": "gitbash_typeahead_reps",
+     "status": "pass",
+     "seconds": 175.6,
+     "detail": [
+      "injector accounting: injector sent 8450; app saw 8450; lost-before-app 0 (Enter: sent 242, app saw 242); of the app's: 8217 unbound keydown/typed, 2 taken by a key binding, 231 Enter by a binding",
+      "pty writes: 1554, of which carrying a CR (\\r): 11; Enter(s) the input editor started: 240 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "mode_proof",
+     "status": "pass",
+     "seconds": 3.5,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "expert_fuzz",
+     "status": "skip",
+     "seconds": 0,
+     "detail": [
+      "not run in the PowerShell pane: BackSpace / Left / Ctrl-W editing of `echo ... >>` lines; PSReadLine's Ctrl-W differs: runs in the Git Bash pane"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "key_delivery",
+     "status": "pass",
+     "seconds": 0,
+     "detail": [
+      "marker typed and received via SendInput vk"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "routing_table_powershell",
+     "status": "pass",
+     "seconds": 76.0,
+     "detail": [
+      "'gti status' reached the shell by ran-before (#1203), not by the #1980 rule (is the word a command on this machine?)",
+      "'dokcer ps' reached the shell by ran-before (#1203), not by the #1980 rule (is the word a command on this machine?)",
+      "'gerp -rn foo foo.txt' reached the shell by ran-before (#1203), not by the #1980 rule (is the word a command on this machine?)",
+      "injector accounting: injector sent 1357; app saw 1357; lost-before-app 0 (Enter: sent 39, app saw 39); of the app's: 1255 unbound keydown/typed, 63 taken by a key binding, 39 Enter by a binding",
+      "pty writes: 52, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 39 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "selection_modes",
+     "status": "skip",
+     "seconds": 0,
+     "detail": [
+      "not run in the PowerShell pane: T31 (r14 T22): `cat` of the fixture files, the `sh` stream program and rec.log: runs in the Git Bash pane (pointer and held Shift by SendInput, positions from the app's find hook)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "gitbash_typeahead_reps",
+     "status": "skip",
+     "seconds": 0,
+     "detail": [
+      "not run in the PowerShell pane: bash precmd_functions and rec.log of the pane's bash, the ConPTY prompt hold of a bash pane (#1393): runs in the Git Bash pane"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent@gitbash",
+     "name": "mode_proof",
+     "status": "pass",
+     "seconds": 2.3,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "agent@gitbash",
+     "name": "key_delivery",
+     "status": "pass",
+     "seconds": 0,
+     "detail": [
+      "marker typed and received via SendInput vk"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent@gitbash",
+     "name": "expert_fuzz",
+     "status": "pass",
+     "seconds": 15.4,
+     "detail": [
+      "injector accounting: injector sent 750; app saw 750; lost-before-app 0 (Enter: sent 25, app saw 25); of the app's: 678 unbound keydown/typed, 47 taken by a key binding, 25 Enter by a binding",
+      "pty writes: 105, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 25 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent@gitbash",
+     "name": "routing_table_powershell",
+     "status": "skip",
+     "seconds": 0,
+     "detail": [
+      "not run in the Git Bash pane: #2072: the routing table judged from PSReadLine's history file; the Git Bash pane has routing_table (rec.log)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent@gitbash",
+     "name": "selection_modes",
+     "status": "pass",
+     "seconds": 26.7,
+     "detail": [
+      "Windows, agent view: Ctrl-C at an idle prompt with a word selected did not copy (the agent view takes an idle Ctrl-C first); 'the copy drops the selection' (#2131) was NOT judged in this pass",
+      "injector accounting: injector sent 284; app saw 284; lost-before-app 0 (Enter: sent 8, app saw 8); of the app's: 259 unbound keydown/typed, 17 taken by a key binding, 8 Enter by a binding",
+      "pty writes: 21, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 8 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent@gitbash",
+     "name": "gitbash_typeahead_reps",
+     "status": "pass",
+     "seconds": 175.9,
+     "detail": [
+      "the precmd set-up line typed before tr12 was not routed to the shell: deferred=false buffer=\"__tr_slow() { sleep 0.25; }; precmd_functions+=(__tr_slow)\" input_type=AI t=1794671544776.637",
+      "tr13: 1 Enter(s) of this rep were not routed to the shell: deferred=false buffer=\".txt\" input_type=AI t=1794671559253.847",
+      "tr15: 1 Enter(s) of this rep were not routed to the shell: deferred=false buffer=\"txt\" input_type=AI t=1794671569390.032",
+      "tr17: 1 Enter(s) of this rep were not routed to the shell: deferred=false buffer=\"echo t187_nmkk8kjh27 >> r_tr17.txt\" input_type=AI t=1794671588853.876",
+      "tr18: 1 Enter(s) of this rep were not routed to the shell: deferred=false buffer=\"txt\" input_type=AI t=1794671591897.537",
+      "tr22: 1 Enter(s) of this rep were not routed to the shell: deferred=false buffer=\"xt\" input_type=AI t=1794671619371.470"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "-",
+     "name": "restore",
+     "status": "pass",
+     "seconds": 0,
+     "detail": [
+      "all 10 restore steps ok (data md5 identical, version v0.1.15, PATH/handler/uninstall/shortcuts restored)"
+     ],
+     "lat": {}
+    }
+   ],
+   "files": [
+    "windows/run_slim/logs/agent/app.stdout",
+    "windows/run_slim/logs/agent/fakesshd.stderr",
+    "windows/junit.xml",
+    "windows/summary.md",
+    "windows/results.json",
+    "windows/run_slim/logs/agent@gitbash/app.stdout",
+    "windows/run_slim/logs/agent@gitbash/fakesshd.stderr",
+    "windows/run_slim/logs/terminal/app.stdout",
+    "windows/run_slim/logs/terminal/fakesshd.stderr",
+    "windows/run_slim/logs/terminal@gitbash/app.stdout",
+    "windows/run_slim/logs/terminal@gitbash/fakesshd.stderr"
+   ],
+   "meta": {
+    "platform": "windows",
+    "backend": "windows",
+    "app_display": "windows",
+    "seed": "1",
+    "commit": "8476d176",
+    "sha": "8476d176d4144966c556c88f45e3613f142f5a75",
+    "owner_settings": "sha256 81d188e9844d",
+    "tier": "targeted",
+    "scale": "1"
+   },
+   "summary": {
+    "pass": 18,
+    "fail": 1,
+    "skip": 8,
+    "noref": 0
+   },
+   "screenshots_in_ci_artifacts": [
+    "shots\\terminal@gitbash_selection_modes_FAIL.png"
+   ]
+  },
+  "macos": {
+   "job": "app-test-macos",
+   "job_id": 18032492768,
+   "status": "success",
+   "reuse": false,
+   "cases": [
+    {
+     "mode": "terminal",
+     "name": "mode_proof",
+     "status": "pass",
+     "seconds": 3.7,
+     "detail": [
+      "injector accounting: injector sent 1; app saw 1; lost-before-app 0 (Enter: sent 0, app saw 0); of the app's: 0 unbound keydown/typed, 1 taken by a key binding, 0 Enter by a binding; macOS: 1 key-down(s) reached NSApplication, 1 dispatched as key events, 0 not (0 Cmd chord(s) injected)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "key_loss_control",
+     "status": "pass",
+     "seconds": 41.9,
+     "detail": [
+      "injector mode: None (persistent = one session-long virtual keyboard, so 'unprimed' measures Phosphor itself; percall = a keyboard per wtype call, the #1414 artifact)",
+      "phosphor / perline: first char lost on 0/12 lines, other bad 0, missing 0",
+      "reference / perline: first char lost on 0/12 lines, other bad 0, missing 0",
+      "injector accounting: injector sent 533; app saw 533; lost-before-app 0 (Enter: sent 13, app saw 13); of the app's: 516 unbound keydown/typed, 2 taken by a key binding, 13 Enter by a binding; macOS: 533 key-down(s) reached NSApplication, 533 dispatched as key events (2 of them a menu key equivalent),",
+      "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 13 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "enter_loss_control",
+     "status": "pass",
+     "seconds": 78.7,
+     "detail": [
+      "reference Terminal.app (.command via open) gap 0.00s: 0/30 lines missing (merged/lost Enter), 0 lines not received exactly, injector posted 30 Enters",
+      "reference Terminal.app (.command via open) gap 0.25s: 0/30 lines missing (merged/lost Enter), 0 lines not received exactly, injector posted 30 Enters",
+      "injector accounting: injector sent 2; app saw 2; lost-before-app 0 (Enter: sent 0, app saw 0); of the app's: 0 unbound keydown/typed, 1 taken by a key binding, 0 Enter by a binding; macOS: 2 key-down(s) reached NSApplication, 2 dispatched as key events (1 of them a menu key equivalent), 0 not (0 Cmd"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "fast_typing",
+     "status": "pass",
+     "seconds": 68.4,
+     "detail": [
+      "injector accounting: injector sent 2058; app saw 2058; lost-before-app 0 (Enter: sent 60, app saw 60); of the app's: 1996 unbound keydown/typed, 1 taken by a key binding, 60 Enter by a binding; macOS: 2058 key-down(s) reached NSApplication, 2058 dispatched as key events (1 of them a menu key equival",
+      "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 60 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "expert_fuzz",
+     "status": "pass",
+     "seconds": 33.9,
+     "detail": [
+      "injector accounting: injector sent 710; app saw 710; lost-before-app 0 (Enter: sent 25, app saw 25); of the app's: 647 unbound keydown/typed, 37 taken by a key binding, 25 Enter by a binding; macOS: 710 key-down(s) reached NSApplication, 710 dispatched as key events (1 of them a menu key equivalent)",
+      "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 25 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "mode_proof",
+     "status": "pass",
+     "seconds": 2.7,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "fast_typing",
+     "status": "pass",
+     "seconds": 67.1,
+     "detail": [
+      "injector accounting: injector sent 2004; app saw 2004; lost-before-app 0 (Enter: sent 60, app saw 60); of the app's: 1942 unbound keydown/typed, 1 taken by a key binding, 60 Enter by a binding; macOS: 2004 key-down(s) reached NSApplication, 2004 dispatched as key events (1 of them a menu key equival",
+      "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 60 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "expert_fuzz",
+     "status": "pass",
+     "seconds": 37.4,
+     "detail": [
+      "injector accounting: injector sent 749; app saw 749; lost-before-app 0 (Enter: sent 25, app saw 25); of the app's: 663 unbound keydown/typed, 60 taken by a key binding, 25 Enter by a binding; macOS: 749 key-down(s) reached NSApplication, 749 dispatched as key events (1 of them a menu key equivalent)",
+      "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 25 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+     ],
+     "lat": {}
+    }
+   ],
+   "files": [
+    "macos/run_slim/logs/agent/ctl/hook.err",
+    "macos/results.json",
+    "macos/summary.md",
+    "macos/junit.xml",
+    "macos/run_slim/logs/agent/ctl/hook.enter",
+    "macos/run_slim/logs/terminal/ctl/hook.err",
+    "macos/run_slim/logs/terminal/ctl/hook.enter",
+    "macos/run_slim/logs/enter_route.txt"
+   ],
+   "meta": {
+    "platform": "macos",
+    "backend": "mac",
+    "app_display": "macos",
+    "seed": "1",
+    "commit": "8476d176",
+    "sha": "8476d176d4144966c556c88f45e3613f142f5a75",
+    "owner_settings": "sha256 81d188e9844d",
+    "tier": "targeted",
+    "scale": "1"
+   },
+   "summary": {
+    "pass": 8,
+    "fail": 0,
+    "skip": 0,
+    "noref": 0
+   },
+   "screenshots_in_ci_artifacts": []
+  },
+  "wayland": {
+   "job": "app-test-linux-wayland",
+   "job_id": 18032492766,
+   "status": "success",
+   "reuse": false,
+   "cases": [
+    {
+     "mode": "terminal",
+     "name": "mode_proof",
+     "status": "pass",
+     "seconds": 1.5,
+     "detail": [
+      "injector accounting: injector sent 1; app saw 1; lost-before-app 0 (Enter: sent 0, app saw 0); of the app's: 0 unbound keydown/typed, 1 taken by a key binding, 0 Enter by a binding"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "key_loss_control",
+     "status": "pass",
+     "seconds": 90.4,
+     "detail": [
+      "injector mode: persistent (persistent = one session-long virtual keyboard, so 'unprimed' measures Phosphor itself; percall = a keyboard per wtype call, the #1414 artifact)",
+      "phosphor / perline-unprimed: first char lost on 0/12 lines, other bad 0, missing 0",
+      "phosphor / perline: first char lost on 0/12 lines, other bad 0, missing 0",
+      "phosphor / oneshot: first char lost on 0/12 lines, other bad 0, missing 0",
+      "reference / perline-unprimed: first char lost on 0/12 lines, other bad 0, missing 0",
+      "reference / perline: first char lost on 0/12 lines, other bad 0, missing 0"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "enter_loss_control",
+     "status": "pass",
+     "seconds": 64.3,
+     "detail": [
+      "reference foot gap 0.00s: 0/30 lines missing (merged/lost Enter), 0 lines not received exactly, injector posted 30 Enters",
+      "reference foot gap 0.25s: 0/30 lines missing (merged/lost Enter), 0 lines not received exactly, injector posted 30 Enters",
+      "injector accounting: injector sent 2; app saw 2; lost-before-app 0 (Enter: sent 0, app saw 0); of the app's: 0 unbound keydown/typed, 2 taken by a key binding, 0 Enter by a binding"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "fast_typing",
+     "status": "pass",
+     "seconds": 57.7,
+     "detail": [
+      "injector accounting: injector sent 2072; app saw 2072; lost-before-app 0 (Enter: sent 60, app saw 60); of the app's: 2010 unbound keydown/typed, 2 taken by a key binding, 60 Enter by a binding",
+      "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 60 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "expert_fuzz",
+     "status": "pass",
+     "seconds": 22.6,
+     "detail": [
+      "injector accounting: injector sent 721; app saw 721; lost-before-app 0 (Enter: sent 25, app saw 25); of the app's: 662 unbound keydown/typed, 34 taken by a key binding, 25 Enter by a binding",
+      "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 25 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "mode_proof",
+     "status": "pass",
+     "seconds": 0.6,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "fast_typing",
+     "status": "pass",
+     "seconds": 57.2,
+     "detail": [
+      "injector accounting: injector sent 2004; app saw 2004; lost-before-app 0 (Enter: sent 60, app saw 60); of the app's: 1942 unbound keydown/typed, 2 taken by a key binding, 60 Enter by a binding",
+      "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 60 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "expert_fuzz",
+     "status": "pass",
+     "seconds": 21.8,
+     "detail": [
+      "injector accounting: injector sent 749; app saw 749; lost-before-app 0 (Enter: sent 25, app saw 25); of the app's: 663 unbound keydown/typed, 61 taken by a key binding, 25 Enter by a binding",
+      "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 25 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+     ],
+     "lat": {}
+    }
+   ],
+   "files": [
+    "wayland/run_slim/logs/agent/app.stdout",
+    "wayland/results.jsonl",
+    "wayland/junit.xml",
+    "wayland/summary.md",
+    "wayland/run_slim/logs/gpu.txt",
+    "wayland/run_slim/logs/terminal/app.stdout",
+    "wayland/results.json"
+   ],
+   "meta": {
+    "platform": "linux-wayland",
+    "backend": "wayland",
+    "app_display": "wayland",
+    "seed": "1",
+    "commit": "8476d176",
+    "sha": "8476d176d4144966c556c88f45e3613f142f5a75",
+    "owner_settings": "sha256 81d188e9844d",
+    "tier": "targeted",
+    "scale": "1"
+   },
+   "summary": {
+    "pass": 8,
+    "fail": 0,
+    "skip": 0,
+    "noref": 0
+   },
+   "screenshots_in_ci_artifacts": []
+  }
+ },
+ "notes": [
+  "TARGETED run (ci_seq.py --tier targeted): only the cases and suites of its cases file were played. A pass here proves those cases on those platforms and nothing else; a job with the note `not run` was not part of it.",
+  "windows/run_slim/logs/agent@gitbash/phosphor.log.gz: 2010 KB skipped (over 1 MB)",
+  "windows/run_slim/logs/terminal@gitbash/phosphor.log.gz: 1946 KB skipped (over 1 MB)"
+ ],
+ "targeted": {
+  "platforms": {
+   "linux-wayland": {
+    "cases": [
+     "expert_fuzz",
+     "fast_typing",
+     "enter_loss_control",
+     "key_loss_control"
+    ]
+   },
+   "macos": {
+    "cases": [
+     "expert_fuzz",
+     "fast_typing",
+     "enter_loss_control",
+     "key_loss_control"
+    ]
+   },
+   "linux-lab": {
+    "cases": [
+     "lab_connect_typeahead.bash.*",
+     "lab_ctrl_c_no_esc_i.zsh.lan.helper"
+    ]
+   },
+   "macos-lab": {
+    "cases": [
+     "lab_connect_typeahead.zsh.*",
+     "lab_ctrl_c_no_esc_i.zsh.lan.helper"
+    ]
+   },
+   "windows": {
+    "cases": [
+     "routing_table_powershell",
+     "expert_fuzz",
+     "selection_modes",
+     "gitbash_typeahead_reps",
+     "enter_loss_control"
+    ],
+    "win_shells": [
+     "powershell",
+     "gitbash"
+    ]
+   },
+   "windows-lab": {
+    "cases": [
+     "lab_connect_typeahead.*",
+     "lab_chips.bash.lan.nohelper"
+    ]
+   }
+  },
+  "suites": {
+   "linux": [
+    "test-linux",
+    "test-warpui-core",
+    "test-workspace-rest"
+   ],
+   "macos": [
+    "test-macos",
+    "test-warpui-core-macos",
+    "test-workspace-rest-macos"
+   ],
+   "windows": [
+    "test-windows",
+    "test-warpui-core-windows",
+    "test-workspace-rest-windows"
+   ]
+  },
+  "note": "r30f: proves #2209 (no dropped keys) + #2115 (expert_fuzz edit keys) + #2223 (selection_modes declined Enters) + #2226 (Windows stdin, test-windows) + #2220 (routing_table_powershell) + #2213 on Windows Git Bash + #2216 chips on Windows + #2203/#2207/#2208 (gitbash_typeahead_reps). Typeahead regression guard on Linux/macOS: expert_fuzz, fast_typing, enter_loss_control, key_loss_control. No soak/perf."
+ },
+ "setup": {
+  "lab-helper": {
+   "failing_lines": [],
+   "job": "lab-helper",
+   "status": "success",
+   "duration": 42.975296
+  },
+  "sshlab-image": {
+   "failing_lines": [],
+   "job": "sshlab-image",
+   "status": "success",
+   "duration": 21.349221
+  }
+ },
+ "compile": {
+  "warning_count": 125,
+  "warnings_by_crate": {
+   "yaml-rust (lib)": 10,
+   "font-kit (lib)": 3,
+   "arboard (lib)": 2,
+   "cosmic-text (lib)": 2,
+   "warpui_extras (lib)": 1,
+   "watcher (lib)": 1,
+   "ai (lib)": 4,
+   "difflib (lib)": 3,
+   "remote_server (lib)": 4,
+   "warp (lib)": 47,
+   "warp (lib test)": 48
+  },
+  "warning_lines_by_kind": {
+   "function": 49,
+   "unused import": 38,
+   "method": 35,
+   "field": 20,
+   "variant": 17,
+   "unexpected": 16,
+   "unused variable": 16,
+   "use of deprecated constant": 12,
+   "use of deprecated struct": 12,
+   "use of deprecated method": 12,
+   "use of deprecated type alias": 8,
+   "use of deprecated associated function": 8,
+   "methods": 8,
+   "constant": 8,
+   "struct": 8,
+   "associated function": 6,
+   "type": 5,
+   "use of deprecated module": 4,
+   "hiding a lifetime that": 4,
+   "missing documentation for an associated function": 4,
+   "missing documentation for a method": 4,
+   "variable does not need to be mutable": 4,
+   "unused attribute": 4,
+   "value assigned to": 4,
+   "enum": 4,
+   "the following packages contain code that will be rejected by": 4,
+   "unused imports": 2,
+   "use of deprecated field": 2
+  },
+  "errors": 0,
+  "status": "success",
+  "duration": 492.877736
+ }
+}

@@ -1,0 +1,80 @@
+{
+ "summary_line": "Summary [ 799.564s] 12062 tests run: 12062 passed (10 slow, 10 leaky), 47 skipped",
+ "duration_s": 799.564,
+ "run": 12062,
+ "passed": 12062,
+ "failed": 0,
+ "timed_out": 0,
+ "skipped": 47,
+ "slow": 10,
+ "flaky": 0,
+ "failures": [
+  {
+   "kind": "LEAK",
+   "crate": "warp",
+   "test": "ai::blocklist::agent_fuzz::matrix::pairs_failing_command::off",
+   "seconds": 51.805
+  },
+  {
+   "kind": "LEAK",
+   "crate": "warp",
+   "test": "ai::blocklist::agent_fuzz::matrix::triples_command::off",
+   "seconds": 131.089
+  },
+  {
+   "kind": "LEAK",
+   "crate": "warp",
+   "test": "context_chips::current_prompt::tests::test_chips_rerun_when_the_blocks_session_registers",
+   "seconds": 0.457
+  },
+  {
+   "kind": "LEAK",
+   "crate": "warp",
+   "test": "context_chips::current_prompt::tests::test_unchanged_chip_refetch_does_not_respawn_on_click_command",
+   "seconds": 0.509
+  },
+  {
+   "kind": "LEAK",
+   "crate": "warp",
+   "test": "terminal::input::tests::test_history_file_does_not_route_requests_or_bare_english_words_to_the_shell",
+   "seconds": 0.768
+  },
+  {
+   "kind": "LEAK",
+   "crate": "warp",
+   "test": "workspace::view::tests::test_active_tab_bar_position_id_tracks_layout",
+   "seconds": 0.655
+  },
+  {
+   "kind": "LEAK",
+   "crate": "warp",
+   "test": "workspace::view::tests::test_closing_a_code_pane_drops_its_editor_and_buffer",
+   "seconds": 2.305
+  },
+  {
+   "kind": "LEAK",
+   "crate": "warp",
+   "test": "workspace::view::tests::test_closing_a_code_pane_releases_a_retained_editors_heavy_state",
+   "seconds": 2.137
+  },
+  {
+   "kind": "LEAK",
+   "crate": "warp",
+   "test": "workspace::view::tests::test_code_editor_entry_points_refuse_a_file_past_the_size_limit",
+   "seconds": 2.185
+  },
+  {
+   "kind": "LEAK",
+   "crate": "warp",
+   "test": "workspace::view::tests::test_reopening_a_file_whose_code_pane_was_moved_away_still_opens_it",
+   "seconds": 2.178
+  }
+ ],
+ "regressions": [],
+ "notes": [
+  "tests: ok (0 known failure(s), no regressions)"
+ ],
+ "job": "test-windows",
+ "status": "success",
+ "duration": 2730.00956
+}

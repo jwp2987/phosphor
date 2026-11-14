@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="appci-linux-wayland" tests="11" failures="0" skipped="0">
+<testcase classname="terminal" name="lab_connect_typeahead.bash.lan.nohelper" time="23.90">
+</testcase>
+<testcase classname="terminal" name="lab_connect_typeahead.bash.150.nohelper" time="41.70">
+</testcase>
+<testcase classname="terminal" name="lab_ctrl_c_no_esc_i.zsh.lan.helper" time="41.80">
+</testcase>
+<testcase classname="terminal" name="lab_connect_typeahead.bash.lan.helper" time="24.70">
+</testcase>
+<testcase classname="terminal" name="lab_connect_typeahead.bash.150.helper" time="39.00">
+</testcase>
+<testcase classname="agent" name="lab_connect_typeahead.bash.lan.nohelper" time="24.00">
+</testcase>
+<testcase classname="agent" name="lab_connect_typeahead.bash.150.nohelper" time="41.30">
+</testcase>
+<testcase classname="agent" name="lab_ctrl_c_no_esc_i.zsh.lan.helper" time="41.50">
+</testcase>
+<testcase classname="agent" name="agent_view_not_restored_after_lab_ctrl_c_no_esc_i.zsh.lan.helper" time="0.00">
+</testcase>
+<testcase classname="agent" name="lab_connect_typeahead.bash.lan.helper" time="23.70">
+</testcase>
+<testcase classname="agent" name="lab_connect_typeahead.bash.150.helper" time="38.60">
+</testcase>
+</testsuite>

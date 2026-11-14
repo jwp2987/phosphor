@@ -1,0 +1,1646 @@
+{
+ "meta": {
+  "platform": "macos",
+  "backend": "mac",
+  "app_display": "macos",
+  "seed": "1",
+  "commit": "8476d176",
+  "sha": "8476d176d4144966c556c88f45e3613f142f5a75",
+  "owner_settings": "sha256 81d188e9844d",
+  "tier": "targeted",
+  "scale": "1"
+ },
+ "generated": "2026-11-14T09:12:16-0600",
+ "summary": {
+  "pass": 9,
+  "fail": 4,
+  "skip": 0,
+  "noref": 0
+ },
+ "cases": [
+  {
+   "name": "lab_connect_typeahead.zsh.lan.nohelper",
+   "mode": "terminal",
+   "status": "pass",
+   "ran_mode": "terminal",
+   "seconds": 32.0,
+   "evidence": [
+    "enter_route: 26 Enter(s) reached the input editor: Shell=26 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794668600.277,
+    1794668632.256
+   ],
+   "detail": [
+    "lab_connect_typeahead loss: 0 of 6 typed-ahead commands lost (observed 0.0 %); 95 % upper confidence bound 39.3 %; this n cannot exclude a 1/40 (2.5 %) rate: needs 119 clean trials",
+    "ssh trial verdicts: exact=6",
+    "typed-during-connect: in 0 of 6 trials keys were in the console before the session and were held at the front (typeahead_front adopted=true)",
+    "injector accounting: injector sent 500; app saw 500; lost-before-app 0 (Enter: sent 24, app saw 24); of the app's: 472 unbound keydown/typed, 2 taken by a key binding, 24 Enter by a binding; macOS: 500 key-down(s) reached NSApplication, 500 dispatched as key events (2 of them a menu key equivalent), 0 not (0 Cmd chord(s) injected)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 24 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 3.3,
+     "target": 0,
+     "n": 15,
+     "tol": 15.0
+    },
+    "trials": 6,
+    "loss": {
+     "lost": 0,
+     "n": 6,
+     "rate": 0.0,
+     "upper_bound": 0.393,
+     "conf": 0.95,
+     "text": "0 of 6 typed-ahead commands lost (observed 0.0 %); 95 % upper confidence bound 39.3 %; this n cannot exclude a 1/40 (2.5 %) rate: needs 119 clean trials"
+    },
+    "ssh_trial_verdicts": [
+     {
+      "exact": true,
+      "held_keys": 11,
+      "held_bytes": 11,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "precmd",
+        11
+       ]
+      ],
+      "finish": [
+       "delivered=remote"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 14,
+      "held_bytes": 14,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "precmd",
+        14
+       ]
+      ],
+      "finish": [
+       "delivered=remote"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 12,
+      "held_bytes": 12,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "precmd",
+        12
+       ]
+      ],
+      "finish": [
+       "delivered=remote"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 7,
+      "held_bytes": 7,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "precmd",
+        7
+       ]
+      ],
+      "finish": [
+       "delivered=remote"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 2,
+      "held_bytes": 2,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "precmd",
+        2
+       ]
+      ],
+      "finish": [
+       "delivered=remote"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     }
+    ],
+    "injector": {
+     "sent": 500,
+     "enters_sent": 24,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 500,
+     "unbound": 472,
+     "bound": 2,
+     "enters_bound": 24,
+     "os_keys": 500,
+     "undispatched": 0,
+     "cmd_chords": 0,
+     "menu": 2,
+     "menu_cmd": 0,
+     "cmd_allowed": 0,
+     "app_undelivered": 0,
+     "seen": 500,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 24
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 24
+    },
+    "enter_taint": {
+     "taps": 24,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_lab_connect_typeahead.zsh.lan.nohelper.png"
+   ]
+  },
+  {
+   "name": "lab_connect_typeahead.zsh.150.nohelper",
+   "mode": "terminal",
+   "status": "pass",
+   "ran_mode": "terminal",
+   "seconds": 51.1,
+   "evidence": [
+    "enter_route: 30 Enter(s) reached the input editor: Shell=30 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794668635.629,
+    1794668686.736
+   ],
+   "detail": [
+    "lab_connect_typeahead loss: 0 of 6 typed-ahead commands lost (observed 0.0 %); 95 % upper confidence bound 39.3 %; this n cannot exclude a 1/40 (2.5 %) rate: needs 119 clean trials",
+    "ssh trial verdicts: exact=6",
+    "typed-during-connect: in 0 of 6 trials keys were in the console before the session and were held at the front (typeahead_front adopted=true)",
+    "injector accounting: injector sent 508; app saw 508; lost-before-app 0 (Enter: sent 24, app saw 24); of the app's: 486 unbound keydown/typed, 2 taken by a key binding, 18 Enter by a binding; macOS: 508 key-down(s) reached NSApplication, 508 dispatched as key events (2 of them a menu key equivalent), 0 not (0 Cmd chord(s) injected)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 24 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 154.6,
+     "target": 150,
+     "n": 15,
+     "tol": 15.0
+    },
+    "trials": 6,
+    "loss": {
+     "lost": 0,
+     "n": 6,
+     "rate": 0.0,
+     "upper_bound": 0.393,
+     "conf": 0.95,
+     "text": "0 of 6 typed-ahead commands lost (observed 0.0 %); 95 % upper confidence bound 39.3 %; this n cannot exclude a 1/40 (2.5 %) rate: needs 119 clean trials"
+    },
+    "ssh_trial_verdicts": [
+     {
+      "exact": true,
+      "held_keys": 28,
+      "held_bytes": 28,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "session_bootstrapped",
+        28
+       ]
+      ],
+      "finish": [
+       "delivered=remote"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 28,
+      "held_bytes": 28,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "session_bootstrapped",
+        28
+       ]
+      ],
+      "finish": [
+       "delivered=remote"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 28,
+      "held_bytes": 28,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "session_bootstrapped",
+        28
+       ]
+      ],
+      "finish": [
+       "delivered=remote"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 28,
+      "held_bytes": 28,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "session_bootstrapped",
+        28
+       ]
+      ],
+      "finish": [
+       "delivered=remote"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 28,
+      "held_bytes": 28,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "session_bootstrapped",
+        28
+       ]
+      ],
+      "finish": [
+       "delivered=remote"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 28,
+      "held_bytes": 28,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "session_bootstrapped",
+        28
+       ]
+      ],
+      "finish": [
+       "delivered=remote"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     }
+    ],
+    "injector": {
+     "sent": 508,
+     "enters_sent": 24,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 508,
+     "unbound": 486,
+     "bound": 2,
+     "enters_bound": 18,
+     "os_keys": 508,
+     "undispatched": 0,
+     "cmd_chords": 0,
+     "menu": 2,
+     "menu_cmd": 0,
+     "cmd_allowed": 0,
+     "app_undelivered": 0,
+     "seen": 508,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 24
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 24
+    },
+    "enter_taint": {
+     "taps": 24,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_lab_connect_typeahead.zsh.150.nohelper.png"
+   ]
+  },
+  {
+   "name": "lab_ctrl_c_no_esc_i.zsh.lan.helper",
+   "mode": "terminal",
+   "status": "pass",
+   "ran_mode": "terminal",
+   "seconds": 45.2,
+   "evidence": [
+    "enter_route: 21 Enter(s) reached the input editor: Shell=21 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794668690.215,
+    1794668735.435
+   ],
+   "detail": [
+    "SETTINGS LEFT CHANGED: the settings file differs from the one this case started on, in: warpify.ssh.remote_helper_denied_hosts",
+    "injector accounting: injector sent 583; app saw 583; lost-before-app 0 (Enter: sent 21, app saw 21); of the app's: 539 unbound keydown/typed, 12 taken by a key binding, 21 Enter by a binding; macOS: 583 key-down(s) reached NSApplication, 583 dispatched as key events (11 of them a menu key equivalent), 0 not (0 Cmd chord(s) injected)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 21 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 3.6,
+     "target": 0,
+     "n": 15,
+     "tol": 15.0
+    },
+    "injector": {
+     "sent": 583,
+     "enters_sent": 21,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 583,
+     "unbound": 539,
+     "bound": 12,
+     "enters_bound": 21,
+     "os_keys": 583,
+     "undispatched": 0,
+     "cmd_chords": 0,
+     "menu": 11,
+     "menu_cmd": 0,
+     "cmd_allowed": 0,
+     "app_undelivered": 0,
+     "seen": 583,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 21
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 21
+    },
+    "enter_taint": {
+     "taps": 21,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_lab_ctrl_c_no_esc_i.zsh.lan.helper.png"
+   ]
+  },
+  {
+   "name": "lab_connect_typeahead.zsh.lan.helper",
+   "mode": "terminal",
+   "status": "pass",
+   "ran_mode": "terminal",
+   "seconds": 35.0,
+   "evidence": [
+    "enter_route: 25 Enter(s) reached the input editor: Shell=25 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794668737.539,
+    1794668772.55
+   ],
+   "detail": [
+    "lab_connect_typeahead loss: 0 of 6 typed-ahead commands lost (observed 0.0 %); 95 % upper confidence bound 39.3 %; this n cannot exclude a 1/40 (2.5 %) rate: needs 119 clean trials",
+    "ssh trial verdicts: exact=6",
+    "typed-during-connect: in 0 of 6 trials keys were in the console before the session and were held at the front (typeahead_front adopted=true)",
+    "injector accounting: injector sent 557; app saw 557; lost-before-app 0 (Enter: sent 25, app saw 25); of the app's: 528 unbound keydown/typed, 2 taken by a key binding, 25 Enter by a binding; macOS: 557 key-down(s) reached NSApplication, 557 dispatched as key events (2 of them a menu key equivalent), 0 not (0 Cmd chord(s) injected)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 25 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 3.3,
+     "target": 0,
+     "n": 15,
+     "tol": 15.0
+    },
+    "trials": 6,
+    "loss": {
+     "lost": 0,
+     "n": 6,
+     "rate": 0.0,
+     "upper_bound": 0.393,
+     "conf": 0.95,
+     "text": "0 of 6 typed-ahead commands lost (observed 0.0 %); 95 % upper confidence bound 39.3 %; this n cannot exclude a 1/40 (2.5 %) rate: needs 119 clean trials"
+    },
+    "ssh_trial_verdicts": [
+     {
+      "exact": true,
+      "held_keys": 23,
+      "held_bytes": 23,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "precmd",
+        23
+       ]
+      ],
+      "finish": [
+       "delivered=remote"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 20,
+      "held_bytes": 20,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "precmd",
+        20
+       ]
+      ],
+      "finish": [
+       "delivered=remote"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 11,
+      "held_bytes": 11,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "precmd",
+        11
+       ]
+      ],
+      "finish": [
+       "delivered=remote"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 5,
+      "held_bytes": 5,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "precmd",
+        5
+       ]
+      ],
+      "finish": [
+       "delivered=remote"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 4,
+      "held_bytes": 4,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "precmd",
+        4
+       ]
+      ],
+      "finish": [
+       "delivered=remote"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     }
+    ],
+    "injector": {
+     "sent": 557,
+     "enters_sent": 25,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 557,
+     "unbound": 528,
+     "bound": 2,
+     "enters_bound": 25,
+     "os_keys": 557,
+     "undispatched": 0,
+     "cmd_chords": 0,
+     "menu": 2,
+     "menu_cmd": 0,
+     "cmd_allowed": 0,
+     "app_undelivered": 0,
+     "seen": 557,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 25
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 25
+    },
+    "enter_taint": {
+     "taps": 25,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_lab_connect_typeahead.zsh.lan.helper.png"
+   ]
+  },
+  {
+   "name": "lab_connect_typeahead.zsh.150.helper",
+   "mode": "terminal",
+   "status": "pass",
+   "ran_mode": "terminal",
+   "seconds": 51.2,
+   "evidence": [
+    "enter_route: 24 Enter(s) reached the input editor: Shell=24 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794668775.922,
+    1794668827.106
+   ],
+   "detail": [
+    "lab_connect_typeahead loss: 0 of 6 typed-ahead commands lost (observed 0.0 %); 95 % upper confidence bound 39.3 %; this n cannot exclude a 1/40 (2.5 %) rate: needs 119 clean trials",
+    "ssh trial verdicts: exact=6",
+    "typed-during-connect: in 0 of 6 trials keys were in the console before the session and were held at the front (typeahead_front adopted=true)",
+    "injector accounting: injector sent 508; app saw 508; lost-before-app 0 (Enter: sent 24, app saw 24); of the app's: 486 unbound keydown/typed, 2 taken by a key binding, 18 Enter by a binding; macOS: 508 key-down(s) reached NSApplication, 508 dispatched as key events (2 of them a menu key equivalent), 0 not (0 Cmd chord(s) injected)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 24 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 154.5,
+     "target": 150,
+     "n": 15,
+     "tol": 15.0
+    },
+    "trials": 6,
+    "loss": {
+     "lost": 0,
+     "n": 6,
+     "rate": 0.0,
+     "upper_bound": 0.393,
+     "conf": 0.95,
+     "text": "0 of 6 typed-ahead commands lost (observed 0.0 %); 95 % upper confidence bound 39.3 %; this n cannot exclude a 1/40 (2.5 %) rate: needs 119 clean trials"
+    },
+    "ssh_trial_verdicts": [
+     {
+      "exact": true,
+      "held_keys": 28,
+      "held_bytes": 28,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "session_bootstrapped",
+        28
+       ]
+      ],
+      "finish": [
+       "delivered=remote"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 28,
+      "held_bytes": 28,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "session_bootstrapped",
+        28
+       ]
+      ],
+      "finish": [
+       "delivered=remote"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 28,
+      "held_bytes": 28,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "session_bootstrapped",
+        28
+       ]
+      ],
+      "finish": [
+       "delivered=remote"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 28,
+      "held_bytes": 28,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "session_bootstrapped",
+        28
+       ]
+      ],
+      "finish": [
+       "delivered=remote"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 28,
+      "held_bytes": 28,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "session_bootstrapped",
+        28
+       ]
+      ],
+      "finish": [
+       "delivered=remote"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 28,
+      "held_bytes": 28,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "session_bootstrapped",
+        28
+       ]
+      ],
+      "finish": [
+       "delivered=remote"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     }
+    ],
+    "injector": {
+     "sent": 508,
+     "enters_sent": 24,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 508,
+     "unbound": 486,
+     "bound": 2,
+     "enters_bound": 18,
+     "os_keys": 508,
+     "undispatched": 0,
+     "cmd_chords": 0,
+     "menu": 2,
+     "menu_cmd": 0,
+     "cmd_allowed": 0,
+     "app_undelivered": 0,
+     "seen": 508,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 24
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 24
+    },
+    "enter_taint": {
+     "taps": 24,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_lab_connect_typeahead.zsh.150.helper.png"
+   ]
+  },
+  {
+   "name": "lab_connect_typeahead.zsh.lan.nohelper",
+   "mode": "agent",
+   "status": "fail",
+   "ran_mode": "agent",
+   "seconds": 41.4,
+   "evidence": [
+    "enter_route: 6 Enter(s) reached the input editor: AI=1 Shell=5 [Shell,Shell,Shell,AI,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794668837.243,
+    1794668878.65
+   ],
+   "detail": [
+    "trial 2 (gap 0.0 s): the line typed behind `ssh lab-u_zsh` never reached the remote shell. Test host: sshd.log: debug1: session_by_pid: pid 65055 | debug1: session_exit_message: session 0 channel 0 pid 65055 exit 0 | debug1: session_exit_message: release channel 0 | Received disconnect from 127.0.0.1 port 50716:11: disconnected by user | Disconnected from user gitrunner 127.0.0.1 port 50716 | debug1: do_cleanup | debug1: mm_reap: child exited with status 255 | debug1: do_cleanup; test sshd (openssh) listening on 127.0.0.1:50712; lab /health: sshd={'22': True, '2222': True} fault=None tc=True ttl_left=11656 ;; lab sshd.log tail: Close session: user u_zsh from <ip> port 39086 id 4 | Starting session: command for u_zsh from <ip> port 39086 id 5 | Close session: user u_zsh from <ip> port 39086 id 1 | Starting session: command for u_zsh from <ip> port 39086 id 1 | Close session: user u_zsh from <ip> port 39086 id 5 | Close session: user u_zsh from <ip> port 39086 id 1 | Starting session: command for u_zsh from <ip> port 39086 id 5 | Close session: user u_zsh from <ip> port 39086 id 5; ssh client probe exit 0: Transferred: sent 3580, received 3540 bytes, in 0.0 seconds | Bytes per second: sent 257665.2, received 254786.3 | debug1: Exit status 0; app ssh hops: [DEBUG] input_order hop=kh_hold_exit seq=152 branch=gate_open_live gate_armed=false table=1 t=1794668844857.987 | [DEBUG] input_order hop=hand_route reason=unheld state=editor_owned awaiting_ready=false in_flight=0 evidence=None command_interactive=false enters_wr | [DEBUG] input_order hop=kh_hold_entry seq=153 holding=false held_bytes=0 gate_armed=false pending_session=false table=1 t=1794668844858.249 | [DEBUG] input_order hop=kh_hold_exit seq=153 branch=gate_open_live gate_armed=false table=1 t=1794668844858.254 | [DEBUG] input_order hop=hand_route reason=unheld state=editor_owned awaiting_ready=false in_flight=0 evidence=None command_interactive=false enters_wr | [DEBUG] input_order hop=kh_hold_entry seq=154 holding=false held_bytes=0 gate_armed=false pending_session=false table=1 t=1794668844862.402 | [DEBUG] input_order hop=kh_hold_exit seq=154 branch=gate_open_live gate_armed=false table=1 t=1794668844862.407 | [DEBUG] input_order hop=hand_route reason=unheld state=editor_owned awaiting_ready=false in_flight=0 evidence=None command_interactive=false enters_wr | [DEBUG] input_order hop=handoff_commit_source ssh_gate_armed=false ssh_holding=false remote_prompt_seen=true t=1794668844866.120 | [DEBUG] input_order hop=handoff_commit_at_prompt committed=false still_pty_owned=false t=1794668844866.128",
+    "trial 2 (gap 0.0 s): the remote shell received ['> ~/rl.txt'], want exactly ['echo T4_yng5by >> ~/rl.txt']",
+    "lab_connect_typeahead (trial 2 (gap 0.0 s)): T4_yng5by never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log). Test host: sshd.log: debug1: session_by_pid: pid 65585 | debug1: session_exit_message: session 0 channel 0 pid 65585 exit 0 | debug1: session_exit_message: release channel 0 | Received disconnect from 127.0.0.1 port 51521:11: disconnected by user | Disconnected from user gitrunner 127.0.0.1 port 51521 | debug1: do_cleanup | debug1: mm_reap: child exited with status 255 | debug1: do_cleanup; test sshd (openssh) listening on 127.0.0.1:50712; lab /health: sshd={'22': True, '2222': True} fault=None tc=True ttl_left=11654 ;; lab sshd.log tail: Close session: user u_zsh from <ip> port 39086 id 4 | Starting session: command for u_zsh from <ip> port 39086 id 5 | Close session: user u_zsh from <ip> port 39086 id 1 | Starting session: command for u_zsh from <ip> port 39086 id 1 | Close session: user u_zsh from <ip> port 39086 id 5 | Close session: user u_zsh from <ip> port 39086 id 1 | Starting session: command for u_zsh from <ip> port 39086 id 5 | Close session: user u_zsh from <ip> port 39086 id 5; ssh client probe exit 0: Transferred: sent 3580, received 3540 bytes, in 0.0 seconds | Bytes per second: sent 190689.2, received 188558.6 | debug1: Exit status 0; app ssh hops: [DEBUG] input_order hop=kh_hold_exit seq=152 branch=gate_open_live gate_armed=false table=1 t=1794668844857.987 | [DEBUG] input_order hop=hand_route reason=unheld state=editor_owned awaiting_ready=false in_flight=0 evidence=None command_interactive=false enters_wr | [DEBUG] input_order hop=kh_hold_entry seq=153 holding=false held_bytes=0 gate_armed=false pending_session=false table=1 t=1794668844858.249 | [DEBUG] input_order hop=kh_hold_exit seq=153 branch=gate_open_live gate_armed=false table=1 t=1794668844858.254 | [DEBUG] input_order hop=hand_route reason=unheld state=editor_owned awaiting_ready=false in_flight=0 evidence=None command_interactive=false enters_wr | [DEBUG] input_order hop=kh_hold_entry seq=154 holding=false held_bytes=0 gate_armed=false pending_session=false table=1 t=1794668844862.402 | [DEBUG] input_order hop=kh_hold_exit seq=154 branch=gate_open_live gate_armed=false table=1 t=1794668844862.407 | [DEBUG] input_order hop=hand_route reason=unheld state=editor_owned awaiting_ready=false in_flight=0 evidence=None command_interactive=false enters_wr | [DEBUG] input_order hop=handoff_commit_source ssh_gate_armed=false ssh_holding=false remote_prompt_seen=true t=1794668844866.120 | [DEBUG] input_order hop=handoff_commit_at_prompt committed=false still_pty_owned=false t=1794668844866.128",
+    "lab_connect_typeahead trial 2 (gap 0.0 s): #1400: keys lost: chars 1-16 'echo T4_yng5by >' of 26; held 11 key(s)/11 byte(s), hand-over precmd@11, finish delivered=remote; the app saw every key of the line; remote got '> ~/rl.txt'",
+    "lab_connect_typeahead loss: 2 of 2 typed-ahead commands lost (observed 100.0 %); 95 % upper confidence bound 100.0 %; this n cannot exclude a 1/40 (2.5 %) rate: needs 119 clean trials",
+    "ssh trial verdicts: #1400=1, exact=1",
+    "typed-during-connect: in 0 of 2 trials keys were in the console before the session and were held at the front (typeahead_front adopted=true)",
+    "injector accounting: injector sent 128; app saw 128; lost-before-app 0 (Enter: sent 6, app saw 6); of the app's: 117 unbound keydown/typed, 4 taken by a key binding, 6 Enter by a binding; macOS: 128 key-down(s) reached NSApplication, 128 dispatched as key events (1 of them a menu key equivalent), 0 not (0 Cmd chord(s) injected)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 6 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 3.6,
+     "target": 0,
+     "n": 15,
+     "tol": 15.0
+    },
+    "trials": 2,
+    "loss": {
+     "lost": 2,
+     "n": 2,
+     "rate": 1.0,
+     "upper_bound": 1.0,
+     "conf": 0.95,
+     "text": "2 of 2 typed-ahead commands lost (observed 100.0 %); 95 % upper confidence bound 100.0 %; this n cannot exclude a 1/40 (2.5 %) rate: needs 119 clean trials"
+    },
+    "ssh_trial_verdicts": [
+     {
+      "exact": true,
+      "held_keys": 11,
+      "held_bytes": 11,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "precmd",
+        11
+       ]
+      ],
+      "finish": [
+       "delivered=remote"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": false,
+      "held_keys": 11,
+      "held_bytes": 11,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "precmd",
+        11
+       ]
+      ],
+      "finish": [
+       "delivered=remote"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": [
+       [
+        0,
+        "echo T4_yng5by >"
+       ]
+      ]
+     }
+    ],
+    "injector": {
+     "sent": 128,
+     "enters_sent": 6,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 128,
+     "unbound": 117,
+     "bound": 4,
+     "enters_bound": 6,
+     "os_keys": 128,
+     "undispatched": 0,
+     "cmd_chords": 0,
+     "menu": 1,
+     "menu_cmd": 0,
+     "cmd_allowed": 0,
+     "app_undelivered": 0,
+     "seen": 128,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 6
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 6
+    },
+    "enter_taint": {
+     "taps": 6,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/agent_lab_connect_typeahead.zsh.lan.nohelper_FAIL.png"
+   ]
+  },
+  {
+   "name": "pane_not_local_after_lab_connect_typeahead.zsh.lan.nohelper",
+   "mode": "agent",
+   "status": "fail",
+   "seconds": 0,
+   "shots": [
+    "/Users/<user>/builds/CR7LvsOfu/0/winters-phosphor/phosphor/appci-out/macos/run/shots/agent_not_local_after_lab_connect_typeahead.zsh.lan.nohelper.png"
+   ],
+   "detail": [
+    "after lab_connect_typeahead.zsh.lan.nohelper the pane's shell was not the root shell (none; root pid 65065); the app is relaunched so later cases start clean"
+   ]
+  },
+  {
+   "name": "lab_connect_typeahead.zsh.150.nohelper",
+   "mode": "agent",
+   "status": "pass",
+   "ran_mode": "agent",
+   "seconds": 50.0,
+   "evidence": [
+    "enter_route: 24 Enter(s) reached the input editor: AI=6 Shell=18 [Shell,Shell,Shell,AI,Shell,Shell,Shell,AI,Shell,Shell,Shell,AI,Shell,Shell,Shell,AI,Shell,Shell,Shell,AI,Shell,Shell,Shell,AI]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794668903.162,
+    1794668953.174
+   ],
+   "detail": [
+    "lab_connect_typeahead loss: 0 of 6 typed-ahead commands lost (observed 0.0 %); 95 % upper confidence bound 39.3 %; this n cannot exclude a 1/40 (2.5 %) rate: needs 119 clean trials",
+    "ssh trial verdicts: exact=6",
+    "typed-during-connect: in 0 of 6 trials keys were in the console before the session and were held at the front (typeahead_front adopted=true)",
+    "injector accounting: injector sent 506; app saw 506; lost-before-app 0 (Enter: sent 24, app saw 24); of the app's: 484 unbound keydown/typed, 2 taken by a key binding, 18 Enter by a binding; macOS: 506 key-down(s) reached NSApplication, 506 dispatched as key events (2 of them a menu key equivalent), 0 not (0 Cmd chord(s) injected)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 24 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 154.3,
+     "target": 150,
+     "n": 15,
+     "tol": 15.0
+    },
+    "trials": 6,
+    "loss": {
+     "lost": 0,
+     "n": 6,
+     "rate": 0.0,
+     "upper_bound": 0.393,
+     "conf": 0.95,
+     "text": "0 of 6 typed-ahead commands lost (observed 0.0 %); 95 % upper confidence bound 39.3 %; this n cannot exclude a 1/40 (2.5 %) rate: needs 119 clean trials"
+    },
+    "ssh_trial_verdicts": [
+     {
+      "exact": true,
+      "held_keys": 27,
+      "held_bytes": 27,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "session_bootstrapped",
+        27
+       ]
+      ],
+      "finish": [
+       "delivered=remote"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 28,
+      "held_bytes": 28,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "session_bootstrapped",
+        28
+       ]
+      ],
+      "finish": [
+       "delivered=remote"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 28,
+      "held_bytes": 28,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "session_bootstrapped",
+        28
+       ]
+      ],
+      "finish": [
+       "delivered=remote"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 28,
+      "held_bytes": 28,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "session_bootstrapped",
+        28
+       ]
+      ],
+      "finish": [
+       "delivered=remote"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 28,
+      "held_bytes": 28,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "session_bootstrapped",
+        28
+       ]
+      ],
+      "finish": [
+       "delivered=remote"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 28,
+      "held_bytes": 28,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "session_bootstrapped",
+        28
+       ]
+      ],
+      "finish": [
+       "delivered=remote"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     }
+    ],
+    "injector": {
+     "sent": 506,
+     "enters_sent": 24,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 506,
+     "unbound": 484,
+     "bound": 2,
+     "enters_bound": 18,
+     "os_keys": 506,
+     "undispatched": 0,
+     "cmd_chords": 0,
+     "menu": 2,
+     "menu_cmd": 0,
+     "cmd_allowed": 0,
+     "app_undelivered": 0,
+     "seen": 506,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 24
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 24
+    },
+    "enter_taint": {
+     "taps": 24,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/agent_lab_connect_typeahead.zsh.150.nohelper.png"
+   ]
+  },
+  {
+   "name": "lab_ctrl_c_no_esc_i.zsh.lan.helper",
+   "mode": "agent",
+   "status": "pass",
+   "ran_mode": "agent",
+   "seconds": 45.4,
+   "evidence": [
+    "enter_route: 21 Enter(s) reached the input editor: Shell=21 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794668956.585,
+    1794669002.007
+   ],
+   "detail": [
+    "SETTINGS LEFT CHANGED: the settings file differs from the one this case started on, in: warpify.ssh.remote_helper_denied_hosts",
+    "injector accounting: injector sent 583; app saw 583; lost-before-app 0 (Enter: sent 21, app saw 21); of the app's: 539 unbound keydown/typed, 12 taken by a key binding, 21 Enter by a binding; macOS: 583 key-down(s) reached NSApplication, 583 dispatched as key events (11 of them a menu key equivalent), 0 not (0 Cmd chord(s) injected)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 21 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 3.7,
+     "target": 0,
+     "n": 15,
+     "tol": 15.0
+    },
+    "injector": {
+     "sent": 583,
+     "enters_sent": 21,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 583,
+     "unbound": 539,
+     "bound": 12,
+     "enters_bound": 21,
+     "os_keys": 583,
+     "undispatched": 0,
+     "cmd_chords": 0,
+     "menu": 11,
+     "menu_cmd": 0,
+     "cmd_allowed": 0,
+     "app_undelivered": 0,
+     "seen": 583,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 21
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 21
+    },
+    "enter_taint": {
+     "taps": 21,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/agent_lab_ctrl_c_no_esc_i.zsh.lan.helper.png"
+   ]
+  },
+  {
+   "name": "agent_view_not_restored_after_lab_ctrl_c_no_esc_i.zsh.lan.helper",
+   "mode": "agent",
+   "status": "pass",
+   "seconds": 0,
+   "shots": [
+    "shots/agent_left_agent_after_lab_ctrl_c_no_esc_i.zsh.lan.helper.png"
+   ],
+   "detail": [
+    "lab_ctrl_c_no_esc_i.zsh.lan.helper relaunched the app itself (pid 65746 -> 66806); a relaunched app starts in a terminal session, so this is not an app finding. The app is relaunched again (fresh agent session) so the cases after it run in agent mode."
+   ]
+  },
+  {
+   "name": "lab_connect_typeahead.zsh.lan.helper",
+   "mode": "agent",
+   "status": "fail",
+   "ran_mode": "agent",
+   "seconds": 51.9,
+   "evidence": [
+    "enter_route: 14 Enter(s) reached the input editor: AI=3 Shell=11 [Shell,Shell,Shell,AI,Shell,Shell,Shell,AI,Shell,Shell,Shell,AI,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794669007.596,
+    1794669059.507
+   ],
+   "detail": [
+    "trial 4 (gap 0.1 s): the line typed behind `ssh lab-u_zsh` never reached the remote shell. Test host: sshd.log: debug1: session_by_pid: pid 65598 | debug1: session_exit_message: session 0 channel 0 pid 65598 exit 0 | debug1: session_exit_message: release channel 0 | Received disconnect from 127.0.0.1 port 51533:11: disconnected by user | Disconnected from user gitrunner 127.0.0.1 port 51533 | debug1: do_cleanup | debug1: mm_reap: child exited with status 255 | debug1: do_cleanup; test sshd (openssh) listening on 127.0.0.1:50712; lab /health: sshd={'22': True, '2222': True} fault=None tc=True ttl_left=11475 ;; lab sshd.log tail: Starting session: command for u_zsh from <ip> port 43564 id 4 | Starting session: command for u_zsh from <ip> port 43564 id 5 | Close session: user u_zsh from <ip> port 43564 id 1 | Close session: user u_zsh from <ip> port 43564 id 2 | Close session: user u_zsh from <ip> port 43564 id 4 | Close session: user u_zsh from <ip> port 43564 id 5 | Starting session: command for u_zsh from <ip> port 43564 id 4 | Close session: user u_zsh from <ip> port 43564 id 4; ssh client probe exit 0: Transferred: sent 3580, received 3540 bytes, in 0.0 seconds | Bytes per second: sent 252166.0, received 249348.5 | debug1: Exit status 0; app ssh hops: [DEBUG] input_order hop=hand_route reason=unheld state=editor_owned awaiting_ready=false in_flight=0 evidence=None command_interactive=false enters_wr | [DEBUG] input_order hop=hand_route reason=unheld state=editor_owned awaiting_ready=false in_flight=0 evidence=None command_interactive=false enters_wr | [DEBUG] input_order hop=hand_route reason=unheld state=editor_owned awaiting_ready=false in_flight=0 evidence=None command_interactive=false enters_wr | [DEBUG] input_order hop=hand_route reason=unheld state=editor_owned awaiting_ready=false in_flight=0 evidence=None command_interactive=false enters_wr | [DEBUG] input_order hop=hand_route reason=unheld state=editor_owned awaiting_ready=false in_flight=0 evidence=None command_interactive=false enters_wr | [DEBUG] input_order hop=hand_route reason=unheld state=editor_owned awaiting_ready=false in_flight=0 evidence=None command_interactive=false enters_wr | [DEBUG] input_order hop=handoff_commit_source ssh_gate_armed=false ssh_holding=false remote_prompt_seen=true t=1794669025553.912 | [DEBUG] input_order hop=handoff_commit_at_prompt committed=false still_pty_owned=false t=1794669025553.916 | [DEBUG] input_order hop=handoff_commit_source ssh_gate_armed=false ssh_holding=false remote_prompt_seen=false t=1794669025831.284 | [DEBUG] input_order hop=handoff_commit_at_prompt committed=true still_pty_owned=false t=1794669025831.291",
+    "trial 4 (gap 0.1 s): the remote shell received ['jck261 >> ~/rl.txt'], want exactly ['echo T39_jck261 >> ~/rl.txt']",
+    "lab_connect_typeahead (trial 4 (gap 0.1 s)): T39_jck261 never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log). Test host: sshd.log: debug1: session_by_pid: pid 68007 | debug1: session_exit_message: session 0 channel 0 pid 68007 exit 0 | debug1: session_exit_message: release channel 0 | Received disconnect from 127.0.0.1 port 53018:11: disconnected by user | Disconnected from user gitrunner 127.0.0.1 port 53018 | debug1: do_cleanup | debug1: mm_reap: child exited with status 255 | debug1: do_cleanup; test sshd (openssh) listening on 127.0.0.1:50712; lab /health: sshd={'22': True, '2222': True} fault=None tc=True ttl_left=11473 ;; lab sshd.log tail: Starting session: command for u_zsh from <ip> port 43564 id 4 | Starting session: command for u_zsh from <ip> port 43564 id 5 | Close session: user u_zsh from <ip> port 43564 id 1 | Close session: user u_zsh from <ip> port 43564 id 2 | Close session: user u_zsh from <ip> port 43564 id 4 | Close session: user u_zsh from <ip> port 43564 id 5 | Starting session: command for u_zsh from <ip> port 43564 id 4 | Close session: user u_zsh from <ip> port 43564 id 4; ssh client probe exit 0: Transferred: sent 3580, received 3540 bytes, in 0.0 seconds | Bytes per second: sent 250017.5, received 247224.0 | debug1: Exit status 0; app ssh hops: [DEBUG] input_order hop=hand_route reason=unheld state=editor_owned awaiting_ready=false in_flight=0 evidence=None command_interactive=false enters_wr | [DEBUG] input_order hop=hand_route reason=unheld state=editor_owned awaiting_ready=false in_flight=0 evidence=None command_interactive=false enters_wr | [DEBUG] input_order hop=hand_route reason=unheld state=editor_owned awaiting_ready=false in_flight=0 evidence=None command_interactive=false enters_wr | [DEBUG] input_order hop=hand_route reason=unheld state=editor_owned awaiting_ready=false in_flight=0 evidence=None command_interactive=false enters_wr | [DEBUG] input_order hop=hand_route reason=unheld state=editor_owned awaiting_ready=false in_flight=0 evidence=None command_interactive=false enters_wr | [DEBUG] input_order hop=hand_route reason=unheld state=editor_owned awaiting_ready=false in_flight=0 evidence=None command_interactive=false enters_wr | [DEBUG] input_order hop=handoff_commit_source ssh_gate_armed=false ssh_holding=false remote_prompt_seen=true t=1794669025553.912 | [DEBUG] input_order hop=handoff_commit_at_prompt committed=false still_pty_owned=false t=1794669025553.916 | [DEBUG] input_order hop=handoff_commit_source ssh_gate_armed=false ssh_holding=false remote_prompt_seen=false t=1794669025831.284 | [DEBUG] input_order hop=handoff_commit_at_prompt committed=true still_pty_owned=false t=1794669025831.291",
+    "lab_connect_typeahead trial 4 (gap 0.1 s): #1400: keys lost: chars 1-9 'echo T39_' of 27; held 9 key(s)/9 byte(s), hand-over session_bootstrapped@9, finish delivered=remote; the app saw every key of the line; remote got 'jck261 >> ~/rl.txt'",
+    "lab_connect_typeahead loss: 1 of 4 typed-ahead commands lost (observed 25.0 %); 95 % upper confidence bound 75.1 %; this n cannot exclude a 1/40 (2.5 %) rate: needs 119 clean trials",
+    "ssh trial verdicts: #1400=1, exact=3",
+    "typed-during-connect: in 0 of 4 trials keys were in the console before the session and were held at the front (typeahead_front adopted=true)",
+    "injector accounting: injector sent 299; app saw 299; lost-before-app 0 (Enter: sent 14, app saw 14); of the app's: 280 unbound keydown/typed, 3 taken by a key binding, 14 Enter by a binding; macOS: 299 key-down(s) reached NSApplication, 299 dispatched as key events (2 of them a menu key equivalent), 0 not (0 Cmd chord(s) injected)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 14 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 4.4,
+     "target": 0,
+     "n": 15,
+     "tol": 15.0
+    },
+    "trials": 4,
+    "loss": {
+     "lost": 1,
+     "n": 4,
+     "rate": 0.25,
+     "upper_bound": 0.7514,
+     "conf": 0.95,
+     "text": "1 of 4 typed-ahead commands lost (observed 25.0 %); 95 % upper confidence bound 75.1 %; this n cannot exclude a 1/40 (2.5 %) rate: needs 119 clean trials"
+    },
+    "ssh_trial_verdicts": [
+     {
+      "exact": true,
+      "held_keys": 11,
+      "held_bytes": 11,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "precmd",
+        11
+       ]
+      ],
+      "finish": [
+       "delivered=remote"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 13,
+      "held_bytes": 13,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "precmd",
+        13
+       ]
+      ],
+      "finish": [
+       "delivered=remote"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 7,
+      "held_bytes": 7,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "precmd",
+        7
+       ]
+      ],
+      "finish": [
+       "delivered=remote"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": false,
+      "held_keys": 9,
+      "held_bytes": 9,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "session_bootstrapped",
+        9
+       ]
+      ],
+      "finish": [
+       "delivered=remote"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": [
+       [
+        0,
+        "echo T39_"
+       ]
+      ]
+     }
+    ],
+    "injector": {
+     "sent": 299,
+     "enters_sent": 14,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 299,
+     "unbound": 280,
+     "bound": 3,
+     "enters_bound": 14,
+     "os_keys": 299,
+     "undispatched": 0,
+     "cmd_chords": 0,
+     "menu": 2,
+     "menu_cmd": 0,
+     "cmd_allowed": 0,
+     "app_undelivered": 0,
+     "seen": 299,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 14
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 14
+    },
+    "enter_taint": {
+     "taps": 14,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/agent_lab_connect_typeahead.zsh.lan.helper_FAIL.png"
+   ]
+  },
+  {
+   "name": "pane_not_local_after_lab_connect_typeahead.zsh.lan.helper",
+   "mode": "agent",
+   "status": "fail",
+   "seconds": 0,
+   "shots": [
+    "/Users/<user>/builds/CR7LvsOfu/0/winters-phosphor/phosphor/appci-out/macos/run/shots/agent_not_local_after_lab_connect_typeahead.zsh.lan.helper.png"
+   ],
+   "detail": [
+    "after lab_connect_typeahead.zsh.lan.helper the pane's shell was not the root shell (none; root pid 67392); the app is relaunched so later cases start clean"
+   ]
+  },
+  {
+   "name": "lab_connect_typeahead.zsh.150.helper",
+   "mode": "agent",
+   "status": "pass",
+   "ran_mode": "agent",
+   "seconds": 49.8,
+   "evidence": [
+    "enter_route: 24 Enter(s) reached the input editor: AI=5 Shell=19 [Shell,Shell,Shell,AI,Shell,Shell,Shell,Shell,Shell,Shell,Shell,AI,Shell,Shell,Shell,AI,Shell,Shell,Shell,AI,Shell,Shell,Shell,AI]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794669084.167,
+    1794669133.947
+   ],
+   "detail": [
+    "lab_connect_typeahead loss: 0 of 6 typed-ahead commands lost (observed 0.0 %); 95 % upper confidence bound 39.3 %; this n cannot exclude a 1/40 (2.5 %) rate: needs 119 clean trials",
+    "ssh trial verdicts: exact=6",
+    "typed-during-connect: in 0 of 6 trials keys were in the console before the session and were held at the front (typeahead_front adopted=true)",
+    "injector accounting: injector sent 508; app saw 508; lost-before-app 0 (Enter: sent 24, app saw 24); of the app's: 486 unbound keydown/typed, 2 taken by a key binding, 18 Enter by a binding; macOS: 508 key-down(s) reached NSApplication, 508 dispatched as key events (2 of them a menu key equivalent), 0 not (0 Cmd chord(s) injected)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 24 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 154.7,
+     "target": 150,
+     "n": 15,
+     "tol": 15.0
+    },
+    "trials": 6,
+    "loss": {
+     "lost": 0,
+     "n": 6,
+     "rate": 0.0,
+     "upper_bound": 0.393,
+     "conf": 0.95,
+     "text": "0 of 6 typed-ahead commands lost (observed 0.0 %); 95 % upper confidence bound 39.3 %; this n cannot exclude a 1/40 (2.5 %) rate: needs 119 clean trials"
+    },
+    "ssh_trial_verdicts": [
+     {
+      "exact": true,
+      "held_keys": 28,
+      "held_bytes": 28,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "session_bootstrapped",
+        28
+       ]
+      ],
+      "finish": [
+       "delivered=remote"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 28,
+      "held_bytes": 28,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "session_bootstrapped",
+        28
+       ]
+      ],
+      "finish": [
+       "delivered=remote"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 28,
+      "held_bytes": 28,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "session_bootstrapped",
+        28
+       ]
+      ],
+      "finish": [
+       "delivered=remote"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 28,
+      "held_bytes": 28,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "session_bootstrapped",
+        28
+       ]
+      ],
+      "finish": [
+       "delivered=remote"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 28,
+      "held_bytes": 28,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "session_bootstrapped",
+        28
+       ]
+      ],
+      "finish": [
+       "delivered=remote"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 28,
+      "held_bytes": 28,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "session_bootstrapped",
+        28
+       ]
+      ],
+      "finish": [
+       "delivered=remote"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     }
+    ],
+    "injector": {
+     "sent": 508,
+     "enters_sent": 24,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 508,
+     "unbound": 486,
+     "bound": 2,
+     "enters_bound": 18,
+     "os_keys": 508,
+     "undispatched": 0,
+     "cmd_chords": 0,
+     "menu": 2,
+     "menu_cmd": 0,
+     "cmd_allowed": 0,
+     "app_undelivered": 0,
+     "seen": 508,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 24
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 24
+    },
+    "enter_taint": {
+     "taps": 24,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/agent_lab_connect_typeahead.zsh.150.helper.png"
+   ]
+  }
+ ]
+}

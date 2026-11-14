@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="appci-macos" tests="8" failures="0" skipped="0">
+<testcase classname="terminal" name="mode_proof" time="3.70">
+</testcase>
+<testcase classname="terminal" name="key_loss_control" time="41.90">
+</testcase>
+<testcase classname="terminal" name="enter_loss_control" time="78.70">
+</testcase>
+<testcase classname="terminal" name="fast_typing" time="68.40">
+</testcase>
+<testcase classname="terminal" name="expert_fuzz" time="33.90">
+</testcase>
+<testcase classname="agent" name="mode_proof" time="2.70">
+</testcase>
+<testcase classname="agent" name="fast_typing" time="67.10">
+</testcase>
+<testcase classname="agent" name="expert_fuzz" time="37.40">
+</testcase>
+</testsuite>

@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="appci-windows" tests="27" failures="1" skipped="8">
+<testcase classname="terminal" name="mode_proof" time="3.30">
+</testcase>
+<testcase classname="terminal" name="key_delivery" time="0.00">
+</testcase>
+<testcase classname="terminal" name="enter_loss_control" time="98.70">
+</testcase>
+<testcase classname="terminal" name="expert_fuzz" time="0.00">
+<skipped message="not run in the PowerShell pane: BackSpace / Left / Ctrl-W editing of `echo ... &gt;&gt;` lines; PSReadLine's Ctrl-W differs: runs in the Git Bash pane"/>
+</testcase>
+<testcase classname="terminal" name="routing_table_powershell" time="69.10">
+</testcase>
+<testcase classname="terminal" name="selection_modes" time="0.00">
+<skipped message="not run in the PowerShell pane: T31 (r14 T22): `cat` of the fixture files, the `sh` stream program and rec.log: runs in the Git Bash pane (pointer and held Shift by SendInput, positions from the app's"/>
+</testcase>
+<testcase classname="terminal" name="gitbash_typeahead_reps" time="0.00">
+<skipped message="not run in the PowerShell pane: bash precmd_functions and rec.log of the pane's bash, the ConPTY prompt hold of a bash pane (#1393): runs in the Git Bash pane"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="mode_proof" time="2.70">
+</testcase>
+<testcase classname="terminal@gitbash" name="key_delivery" time="0.00">
+</testcase>
+<testcase classname="terminal@gitbash" name="enter_loss_control" time="58.70">
+</testcase>
+<testcase classname="terminal@gitbash" name="expert_fuzz" time="15.20">
+</testcase>
+<testcase classname="terminal@gitbash" name="routing_table_powershell" time="0.00">
+<skipped message="not run in the Git Bash pane: #2072: the routing table judged from PSReadLine's history file; the Git Bash pane has routing_table (rec.log)"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="selection_modes" time="50.70">
+<failure message="Ctrl-C did not end the streaming program: no prompt within 8 s (the SECOND Ctrl-C: the first copied the selection; if this one copied too, the copy did not drop the selection, #2117)">Ctrl-C did not end the streaming program: no prompt within 8 s (the SECOND Ctrl-C: the first copied the selection; if this one copied too, the copy did not drop the selection, #2117)
+`sh sm_stream_t63_q6s0r.sh` did not reach the shell as typed (received [])
+after_selection: shell received 5 commands, not the typed ones (first mismatch: 'sh sm_stream_t63_q6s0r.sh') -- differs (44 typed, 25 received characters): typed 'echo t64_5z1feinjob &gt;&gt; r_after_selection.txt', shell received 'sh sm_stream_t63_q6s0r.sh'; the app's log shows every character of the line arriving in order (typed_characters); the app's own pty writes (pty_write_bytes) carry the line exactly as typed and not the corrupted one: it was changed after the app's pty write (ConPTY / the shell's tty)
+injector accounting: injector sent 292; app saw 292; lost-before-app 0 (Enter: sent 8, app saw 8); of the app's: 270 unbound keydown/typed, 17 taken by a key binding, 5 Enter by a binding
+pty writes: 142, of which carrying a CR (\r): 4; Enter(s) the input editor started: 5 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="terminal@gitbash" name="gitbash_typeahead_reps" time="175.60">
+</testcase>
+<testcase classname="agent" name="mode_proof" time="3.50">
+</testcase>
+<testcase classname="agent" name="expert_fuzz" time="0.00">
+<skipped message="not run in the PowerShell pane: BackSpace / Left / Ctrl-W editing of `echo ... &gt;&gt;` lines; PSReadLine's Ctrl-W differs: runs in the Git Bash pane"/>
+</testcase>
+<testcase classname="agent" name="key_delivery" time="0.00">
+</testcase>
+<testcase classname="agent" name="routing_table_powershell" time="76.00">
+</testcase>
+<testcase classname="agent" name="selection_modes" time="0.00">
+<skipped message="not run in the PowerShell pane: T31 (r14 T22): `cat` of the fixture files, the `sh` stream program and rec.log: runs in the Git Bash pane (pointer and held Shift by SendInput, positions from the app's"/>
+</testcase>
+<testcase classname="agent" name="gitbash_typeahead_reps" time="0.00">
+<skipped message="not run in the PowerShell pane: bash precmd_functions and rec.log of the pane's bash, the ConPTY prompt hold of a bash pane (#1393): runs in the Git Bash pane"/>
+</testcase>
+<testcase classname="agent@gitbash" name="mode_proof" time="2.30">
+</testcase>
+<testcase classname="agent@gitbash" name="key_delivery" time="0.00">
+</testcase>
+<testcase classname="agent@gitbash" name="expert_fuzz" time="15.40">
+</testcase>
+<testcase classname="agent@gitbash" name="routing_table_powershell" time="0.00">
+<skipped message="not run in the Git Bash pane: #2072: the routing table judged from PSReadLine's history file; the Git Bash pane has routing_table (rec.log)"/>
+</testcase>
+<testcase classname="agent@gitbash" name="selection_modes" time="26.70">
+</testcase>
+<testcase classname="agent@gitbash" name="gitbash_typeahead_reps" time="175.90">
+</testcase>
+<testcase classname="-" name="restore" time="0.00">
+</testcase>
+</testsuite>

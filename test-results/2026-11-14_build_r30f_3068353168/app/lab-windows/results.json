@@ -1,0 +1,3500 @@
+{
+ "meta": {
+  "platform": "windows",
+  "backend": "windows",
+  "app_display": "windows",
+  "seed": "1",
+  "commit": "8476d176",
+  "sha": "8476d176d4144966c556c88f45e3613f142f5a75",
+  "owner_settings": "sha256 81d188e9844d",
+  "tier": "targeted",
+  "scale": "1"
+ },
+ "generated": "2026-11-14T08:22:11-0800",
+ "summary": {
+  "pass": 7,
+  "fail": 24,
+  "skip": 18,
+  "noref": 0
+ },
+ "cases": [
+  {
+   "name": "lab_chips.bash.lan.nohelper",
+   "mode": "terminal",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run in the PowerShell pane: the lab cases use the local shell's rec.log / prompt.log and bash syntax: they run in the Git Bash pane"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "lab_connect_typeahead.bash.lan.nohelper",
+   "mode": "terminal",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run in the PowerShell pane: the lab cases use the local shell's rec.log / prompt.log and bash syntax: they run in the Git Bash pane"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "lab_connect_typeahead.bash.150.nohelper",
+   "mode": "terminal",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run in the PowerShell pane: the lab cases use the local shell's rec.log / prompt.log and bash syntax: they run in the Git Bash pane"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "lab_connect_typeahead.zsh.lan.nohelper",
+   "mode": "terminal",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run in the PowerShell pane: the lab cases use the local shell's rec.log / prompt.log and bash syntax: they run in the Git Bash pane"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "lab_connect_typeahead.zsh.150.nohelper",
+   "mode": "terminal",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run in the PowerShell pane: the lab cases use the local shell's rec.log / prompt.log and bash syntax: they run in the Git Bash pane"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "lab_connect_typeahead.bash.lan.helper",
+   "mode": "terminal",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run in the PowerShell pane: the lab cases use the local shell's rec.log / prompt.log and bash syntax: they run in the Git Bash pane"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "lab_connect_typeahead.bash.150.helper",
+   "mode": "terminal",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run in the PowerShell pane: the lab cases use the local shell's rec.log / prompt.log and bash syntax: they run in the Git Bash pane"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "lab_connect_typeahead.zsh.lan.helper",
+   "mode": "terminal",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run in the PowerShell pane: the lab cases use the local shell's rec.log / prompt.log and bash syntax: they run in the Git Bash pane"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "lab_connect_typeahead.zsh.150.helper",
+   "mode": "terminal",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run in the PowerShell pane: the lab cases use the local shell's rec.log / prompt.log and bash syntax: they run in the Git Bash pane"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "key_delivery",
+   "mode": "terminal@gitbash",
+   "status": "pass",
+   "seconds": 0,
+   "detail": [
+    "marker typed and received via SendInput vk"
+   ],
+   "metrics": {
+    "method": "vk"
+   },
+   "shots": []
+  },
+  {
+   "name": "lab_chips.bash.lan.nohelper",
+   "mode": "terminal@gitbash",
+   "status": "fail",
+   "ran_mode": "terminal",
+   "seconds": 31.3,
+   "evidence": [
+    "enter_route: 12 Enter(s) reached the input editor: Shell=12 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794671766.485,
+    1794671797.834
+   ],
+   "detail": [
+    "the app log has no update_chip_value ShellGitBranch -> brt35by1a2 line: the chip never took the branch",
+    "no side call at all with no helper: where did the branch chip come from?",
+    "`exit` did not return to the local shell (None)",
+    "side-call producers (#2156): shell exec lines by producer: none; prompts the app ran a batch for: []",
+    "injector accounting: injector sent 406; app saw 406; lost-before-app 0 (Enter: sent 12, app saw 12); of the app's: 391 unbound keydown/typed, 4 taken by a key binding, 11 Enter by a binding",
+    "pty writes: 28, of which carrying a CR (\\r): 1; Enter(s) the input editor started: 11 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 0.9,
+     "target": 0,
+     "n": 15,
+     "tol": 15.0
+    },
+    "exec_channel_timeline": [],
+    "side_calls": 0,
+    "prompts": 1,
+    "injector": {
+     "sent": 406,
+     "enters_sent": 12,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 406,
+     "unbound": 391,
+     "bound": 4,
+     "enters_bound": 11,
+     "seen": 406,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 12
+    },
+    "pty_write_cr": {
+     "writes": 28,
+     "with_cr": 1,
+     "enters": 11
+    }
+   },
+   "shots": [
+    "shots\\terminal@gitbash_lab_chips.bash.lan.nohelper_FAIL.png"
+   ]
+  },
+  {
+   "name": "lab_connect_typeahead.bash.lan.nohelper",
+   "mode": "terminal@gitbash",
+   "status": "fail",
+   "ran_mode": "terminal",
+   "seconds": 82.9,
+   "evidence": [
+    "enter_route: 32 Enter(s) reached the input editor: AI=7 Shell=25 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,AI,Shell,Shell,AI,AI,Shell,Shell,AI,AI,Shell,Shell,AI,AI,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794671802.136,
+    1794671885.026
+   ],
+   "detail": [
+    "trial 3 (gap 0.0 s): the remote shell received ['exitssh lab-u_bash', 'echo T15_259owo >> ~/rl.txt'], want exactly ['echo T15_259owo >> ~/rl.txt']",
+    "trial 3 (gap 0.0 s): the session was not managed (no ManagedSSHSessionStarting hook and no `verdict managed=true` in the app log of this connect)",
+    "trial 3 (gap 0.0 s): one-connection stages in the app log: [], want auth, auth_done, managed (a final `plain` is the old #1959 behaviour)",
+    "trial 3 (gap 0.0 s): the wrapper's verdict was managed=true (round 8: managed=false, #1933)",
+    "trial 3 (gap 0.0 s): the wrapper announcement was not handled on the connect window (hop ssh_wrapper announced; 0 wrapper hops)",
+    "trial 4 (gap 0.1 s): the session was not managed (no ManagedSSHSessionStarting hook and no `verdict managed=true` in the app log of this connect)",
+    "trial 4 (gap 0.1 s): one-connection stages in the app log: [], want auth, auth_done, managed (a final `plain` is the old #1959 behaviour)",
+    "trial 4 (gap 0.1 s): the wrapper's verdict was managed=true (round 8: managed=false, #1933)",
+    "trial 4 (gap 0.1 s): the wrapper announcement was not handled on the connect window (hop ssh_wrapper announced; 0 wrapper hops)",
+    "trial 5 (gap 0.2 s): the session was not managed (no ManagedSSHSessionStarting hook and no `verdict managed=true` in the app log of this connect)",
+    "trial 5 (gap 0.2 s): one-connection stages in the app log: [], want auth, auth_done, managed (a final `plain` is the old #1959 behaviour)",
+    "trial 5 (gap 0.2 s): the wrapper's verdict was managed=true (round 8: managed=false, #1933)",
+    "trial 5 (gap 0.2 s): the wrapper announcement was not handled on the connect window (hop ssh_wrapper announced; 0 wrapper hops)",
+    "trial 6 (gap 0.3 s): the session was not managed (no ManagedSSHSessionStarting hook and no `verdict managed=true` in the app log of this connect)",
+    "trial 6 (gap 0.3 s): one-connection stages in the app log: [], want auth, auth_done, managed (a final `plain` is the old #1959 behaviour)",
+    "trial 6 (gap 0.3 s): the wrapper's verdict was managed=true (round 8: managed=false, #1933)",
+    "trial 6 (gap 0.3 s): the wrapper announcement was not handled on the connect window (hop ssh_wrapper announced; 0 wrapper hops)",
+    "lab_connect_typeahead loss: 0 of 6 typed-ahead commands lost (observed 0.0 %); 95 % upper confidence bound 39.3 %; this n cannot exclude a 1/40 (2.5 %) rate: needs 119 clean trials",
+    "ssh trial verdicts: exact=6",
+    "typed-during-connect: in 2 of 6 trials keys were in the console before the session and were held at the front (typeahead_front adopted=true)",
+    "injector accounting: injector sent 834; app saw 834; lost-before-app 0 (Enter: sent 32, app saw 32); of the app's: 802 unbound keydown/typed, 3 taken by a key binding, 29 Enter by a binding",
+    "pty writes: 91, of which carrying a CR (\\r): 5; Enter(s) the input editor started: 29 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 1.1,
+     "target": 0,
+     "n": 15,
+     "tol": 15.0
+    },
+    "trials": 6,
+    "loss": {
+     "lost": 0,
+     "n": 6,
+     "rate": 0.0,
+     "upper_bound": 0.393,
+     "conf": 0.95,
+     "text": "0 of 6 typed-ahead commands lost (observed 0.0 %); 95 % upper confidence bound 39.3 %; this n cannot exclude a 1/40 (2.5 %) rate: needs 119 clean trials"
+    },
+    "ssh_trial_verdicts": [
+     {
+      "exact": true,
+      "held_keys": 24,
+      "held_bytes": 51,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "finish",
+        23
+       ],
+       [
+        "precmd",
+        28
+       ]
+      ],
+      "finish": [
+       "delivered=tty_owner",
+       "delivered=remote"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 19,
+      "held_bytes": 46,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "finish",
+        18
+       ],
+       [
+        "precmd",
+        28
+       ]
+      ],
+      "finish": [
+       "delivered=tty_owner",
+       "delivered=remote"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     }
+    ],
+    "injector": {
+     "sent": 834,
+     "enters_sent": 32,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 834,
+     "unbound": 802,
+     "bound": 3,
+     "enters_bound": 29,
+     "seen": 834,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 32
+    },
+    "pty_write_cr": {
+     "writes": 91,
+     "with_cr": 5,
+     "enters": 29
+    }
+   },
+   "shots": [
+    "shots\\terminal@gitbash_lab_connect_typeahead.bash.lan.nohelper_FAIL.png"
+   ]
+  },
+  {
+   "name": "entered_agent_view_in_lab_connect_typeahead.bash.lan.nohelper",
+   "mode": "terminal@gitbash",
+   "status": "fail",
+   "seconds": 0,
+   "shots": [
+    "shots\\terminal@gitbash_entered_agent_after_lab_connect_typeahead.bash.lan.nohelper.png"
+   ],
+   "detail": [
+    "after the TERMINAL case lab_connect_typeahead.bash.lan.nohelper the pane shows AGENT view: something the case typed was sent to the agent instead of the shell (candidate APP finding: input routing), or the case enters agent view on purpose and must say so (enters_agent=True). The mode guard puts the pane back before the next case."
+   ]
+  },
+  {
+   "name": "lab_connect_typeahead.bash.150.nohelper",
+   "mode": "terminal@gitbash",
+   "status": "fail",
+   "ran_mode": "terminal",
+   "seconds": 84.6,
+   "evidence": [
+    "enter_route: 13 Enter(s) reached the input editor: AI=1 Shell=12 [Shell,Shell,Shell,Shell,Shell,AI,Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794671893.802,
+    1794671978.354
+   ],
+   "detail": [
+    "trial 2 (gap 0.0 s): the line typed behind `ssh lab-u_bash` never reached the remote shell. Test host: sshd.log: 07:55:55 auth publickey user=Winters key=ssh-ed25519 c61037273003a7b72ee329010e27c736 -> ok | 07:55:55 auth publickey user=Winters key=ssh-ed25519 c61037273003a7b72ee329010e27c736 -> ok | 07:55:55 session exec true nopty | 07:55:55 connection closed: authenticated=False channels=1 | 07:55:55 connect from ('127.0.0.1', 63899) | 07:55:55 auth publickey user=Winters key=ssh-ed25519 c61037273003a7b72ee329010e27c736 -> ok | 07:55:55 auth publickey user=Winters key=ssh-ed25519 c61037273003a7b72ee329010e27c736 -> ok | 07:55:58 connection closed: authenticated=False channels=0; fakesshd.stderr: (empty); test sshd (fakesshd-win) listening on 127.0.0.1:63861; exec+pty of the test sshd is served by a pseudo console of the app's own conpty.dll, measured byte-exact both ways. Measured: app: out ok, in ok (a 610-byte OSC arrived whole; a counted raw read of 3827 bytes got exactly what was sent) | inbox: out BROKEN, in ok (a 610-byte OSC did NOT arrive whole: the longest piece of its 600 payload characters is 80 (205 bytes seen); a counted raw read of 3827 bytes got exactly what was sent); no msys pty host: Git for Windows has no usr\\bin\\sshd.exe next to its bash (C:\\Program Files\\Git\\usr\\bin); lab /health: sshd={'22': True, '2222': True} fault={'rtt_ms': 150.0, 'jitter_ms': 0.0, 'loss_pct': 0.0, 'rate_kbit': 0.0} tc=True ttl_left=8584 ;; lab sshd.log tail: Disconnected from user u_bash <ip> port 50536 | Connection from <ip> port 46490 on <ip> port 22 rdomain \"\" | Accepted key ED25519 SHA256:q7yMCXe8q85ZZD1eSImqJ8ho9FpFhFBvoar5BVjrjiA found at /run/sshlab/authkeys/u_bash:1 | Postponed publickey for u_bash from <ip> port 46490 ssh2 [preauth] | Accepted key ED25519 SHA256:q7yMCXe8q85ZZD1eSImqJ8ho9FpFhFBvoar5BVjrjiA found at /run/sshlab/authkeys/u_bash:1 | Accepted publickey for u_bash from <ip> port 46490 ssh2: ED25519 SHA256:q7yMCXe8q85ZZD1eSImqJ8ho9FpFhFBvoar5BVjrjiA | User child is on pid 1570 | Starting session: command on pts/0 for u_bash from <ip> port 46490 id 0; app ssh hops: [DEBUG] input_order hop=handoff_commit_source ssh_gate_armed=false ssh_holding=false remote_prompt_seen=false t=1794671904039.628 | [DEBUG] input_order hop=handoff_commit_at_prompt committed=false still_pty_owned=true t=1794671904039.657 | [DEBUG] input_order hop=handoff_commit_source ssh_gate_armed=false ssh_holding=false remote_prompt_seen=false t=1794671904351.735 | [DEBUG] input_order hop=handoff_commit_at_prompt committed=false still_pty_owned=false t=1794671904351.757 | [DEBUG] input_order hop=handoff_commit_source ssh_gate_armed=false ssh_holding=false remote_prompt_seen=false t=1794671904629.751 | [DEBUG] input_order hop=handoff_commit_at_prompt committed=false still_pty_owned=false t=1794671904629.763 | [DEBUG] input_order hop=kh_hold_entry seq=1663 holding=false held_bytes=0 gate_armed=false pending_session=false table=1 t=1794671915070.099 | [DEBUG] input_order hop=kh_hold_exit seq=1663 branch=gate_open_live gate_armed=false table=1 t=1794671915070.114 | [DEBUG] input_order hop=handoff_commit_source ssh_gate_armed=false ssh_holding=false remote_prompt_seen=false t=1794671915625.110 | [DEBUG] input_order hop=handoff_commit_at_prompt committed=false still_pty_owned=false t=1794671915625.121; PROBE: Git Bash pane: C:\\Program Files\\Git\\usr\\bin\\ssh.exe cannot start a ControlMaster (exit 255: mux_client_request_session: read from master failed: Connection reset by peer Failed to connect to new control master). Background only: since #1551 / #1933 the app's bash ssh wrapper never multiplexes under msys (one connection with LocalCommand, or plain ssh), so this does NOT explain a failing case",
+    "trial 2 (gap 0.0 s): the remote shell received [], want exactly ['echo T31_x9xf26 >> ~/rl.txt']",
+    "trial 2 (gap 0.0 s): the session was not managed (no ManagedSSHSessionStarting hook and no `verdict managed=true` in the app log of this connect)",
+    "trial 2 (gap 0.0 s): one-connection stages in the app log: [], want auth, auth_done, managed (a final `plain` is the old #1959 behaviour)",
+    "trial 2 (gap 0.0 s): the wrapper's verdict was managed=true (round 8: managed=false, #1933)",
+    "trial 2 (gap 0.0 s): the wrapper announcement was not handled on the connect window (hop ssh_wrapper announced; 0 wrapper hops)",
+    "lab_connect_typeahead (trial 2 (gap 0.0 s)): T31_x9xf26 never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log). Test host: sshd.log: 07:55:55 session exec true nopty | 07:55:55 connection closed: authenticated=False channels=1 | 07:55:55 connect from ('127.0.0.1', 63899) | 07:55:55 auth publickey user=Winters key=ssh-ed25519 c61037273003a7b72ee329010e27c736 -> ok | 07:55:55 auth publickey user=Winters key=ssh-ed25519 c61037273003a7b72ee329010e27c736 -> ok | 07:55:58 connection closed: authenticated=False channels=0 | 07:59:07 connect from ('127.0.0.1', 50924) | 07:59:07 serve err SSHException('Error reading SSH protocol banner[WinError 10054] An existing connection was forcibly closed by the remote host'); fakesshd.stderr: (empty); test sshd (fakesshd-win) listening on 127.0.0.1:63861; exec+pty of the test sshd is served by a pseudo console of the app's own conpty.dll, measured byte-exact both ways. Measured: app: out ok, in ok (a 610-byte OSC arrived whole; a counted raw read of 3827 bytes got exactly what was sent) | inbox: out BROKEN, in ok (a 610-byte OSC did NOT arrive whole: the longest piece of its 600 payload characters is 80 (205 bytes seen); a counted raw read of 3827 bytes got exactly what was sent); no msys pty host: Git for Windows has no usr\\bin\\sshd.exe next to its bash (C:\\Program Files\\Git\\usr\\bin); lab /health: sshd={'22': True, '2222': True} fault={'rtt_ms': 150.0, 'jitter_ms': 0.0, 'loss_pct': 0.0, 'rate_kbit': 0.0} tc=True ttl_left=8561 ;; lab sshd.log tail: Disconnected from user u_bash <ip> port 50536 | Connection from <ip> port 46490 on <ip> port 22 rdomain \"\" | Accepted key ED25519 SHA256:q7yMCXe8q85ZZD1eSImqJ8ho9FpFhFBvoar5BVjrjiA found at /run/sshlab/authkeys/u_bash:1 | Postponed publickey for u_bash from <ip> port 46490 ssh2 [preauth] | Accepted key ED25519 SHA256:q7yMCXe8q85ZZD1eSImqJ8ho9FpFhFBvoar5BVjrjiA found at /run/sshlab/authkeys/u_bash:1 | Accepted publickey for u_bash from <ip> port 46490 ssh2: ED25519 SHA256:q7yMCXe8q85ZZD1eSImqJ8ho9FpFhFBvoar5BVjrjiA | User child is on pid 1570 | Starting session: command on pts/0 for u_bash from <ip> port 46490 id 0; app ssh hops: [DEBUG] input_order hop=handoff_commit_source ssh_gate_armed=false ssh_holding=false remote_prompt_seen=false t=1794671904039.628 | [DEBUG] input_order hop=handoff_commit_at_prompt committed=false still_pty_owned=true t=1794671904039.657 | [DEBUG] input_order hop=handoff_commit_source ssh_gate_armed=false ssh_holding=false remote_prompt_seen=false t=1794671904351.735 | [DEBUG] input_order hop=handoff_commit_at_prompt committed=false still_pty_owned=false t=1794671904351.757 | [DEBUG] input_order hop=handoff_commit_source ssh_gate_armed=false ssh_holding=false remote_prompt_seen=false t=1794671904629.751 | [DEBUG] input_order hop=handoff_commit_at_prompt committed=false still_pty_owned=false t=1794671904629.763 | [DEBUG] input_order hop=kh_hold_entry seq=1663 holding=false held_bytes=0 gate_armed=false pending_session=false table=1 t=1794671915070.099 | [DEBUG] input_order hop=kh_hold_exit seq=1663 branch=gate_open_live gate_armed=false table=1 t=1794671915070.114 | [DEBUG] input_order hop=handoff_commit_source ssh_gate_armed=false ssh_holding=false remote_prompt_seen=false t=1794671915625.110 | [DEBUG] input_order hop=handoff_commit_at_prompt committed=false still_pty_owned=false t=1794671915625.121; PROBE: Git Bash pane: C:\\Program Files\\Git\\usr\\bin\\ssh.exe cannot start a ControlMaster (exit 255: mux_client_request_session: read from master failed: Connection reset by peer Failed to connect to new control master). Background only: since #1551 / #1933 the app's bash ssh wrapper never multiplexes under msys (one connection with LocalCommand, or plain ssh), so this does NOT explain a failing case",
+    "mode guard: the pane was in agent before this terminal case; put back with escape",
+    "lab_connect_typeahead trial 2 (gap 0.0 s): #1292: no ssh hold was seen and the remote shell logged nothing for the line; held 0 key(s)/0 byte(s), hand-over none, finish none; the app saw every key of the line; remote got None",
+    "lab_connect_typeahead loss: 1 of 2 typed-ahead commands lost (observed 50.0 %); 95 % upper confidence bound 97.5 %; this n cannot exclude a 1/40 (2.5 %) rate: needs 119 clean trials",
+    "ssh trial verdicts: #1292=1, exact=1",
+    "typed-during-connect: in 1 of 2 trials keys were in the console before the session and were held at the front (typeahead_front adopted=true)",
+    "injector accounting: injector sent 454; app saw 454; lost-before-app 0 (Enter: sent 14, app saw 14); of the app's: 437 unbound keydown/typed, 5 taken by a key binding, 12 Enter by a binding",
+    "pty writes: 42, of which carrying a CR (\\r): 3; Enter(s) the input editor started: 12 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 151.4,
+     "target": 150,
+     "n": 15,
+     "tol": 15.0
+    },
+    "trials": 2,
+    "loss": {
+     "lost": 1,
+     "n": 2,
+     "rate": 0.5,
+     "upper_bound": 0.9747,
+     "conf": 0.95,
+     "text": "1 of 2 typed-ahead commands lost (observed 50.0 %); 95 % upper confidence bound 97.5 %; this n cannot exclude a 1/40 (2.5 %) rate: needs 119 clean trials"
+    },
+    "ssh_trial_verdicts": [
+     {
+      "exact": true,
+      "held_keys": 21,
+      "held_bytes": 48,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "finish",
+        20
+       ],
+       [
+        "precmd",
+        28
+       ]
+      ],
+      "finish": [
+       "delivered=tty_owner",
+       "delivered=remote"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": false,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     }
+    ],
+    "injector": {
+     "sent": 454,
+     "enters_sent": 14,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 454,
+     "unbound": 437,
+     "bound": 5,
+     "enters_bound": 12,
+     "seen": 454,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 14
+    },
+    "pty_write_cr": {
+     "writes": 42,
+     "with_cr": 3,
+     "enters": 12
+    }
+   },
+   "shots": [
+    "shots\\terminal@gitbash_lab_connect_typeahead.bash.150.nohelper_FAIL.png"
+   ]
+  },
+  {
+   "name": "entered_agent_view_in_lab_connect_typeahead.bash.150.nohelper",
+   "mode": "terminal@gitbash",
+   "status": "fail",
+   "seconds": 0,
+   "shots": [
+    "shots\\terminal@gitbash_entered_agent_after_lab_connect_typeahead.bash.150.nohelper.png"
+   ],
+   "detail": [
+    "after the TERMINAL case lab_connect_typeahead.bash.150.nohelper the pane shows AGENT view: something the case typed was sent to the agent instead of the shell (candidate APP finding: input routing), or the case enters agent view on purpose and must say so (enters_agent=True). The mode guard puts the pane back before the next case."
+   ]
+  },
+  {
+   "name": "lab_connect_typeahead.zsh.lan.nohelper",
+   "mode": "terminal@gitbash",
+   "status": "fail",
+   "ran_mode": "terminal",
+   "seconds": 32.6,
+   "evidence": [
+    "enter_route: 9 Enter(s) reached the input editor: Shell=9 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794671986.622,
+    1794672019.213
+   ],
+   "detail": [
+    "trial 2 (gap 0.0 s): the remote shell received ['exit', 'echo T40_4ctzkk >> ~/rl.txt'], want exactly ['echo T40_4ctzkk >> ~/rl.txt']",
+    "trial 3 (gap 0.0 s): the remote shell received ['exit', 'echo T42_6oam89 >> ~/rl.txt'], want exactly ['echo T42_6oam89 >> ~/rl.txt']",
+    "trial 4 (gap 0.1 s): the remote shell received ['exit', 'echo T44_z6ww3r >> ~/rl.txt'], want exactly ['echo T44_z6ww3r >> ~/rl.txt']",
+    "trial 5 (gap 0.2 s): the remote shell received ['exit', 'echo T46_9ay6i7 >> ~/rl.txt'], want exactly ['echo T46_9ay6i7 >> ~/rl.txt']",
+    "trial 6 (gap 0.3 s): the remote shell received ['exit', 'echo T48_9n1d4x >> ~/rl.txt'], want exactly ['echo T48_9n1d4x >> ~/rl.txt']",
+    "mode guard: the pane was in agent before this terminal case; put back with escape",
+    "lab_connect_typeahead loss: 0 of 6 typed-ahead commands lost (observed 0.0 %); 95 % upper confidence bound 39.3 %; this n cannot exclude a 1/40 (2.5 %) rate: needs 119 clean trials",
+    "ssh trial verdicts: exact=6",
+    "typed-during-connect: in 6 of 6 trials keys were in the console before the session and were held at the front (typeahead_front adopted=true)",
+    "injector accounting: injector sent 646; app saw 646; lost-before-app 0 (Enter: sent 27, app saw 27); of the app's: 633 unbound keydown/typed, 4 taken by a key binding, 9 Enter by a binding"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 1.1,
+     "target": 0,
+     "n": 15,
+     "tol": 15.0
+    },
+    "trials": 6,
+    "loss": {
+     "lost": 0,
+     "n": 6,
+     "rate": 0.0,
+     "upper_bound": 0.393,
+     "conf": 0.95,
+     "text": "0 of 6 typed-ahead commands lost (observed 0.0 %); 95 % upper confidence bound 39.3 %; this n cannot exclude a 1/40 (2.5 %) rate: needs 119 clean trials"
+    },
+    "ssh_trial_verdicts": [
+     {
+      "exact": true,
+      "held_keys": 22,
+      "held_bytes": 49,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "finish",
+        21
+       ],
+       [
+        "finish",
+        28
+       ]
+      ],
+      "finish": [
+       "delivered=tty_owner",
+       "delivered=tty_owner"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 25,
+      "held_bytes": 52,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "finish",
+        24
+       ],
+       [
+        "finish",
+        28
+       ]
+      ],
+      "finish": [
+       "delivered=tty_owner",
+       "delivered=tty_owner"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 19,
+      "held_bytes": 46,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "finish",
+        18
+       ],
+       [
+        "finish",
+        28
+       ]
+      ],
+      "finish": [
+       "delivered=tty_owner",
+       "delivered=tty_owner"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 19,
+      "held_bytes": 46,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "finish",
+        18
+       ],
+       [
+        "finish",
+        28
+       ]
+      ],
+      "finish": [
+       "delivered=tty_owner",
+       "delivered=tty_owner"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 17,
+      "held_bytes": 44,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "finish",
+        16
+       ],
+       [
+        "finish",
+        28
+       ]
+      ],
+      "finish": [
+       "delivered=tty_owner",
+       "delivered=tty_owner"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 8,
+      "held_bytes": 35,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "finish",
+        7
+       ],
+       [
+        "finish",
+        28
+       ]
+      ],
+      "finish": [
+       "delivered=tty_owner",
+       "delivered=tty_owner"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     }
+    ],
+    "injector": {
+     "sent": 646,
+     "enters_sent": 27,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 646,
+     "unbound": 633,
+     "bound": 4,
+     "enters_bound": 9,
+     "seen": 646,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 27
+    },
+    "pty_write_cr": {
+     "writes": 367,
+     "with_cr": 24,
+     "enters": 9
+    }
+   },
+   "shots": [
+    "shots\\terminal@gitbash_lab_connect_typeahead.zsh.lan.nohelper_FAIL.png"
+   ]
+  },
+  {
+   "name": "lab_connect_typeahead.zsh.150.nohelper",
+   "mode": "terminal@gitbash",
+   "status": "fail",
+   "ran_mode": "terminal",
+   "seconds": 47.9,
+   "evidence": [
+    "enter_route: 9 Enter(s) reached the input editor: Shell=9 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794672024.571,
+    1794672072.513
+   ],
+   "detail": [
+    "trial 1 (gap 0.0 s): the remote shell received ['exit', 'echo T53_9m605w >> ~/rl.txt'], want exactly ['echo T53_9m605w >> ~/rl.txt']",
+    "trial 2 (gap 0.0 s): the remote shell received ['exit', 'echo T55_wa88v3 >> ~/rl.txt'], want exactly ['echo T55_wa88v3 >> ~/rl.txt']",
+    "trial 3 (gap 0.0 s): the remote shell received ['exit', 'echo T57_bol9lf >> ~/rl.txt'], want exactly ['echo T57_bol9lf >> ~/rl.txt']",
+    "trial 4 (gap 0.1 s): the remote shell received ['exit', 'echo T59_cefb2a >> ~/rl.txt'], want exactly ['echo T59_cefb2a >> ~/rl.txt']",
+    "trial 5 (gap 0.2 s): the remote shell received ['exit', 'echo T61_rprhlw >> ~/rl.txt'], want exactly ['echo T61_rprhlw >> ~/rl.txt']",
+    "trial 6 (gap 0.3 s): the remote shell received ['exit', 'echo T63_sekkq7 >> ~/rl.txt'], want exactly ['echo T63_sekkq7 >> ~/rl.txt']",
+    "lab_connect_typeahead loss: 0 of 6 typed-ahead commands lost (observed 0.0 %); 95 % upper confidence bound 39.3 %; this n cannot exclude a 1/40 (2.5 %) rate: needs 119 clean trials",
+    "ssh trial verdicts: exact=6",
+    "typed-during-connect: in 6 of 6 trials keys were in the console before the session and were held at the front (typeahead_front adopted=true)",
+    "injector accounting: injector sent 646; app saw 646; lost-before-app 0 (Enter: sent 27, app saw 27); of the app's: 633 unbound keydown/typed, 4 taken by a key binding, 9 Enter by a binding"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 151.3,
+     "target": 150,
+     "n": 15,
+     "tol": 15.0
+    },
+    "trials": 6,
+    "loss": {
+     "lost": 0,
+     "n": 6,
+     "rate": 0.0,
+     "upper_bound": 0.393,
+     "conf": 0.95,
+     "text": "0 of 6 typed-ahead commands lost (observed 0.0 %); 95 % upper confidence bound 39.3 %; this n cannot exclude a 1/40 (2.5 %) rate: needs 119 clean trials"
+    },
+    "ssh_trial_verdicts": [
+     {
+      "exact": true,
+      "held_keys": 15,
+      "held_bytes": 42,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "finish",
+        14
+       ],
+       [
+        "finish",
+        28
+       ]
+      ],
+      "finish": [
+       "delivered=tty_owner",
+       "delivered=tty_owner"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 19,
+      "held_bytes": 46,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "finish",
+        18
+       ],
+       [
+        "finish",
+        28
+       ]
+      ],
+      "finish": [
+       "delivered=tty_owner",
+       "delivered=tty_owner"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 20,
+      "held_bytes": 47,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "finish",
+        19
+       ],
+       [
+        "finish",
+        28
+       ]
+      ],
+      "finish": [
+       "delivered=tty_owner",
+       "delivered=tty_owner"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 15,
+      "held_bytes": 42,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "finish",
+        14
+       ],
+       [
+        "finish",
+        28
+       ]
+      ],
+      "finish": [
+       "delivered=tty_owner",
+       "delivered=tty_owner"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 10,
+      "held_bytes": 37,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "finish",
+        9
+       ],
+       [
+        "finish",
+        28
+       ]
+      ],
+      "finish": [
+       "delivered=tty_owner",
+       "delivered=tty_owner"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 10,
+      "held_bytes": 37,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "finish",
+        9
+       ],
+       [
+        "finish",
+        28
+       ]
+      ],
+      "finish": [
+       "delivered=tty_owner",
+       "delivered=tty_owner"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     }
+    ],
+    "injector": {
+     "sent": 646,
+     "enters_sent": 27,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 646,
+     "unbound": 633,
+     "bound": 4,
+     "enters_bound": 9,
+     "seen": 646,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 27
+    },
+    "pty_write_cr": {
+     "writes": 397,
+     "with_cr": 24,
+     "enters": 9
+    }
+   },
+   "shots": [
+    "shots\\terminal@gitbash_lab_connect_typeahead.zsh.150.nohelper_FAIL.png"
+   ]
+  },
+  {
+   "name": "lab_connect_typeahead.bash.lan.helper",
+   "mode": "terminal@gitbash",
+   "status": "fail",
+   "ran_mode": "terminal",
+   "seconds": 170.4,
+   "evidence": [
+    "enter_route: 40 Enter(s) reached the input editor: AI=16 Shell=24 [Shell,Shell,Shell,Shell,Shell,AI,Shell,Shell,AI,AI,Shell,Shell,AI,AI,Shell,Shell,AI,AI,Shell,Shell,AI,AI,Shell,Shell,AI,AI,Shell,Shell,AI,Shell,Shell,AI,Shell,Shell,AI,Shell,Shell,AI,AI,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794672077.795,
+    1794672248.183
+   ],
+   "detail": [
+    "trial 2 (gap 0.0 s): the session was not managed (no ManagedSSHSessionStarting hook and no `verdict managed=true` in the app log of this connect)",
+    "trial 2 (gap 0.0 s): one-connection stages in the app log: [], want auth, auth_done, managed (a final `plain` is the old #1959 behaviour)",
+    "trial 2 (gap 0.0 s): the wrapper's verdict was managed=true (round 8: managed=false, #1933)",
+    "trial 2 (gap 0.0 s): the wrapper announcement was not handled on the connect window (hop ssh_wrapper announced; 0 wrapper hops)",
+    "trial 3 (gap 0.0 s): the session was not managed (no ManagedSSHSessionStarting hook and no `verdict managed=true` in the app log of this connect)",
+    "trial 3 (gap 0.0 s): one-connection stages in the app log: [], want auth, auth_done, managed (a final `plain` is the old #1959 behaviour)",
+    "trial 3 (gap 0.0 s): the wrapper's verdict was managed=true (round 8: managed=false, #1933)",
+    "trial 3 (gap 0.0 s): the wrapper announcement was not handled on the connect window (hop ssh_wrapper announced; 0 wrapper hops)",
+    "trial 4 (gap 0.1 s): the session was not managed (no ManagedSSHSessionStarting hook and no `verdict managed=true` in the app log of this connect)",
+    "trial 4 (gap 0.1 s): one-connection stages in the app log: [], want auth, auth_done, managed (a final `plain` is the old #1959 behaviour)",
+    "trial 4 (gap 0.1 s): the wrapper's verdict was managed=true (round 8: managed=false, #1933)",
+    "trial 4 (gap 0.1 s): the wrapper announcement was not handled on the connect window (hop ssh_wrapper announced; 0 wrapper hops)",
+    "trial 5 (gap 0.2 s): the session was not managed (no ManagedSSHSessionStarting hook and no `verdict managed=true` in the app log of this connect)",
+    "trial 5 (gap 0.2 s): one-connection stages in the app log: [], want auth, auth_done, managed (a final `plain` is the old #1959 behaviour)",
+    "trial 5 (gap 0.2 s): the wrapper's verdict was managed=true (round 8: managed=false, #1933)",
+    "trial 5 (gap 0.2 s): the wrapper announcement was not handled on the connect window (hop ssh_wrapper announced; 0 wrapper hops)",
+    "trial 6 (gap 0.3 s): the session was not managed (no ManagedSSHSessionStarting hook and no `verdict managed=true` in the app log of this connect)",
+    "trial 6 (gap 0.3 s): one-connection stages in the app log: [], want auth, auth_done, managed (a final `plain` is the old #1959 behaviour)",
+    "trial 6 (gap 0.3 s): the wrapper's verdict was managed=true (round 8: managed=false, #1933)",
+    "trial 6 (gap 0.3 s): the wrapper announcement was not handled on the connect window (hop ssh_wrapper announced; 0 wrapper hops)",
+    "lab_connect_typeahead loss: 0 of 6 typed-ahead commands lost (observed 0.0 %); 95 % upper confidence bound 39.3 %; this n cannot exclude a 1/40 (2.5 %) rate: needs 119 clean trials",
+    "ssh trial verdicts: exact=6",
+    "typed-during-connect: in 1 of 6 trials keys were in the console before the session and were held at the front (typeahead_front adopted=true)",
+    "SETTINGS LEFT CHANGED: the settings file differs from the one this case started on, in: warpify.ssh.remote_helper_denied_hosts",
+    "injector accounting: injector sent 1041; app saw 1041; lost-before-app 0 (Enter: sent 40, app saw 40); of the app's: 992 unbound keydown/typed, 10 taken by a key binding, 39 Enter by a binding",
+    "pty writes: 99, of which carrying a CR (\\r): 3; Enter(s) the input editor started: 39 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 1.0,
+     "target": 0,
+     "n": 15,
+     "tol": 15.0
+    },
+    "trials": 6,
+    "loss": {
+     "lost": 0,
+     "n": 6,
+     "rate": 0.0,
+     "upper_bound": 0.393,
+     "conf": 0.95,
+     "text": "0 of 6 typed-ahead commands lost (observed 0.0 %); 95 % upper confidence bound 39.3 %; this n cannot exclude a 1/40 (2.5 %) rate: needs 119 clean trials"
+    },
+    "ssh_trial_verdicts": [
+     {
+      "exact": true,
+      "held_keys": 17,
+      "held_bytes": 44,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "finish",
+        16
+       ],
+       [
+        "precmd",
+        28
+       ]
+      ],
+      "finish": [
+       "delivered=tty_owner",
+       "delivered=remote"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     }
+    ],
+    "injector": {
+     "sent": 1041,
+     "enters_sent": 40,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 1041,
+     "unbound": 992,
+     "bound": 10,
+     "enters_bound": 39,
+     "seen": 1041,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 40
+    },
+    "pty_write_cr": {
+     "writes": 99,
+     "with_cr": 3,
+     "enters": 39
+    }
+   },
+   "shots": [
+    "shots\\terminal@gitbash_lab_connect_typeahead.bash.lan.helper_FAIL.png"
+   ]
+  },
+  {
+   "name": "pane_switch_left_on_after_lab_connect_typeahead.bash.lan.helper",
+   "mode": "terminal@gitbash",
+   "status": "fail",
+   "seconds": 0,
+   "shots": [],
+   "detail": [
+    "after lab_connect_typeahead.bash.lan.helper: the `unset PHOSPHOR_MSYS_MANAGED_SSH` after the case is not proven in the pane's local shell: the proof line ran in the REMOTE shell and answered ['off'] [app's pane state at case start: no hand_route line; now: no hand_route line]; the app is relaunched so later cases start with the default"
+   ]
+  },
+  {
+   "name": "key_delivery",
+   "mode": "terminal@gitbash",
+   "status": "pass",
+   "seconds": 0,
+   "detail": [
+    "marker typed and received via SendInput vk"
+   ],
+   "metrics": {
+    "method": "vk"
+   },
+   "shots": []
+  },
+  {
+   "name": "lab_connect_typeahead.bash.150.helper",
+   "mode": "terminal@gitbash",
+   "status": "fail",
+   "ran_mode": "terminal",
+   "seconds": 155.3,
+   "evidence": [
+    "enter_route: 22 Enter(s) reached the input editor: AI=5 Shell=17 [Shell,Shell,Shell,Shell,Shell,AI,Shell,Shell,Shell,Shell,Shell,Shell,Shell,AI,Shell,Shell,AI,Shell,Shell,AI,AI,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794672259.469,
+    1794672414.721
+   ],
+   "detail": [
+    "trial 2 (gap 0.0 s): the line typed behind `ssh lab-u_bash` never reached the remote shell. Test host: sshd.log: 07:55:55 connect from ('127.0.0.1', 63899) | 07:55:55 auth publickey user=Winters key=ssh-ed25519 c61037273003a7b72ee329010e27c736 -> ok | 07:55:55 auth publickey user=Winters key=ssh-ed25519 c61037273003a7b72ee329010e27c736 -> ok | 07:55:58 connection closed: authenticated=False channels=0 | 07:59:07 connect from ('127.0.0.1', 50924) | 07:59:07 serve err SSHException('Error reading SSH protocol banner[WinError 10054] An existing connection was forcibly closed by the remote host') | 07:59:30 connect from ('127.0.0.1', 51617) | 07:59:30 serve err SSHException('Error reading SSH protocol banner[WinError 10053] An established connection was aborted by the software in your host machine'); fakesshd.stderr: (empty); test sshd (fakesshd-win) listening on 127.0.0.1:63861; exec+pty of the test sshd is served by a pseudo console of the app's own conpty.dll, measured byte-exact both ways. Measured: app: out ok, in ok (a 610-byte OSC arrived whole; a counted raw read of 3827 bytes got exactly what was sent) | inbox: out BROKEN, in ok (a 610-byte OSC did NOT arrive whole: the longest piece of its 600 payload characters is 80 (205 bytes seen); a counted raw read of 3827 bytes got exactly what was sent); no msys pty host: Git for Windows has no usr\\bin\\sshd.exe next to its bash (C:\\Program Files\\Git\\usr\\bin); lab /health: sshd={'22': True, '2222': True} fault={'rtt_ms': 150.0, 'jitter_ms': 0.0, 'loss_pct': 0.0, 'rate_kbit': 0.0} tc=True ttl_left=8218 ;; lab sshd.log tail: syslogin_perform_logout: logout() returned an error | Connection from <ip> port 42010 on <ip> port 22 rdomain \"\" | Accepted key ED25519 SHA256:q7yMCXe8q85ZZD1eSImqJ8ho9FpFhFBvoar5BVjrjiA found at /run/sshlab/authkeys/u_bash:1 | Postponed publickey for u_bash from <ip> port 42010 ssh2 [preauth] | Accepted key ED25519 SHA256:q7yMCXe8q85ZZD1eSImqJ8ho9FpFhFBvoar5BVjrjiA found at /run/sshlab/authkeys/u_bash:1 | Accepted publickey for u_bash from <ip> port 42010 ssh2: ED25519 SHA256:q7yMCXe8q85ZZD1eSImqJ8ho9FpFhFBvoar5BVjrjiA | User child is on pid 6029 | Starting session: command on pts/0 for u_bash from <ip> port 42010 id 0; app ssh hops: [DEBUG] input_order hop=handoff_commit_source ssh_gate_armed=false ssh_holding=false remote_prompt_seen=false t=1794672270299.771 | [DEBUG] input_order hop=handoff_commit_at_prompt committed=false still_pty_owned=false t=1794672270299.800 | [DEBUG] input_order hop=handoff_commit_source ssh_gate_armed=false ssh_holding=false remote_prompt_seen=false t=1794672270558.763 | [DEBUG] input_order hop=handoff_commit_at_prompt committed=false still_pty_owned=false t=1794672270558.775 | [DEBUG] input_order hop=kh_hold_entry seq=291 holding=false held_bytes=0 gate_armed=false pending_session=false table=1 t=1794672280960.100 | [DEBUG] input_order hop=kh_hold_exit seq=291 branch=gate_open_live gate_armed=false table=1 t=1794672280960.127 | [DEBUG] input_order hop=handoff_commit_source ssh_gate_armed=false ssh_holding=false remote_prompt_seen=false t=1794672281472.461 | [DEBUG] input_order hop=handoff_commit_at_prompt committed=false still_pty_owned=false t=1794672281472.471 | [DEBUG] input_order hop=handoff_commit_source ssh_gate_armed=false ssh_holding=false remote_prompt_seen=false t=1794672281751.106 | [DEBUG] input_order hop=handoff_commit_at_prompt committed=false still_pty_owned=false t=1794672281751.131; PROBE: Git Bash pane: C:\\Program Files\\Git\\usr\\bin\\ssh.exe cannot start a ControlMaster (exit 255: mux_client_request_session: read from master failed: Connection reset by peer Failed to connect to new control master). Background only: since #1551 / #1933 the app's bash ssh wrapper never multiplexes under msys (one connection with LocalCommand, or plain ssh), so this does NOT explain a failing case",
+    "trial 2 (gap 0.0 s): the remote shell received [], want exactly ['echo T93_9cn3k6 >> ~/rl.txt']",
+    "trial 2 (gap 0.0 s): the session was not managed (no ManagedSSHSessionStarting hook and no `verdict managed=true` in the app log of this connect)",
+    "trial 2 (gap 0.0 s): one-connection stages in the app log: [], want auth, auth_done, managed (a final `plain` is the old #1959 behaviour)",
+    "trial 2 (gap 0.0 s): the wrapper's verdict was managed=true (round 8: managed=false, #1933)",
+    "trial 2 (gap 0.0 s): the wrapper announcement was not handled on the connect window (hop ssh_wrapper announced; 0 wrapper hops)",
+    "lab_connect_typeahead (trial 2 (gap 0.0 s)): T93_9cn3k6 never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log). Test host: sshd.log: 07:55:55 auth publickey user=Winters key=ssh-ed25519 c61037273003a7b72ee329010e27c736 -> ok | 07:55:58 connection closed: authenticated=False channels=0 | 07:59:07 connect from ('127.0.0.1', 50924) | 07:59:07 serve err SSHException('Error reading SSH protocol banner[WinError 10054] An existing connection was forcibly closed by the remote host') | 07:59:30 connect from ('127.0.0.1', 51617) | 07:59:30 serve err SSHException('Error reading SSH protocol banner[WinError 10053] An established connection was aborted by the software in your host machine') | 08:05:13 connect from ('127.0.0.1', 60957) | 08:05:13 serve err SSHException('Error reading SSH protocol banner[WinError 10054] An existing connection was forcibly closed by the remote host'); fakesshd.stderr: (empty); test sshd (fakesshd-win) listening on 127.0.0.1:63861; exec+pty of the test sshd is served by a pseudo console of the app's own conpty.dll, measured byte-exact both ways. Measured: app: out ok, in ok (a 610-byte OSC arrived whole; a counted raw read of 3827 bytes got exactly what was sent) | inbox: out BROKEN, in ok (a 610-byte OSC did NOT arrive whole: the longest piece of its 600 payload characters is 80 (205 bytes seen); a counted raw read of 3827 bytes got exactly what was sent); no msys pty host: Git for Windows has no usr\\bin\\sshd.exe next to its bash (C:\\Program Files\\Git\\usr\\bin); lab /health: sshd={'22': True, '2222': True} fault={'rtt_ms': 150.0, 'jitter_ms': 0.0, 'loss_pct': 0.0, 'rate_kbit': 0.0} tc=True ttl_left=8195 ;; lab sshd.log tail: syslogin_perform_logout: logout() returned an error | Connection from <ip> port 42010 on <ip> port 22 rdomain \"\" | Accepted key ED25519 SHA256:q7yMCXe8q85ZZD1eSImqJ8ho9FpFhFBvoar5BVjrjiA found at /run/sshlab/authkeys/u_bash:1 | Postponed publickey for u_bash from <ip> port 42010 ssh2 [preauth] | Accepted key ED25519 SHA256:q7yMCXe8q85ZZD1eSImqJ8ho9FpFhFBvoar5BVjrjiA found at /run/sshlab/authkeys/u_bash:1 | Accepted publickey for u_bash from <ip> port 42010 ssh2: ED25519 SHA256:q7yMCXe8q85ZZD1eSImqJ8ho9FpFhFBvoar5BVjrjiA | User child is on pid 6029 | Starting session: command on pts/0 for u_bash from <ip> port 42010 id 0; app ssh hops: [DEBUG] input_order hop=handoff_commit_source ssh_gate_armed=false ssh_holding=false remote_prompt_seen=false t=1794672270299.771 | [DEBUG] input_order hop=handoff_commit_at_prompt committed=false still_pty_owned=false t=1794672270299.800 | [DEBUG] input_order hop=handoff_commit_source ssh_gate_armed=false ssh_holding=false remote_prompt_seen=false t=1794672270558.763 | [DEBUG] input_order hop=handoff_commit_at_prompt committed=false still_pty_owned=false t=1794672270558.775 | [DEBUG] input_order hop=kh_hold_entry seq=291 holding=false held_bytes=0 gate_armed=false pending_session=false table=1 t=1794672280960.100 | [DEBUG] input_order hop=kh_hold_exit seq=291 branch=gate_open_live gate_armed=false table=1 t=1794672280960.127 | [DEBUG] input_order hop=handoff_commit_source ssh_gate_armed=false ssh_holding=false remote_prompt_seen=false t=1794672281472.461 | [DEBUG] input_order hop=handoff_commit_at_prompt committed=false still_pty_owned=false t=1794672281472.471 | [DEBUG] input_order hop=handoff_commit_source ssh_gate_armed=false ssh_holding=false remote_prompt_seen=false t=1794672281751.106 | [DEBUG] input_order hop=handoff_commit_at_prompt committed=false still_pty_owned=false t=1794672281751.131; PROBE: Git Bash pane: C:\\Program Files\\Git\\usr\\bin\\ssh.exe cannot start a ControlMaster (exit 255: mux_client_request_session: read from master failed: Connection reset by peer Failed to connect to new control master). Background only: since #1551 / #1933 the app's bash ssh wrapper never multiplexes under msys (one connection with LocalCommand, or plain ssh), so this does NOT explain a failing case",
+    "lab_connect_typeahead trial 2 (gap 0.0 s): #1292: no ssh hold was seen and the remote shell logged nothing for the line; held 0 key(s)/0 byte(s), hand-over none, finish none; the app saw every key of the line; remote got None",
+    "lab_connect_typeahead loss: 1 of 2 typed-ahead commands lost (observed 50.0 %); 95 % upper confidence bound 97.5 %; this n cannot exclude a 1/40 (2.5 %) rate: needs 119 clean trials",
+    "ssh trial verdicts: #1292=1, exact=1",
+    "typed-during-connect: in 1 of 2 trials keys were in the console before the session and were held at the front (typeahead_front adopted=true)",
+    "injector accounting: injector sent 663; app saw 663; lost-before-app 0 (Enter: sent 22, app saw 22); of the app's: 631 unbound keydown/typed, 11 taken by a key binding, 21 Enter by a binding",
+    "pty writes: 64, of which carrying a CR (\\r): 2; Enter(s) the input editor started: 21 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 151.3,
+     "target": 150,
+     "n": 15,
+     "tol": 15.0
+    },
+    "trials": 2,
+    "loss": {
+     "lost": 1,
+     "n": 2,
+     "rate": 0.5,
+     "upper_bound": 0.9747,
+     "conf": 0.95,
+     "text": "1 of 2 typed-ahead commands lost (observed 50.0 %); 95 % upper confidence bound 97.5 %; this n cannot exclude a 1/40 (2.5 %) rate: needs 119 clean trials"
+    },
+    "ssh_trial_verdicts": [
+     {
+      "exact": true,
+      "held_keys": 23,
+      "held_bytes": 50,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "finish",
+        22
+       ],
+       [
+        "precmd",
+        28
+       ]
+      ],
+      "finish": [
+       "delivered=tty_owner",
+       "delivered=remote"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": false,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     }
+    ],
+    "injector": {
+     "sent": 663,
+     "enters_sent": 22,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 663,
+     "unbound": 631,
+     "bound": 11,
+     "enters_bound": 21,
+     "seen": 663,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 22
+    },
+    "pty_write_cr": {
+     "writes": 64,
+     "with_cr": 2,
+     "enters": 21
+    }
+   },
+   "shots": [
+    "shots\\terminal@gitbash_lab_connect_typeahead.bash.150.helper_FAIL.png"
+   ]
+  },
+  {
+   "name": "pane_switch_left_on_after_lab_connect_typeahead.bash.150.helper",
+   "mode": "terminal@gitbash",
+   "status": "fail",
+   "seconds": 0,
+   "shots": [],
+   "detail": [
+    "after lab_connect_typeahead.bash.150.helper: the `unset PHOSPHOR_MSYS_MANAGED_SSH` after the case is not proven in the pane's local shell: the proof line ran in the REMOTE shell and answered ['off'] [app's pane state at case start: command_interactive=false enters_written=1 precmds_seen=1; now: no hand_route line]; the app is relaunched so later cases start with the default"
+   ]
+  },
+  {
+   "name": "key_delivery",
+   "mode": "terminal@gitbash",
+   "status": "pass",
+   "seconds": 0,
+   "detail": [
+    "marker typed and received via SendInput vk"
+   ],
+   "metrics": {
+    "method": "vk"
+   },
+   "shots": []
+  },
+  {
+   "name": "lab_connect_typeahead.zsh.lan.helper",
+   "mode": "terminal@gitbash",
+   "status": "fail",
+   "ran_mode": "terminal",
+   "seconds": 31.1,
+   "evidence": [
+    "enter_route: 9 Enter(s) reached the input editor: Shell=9 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794672426.283,
+    1794672457.372
+   ],
+   "detail": [
+    "trial 1 (gap 0.0 s): the remote shell received ['exit', 'echo T105_ys65bu >> ~/rl.txt'], want exactly ['echo T105_ys65bu >> ~/rl.txt']",
+    "trial 2 (gap 0.0 s): the remote shell received ['exit', 'echo T107_sbkmui >> ~/rl.txt'], want exactly ['echo T107_sbkmui >> ~/rl.txt']",
+    "trial 3 (gap 0.0 s): the remote shell received ['exit', 'echo T109_v1nrgy >> ~/rl.txt'], want exactly ['echo T109_v1nrgy >> ~/rl.txt']",
+    "trial 4 (gap 0.1 s): the remote shell received ['exit', 'echo T111_858pec >> ~/rl.txt'], want exactly ['echo T111_858pec >> ~/rl.txt']",
+    "trial 5 (gap 0.2 s): the remote shell received ['exit', 'echo T113_fikk8n >> ~/rl.txt'], want exactly ['echo T113_fikk8n >> ~/rl.txt']",
+    "trial 6 (gap 0.3 s): the remote shell received ['exit', 'echo T115_rv6qxv >> ~/rl.txt'], want exactly ['echo T115_rv6qxv >> ~/rl.txt']",
+    "lab_connect_typeahead loss: 0 of 6 typed-ahead commands lost (observed 0.0 %); 95 % upper confidence bound 39.3 %; this n cannot exclude a 1/40 (2.5 %) rate: needs 119 clean trials",
+    "ssh trial verdicts: exact=6",
+    "typed-during-connect: in 6 of 6 trials keys were in the console before the session and were held at the front (typeahead_front adopted=true)",
+    "injector accounting: injector sent 659; app saw 659; lost-before-app 0 (Enter: sent 27, app saw 27); of the app's: 646 unbound keydown/typed, 4 taken by a key binding, 9 Enter by a binding"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 1.2,
+     "target": 0,
+     "n": 15,
+     "tol": 15.0
+    },
+    "trials": 6,
+    "loss": {
+     "lost": 0,
+     "n": 6,
+     "rate": 0.0,
+     "upper_bound": 0.393,
+     "conf": 0.95,
+     "text": "0 of 6 typed-ahead commands lost (observed 0.0 %); 95 % upper confidence bound 39.3 %; this n cannot exclude a 1/40 (2.5 %) rate: needs 119 clean trials"
+    },
+    "ssh_trial_verdicts": [
+     {
+      "exact": true,
+      "held_keys": 24,
+      "held_bytes": 52,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "finish",
+        23
+       ],
+       [
+        "finish",
+        29
+       ]
+      ],
+      "finish": [
+       "delivered=tty_owner",
+       "delivered=tty_owner"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 23,
+      "held_bytes": 51,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "finish",
+        22
+       ],
+       [
+        "finish",
+        29
+       ]
+      ],
+      "finish": [
+       "delivered=tty_owner",
+       "delivered=tty_owner"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 12,
+      "held_bytes": 40,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "finish",
+        11
+       ],
+       [
+        "finish",
+        29
+       ]
+      ],
+      "finish": [
+       "delivered=tty_owner",
+       "delivered=tty_owner"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 13,
+      "held_bytes": 41,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "finish",
+        12
+       ],
+       [
+        "finish",
+        29
+       ]
+      ],
+      "finish": [
+       "delivered=tty_owner",
+       "delivered=tty_owner"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 11,
+      "held_bytes": 39,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "finish",
+        10
+       ],
+       [
+        "finish",
+        29
+       ]
+      ],
+      "finish": [
+       "delivered=tty_owner",
+       "delivered=tty_owner"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 8,
+      "held_bytes": 36,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "finish",
+        7
+       ],
+       [
+        "finish",
+        29
+       ]
+      ],
+      "finish": [
+       "delivered=tty_owner",
+       "delivered=tty_owner"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     }
+    ],
+    "injector": {
+     "sent": 659,
+     "enters_sent": 27,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 659,
+     "unbound": 646,
+     "bound": 4,
+     "enters_bound": 9,
+     "seen": 659,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 27
+    },
+    "pty_write_cr": {
+     "writes": 399,
+     "with_cr": 24,
+     "enters": 9
+    }
+   },
+   "shots": [
+    "shots\\terminal@gitbash_lab_connect_typeahead.zsh.lan.helper_FAIL.png"
+   ]
+  },
+  {
+   "name": "lab_connect_typeahead.zsh.150.helper",
+   "mode": "terminal@gitbash",
+   "status": "fail",
+   "ran_mode": "terminal",
+   "seconds": 46.7,
+   "evidence": [
+    "enter_route: 9 Enter(s) reached the input editor: Shell=9 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794672462.024,
+    1794672508.701
+   ],
+   "detail": [
+    "trial 1 (gap 0.0 s): the remote shell received ['exit', 'echo T120_vhsp5i >> ~/rl.txt'], want exactly ['echo T120_vhsp5i >> ~/rl.txt']",
+    "trial 2 (gap 0.0 s): the remote shell received ['exit', 'echo T122_uc0eyj >> ~/rl.txt'], want exactly ['echo T122_uc0eyj >> ~/rl.txt']",
+    "trial 3 (gap 0.0 s): the remote shell received ['exit', 'echo T124_ivhye9 >> ~/rl.txt'], want exactly ['echo T124_ivhye9 >> ~/rl.txt']",
+    "trial 4 (gap 0.1 s): the remote shell received ['exit', 'echo T126_frxs8h >> ~/rl.txt'], want exactly ['echo T126_frxs8h >> ~/rl.txt']",
+    "trial 5 (gap 0.2 s): the remote shell received ['exit', 'echo T128_3rgcsa >> ~/rl.txt'], want exactly ['echo T128_3rgcsa >> ~/rl.txt']",
+    "trial 6 (gap 0.3 s): the remote shell received ['exit', 'echo T130_af0hcm >> ~/rl.txt'], want exactly ['echo T130_af0hcm >> ~/rl.txt']",
+    "lab_connect_typeahead loss: 0 of 6 typed-ahead commands lost (observed 0.0 %); 95 % upper confidence bound 39.3 %; this n cannot exclude a 1/40 (2.5 %) rate: needs 119 clean trials",
+    "ssh trial verdicts: exact=6",
+    "typed-during-connect: in 6 of 6 trials keys were in the console before the session and were held at the front (typeahead_front adopted=true)",
+    "injector accounting: injector sent 659; app saw 659; lost-before-app 0 (Enter: sent 27, app saw 27); of the app's: 646 unbound keydown/typed, 4 taken by a key binding, 9 Enter by a binding"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 151.3,
+     "target": 150,
+     "n": 15,
+     "tol": 15.0
+    },
+    "trials": 6,
+    "loss": {
+     "lost": 0,
+     "n": 6,
+     "rate": 0.0,
+     "upper_bound": 0.393,
+     "conf": 0.95,
+     "text": "0 of 6 typed-ahead commands lost (observed 0.0 %); 95 % upper confidence bound 39.3 %; this n cannot exclude a 1/40 (2.5 %) rate: needs 119 clean trials"
+    },
+    "ssh_trial_verdicts": [
+     {
+      "exact": true,
+      "held_keys": 23,
+      "held_bytes": 51,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "finish",
+        22
+       ],
+       [
+        "finish",
+        29
+       ]
+      ],
+      "finish": [
+       "delivered=tty_owner",
+       "delivered=tty_owner"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 26,
+      "held_bytes": 54,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "finish",
+        25
+       ],
+       [
+        "finish",
+        29
+       ]
+      ],
+      "finish": [
+       "delivered=tty_owner",
+       "delivered=tty_owner"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 19,
+      "held_bytes": 47,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "finish",
+        18
+       ],
+       [
+        "finish",
+        29
+       ]
+      ],
+      "finish": [
+       "delivered=tty_owner",
+       "delivered=tty_owner"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 14,
+      "held_bytes": 42,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "finish",
+        13
+       ],
+       [
+        "finish",
+        29
+       ]
+      ],
+      "finish": [
+       "delivered=tty_owner",
+       "delivered=tty_owner"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 17,
+      "held_bytes": 45,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "finish",
+        16
+       ],
+       [
+        "finish",
+        29
+       ]
+      ],
+      "finish": [
+       "delivered=tty_owner",
+       "delivered=tty_owner"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 4,
+      "held_bytes": 32,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "finish",
+        3
+       ],
+       [
+        "finish",
+        29
+       ]
+      ],
+      "finish": [
+       "delivered=tty_owner",
+       "delivered=tty_owner"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     }
+    ],
+    "injector": {
+     "sent": 659,
+     "enters_sent": 27,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 659,
+     "unbound": 646,
+     "bound": 4,
+     "enters_bound": 9,
+     "seen": 659,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 27
+    },
+    "pty_write_cr": {
+     "writes": 395,
+     "with_cr": 24,
+     "enters": 9
+    }
+   },
+   "shots": [
+    "shots\\terminal@gitbash_lab_connect_typeahead.zsh.150.helper_FAIL.png"
+   ]
+  },
+  {
+   "name": "lab_chips.bash.lan.nohelper",
+   "mode": "agent",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run in the PowerShell pane: the lab cases use the local shell's rec.log / prompt.log and bash syntax: they run in the Git Bash pane"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "lab_connect_typeahead.bash.lan.nohelper",
+   "mode": "agent",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run in the PowerShell pane: the lab cases use the local shell's rec.log / prompt.log and bash syntax: they run in the Git Bash pane"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "lab_connect_typeahead.bash.150.nohelper",
+   "mode": "agent",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run in the PowerShell pane: the lab cases use the local shell's rec.log / prompt.log and bash syntax: they run in the Git Bash pane"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "lab_connect_typeahead.zsh.lan.nohelper",
+   "mode": "agent",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run in the PowerShell pane: the lab cases use the local shell's rec.log / prompt.log and bash syntax: they run in the Git Bash pane"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "lab_connect_typeahead.zsh.150.nohelper",
+   "mode": "agent",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run in the PowerShell pane: the lab cases use the local shell's rec.log / prompt.log and bash syntax: they run in the Git Bash pane"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "lab_connect_typeahead.bash.lan.helper",
+   "mode": "agent",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run in the PowerShell pane: the lab cases use the local shell's rec.log / prompt.log and bash syntax: they run in the Git Bash pane"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "lab_connect_typeahead.bash.150.helper",
+   "mode": "agent",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run in the PowerShell pane: the lab cases use the local shell's rec.log / prompt.log and bash syntax: they run in the Git Bash pane"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "lab_connect_typeahead.zsh.lan.helper",
+   "mode": "agent",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run in the PowerShell pane: the lab cases use the local shell's rec.log / prompt.log and bash syntax: they run in the Git Bash pane"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "lab_connect_typeahead.zsh.150.helper",
+   "mode": "agent",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run in the PowerShell pane: the lab cases use the local shell's rec.log / prompt.log and bash syntax: they run in the Git Bash pane"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "key_delivery",
+   "mode": "agent@gitbash",
+   "status": "pass",
+   "seconds": 0,
+   "detail": [
+    "marker typed and received via SendInput vk"
+   ],
+   "metrics": {
+    "method": "vk"
+   },
+   "shots": []
+  },
+  {
+   "name": "lab_chips.bash.lan.nohelper",
+   "mode": "agent@gitbash",
+   "status": "fail",
+   "ran_mode": "agent",
+   "seconds": 102.0,
+   "evidence": [
+    "enter_route: 20 Enter(s) reached the input editor: AI=7 Shell=13 [Shell,Shell,Shell,Shell,AI,AI,Shell,Shell,AI,Shell,Shell,AI,Shell,Shell,AI,Shell,Shell,AI,AI,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794672539.712,
+    1794672641.676
+   ],
+   "detail": [
+    "the app log has no update_chip_value ShellGitBranch -> brt35by1a2 line: the chip never took the branch",
+    "no side call at all with no helper: where did the branch chip come from?",
+    "`exit` did not return to the local shell (None)",
+    "side-call producers (#2156): shell exec lines by producer: none; prompts the app ran a batch for: []",
+    "injector accounting: injector sent 611; app saw 611; lost-before-app 0 (Enter: sent 20, app saw 20); of the app's: 582 unbound keydown/typed, 9 taken by a key binding, 20 Enter by a binding",
+    "pty writes: 39, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 20 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 1.1,
+     "target": 0,
+     "n": 15,
+     "tol": 15.0
+    },
+    "exec_channel_timeline": [],
+    "side_calls": 0,
+    "prompts": 1,
+    "injector": {
+     "sent": 611,
+     "enters_sent": 20,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 611,
+     "unbound": 582,
+     "bound": 9,
+     "enters_bound": 20,
+     "seen": 611,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 20
+    },
+    "pty_write_cr": {
+     "writes": 39,
+     "with_cr": 0,
+     "enters": 20
+    }
+   },
+   "shots": [
+    "shots\\agent@gitbash_lab_chips.bash.lan.nohelper_FAIL.png"
+   ]
+  },
+  {
+   "name": "pane_switch_left_on_after_lab_chips.bash.lan.nohelper",
+   "mode": "agent@gitbash",
+   "status": "fail",
+   "seconds": 0,
+   "shots": [],
+   "detail": [
+    "after lab_chips.bash.lan.nohelper: the `unset PHOSPHOR_MSYS_MANAGED_SSH` after the case is not proven in the pane's local shell: the proof line ran in the REMOTE shell and answered ['off'] [app's pane state at case start: command_interactive=false enters_written=1 precmds_seen=1; now: no hand_route line]; the app is relaunched so later cases start with the default"
+   ]
+  },
+  {
+   "name": "key_delivery",
+   "mode": "agent@gitbash",
+   "status": "pass",
+   "seconds": 0,
+   "detail": [
+    "marker typed and received via SendInput vk"
+   ],
+   "metrics": {
+    "method": "vk"
+   },
+   "shots": []
+  },
+  {
+   "name": "lab_connect_typeahead.bash.lan.nohelper",
+   "mode": "agent@gitbash",
+   "status": "fail",
+   "ran_mode": "agent",
+   "seconds": 78.5,
+   "evidence": [
+    "enter_route: 25 Enter(s) reached the input editor: AI=10 Shell=15 [Shell,Shell,Shell,AI,AI,Shell,Shell,AI,AI,Shell,Shell,AI,AI,Shell,Shell,AI,AI,Shell,Shell,AI,AI,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794672653.472,
+    1794672731.933
+   ],
+   "detail": [
+    "trial 2 (gap 0.0 s): the session was not managed (no ManagedSSHSessionStarting hook and no `verdict managed=true` in the app log of this connect)",
+    "trial 2 (gap 0.0 s): one-connection stages in the app log: [], want auth, auth_done, managed (a final `plain` is the old #1959 behaviour)",
+    "trial 2 (gap 0.0 s): the wrapper's verdict was managed=true (round 8: managed=false, #1933)",
+    "trial 2 (gap 0.0 s): the wrapper announcement was not handled on the connect window (hop ssh_wrapper announced; 0 wrapper hops)",
+    "trial 3 (gap 0.0 s): the session was not managed (no ManagedSSHSessionStarting hook and no `verdict managed=true` in the app log of this connect)",
+    "trial 3 (gap 0.0 s): one-connection stages in the app log: [], want auth, auth_done, managed (a final `plain` is the old #1959 behaviour)",
+    "trial 3 (gap 0.0 s): the wrapper's verdict was managed=true (round 8: managed=false, #1933)",
+    "trial 3 (gap 0.0 s): the wrapper announcement was not handled on the connect window (hop ssh_wrapper announced; 0 wrapper hops)",
+    "trial 4 (gap 0.1 s): the session was not managed (no ManagedSSHSessionStarting hook and no `verdict managed=true` in the app log of this connect)",
+    "trial 4 (gap 0.1 s): one-connection stages in the app log: [], want auth, auth_done, managed (a final `plain` is the old #1959 behaviour)",
+    "trial 4 (gap 0.1 s): the wrapper's verdict was managed=true (round 8: managed=false, #1933)",
+    "trial 4 (gap 0.1 s): the wrapper announcement was not handled on the connect window (hop ssh_wrapper announced; 0 wrapper hops)",
+    "trial 5 (gap 0.2 s): the session was not managed (no ManagedSSHSessionStarting hook and no `verdict managed=true` in the app log of this connect)",
+    "trial 5 (gap 0.2 s): one-connection stages in the app log: [], want auth, auth_done, managed (a final `plain` is the old #1959 behaviour)",
+    "trial 5 (gap 0.2 s): the wrapper's verdict was managed=true (round 8: managed=false, #1933)",
+    "trial 5 (gap 0.2 s): the wrapper announcement was not handled on the connect window (hop ssh_wrapper announced; 0 wrapper hops)",
+    "trial 6 (gap 0.3 s): the session was not managed (no ManagedSSHSessionStarting hook and no `verdict managed=true` in the app log of this connect)",
+    "trial 6 (gap 0.3 s): one-connection stages in the app log: [], want auth, auth_done, managed (a final `plain` is the old #1959 behaviour)",
+    "trial 6 (gap 0.3 s): the wrapper's verdict was managed=true (round 8: managed=false, #1933)",
+    "trial 6 (gap 0.3 s): the wrapper announcement was not handled on the connect window (hop ssh_wrapper announced; 0 wrapper hops)",
+    "lab_connect_typeahead loss: 0 of 6 typed-ahead commands lost (observed 0.0 %); 95 % upper confidence bound 39.3 %; this n cannot exclude a 1/40 (2.5 %) rate: needs 119 clean trials",
+    "ssh trial verdicts: exact=6",
+    "typed-during-connect: in 1 of 6 trials keys were in the console before the session and were held at the front (typeahead_front adopted=true)",
+    "injector accounting: injector sent 652; app saw 652; lost-before-app 0 (Enter: sent 27, app saw 27); of the app's: 623 unbound keydown/typed, 4 taken by a key binding, 25 Enter by a binding",
+    "pty writes: 62, of which carrying a CR (\\r): 3; Enter(s) the input editor started: 25 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 1.1,
+     "target": 0,
+     "n": 15,
+     "tol": 15.0
+    },
+    "trials": 6,
+    "loss": {
+     "lost": 0,
+     "n": 6,
+     "rate": 0.0,
+     "upper_bound": 0.393,
+     "conf": 0.95,
+     "text": "0 of 6 typed-ahead commands lost (observed 0.0 %); 95 % upper confidence bound 39.3 %; this n cannot exclude a 1/40 (2.5 %) rate: needs 119 clean trials"
+    },
+    "ssh_trial_verdicts": [
+     {
+      "exact": true,
+      "held_keys": 25,
+      "held_bytes": 52,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "finish",
+        24
+       ],
+       [
+        "precmd",
+        28
+       ]
+      ],
+      "finish": [
+       "delivered=tty_owner",
+       "delivered=remote"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     }
+    ],
+    "injector": {
+     "sent": 652,
+     "enters_sent": 27,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 652,
+     "unbound": 623,
+     "bound": 4,
+     "enters_bound": 25,
+     "seen": 652,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 27
+    },
+    "pty_write_cr": {
+     "writes": 62,
+     "with_cr": 3,
+     "enters": 25
+    }
+   },
+   "shots": [
+    "shots\\agent@gitbash_lab_connect_typeahead.bash.lan.nohelper_FAIL.png"
+   ]
+  },
+  {
+   "name": "lab_connect_typeahead.bash.150.nohelper",
+   "mode": "agent@gitbash",
+   "status": "fail",
+   "ran_mode": "agent",
+   "seconds": 176.5,
+   "evidence": [
+    "enter_route: 26 Enter(s) reached the input editor: AI=7 Shell=19 [Shell,Shell,Shell,AI,AI,Shell,Shell,Shell,Shell,AI,Shell,Shell,Shell,Shell,AI,Shell,Shell,Shell,Shell,Shell,AI,Shell,Shell,AI,AI,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794672736.905,
+    1794672913.377
+   ],
+   "detail": [
+    "trial 2 (gap 0.0 s): the session was not managed (no ManagedSSHSessionStarting hook and no `verdict managed=true` in the app log of this connect)",
+    "trial 2 (gap 0.0 s): one-connection stages in the app log: [], want auth, auth_done, managed (a final `plain` is the old #1959 behaviour)",
+    "trial 2 (gap 0.0 s): the wrapper's verdict was managed=true (round 8: managed=false, #1933)",
+    "trial 2 (gap 0.0 s): the wrapper announcement was not handled on the connect window (hop ssh_wrapper announced; 0 wrapper hops)",
+    "trial 4 (gap 0.1 s): the line typed behind `ssh lab-u_bash` never reached the remote shell. Test host: sshd.log: 08:08:48 auth publickey user=Winters key=ssh-ed25519 c61037273003a7b72ee329010e27c736 -> ok | 08:08:48 auth publickey user=Winters key=ssh-ed25519 c61037273003a7b72ee329010e27c736 -> ok | 08:08:48 session exec true nopty | 08:08:48 connection closed: authenticated=False channels=1 | 08:08:48 connect from ('127.0.0.1', 54059) | 08:08:48 auth publickey user=Winters key=ssh-ed25519 c61037273003a7b72ee329010e27c736 -> ok | 08:08:48 auth publickey user=Winters key=ssh-ed25519 c61037273003a7b72ee329010e27c736 -> ok | 08:08:51 connection closed: authenticated=False channels=0; fakesshd.stderr: (empty); test sshd (fakesshd-win) listening on 127.0.0.1:54041; exec+pty of the test sshd is served by a pseudo console of the app's own conpty.dll, measured byte-exact both ways. Measured: app: out ok, in ok (a 610-byte OSC arrived whole; a counted raw read of 3827 bytes got exactly what was sent) | inbox: out BROKEN, in ok (a 610-byte OSC did NOT arrive whole: the longest piece of its 600 payload characters is 80 (205 bytes seen); a counted raw read of 3827 bytes got exactly what was sent); no msys pty host: Git for Windows has no usr\\bin\\sshd.exe next to its bash (C:\\Program Files\\Git\\usr\\bin); lab /health: sshd={'22': True, '2222': True} fault={'rtt_ms': 150.0, 'jitter_ms': 0.0, 'loss_pct': 0.0, 'rate_kbit': 0.0} tc=True ttl_left=7720 ;; lab sshd.log tail: Disconnected from user u_bash <ip> port 43920 | Connection from <ip> port 46618 on <ip> port 22 rdomain \"\" | Accepted key ED25519 SHA256:q7yMCXe8q85ZZD1eSImqJ8ho9FpFhFBvoar5BVjrjiA found at /run/sshlab/authkeys/u_bash:1 | Postponed publickey for u_bash from <ip> port 46618 ssh2 [preauth] | Accepted key ED25519 SHA256:q7yMCXe8q85ZZD1eSImqJ8ho9FpFhFBvoar5BVjrjiA found at /run/sshlab/authkeys/u_bash:1 | Accepted publickey for u_bash from <ip> port 46618 ssh2: ED25519 SHA256:q7yMCXe8q85ZZD1eSImqJ8ho9FpFhFBvoar5BVjrjiA | User child is on pid 12584 | Starting session: command on pts/0 for u_bash from <ip> port 46618 id 0; app ssh hops: [DEBUG] input_order hop=kh_hold_entry seq=1204 holding=false held_bytes=0 gate_armed=false pending_session=false table=1 t=1794672779755.216 | [DEBUG] input_order hop=kh_hold_exit seq=1204 branch=held held_bytes=0 table=1 t=1794672779755.243 | [DEBUG] input_order hop=kh_hold_entry seq=1205 holding=false held_bytes=0 gate_armed=false pending_session=false table=1 t=1794672779771.239 | [DEBUG] input_order hop=kh_hold_exit seq=1205 branch=held held_bytes=0 table=1 t=1794672779771.254 | [DEBUG] input_order hop=kh_hold_entry seq=1206 holding=false held_bytes=0 gate_armed=false pending_session=false table=1 t=1794672779788.102 | [DEBUG] input_order hop=kh_hold_exit seq=1206 branch=held held_bytes=0 table=1 t=1794672779788.117 | [DEBUG] input_order hop=kh_hold_entry seq=1207 holding=false held_bytes=0 gate_armed=false pending_session=false table=1 t=1794672779803.350 | [DEBUG] input_order hop=kh_hold_exit seq=1207 branch=held held_bytes=0 table=1 t=1794672779803.366 | [DEBUG] input_order hop=kh_hold_entry seq=1208 holding=false held_bytes=0 gate_armed=false pending_session=false table=1 t=1794672779804.212 | [DEBUG] input_order hop=kh_hold_exit seq=1208 branch=held held_bytes=0 table=1 t=1794672779804.227; PROBE: Git Bash pane: C:\\Program Files\\Git\\usr\\bin\\ssh.exe cannot start a ControlMaster (exit 255: mux_client_request_session: read from master failed: Connection reset by peer Failed to connect to new control master). Background only: since #1551 / #1933 the app's bash ssh wrapper never multiplexes under msys (one connection with LocalCommand, or plain ssh), so this does NOT explain a failing case",
+    "trial 4 (gap 0.1 s): the remote shell received [], want exactly ['echo T37_89oz6w >> ~/rl.txt']",
+    "trial 4 (gap 0.1 s): the session was not managed (no ManagedSSHSessionStarting hook and no `verdict managed=true` in the app log of this connect)",
+    "trial 4 (gap 0.1 s): one-connection stages in the app log: [], want auth, auth_done, managed (a final `plain` is the old #1959 behaviour)",
+    "trial 4 (gap 0.1 s): the wrapper's verdict was managed=true (round 8: managed=false, #1933)",
+    "trial 4 (gap 0.1 s): the wrapper announcement was not handled on the connect window (hop ssh_wrapper announced; 0 wrapper hops)",
+    "lab_connect_typeahead (trial 4 (gap 0.1 s)): T37_89oz6w never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log). Test host: sshd.log: 08:08:48 session exec true nopty | 08:08:48 connection closed: authenticated=False channels=1 | 08:08:48 connect from ('127.0.0.1', 54059) | 08:08:48 auth publickey user=Winters key=ssh-ed25519 c61037273003a7b72ee329010e27c736 -> ok | 08:08:48 auth publickey user=Winters key=ssh-ed25519 c61037273003a7b72ee329010e27c736 -> ok | 08:08:51 connection closed: authenticated=False channels=0 | 08:13:31 connect from ('127.0.0.1', 60838) | 08:13:31 serve err SSHException('Error reading SSH protocol banner[WinError 10054] An existing connection was forcibly closed by the remote host'); fakesshd.stderr: (empty); test sshd (fakesshd-win) listening on 127.0.0.1:54041; exec+pty of the test sshd is served by a pseudo console of the app's own conpty.dll, measured byte-exact both ways. Measured: app: out ok, in ok (a 610-byte OSC arrived whole; a counted raw read of 3827 bytes got exactly what was sent) | inbox: out BROKEN, in ok (a 610-byte OSC did NOT arrive whole: the longest piece of its 600 payload characters is 80 (205 bytes seen); a counted raw read of 3827 bytes got exactly what was sent); no msys pty host: Git for Windows has no usr\\bin\\sshd.exe next to its bash (C:\\Program Files\\Git\\usr\\bin); lab /health: sshd={'22': True, '2222': True} fault={'rtt_ms': 150.0, 'jitter_ms': 0.0, 'loss_pct': 0.0, 'rate_kbit': 0.0} tc=True ttl_left=7697 ;; lab sshd.log tail: Disconnected from user u_bash <ip> port 43920 | Connection from <ip> port 46618 on <ip> port 22 rdomain \"\" | Accepted key ED25519 SHA256:q7yMCXe8q85ZZD1eSImqJ8ho9FpFhFBvoar5BVjrjiA found at /run/sshlab/authkeys/u_bash:1 | Postponed publickey for u_bash from <ip> port 46618 ssh2 [preauth] | Accepted key ED25519 SHA256:q7yMCXe8q85ZZD1eSImqJ8ho9FpFhFBvoar5BVjrjiA found at /run/sshlab/authkeys/u_bash:1 | Accepted publickey for u_bash from <ip> port 46618 ssh2: ED25519 SHA256:q7yMCXe8q85ZZD1eSImqJ8ho9FpFhFBvoar5BVjrjiA | User child is on pid 12584 | Starting session: command on pts/0 for u_bash from <ip> port 46618 id 0; app ssh hops: [DEBUG] input_order hop=kh_hold_entry seq=1204 holding=false held_bytes=0 gate_armed=false pending_session=false table=1 t=1794672779755.216 | [DEBUG] input_order hop=kh_hold_exit seq=1204 branch=held held_bytes=0 table=1 t=1794672779755.243 | [DEBUG] input_order hop=kh_hold_entry seq=1205 holding=false held_bytes=0 gate_armed=false pending_session=false table=1 t=1794672779771.239 | [DEBUG] input_order hop=kh_hold_exit seq=1205 branch=held held_bytes=0 table=1 t=1794672779771.254 | [DEBUG] input_order hop=kh_hold_entry seq=1206 holding=false held_bytes=0 gate_armed=false pending_session=false table=1 t=1794672779788.102 | [DEBUG] input_order hop=kh_hold_exit seq=1206 branch=held held_bytes=0 table=1 t=1794672779788.117 | [DEBUG] input_order hop=kh_hold_entry seq=1207 holding=false held_bytes=0 gate_armed=false pending_session=false table=1 t=1794672779803.350 | [DEBUG] input_order hop=kh_hold_exit seq=1207 branch=held held_bytes=0 table=1 t=1794672779803.366 | [DEBUG] input_order hop=kh_hold_entry seq=1208 holding=false held_bytes=0 gate_armed=false pending_session=false table=1 t=1794672779804.212 | [DEBUG] input_order hop=kh_hold_exit seq=1208 branch=held held_bytes=0 table=1 t=1794672779804.227; PROBE: Git Bash pane: C:\\Program Files\\Git\\usr\\bin\\ssh.exe cannot start a ControlMaster (exit 255: mux_client_request_session: read from master failed: Connection reset by peer Failed to connect to new control master). Background only: since #1551 / #1933 the app's bash ssh wrapper never multiplexes under msys (one connection with LocalCommand, or plain ssh), so this does NOT explain a failing case",
+    "lab_connect_typeahead trial 4 (gap 0.1 s): #1292: no ssh hold was seen and the remote shell logged nothing for the line; held 0 key(s)/0 byte(s), hand-over none, finish none; the app saw every key of the line; remote got None",
+    "lab_connect_typeahead loss: 1 of 4 typed-ahead commands lost (observed 25.0 %); 95 % upper confidence bound 75.1 %; this n cannot exclude a 1/40 (2.5 %) rate: needs 119 clean trials",
+    "ssh trial verdicts: #1292=1, exact=3",
+    "typed-during-connect: in 2 of 4 trials keys were in the console before the session and were held at the front (typeahead_front adopted=true)",
+    "injector accounting: injector sent 829; app saw 829; lost-before-app 0 (Enter: sent 30, app saw 30); of the app's: 793 unbound keydown/typed, 11 taken by a key binding, 25 Enter by a binding",
+    "pty writes: 113, of which carrying a CR (\\r): 5; Enter(s) the input editor started: 26 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 151.3,
+     "target": 150,
+     "n": 15,
+     "tol": 15.0
+    },
+    "trials": 4,
+    "loss": {
+     "lost": 1,
+     "n": 4,
+     "rate": 0.25,
+     "upper_bound": 0.7514,
+     "conf": 0.95,
+     "text": "1 of 4 typed-ahead commands lost (observed 25.0 %); 95 % upper confidence bound 75.1 %; this n cannot exclude a 1/40 (2.5 %) rate: needs 119 clean trials"
+    },
+    "ssh_trial_verdicts": [
+     {
+      "exact": true,
+      "held_keys": 16,
+      "held_bytes": 43,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "finish",
+        15
+       ],
+       [
+        "precmd",
+        28
+       ]
+      ],
+      "finish": [
+       "delivered=tty_owner",
+       "delivered=remote"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 14,
+      "held_bytes": 41,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "finish",
+        13
+       ],
+       [
+        "precmd",
+        28
+       ]
+      ],
+      "finish": [
+       "delivered=tty_owner",
+       "delivered=remote"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": false,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     }
+    ],
+    "injector": {
+     "sent": 829,
+     "enters_sent": 30,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 829,
+     "unbound": 793,
+     "bound": 11,
+     "enters_bound": 25,
+     "seen": 829,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 30
+    },
+    "pty_write_cr": {
+     "writes": 113,
+     "with_cr": 5,
+     "enters": 26
+    }
+   },
+   "shots": [
+    "shots\\agent@gitbash_lab_connect_typeahead.bash.150.nohelper_FAIL.png"
+   ]
+  },
+  {
+   "name": "pane_switch_left_on_after_lab_connect_typeahead.bash.150.nohelper",
+   "mode": "agent@gitbash",
+   "status": "fail",
+   "seconds": 0,
+   "shots": [],
+   "detail": [
+    "after lab_connect_typeahead.bash.150.nohelper: the `unset PHOSPHOR_MSYS_MANAGED_SSH` after the case is not proven in the pane's local shell: the proof line ran in the REMOTE shell and answered ['off'] [app's pane state at case start: no hand_route line; now: no hand_route line]; the app is relaunched so later cases start with the default"
+   ]
+  },
+  {
+   "name": "key_delivery",
+   "mode": "agent@gitbash",
+   "status": "pass",
+   "seconds": 0,
+   "detail": [
+    "marker typed and received via SendInput vk"
+   ],
+   "metrics": {
+    "method": "vk"
+   },
+   "shots": []
+  },
+  {
+   "name": "lab_connect_typeahead.zsh.lan.nohelper",
+   "mode": "agent@gitbash",
+   "status": "fail",
+   "ran_mode": "agent",
+   "seconds": 31.9,
+   "evidence": [
+    "enter_route: 9 Enter(s) reached the input editor: Shell=9 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794672925.018,
+    1794672956.883
+   ],
+   "detail": [
+    "trial 2 (gap 0.0 s): the remote shell received ['exit', 'echo T51_605w0w >> ~/rl.txt'], want exactly ['echo T51_605w0w >> ~/rl.txt']",
+    "trial 3 (gap 0.0 s): the remote shell received ['exit', 'echo T53_a88v3b >> ~/rl.txt'], want exactly ['echo T53_a88v3b >> ~/rl.txt']",
+    "trial 4 (gap 0.1 s): the remote shell received ['exit', 'echo T55_l9lf9q >> ~/rl.txt'], want exactly ['echo T55_l9lf9q >> ~/rl.txt']",
+    "trial 5 (gap 0.2 s): the remote shell received ['exit', 'echo T57_cefb2a >> ~/rl.txt'], want exactly ['echo T57_cefb2a >> ~/rl.txt']",
+    "trial 6 (gap 0.3 s): the remote shell received ['exit', 'echo T59_rprhlw >> ~/rl.txt'], want exactly ['echo T59_rprhlw >> ~/rl.txt']",
+    "lab_connect_typeahead loss: 0 of 6 typed-ahead commands lost (observed 0.0 %); 95 % upper confidence bound 39.3 %; this n cannot exclude a 1/40 (2.5 %) rate: needs 119 clean trials",
+    "ssh trial verdicts: exact=6",
+    "typed-during-connect: in 6 of 6 trials keys were in the console before the session and were held at the front (typeahead_front adopted=true)",
+    "injector accounting: injector sent 646; app saw 646; lost-before-app 0 (Enter: sent 27, app saw 27); of the app's: 633 unbound keydown/typed, 4 taken by a key binding, 9 Enter by a binding"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 1.1,
+     "target": 0,
+     "n": 15,
+     "tol": 15.0
+    },
+    "trials": 6,
+    "loss": {
+     "lost": 0,
+     "n": 6,
+     "rate": 0.0,
+     "upper_bound": 0.393,
+     "conf": 0.95,
+     "text": "0 of 6 typed-ahead commands lost (observed 0.0 %); 95 % upper confidence bound 39.3 %; this n cannot exclude a 1/40 (2.5 %) rate: needs 119 clean trials"
+    },
+    "ssh_trial_verdicts": [
+     {
+      "exact": true,
+      "held_keys": 25,
+      "held_bytes": 52,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "finish",
+        24
+       ],
+       [
+        "finish",
+        28
+       ]
+      ],
+      "finish": [
+       "delivered=tty_owner",
+       "delivered=tty_owner"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 24,
+      "held_bytes": 51,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "finish",
+        23
+       ],
+       [
+        "finish",
+        28
+       ]
+      ],
+      "finish": [
+       "delivered=tty_owner",
+       "delivered=tty_owner"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 23,
+      "held_bytes": 50,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "finish",
+        22
+       ],
+       [
+        "finish",
+        28
+       ]
+      ],
+      "finish": [
+       "delivered=tty_owner",
+       "delivered=tty_owner"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 15,
+      "held_bytes": 42,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "finish",
+        14
+       ],
+       [
+        "finish",
+        28
+       ]
+      ],
+      "finish": [
+       "delivered=tty_owner",
+       "delivered=tty_owner"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 9,
+      "held_bytes": 36,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "finish",
+        8
+       ],
+       [
+        "finish",
+        28
+       ]
+      ],
+      "finish": [
+       "delivered=tty_owner",
+       "delivered=tty_owner"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 5,
+      "held_bytes": 31,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "finish",
+        3
+       ],
+       [
+        "finish",
+        28
+       ]
+      ],
+      "finish": [
+       "delivered=tty_owner",
+       "delivered=tty_owner"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     }
+    ],
+    "injector": {
+     "sent": 646,
+     "enters_sent": 27,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 646,
+     "unbound": 633,
+     "bound": 4,
+     "enters_bound": 9,
+     "seen": 646,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 27
+    },
+    "pty_write_cr": {
+     "writes": 376,
+     "with_cr": 23,
+     "enters": 9
+    }
+   },
+   "shots": [
+    "shots\\agent@gitbash_lab_connect_typeahead.zsh.lan.nohelper_FAIL.png"
+   ]
+  },
+  {
+   "name": "lab_connect_typeahead.zsh.150.nohelper",
+   "mode": "agent@gitbash",
+   "status": "fail",
+   "ran_mode": "agent",
+   "seconds": 46.4,
+   "evidence": [
+    "enter_route: 9 Enter(s) reached the input editor: Shell=9 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794672961.559,
+    1794673007.969
+   ],
+   "detail": [
+    "trial 1 (gap 0.0 s): the remote shell received ['exit', 'echo T64_sekkq7 >> ~/rl.txt'], want exactly ['echo T64_sekkq7 >> ~/rl.txt']",
+    "trial 2 (gap 0.0 s): the remote shell received ['exit', 'echo T66_rs3u54 >> ~/rl.txt'], want exactly ['echo T66_rs3u54 >> ~/rl.txt']",
+    "trial 3 (gap 0.0 s): the remote shell received ['exit', 'echo T68_hbtyv0 >> ~/rl.txt'], want exactly ['echo T68_hbtyv0 >> ~/rl.txt']",
+    "trial 4 (gap 0.1 s): the remote shell received ['exit', 'echo T70_qgq6n1 >> ~/rl.txt'], want exactly ['echo T70_qgq6n1 >> ~/rl.txt']",
+    "trial 5 (gap 0.2 s): the remote shell received ['exit', 'echo T72_bobzjc >> ~/rl.txt'], want exactly ['echo T72_bobzjc >> ~/rl.txt']",
+    "trial 6 (gap 0.3 s): the remote shell received ['exit', 'echo T74_k2618o >> ~/rl.txt'], want exactly ['echo T74_k2618o >> ~/rl.txt']",
+    "lab_connect_typeahead loss: 0 of 6 typed-ahead commands lost (observed 0.0 %); 95 % upper confidence bound 39.3 %; this n cannot exclude a 1/40 (2.5 %) rate: needs 119 clean trials",
+    "ssh trial verdicts: exact=6",
+    "typed-during-connect: in 6 of 6 trials keys were in the console before the session and were held at the front (typeahead_front adopted=true)",
+    "injector accounting: injector sent 646; app saw 646; lost-before-app 0 (Enter: sent 27, app saw 27); of the app's: 633 unbound keydown/typed, 4 taken by a key binding, 9 Enter by a binding"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 151.4,
+     "target": 150,
+     "n": 15,
+     "tol": 15.0
+    },
+    "trials": 6,
+    "loss": {
+     "lost": 0,
+     "n": 6,
+     "rate": 0.0,
+     "upper_bound": 0.393,
+     "conf": 0.95,
+     "text": "0 of 6 typed-ahead commands lost (observed 0.0 %); 95 % upper confidence bound 39.3 %; this n cannot exclude a 1/40 (2.5 %) rate: needs 119 clean trials"
+    },
+    "ssh_trial_verdicts": [
+     {
+      "exact": true,
+      "held_keys": 20,
+      "held_bytes": 47,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "finish",
+        19
+       ],
+       [
+        "finish",
+        28
+       ]
+      ],
+      "finish": [
+       "delivered=tty_owner",
+       "delivered=tty_owner"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 25,
+      "held_bytes": 52,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "finish",
+        24
+       ],
+       [
+        "finish",
+        28
+       ]
+      ],
+      "finish": [
+       "delivered=tty_owner",
+       "delivered=tty_owner"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 16,
+      "held_bytes": 43,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "finish",
+        15
+       ],
+       [
+        "finish",
+        28
+       ]
+      ],
+      "finish": [
+       "delivered=tty_owner",
+       "delivered=tty_owner"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 19,
+      "held_bytes": 46,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "finish",
+        18
+       ],
+       [
+        "finish",
+        28
+       ]
+      ],
+      "finish": [
+       "delivered=tty_owner",
+       "delivered=tty_owner"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 11,
+      "held_bytes": 38,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "finish",
+        10
+       ],
+       [
+        "finish",
+        28
+       ]
+      ],
+      "finish": [
+       "delivered=tty_owner",
+       "delivered=tty_owner"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 5,
+      "held_bytes": 32,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "finish",
+        4
+       ],
+       [
+        "finish",
+        28
+       ]
+      ],
+      "finish": [
+       "delivered=tty_owner",
+       "delivered=tty_owner"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     }
+    ],
+    "injector": {
+     "sent": 646,
+     "enters_sent": 27,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 646,
+     "unbound": 633,
+     "bound": 4,
+     "enters_bound": 9,
+     "seen": 646,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 27
+    },
+    "pty_write_cr": {
+     "writes": 382,
+     "with_cr": 24,
+     "enters": 9
+    }
+   },
+   "shots": [
+    "shots\\agent@gitbash_lab_connect_typeahead.zsh.150.nohelper_FAIL.png"
+   ]
+  },
+  {
+   "name": "lab_connect_typeahead.bash.lan.helper",
+   "mode": "agent@gitbash",
+   "status": "fail",
+   "ran_mode": "agent",
+   "seconds": 131.1,
+   "evidence": [
+    "enter_route: 36 Enter(s) reached the input editor: AI=11 Shell=25 [Shell,Shell,Shell,Shell,Shell,AI,Shell,Shell,AI,Shell,Shell,AI,AI,Shell,Shell,AI,AI,Shell,Shell,AI,AI,Shell,Shell,AI,AI,Shell,Shell,Shell,Shell,Shell,AI,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794673012.932,
+    1794673144.032
+   ],
+   "detail": [
+    "trial 2 (gap 0.0 s): the session was not managed (no ManagedSSHSessionStarting hook and no `verdict managed=true` in the app log of this connect)",
+    "trial 2 (gap 0.0 s): one-connection stages in the app log: [], want auth, auth_done, managed (a final `plain` is the old #1959 behaviour)",
+    "trial 2 (gap 0.0 s): the wrapper's verdict was managed=true (round 8: managed=false, #1933)",
+    "trial 2 (gap 0.0 s): the wrapper announcement was not handled on the connect window (hop ssh_wrapper announced; 0 wrapper hops)",
+    "trial 4 (gap 0.1 s): the session was not managed (no ManagedSSHSessionStarting hook and no `verdict managed=true` in the app log of this connect)",
+    "trial 4 (gap 0.1 s): one-connection stages in the app log: [], want auth, auth_done, managed (a final `plain` is the old #1959 behaviour)",
+    "trial 4 (gap 0.1 s): the wrapper's verdict was managed=true (round 8: managed=false, #1933)",
+    "trial 4 (gap 0.1 s): the wrapper announcement was not handled on the connect window (hop ssh_wrapper announced; 0 wrapper hops)",
+    "trial 5 (gap 0.2 s): the session was not managed (no ManagedSSHSessionStarting hook and no `verdict managed=true` in the app log of this connect)",
+    "trial 5 (gap 0.2 s): one-connection stages in the app log: [], want auth, auth_done, managed (a final `plain` is the old #1959 behaviour)",
+    "trial 5 (gap 0.2 s): the wrapper's verdict was managed=true (round 8: managed=false, #1933)",
+    "trial 5 (gap 0.2 s): the wrapper announcement was not handled on the connect window (hop ssh_wrapper announced; 0 wrapper hops)",
+    "trial 6 (gap 0.3 s): the session was not managed (no ManagedSSHSessionStarting hook and no `verdict managed=true` in the app log of this connect)",
+    "trial 6 (gap 0.3 s): one-connection stages in the app log: [], want auth, auth_done, managed (a final `plain` is the old #1959 behaviour)",
+    "trial 6 (gap 0.3 s): the wrapper's verdict was managed=true (round 8: managed=false, #1933)",
+    "trial 6 (gap 0.3 s): the wrapper announcement was not handled on the connect window (hop ssh_wrapper announced; 0 wrapper hops)",
+    "lab_connect_typeahead loss: 0 of 6 typed-ahead commands lost (observed 0.0 %); 95 % upper confidence bound 39.3 %; this n cannot exclude a 1/40 (2.5 %) rate: needs 119 clean trials",
+    "ssh trial verdicts: exact=6",
+    "typed-during-connect: in 2 of 6 trials keys were in the console before the session and were held at the front (typeahead_front adopted=true)",
+    "SETTINGS LEFT CHANGED: the settings file differs from the one this case started on, in: warpify.ssh.remote_helper_denied_hosts",
+    "injector accounting: injector sent 997; app saw 997; lost-before-app 0 (Enter: sent 38, app saw 38); of the app's: 954 unbound keydown/typed, 8 taken by a key binding, 35 Enter by a binding",
+    "pty writes: 117, of which carrying a CR (\\r): 6; Enter(s) the input editor started: 35 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 1.0,
+     "target": 0,
+     "n": 15,
+     "tol": 15.0
+    },
+    "trials": 6,
+    "loss": {
+     "lost": 0,
+     "n": 6,
+     "rate": 0.0,
+     "upper_bound": 0.393,
+     "conf": 0.95,
+     "text": "0 of 6 typed-ahead commands lost (observed 0.0 %); 95 % upper confidence bound 39.3 %; this n cannot exclude a 1/40 (2.5 %) rate: needs 119 clean trials"
+    },
+    "ssh_trial_verdicts": [
+     {
+      "exact": true,
+      "held_keys": 26,
+      "held_bytes": 53,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "finish",
+        25
+       ],
+       [
+        "precmd",
+        28
+       ]
+      ],
+      "finish": [
+       "delivered=tty_owner",
+       "delivered=remote"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 12,
+      "held_bytes": 39,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "finish",
+        11
+       ],
+       [
+        "precmd",
+        28
+       ]
+      ],
+      "finish": [
+       "delivered=tty_owner",
+       "delivered=remote"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     }
+    ],
+    "injector": {
+     "sent": 997,
+     "enters_sent": 38,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 997,
+     "unbound": 954,
+     "bound": 8,
+     "enters_bound": 35,
+     "seen": 997,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 38
+    },
+    "pty_write_cr": {
+     "writes": 117,
+     "with_cr": 6,
+     "enters": 35
+    }
+   },
+   "shots": [
+    "shots\\agent@gitbash_lab_connect_typeahead.bash.lan.helper_FAIL.png"
+   ]
+  },
+  {
+   "name": "lab_connect_typeahead.bash.150.helper",
+   "mode": "agent@gitbash",
+   "status": "fail",
+   "ran_mode": "agent",
+   "seconds": 87.6,
+   "evidence": [
+    "enter_route: 25 Enter(s) reached the input editor: AI=10 Shell=15 [Shell,Shell,Shell,AI,AI,Shell,Shell,AI,AI,Shell,Shell,AI,AI,Shell,Shell,AI,AI,Shell,Shell,AI,AI,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794673148.361,
+    1794673235.942
+   ],
+   "detail": [
+    "trial 2 (gap 0.0 s): the session was not managed (no ManagedSSHSessionStarting hook and no `verdict managed=true` in the app log of this connect)",
+    "trial 2 (gap 0.0 s): one-connection stages in the app log: [], want auth, auth_done, managed (a final `plain` is the old #1959 behaviour)",
+    "trial 2 (gap 0.0 s): the wrapper's verdict was managed=true (round 8: managed=false, #1933)",
+    "trial 2 (gap 0.0 s): the wrapper announcement was not handled on the connect window (hop ssh_wrapper announced; 0 wrapper hops)",
+    "trial 3 (gap 0.0 s): the session was not managed (no ManagedSSHSessionStarting hook and no `verdict managed=true` in the app log of this connect)",
+    "trial 3 (gap 0.0 s): one-connection stages in the app log: [], want auth, auth_done, managed (a final `plain` is the old #1959 behaviour)",
+    "trial 3 (gap 0.0 s): the wrapper's verdict was managed=true (round 8: managed=false, #1933)",
+    "trial 3 (gap 0.0 s): the wrapper announcement was not handled on the connect window (hop ssh_wrapper announced; 0 wrapper hops)",
+    "trial 4 (gap 0.1 s): the session was not managed (no ManagedSSHSessionStarting hook and no `verdict managed=true` in the app log of this connect)",
+    "trial 4 (gap 0.1 s): one-connection stages in the app log: [], want auth, auth_done, managed (a final `plain` is the old #1959 behaviour)",
+    "trial 4 (gap 0.1 s): the wrapper's verdict was managed=true (round 8: managed=false, #1933)",
+    "trial 4 (gap 0.1 s): the wrapper announcement was not handled on the connect window (hop ssh_wrapper announced; 0 wrapper hops)",
+    "trial 5 (gap 0.2 s): the session was not managed (no ManagedSSHSessionStarting hook and no `verdict managed=true` in the app log of this connect)",
+    "trial 5 (gap 0.2 s): one-connection stages in the app log: [], want auth, auth_done, managed (a final `plain` is the old #1959 behaviour)",
+    "trial 5 (gap 0.2 s): the wrapper's verdict was managed=true (round 8: managed=false, #1933)",
+    "trial 5 (gap 0.2 s): the wrapper announcement was not handled on the connect window (hop ssh_wrapper announced; 0 wrapper hops)",
+    "trial 6 (gap 0.3 s): the session was not managed (no ManagedSSHSessionStarting hook and no `verdict managed=true` in the app log of this connect)",
+    "trial 6 (gap 0.3 s): one-connection stages in the app log: [], want auth, auth_done, managed (a final `plain` is the old #1959 behaviour)",
+    "trial 6 (gap 0.3 s): the wrapper's verdict was managed=true (round 8: managed=false, #1933)",
+    "trial 6 (gap 0.3 s): the wrapper announcement was not handled on the connect window (hop ssh_wrapper announced; 0 wrapper hops)",
+    "lab_connect_typeahead loss: 0 of 6 typed-ahead commands lost (observed 0.0 %); 95 % upper confidence bound 39.3 %; this n cannot exclude a 1/40 (2.5 %) rate: needs 119 clean trials",
+    "ssh trial verdicts: exact=6",
+    "typed-during-connect: in 1 of 6 trials keys were in the console before the session and were held at the front (typeahead_front adopted=true)",
+    "injector accounting: injector sent 665; app saw 665; lost-before-app 0 (Enter: sent 27, app saw 27); of the app's: 636 unbound keydown/typed, 4 taken by a key binding, 25 Enter by a binding",
+    "pty writes: 56, of which carrying a CR (\\r): 3; Enter(s) the input editor started: 25 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 151.3,
+     "target": 150,
+     "n": 15,
+     "tol": 15.0
+    },
+    "trials": 6,
+    "loss": {
+     "lost": 0,
+     "n": 6,
+     "rate": 0.0,
+     "upper_bound": 0.393,
+     "conf": 0.95,
+     "text": "0 of 6 typed-ahead commands lost (observed 0.0 %); 95 % upper confidence bound 39.3 %; this n cannot exclude a 1/40 (2.5 %) rate: needs 119 clean trials"
+    },
+    "ssh_trial_verdicts": [
+     {
+      "exact": true,
+      "held_keys": 27,
+      "held_bytes": 55,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "finish",
+        26
+       ],
+       [
+        "precmd",
+        29
+       ]
+      ],
+      "finish": [
+       "delivered=tty_owner",
+       "delivered=remote"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     }
+    ],
+    "injector": {
+     "sent": 665,
+     "enters_sent": 27,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 665,
+     "unbound": 636,
+     "bound": 4,
+     "enters_bound": 25,
+     "seen": 665,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 27
+    },
+    "pty_write_cr": {
+     "writes": 56,
+     "with_cr": 3,
+     "enters": 25
+    }
+   },
+   "shots": [
+    "shots\\agent@gitbash_lab_connect_typeahead.bash.150.helper_FAIL.png"
+   ]
+  },
+  {
+   "name": "lab_connect_typeahead.zsh.lan.helper",
+   "mode": "agent@gitbash",
+   "status": "fail",
+   "ran_mode": "agent",
+   "seconds": 32.7,
+   "evidence": [
+    "enter_route: 9 Enter(s) reached the input editor: Shell=9 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794673240.13,
+    1794673272.836
+   ],
+   "detail": [
+    "trial 1 (gap 0.0 s): the remote shell received ['exit', 'echo T114_xvvhsp >> ~/rl.txt'], want exactly ['echo T114_xvvhsp >> ~/rl.txt']",
+    "trial 2 (gap 0.0 s): the remote shell received ['exit', 'echo T116_i9guc0 >> ~/rl.txt'], want exactly ['echo T116_i9guc0 >> ~/rl.txt']",
+    "trial 3 (gap 0.0 s): the remote shell received ['exit', 'echo T118_eyjivh >> ~/rl.txt'], want exactly ['echo T118_eyjivh >> ~/rl.txt']",
+    "trial 4 (gap 0.1 s): the remote shell received ['exit', 'echo T120_e9ofrx >> ~/rl.txt'], want exactly ['echo T120_e9ofrx >> ~/rl.txt']",
+    "trial 5 (gap 0.2 s): the remote shell received ['exit', 'echo T122_s8h3rg >> ~/rl.txt'], want exactly ['echo T122_s8h3rg >> ~/rl.txt']",
+    "trial 6 (gap 0.3 s): the remote shell received ['exit', 'echo T124_csaaf0 >> ~/rl.txt'], want exactly ['echo T124_csaaf0 >> ~/rl.txt']",
+    "lab_connect_typeahead loss: 0 of 6 typed-ahead commands lost (observed 0.0 %); 95 % upper confidence bound 39.3 %; this n cannot exclude a 1/40 (2.5 %) rate: needs 119 clean trials",
+    "ssh trial verdicts: exact=6",
+    "typed-during-connect: in 6 of 6 trials keys were in the console before the session and were held at the front (typeahead_front adopted=true)",
+    "injector accounting: injector sent 659; app saw 659; lost-before-app 0 (Enter: sent 27, app saw 27); of the app's: 646 unbound keydown/typed, 4 taken by a key binding, 9 Enter by a binding"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 1.1,
+     "target": 0,
+     "n": 15,
+     "tol": 15.0
+    },
+    "trials": 6,
+    "loss": {
+     "lost": 0,
+     "n": 6,
+     "rate": 0.0,
+     "upper_bound": 0.393,
+     "conf": 0.95,
+     "text": "0 of 6 typed-ahead commands lost (observed 0.0 %); 95 % upper confidence bound 39.3 %; this n cannot exclude a 1/40 (2.5 %) rate: needs 119 clean trials"
+    },
+    "ssh_trial_verdicts": [
+     {
+      "exact": true,
+      "held_keys": 17,
+      "held_bytes": 45,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "finish",
+        16
+       ],
+       [
+        "finish",
+        29
+       ]
+      ],
+      "finish": [
+       "delivered=tty_owner",
+       "delivered=tty_owner"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 24,
+      "held_bytes": 52,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "finish",
+        23
+       ],
+       [
+        "finish",
+        29
+       ]
+      ],
+      "finish": [
+       "delivered=tty_owner",
+       "delivered=tty_owner"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 12,
+      "held_bytes": 40,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "finish",
+        11
+       ],
+       [
+        "finish",
+        29
+       ]
+      ],
+      "finish": [
+       "delivered=tty_owner",
+       "delivered=tty_owner"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 17,
+      "held_bytes": 45,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "finish",
+        16
+       ],
+       [
+        "finish",
+        29
+       ]
+      ],
+      "finish": [
+       "delivered=tty_owner",
+       "delivered=tty_owner"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 15,
+      "held_bytes": 43,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "finish",
+        14
+       ],
+       [
+        "finish",
+        29
+       ]
+      ],
+      "finish": [
+       "delivered=tty_owner",
+       "delivered=tty_owner"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 7,
+      "held_bytes": 35,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "finish",
+        6
+       ],
+       [
+        "finish",
+        29
+       ]
+      ],
+      "finish": [
+       "delivered=tty_owner",
+       "delivered=tty_owner"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     }
+    ],
+    "injector": {
+     "sent": 659,
+     "enters_sent": 27,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 659,
+     "unbound": 646,
+     "bound": 4,
+     "enters_bound": 9,
+     "seen": 659,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 27
+    },
+    "pty_write_cr": {
+     "writes": 398,
+     "with_cr": 24,
+     "enters": 9
+    }
+   },
+   "shots": [
+    "shots\\agent@gitbash_lab_connect_typeahead.zsh.lan.helper_FAIL.png"
+   ]
+  },
+  {
+   "name": "lab_connect_typeahead.zsh.150.helper",
+   "mode": "agent@gitbash",
+   "status": "fail",
+   "ran_mode": "agent",
+   "seconds": 48.3,
+   "evidence": [
+    "enter_route: 9 Enter(s) reached the input editor: Shell=9 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794673277.098,
+    1794673325.352
+   ],
+   "detail": [
+    "trial 1 (gap 0.0 s): the remote shell received ['exit', 'echo T128_hcmp0k >> ~/rl.txt'], want exactly ['echo T128_hcmp0k >> ~/rl.txt']",
+    "trial 2 (gap 0.0 s): the remote shell received ['exit', 'echo T130_2kpkg1 >> ~/rl.txt'], want exactly ['echo T130_2kpkg1 >> ~/rl.txt']",
+    "trial 3 (gap 0.0 s): the remote shell received ['exit', 'echo T132_y8s9q4 >> ~/rl.txt'], want exactly ['echo T132_y8s9q4 >> ~/rl.txt']",
+    "trial 4 (gap 0.1 s): the remote shell received ['exit', 'echo T134_gnucba >> ~/rl.txt'], want exactly ['echo T134_gnucba >> ~/rl.txt']",
+    "trial 5 (gap 0.2 s): the remote shell received ['exit', 'echo T136_su2zuz >> ~/rl.txt'], want exactly ['echo T136_su2zuz >> ~/rl.txt']",
+    "trial 6 (gap 0.3 s): the remote shell received ['exit', 'echo T138_eeu3hq >> ~/rl.txt'], want exactly ['echo T138_eeu3hq >> ~/rl.txt']",
+    "lab_connect_typeahead loss: 0 of 6 typed-ahead commands lost (observed 0.0 %); 95 % upper confidence bound 39.3 %; this n cannot exclude a 1/40 (2.5 %) rate: needs 119 clean trials",
+    "ssh trial verdicts: exact=6",
+    "typed-during-connect: in 6 of 6 trials keys were in the console before the session and were held at the front (typeahead_front adopted=true)",
+    "injector accounting: injector sent 659; app saw 659; lost-before-app 0 (Enter: sent 27, app saw 27); of the app's: 646 unbound keydown/typed, 4 taken by a key binding, 9 Enter by a binding"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 151.4,
+     "target": 150,
+     "n": 15,
+     "tol": 15.0
+    },
+    "trials": 6,
+    "loss": {
+     "lost": 0,
+     "n": 6,
+     "rate": 0.0,
+     "upper_bound": 0.393,
+     "conf": 0.95,
+     "text": "0 of 6 typed-ahead commands lost (observed 0.0 %); 95 % upper confidence bound 39.3 %; this n cannot exclude a 1/40 (2.5 %) rate: needs 119 clean trials"
+    },
+    "ssh_trial_verdicts": [
+     {
+      "exact": true,
+      "held_keys": 24,
+      "held_bytes": 52,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "finish",
+        23
+       ],
+       [
+        "finish",
+        29
+       ]
+      ],
+      "finish": [
+       "delivered=tty_owner",
+       "delivered=tty_owner"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 25,
+      "held_bytes": 53,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "finish",
+        24
+       ],
+       [
+        "finish",
+        29
+       ]
+      ],
+      "finish": [
+       "delivered=tty_owner",
+       "delivered=tty_owner"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 14,
+      "held_bytes": 42,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "finish",
+        13
+       ],
+       [
+        "finish",
+        29
+       ]
+      ],
+      "finish": [
+       "delivered=tty_owner",
+       "delivered=tty_owner"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 24,
+      "held_bytes": 52,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "finish",
+        23
+       ],
+       [
+        "finish",
+        29
+       ]
+      ],
+      "finish": [
+       "delivered=tty_owner",
+       "delivered=tty_owner"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 11,
+      "held_bytes": 39,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "finish",
+        10
+       ],
+       [
+        "finish",
+        29
+       ]
+      ],
+      "finish": [
+       "delivered=tty_owner",
+       "delivered=tty_owner"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 8,
+      "held_bytes": 36,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "finish",
+        7
+       ],
+       [
+        "finish",
+        29
+       ]
+      ],
+      "finish": [
+       "delivered=tty_owner",
+       "delivered=tty_owner"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     }
+    ],
+    "injector": {
+     "sent": 659,
+     "enters_sent": 27,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 659,
+     "unbound": 646,
+     "bound": 4,
+     "enters_bound": 9,
+     "seen": 659,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 27
+    },
+    "pty_write_cr": {
+     "writes": 380,
+     "with_cr": 24,
+     "enters": 9
+    }
+   },
+   "shots": [
+    "shots\\agent@gitbash_lab_connect_typeahead.zsh.150.helper_FAIL.png"
+   ]
+  },
+  {
+   "name": "restore",
+   "mode": "-",
+   "status": "pass",
+   "seconds": 0,
+   "detail": [
+    "all 10 restore steps ok (data md5 identical, version v0.1.15, PATH/handler/uninstall/shortcuts restored)"
+   ],
+   "metrics": {},
+   "shots": []
+  }
+ ]
+}

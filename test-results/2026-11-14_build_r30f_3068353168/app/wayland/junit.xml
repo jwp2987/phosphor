@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="appci-linux-wayland" tests="8" failures="0" skipped="0">
+<testcase classname="terminal" name="mode_proof" time="1.50">
+</testcase>
+<testcase classname="terminal" name="key_loss_control" time="90.40">
+</testcase>
+<testcase classname="terminal" name="enter_loss_control" time="64.30">
+</testcase>
+<testcase classname="terminal" name="fast_typing" time="57.70">
+</testcase>
+<testcase classname="terminal" name="expert_fuzz" time="22.60">
+</testcase>
+<testcase classname="agent" name="mode_proof" time="0.60">
+</testcase>
+<testcase classname="agent" name="fast_typing" time="57.20">
+</testcase>
+<testcase classname="agent" name="expert_fuzz" time="21.80">
+</testcase>
+</testsuite>
