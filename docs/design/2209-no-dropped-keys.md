@@ -1,8 +1,8 @@
-# #2209: no typed key is dropped when a hold ends (design, phase 1, round 2, UNREVIEWED)
+# #2209: no typed key is dropped when a hold ends (design, phase 1, round 3, UNREVIEWED)
 
 Status: design only. No code changed. Written by reading the code at `36efe34b5`
 (`integ/r15`); nothing here was compiled or run. Round 2 answers the refute of `ad21f0890`
-(section 7 maps each finding). Paths are relative to `app/src/terminal`; `h` =
+(section 7 maps each finding) and round 3 the re-check of `49bc0045a` (section 8). Paths are relative to `app/src/terminal`; `h` =
 `model/typeahead_handoff.rs`, `pq` = `view/paste_queue.rs`, `view` = `view.rs`,
 `giveup` = `view/give_up_to_pty.rs`, `pc` = `writeable_pty/pty_controller.rs`.
 
@@ -93,7 +93,7 @@ that state (`h:5280-5297`) do not take the hold. Round 1 called this unreachable
 
 ## 2. Other places that can discard typed bytes
 
-Found 12, filed 0 (the coordinator files).
+Found 13, filed 0 (the coordinator files).
 
 | # | where | what | verdict |
 |---|---|---|---|
@@ -109,6 +109,8 @@ Found 12, filed 0 (the coordinator files).
 | F10 | `pq:1661` | The `Typeahead` arm emits `WriteHandoffUserBytesToPty` directly: no agent-in-control or hidden-input guard, no input-text fallback | pre-existing for every `Typeahead` end; the new ends do not use it; separate issue |
 | F11 | `h:5147-5153`, `pc:1423` | A `Typeahead` end written while the state is not `PtyOwned` is routed `Write` (not counted) but the controller still decrements `writes_in_flight`: undercount, can read 0 early (`h:4107`, `pc:1432`). #2207's escape hold has it at the edge end (`view:15165`) | pre-existing; not widened by this design; separate issue |
 | F12 | any pty write | Bytes already handed to the controller when the pty dies are lost (F2's mechanics), a typed key written a moment before the shell died included | same as a plain terminal's tty; Q5 |
+
+| F13 | `input/enter_queue.rs:1403-1422`, `input.rs:17444-17451` | #1016's own path: `queue_enter_behind_deferred_enter` warns and returns when the `HandoffReport` gate is not open yet or the queue cannot be peeked, and its caller still answers "deferred": that Enter is consumed and lost | in scope: H5 replaces the function |
 
 ## 3. The design
 
@@ -144,12 +146,35 @@ Hand-off (`h`):
   flag is set and kept across the reset (as `escape_hold_id` is, `h:5330`).
 - **H4** `give_up_report_deferral` / `give_up_deferred_gate`: `drop_young_hold()` ->
   `end_unowned_young_hold()` (path 4).
-- **H5** The race is closed where #1016 closed its twin: `defer_enter_for_typeahead_report`
-  (`input.rs:17444-17451`) also asks whether a young Enter waits behind the request
-  (`holds_young_enter_behind_request`, `h:2947`) and then queues this Enter behind that hold's
-  gate, in arrival order; `defer_enter` refuses while `young_hold_queued`. After this, 1b, 2(a)
-  and 4 need a queue / state disagreement; H1, H2 and H4 are their nets. A net guarantees every
-  key is delivered once, in gate order; it does not repair the order between the two Enters.
+- **H5** The race is closed at its source. `defer_enter_for_typeahead_report`
+  (`input.rs:17444-17451`) gets a second question beside #1016's: does a young Enter wait
+  behind the request (`holds_young_enter_behind_request`, `h:2947`)? Both cases call ONE new
+  function, `queue_enter_behind_handoff_gate(gate) -> bool`, which replaces
+  `queue_enter_behind_deferred_enter` (F13). `gate` is `(PromptSeen, hold id)` or
+  `(HandoffReport, deferred gate id)`, read from the hand-off. Its three outcomes:
+  - **queue free:** under one `try_lock_ordered`, the hand-off is read again. Still live and
+    the gate open: `EntryKind::Enter` is offered behind it. Still live and the gate not open
+    yet (the view opens it on an event): the gate is opened here with the spec the view uses
+    (`pq:1315`, `handoff_report_spec`; opening twice is harmless, `pq:1797`), then the Enter is
+    offered. A young hold whose gate the report has just retagged (`pq:1604`) is found under
+    `HandoffReport` by the same re-read. Returns `true`.
+  - **queue busy:** `Deferred::Offer { Enter, Keyboard, stamp }` into the FIFO mailbox, the
+    pattern of `enter_queue.rs:1386-1392`: applied in typed order when the queue is free,
+    behind the gate if it is still open, as a live Enter if it is not. Returns `true`.
+  - **the hand-off says the hold or deferral is over:** nothing is queued. Returns `false`.
+  The caller answers "deferred" only on `true`. On `false` it decides again, once, from the
+  hand-off as it now is (#1016's question, then `defer_enter`, then "not deferred": the editor
+  handles the Enter as an ordinary Enter). An Enter is never reported consumed without being
+  in the queue or the mailbox. `defer_enter` itself refuses while `young_hold_queued`.
+  What happens to the queued Enter: when the report ends the hold with `SubmitOnReport`, the
+  gate becomes the deferred Enter's `HandoffReport` gate in place and its first entry (the
+  held Enter) leaves it (`pq:1597-1607`); the Enter queued here is then an entry behind a
+  deferred Enter, the #1016 shape, and follows the command in typed order (`FollowCommand`).
+  After H5, 1b, 2(a) and 4 need a queue / state disagreement; H1, H2 and H4 are their nets. A
+  net delivers every key once, in gate order, but not in perfect typed order: `ToReader` in
+  `HoldAfterEnter { released: true }` writes the older young line after the editor's command.
+  That inversion is not a loss; H5 removes the only known way into that state, not the
+  inversion in the net.
 - **H6** `drop_young_hold` -> `flush_young_hold_for_signal` (callers `h:4171`, `5439`, `5502`);
   `drop_deferred_gate` -> `flush_deferred_gate_for_signal`. `FlushedBySignal` carries a token
   type whose constructor is private to those two functions; the view's one signal site
@@ -162,14 +187,24 @@ edge end (`view:15165`). Nothing is lost by waiting, and nothing changes for #22
 
 View:
 
-- **V1** `ToReader` arm in `apply_young_hold_end`: the entries are taken under one queue lock,
-  then cut at the first editor key that has no byte form (an arrow, a selection, Tab). The
-  part before the cut goes to `write_given_up_entries_to_pty` (`giveup:412`): every entry kind
-  converted (`giveup:163-240`), written through `write_user_bytes_to_pty_after_paste_stage`
-  (the stages every typed key takes: guarded, counted by the hand-off, a refused write becomes
-  input text, `giveup:453-470`). The cut key and everything after it are offered back to the
-  queue, ungated, with their kind, origin and stamp (`offer_stamped`, as #2207 does at
-  `pq:1779-1781`), so they are delivered after the written part, each to where it was typed.
+- **V1** `ToReader` arm in `apply_young_hold_end`: the entries are taken under one queue lock
+  and, in the same view turn, split at the first editor key that has no byte form (an arrow,
+  a selection, Tab). Nothing is offered back to the queue.
+  - The part before the split goes to `write_given_up_entries_to_pty` (`giveup:412`): every
+    entry kind converted (`giveup:163-240`), written through
+    `write_user_bytes_to_pty_after_paste_stage` (the stages every typed key takes: guarded,
+    counted by the hand-off). A chunk is either written or, if refused, becomes input text
+    with everything after it; never both (`giveup:441-470`).
+  - The split key and everything after it, whatever its origin, go to
+    `keep_given_up_keys_with_line` (`giveup:254`), an existing function with exactly this
+    job: byte-form keys become input text in typed order, a no-byte key acts on the editor in
+    its place, an Enter is a line break under the hand-back guard and submits nothing.
+  Why text and not live keys: re-offered, the tail would pass the routing table again and
+  could become an editor submit, a new young hold, or a `D8` / `D10` drop (F9), and a key
+  arriving in between could pass it. As text in one turn it has one destination and nothing
+  can get in front.
+  With the pty gone there is no split: the whole segment is input text through the same
+  writer.
 - **V1b** `WithLine` arm: a `PromptSeen` gate's entries go to `keep_given_up_keys_with_line`
   (`giveup:254`): the held Enter and the keys behind it become lines of input text, the
   hand-back guard is armed, nothing reaches the pty; the stashed report then lands in front of
@@ -206,8 +241,9 @@ View:
   behind a stale hold ends it first (`pq:1497`).
 - A busy queue defers the whole end into the FIFO mailbox (`pq:1590-1595`).
 - Editor-typed text, Enter and Backspace in the segment are written as their bytes, in place
-  (the rule of every give-up since 2026-11-09, `giveup:193-203`); the cut (V1) keeps what
-  follows a no-byte key behind what was written.
+  (the rule of every give-up since 2026-11-09, `giveup:193-203`); from the first no-byte key
+  on, the rest of the segment becomes input text in the same turn (V1), so it can neither
+  run nor pass what was written.
 - `WithLine` writes nothing, so no line can run ahead of the one before it.
 - Pty gone: one insert of the concatenated text.
 
@@ -237,8 +273,10 @@ View:
 - **Q3** Stop, a dismissed warpify block and rewind send `^C` and so void typed-ahead keys
   although the user typed no `^C`. Keep? Recommended: keep; a real `^C` reaches the tty.
 - **Q4** Keys typed in the input box while a hold is open: when the hold is written to the
-  pty, plain typing (text, Enter, Backspace) goes with it; from the first arrow or Tab on,
-  keys go to the input box. Recommended: yes; it is what every give-up does since 2026-11-09.
+  pty, plain typing (text, Enter, Backspace) goes with it. From the first arrow or Tab on,
+  everything typed after it, in the box or on the terminal, is shown as text in the input
+  box, unrun, with the "check the line" guard. Recommended: yes; nothing is lost, nothing
+  runs out of order, and the mixed case is rare.
 - **Q5** A key written a moment before the shell dies is lost in the dying tty, as in any
   terminal. Should the app keep the last write until the pty loop confirms it, to show it as
   input text instead? Recommended: no; it adds bookkeeping to every write for a case no
@@ -287,8 +325,17 @@ New view tests (`input_test.rs`):
 - `test_an_editor_enter_behind_a_young_hold_runs_in_typed_order` (H5, end to end).
 - `test_a_stale_young_hold_reaches_the_pty_once_in_typed_order`, asserting
   `writes_in_flight` before and after in each state.
-- `test_an_arrow_in_the_segment_cuts_the_hold`: keys before it written, the arrow and the
-  keys after it delivered after them, to the editor.
+- `test_an_arrow_in_the_segment_splits_the_hold`: keys before it written once; the arrow
+  applied; every key after it (editor text, a terminal-typed key, an Enter, `^U`, an arrow
+  sequence typed on the terminal) is input text in typed order, nothing submitted, nothing
+  written, no new hold, queue idle.
+- `test_an_enter_behind_a_young_hold_is_never_consumed_unqueued`: the three outcomes of
+  `queue_enter_behind_handoff_gate` (free, busy, hold over), and the gate-not-open-yet arm
+  for both gate kinds (F13).
+- `test_an_enter_queued_behind_a_young_hold_follows_the_command_after_the_report`
+  (`SubmitOnReport` retag, the #1016 shape).
+- `test_a_clicked_command_keeps_the_line_head_report` (2b: the stashed report still arrives
+  and lands in front of the kept Enter and keys).
 - `test_a_stale_hold_under_agent_control_becomes_input_text` and the hidden-input-box arm.
 - `test_a_clicked_command_behind_a_request_keeps_the_enter_and_keys_as_input_text` (2).
 - `test_ctrl_c_after_an_undrained_release_writes_the_keys_then_the_interrupt`.
@@ -330,19 +377,24 @@ New, in `cases.PROVING`, agent and terminal mode:
 |---|---|---|
 | Latency | No per-key work on the pty path. H5 adds one hand-off read to an editor Enter | the latency cases against their bands |
 | #2182 reorder class | Nothing is written behind a command any more (W); `ToReader` writes go through the normal key stages | the H2 tests, `c_gitbash_typeahead_reps` |
-| H5 changes a hot path | Every editor Enter passes `defer_enter_for_typeahead_report`; the new branch must queue behind a `PromptSeen` gate exactly as #1016 queues behind a `HandoffReport` gate. `queue_enter_behind_deferred_enter` was not read: whether it can take the other gate kind is open | `test_an_editor_enter_behind_a_young_hold_runs_in_typed_order`, `editor_enter_behind_young_enter_in_order` |
+| H5 changes a hot path | Every editor Enter passes `defer_enter_for_typeahead_report`; the #1016 function is replaced, so #1016's own cases must stay green. The mailbox arm delivers a live Enter if the gate closed meanwhile | `test_an_editor_enter_behind_a_young_hold_runs_in_typed_order`, `editor_enter_behind_young_enter_in_order` |
 | Counting | The claim that the key stages count and retire a write consistently in every state is unverified (F11 shows the direct path does not) | the `writes_in_flight` assertions; first check of phase 2 |
 | ssh escape `~.` | The escape hold's ends are untouched except at pty exit | the #2207 unit tests unchanged, `c_lab_drop` |
 | Secrets | `ToReader` writes to the pty, never the editor; only pty-gone text is visible (Q6) | `c_password_prompt`, `c_gitbash_precmd_secret`, a view test once Q6 is decided |
-| Text into a disabled editor | V3 | `test_exit_with_a_busy_queue_still_puts_the_keys_in_the_input` |
+| The tail as text | `text_for_editor` was not read: what it does with control bytes other than Backspace (`^U`, an arrow sequence typed on the terminal) is open; they must not vanish | the split test pins them |
+| Text into a disabled editor | No `can_edit` guard was found on the path read (`input.rs:15230` -> `insert_internal` -> `editor/view/mod.rs:5860` -> the model's `insert`), but the editor's inner `edit` was not read; V3 keeps the drain before the disable | `test_exit_with_a_busy_queue_still_puts_the_keys_in_the_input` |
 | A leading line break | The held Enter is the first entry; as input text it is a line break | the exit tests pin the exact text |
 | Double delivery | The leak net and the exit end can both reach a deferred gate | `test_the_60s_leak_net_after_an_exit_end_delivers_nothing_twice` |
 
 ## 6. Not determined
 
-- Whether `queue_enter_behind_deferred_enter` generalises to a `PromptSeen` gate (H5).
+- What `text_for_editor` does with control bytes other than Backspace.
+- Whether the stashed report of case 2(b) survives: by FIFO the shell answers the request
+  before it reads the command's kill prefix, and `clear_typeahead_for_new_command` runs before
+  the report arrives, but `reconcile_requests_at_own_preexec` (`h:3816-3822`) was not read.
+  A phase-2 test (above).
 - Whether the key stages count a write consistently outside `PtyOwned`.
-- Whether a disabled editor accepts `system_insert`.
+- Whether the editor's inner `edit` refuses a programmatic insert when disabled.
 - Whether path 2 has a non-key trigger besides a click.
 - View tests that assert the old drop by its effect: only a box run will show them.
 - The harness hook for `exit_keeps_typed_keys`, above all on Windows.
@@ -365,3 +417,14 @@ New, in `cases.PROVING`, agent and terminal mode:
 | 12 | FIXED: path 5 and Q3 widened; the one caller of `h:5439` is `view:16369` |
 | 13 | FIXED: private constructor (H6); vacuous test tightened; the five tests added |
 | 14 | FIXED: (a) Q4, (b) eager end removed from the design, (c) Q2 with the default; old Q3 dropped |
+
+## 8. Re-check of `49bc0045a`: resolution
+
+| # | resolution |
+|---|---|
+| N1 | FIXED: H5 respecified. One function for both gate kinds, three stated outcomes; the caller answers "deferred" only when the Enter is in the queue or the mailbox, otherwise decides again once; the `SubmitOnReport` retag and the #1016 shape are stated. The same hole in today's #1016 path is F13 and goes with it |
+| N2 | FIXED: no re-offer. The tail has one explicit destination, input text, through `keep_given_up_keys_with_line`, in the same turn as the take; Q4 updated to say so |
+| N3 | Confirmed in V1 (written or text, never both) |
+| N4 | Stated in H5: an inversion in a net, not a loss; H5 removes the way in, not the inversion |
+| finding 5 residual | Not settled by reading; listed in section 6 with a phase-2 test |
+| finding 9 | No guard found on the path read; inner `edit` unread; V3 ordering and its test stay |
