@@ -220,9 +220,11 @@ struct ParkedUserCommand {
     annotate_block: Arc<parking_lot::Mutex<Option<AnnotateBlock>>>,
     /// What its `before_write_fn` found at the latest write; `None` until it has run.
     started: Arc<parking_lot::Mutex<Option<ParkedStart>>>,
-    /// The editor's command on a shell that reports its line: the typeahead hand-off engages
-    /// when it is written, so the request decision of the prompt it is written at is skipped
-    /// (as for an editor command queued behind an inactive line editor).
+    /// The editor's command on a shell that reports its line: the typeahead hand-off was told
+    /// of it when it was PARKED (`TypeaheadHandoff::on_command_parked`), so the keys typed
+    /// behind its Enter are the pty's and follow it (`handoff_command_pending`), and the request
+    /// decision of the prompt it is written at is skipped, as for an editor command queued
+    /// behind an inactive line editor. Only its block start is left for the write.
     expects_handoff: bool,
 }
 
@@ -691,6 +693,13 @@ impl<T: EventLoopSender> PtyController<T> {
             ModelEvent::Handler(AnsiHandlerEvent::Precmd) => {
                 me.log_since_ctrl_c("precmd_after_ctrl_c");
                 me.on_precmd_with_chord_outstanding(ctx);
+                // #2182 (b) review m1: a parked user command whose start was refused at a write
+                // (the line editor was active while the side call still held the block) is woken
+                // by the side call's Precmd: `LineEditorStatus` emits nothing for a Precmd that
+                // finds the editor already active, so nothing else would drain the queue.
+                if me.has_parked_user_command() {
+                    me.execute_next_queued_write(ctx);
+                }
             }
             ModelEvent::Handler(AnsiHandlerEvent::StartTmuxControlMode) => {
                 me.tmux_control_mode = Some(TmuxControlMode::Pending {
@@ -710,7 +719,7 @@ impl<T: EventLoopSender> PtyController<T> {
                 if me.handoff_held_command_pending {
                     me.drop_held_handoff_command();
                 }
-                me.drop_parked_user_commands("shell_exit");
+                me.drop_parked_user_commands("shell_exit", false, ctx);
             }
             ModelEvent::HonorPS1OutOfSync => {
                 // We force re-sync the PS1 state of Zap settings with the shell's environment variable, $WARP_HONOR_PS1, via
@@ -1458,6 +1467,11 @@ impl<T: EventLoopSender> PtyController<T> {
             // cannot be parsed before they are written, which happens below.
             self.model_inbox
                 .post(ModelCommand::TypedAhead(bytes.to_vec()));
+        }
+        // #2182 (b) review m5: a ^C is never kept behind a parked command; it drops it (and
+        // lets the keys typed behind it go first) and is written now.
+        if bytes.as_ref() == [escape_sequences::C0::ETX] {
+            self.drop_parked_user_commands_on_interrupt(ctx);
         }
         let deferred_behind_command = self.handoff_command_pending;
         let byte_count = bytes.len();
@@ -2701,6 +2715,36 @@ impl<T: EventLoopSender> PtyController<T> {
             log::warn!("A command is already held behind the user's typeahead; coalescing.");
             return StartCommandOutcome::Coalesced;
         }
+        let is_users_command = is_users_command_source(&source);
+        if !is_users_command && self.has_parked_user_command() {
+            // #2182 (b) review M3: the user's command is parked and owed the next prompt. A
+            // command that is not the user's (an agent's, a shared session's) accepted in the
+            // moment between the side call's end and that write would run ahead of it, so it is
+            // coalesced, as behind a held command.
+            warpui::input_order::log_hop("write_command_refused", || {
+                format!(
+                    "source={} outcome=Coalesced reason=user_command_parked",
+                    command_source_name(&source)
+                )
+            });
+            return StartCommandOutcome::Coalesced;
+        }
+        if is_users_command && self.has_parked_user_command() && self.tmux_control_mode.is_none() {
+            // A command of the user's is already parked: this one runs after it, in the order
+            // they were submitted, whatever the active block says by now. Decided before the
+            // hold behind the user's line below: held there, it would set the request waiting
+            // and keep the parked command queued behind a report that is not coming.
+            warpui::input_order::log_hop("write_command", String::new);
+            self.park_user_command_behind_in_band(
+                command,
+                shell_type,
+                source,
+                annotate_block,
+                "behind_parked_command",
+                ctx,
+            );
+            return StartCommandOutcome::Accepted;
+        }
         if self.must_hold_command_behind_unreported_user_line(&source) {
             self.hold_command_behind_unreported_user_line(
                 command,
@@ -2713,20 +2757,6 @@ impl<T: EventLoopSender> PtyController<T> {
         }
         warpui::input_order::log_hop("write_command", String::new);
         let is_editor_command = matches!(source, CommandExecutionSource::User);
-        let is_users_command = is_users_command_source(&source);
-        if is_users_command && self.has_parked_user_command() {
-            // A command of the user's is already parked: this one runs after it, in the order
-            // they were submitted, whatever the active block says by now.
-            self.park_user_command_behind_in_band(
-                command,
-                shell_type,
-                source,
-                annotate_block,
-                "behind_parked_command",
-                ctx,
-            );
-            return StartCommandOutcome::Accepted;
-        }
         let engages_typeahead_handoff;
         {
             let mut model = self.terminal_model.lock();
@@ -2743,9 +2773,13 @@ impl<T: EventLoopSender> PtyController<T> {
                         command_source_name(&source)
                     )
                 });
+                // Review m2: not under tmux control mode, where a write can be taken into
+                // tmux's pending buffer before a parked command's block could be started; the
+                // refusal is unchanged there (the line is given back to the editor).
                 if in_band_block
                     && is_users_command
                     && outcome != StartCommandOutcome::IgnoredTerminated
+                    && self.tmux_control_mode.is_none()
                 {
                     // The app's own side call holds the block, not a command of the user's: the
                     // user's command waits for it to finish and is written first.
@@ -2847,14 +2881,18 @@ impl<T: EventLoopSender> PtyController<T> {
     /// becomes active never reaches the shell. Used when the pane that queued it is closed
     /// (#848). Keystrokes and in-band commands stay queued.
     pub fn discard_pending_command_writes(&mut self) {
+        // #2182 (b) review M2: not the user's own command parked behind a side call. This
+        // discard is the agent's (its command was cancelled, `interrupt_agent_command`); the
+        // user's command is dropped only by the shell's exit or a real Ctrl-C, with a log line.
         self.pending_writes.retain(|pty_write| {
-            !matches!(
-                pty_write,
-                PtyWrite::Command {
-                    in_band_command_id: None,
-                    ..
-                }
-            )
+            is_parked_user_command(pty_write)
+                || !matches!(
+                    pty_write,
+                    PtyWrite::Command {
+                        in_band_command_id: None,
+                        ..
+                    }
+                )
         });
         // A command held behind the user's typeahead is parked like any other and goes with
         // them; forget it, or the next one would be coalesced behind a command that is gone.
@@ -2949,15 +2987,26 @@ impl<T: EventLoopSender> PtyController<T> {
         ctx: &mut ModelContext<Self>,
     ) {
         let is_editor_command = matches!(source, CommandExecutionSource::User);
-        let expects_handoff = is_editor_command
-            && FeatureFlag::TypeaheadHandoff.is_enabled()
-            && self
-                .terminal_model
-                .lock()
-                .block_list()
-                .early_output()
-                .typeahead_mode()
-                == TypeaheadMode::ShellReported;
+        let (can_report, side_call_prompt_pending) = {
+            let model = self.terminal_model.lock();
+            (
+                model.block_list().early_output().typeahead_mode() == TypeaheadMode::ShellReported,
+                model.block_list().active_block().is_in_band_command_block(),
+            )
+        };
+        let expects_handoff =
+            is_editor_command && FeatureFlag::TypeaheadHandoff.is_enabled() && can_report;
+        if expects_handoff {
+            // Review B1: the hand-off is told NOW, as `write_command` tells it for a command
+            // queued behind an inactive line editor. Until the write the editor still holds the
+            // submitted text; keys routed by the old facts landed in it behind that text
+            // (`exit` then `ssh h` + Enter submitted `exitssh h`) and keys typed after the
+            // write went to the pty (a reorder). From here the keys are the pty's, and
+            // `write_handoff_user_bytes` keeps them behind the command (`handoff_command_pending`).
+            self.handoff
+                .write()
+                .on_command_parked(side_call_prompt_pending);
+        }
         let source_name = command_source_name(&source);
         let parked = ParkedUserCommand {
             command: command.to_owned(),
@@ -2981,10 +3030,48 @@ impl<T: EventLoopSender> PtyController<T> {
         self.end_in_band_wait();
         let queued = self.pending_writes.len();
         warpui::input_order::log_hop("write_command_parked_behind_in_band", || {
-            format!("source={source_name} reason={reason} at={at} queued={queued}")
+            format!(
+                "source={source_name} reason={reason} at={at} queued={queued} \
+                 handoff={expects_handoff}"
+            )
         });
+        if expects_handoff {
+            self.handoff_command_pending = true;
+            self.set_handoff_request_waiting(false);
+            ctx.emit(PtyControllerEvent::TypeaheadHandoffChanged);
+        }
+        // A young hold (or a deferred Enter's gate) the hand-off ended for this command: the
+        // view writes its keys, which then wait behind the command like any typed now.
+        self.announce_young_hold_end(ctx);
         // Its turn may have come already (parked behind an earlier one at a free prompt).
         self.execute_next_queued_write(ctx);
+    }
+
+    /// #2182 (b): a parked user command will not be written. Undoes what the park told the
+    /// hand-off (`told_handoff`: its Enter is not awaited any more) and ends the wait of the
+    /// keys typed behind it: they are written now (`write_keys`: a Ctrl-C, where the tty decides
+    /// what an interrupt leaves of them, as it would have had they been written when typed) or
+    /// dropped with the command (the shell is gone).
+    fn forget_parked_handoff(
+        &mut self,
+        told_handoff: usize,
+        write_keys: bool,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        if told_handoff > 0 {
+            let mut handoff = self.handoff.write();
+            for _ in 0..told_handoff {
+                handoff.on_parked_command_dropped();
+            }
+        }
+        if self.handoff_command_pending && !self.has_parked_user_command() {
+            if write_keys {
+                self.flush_handoff_bytes_after_command(ctx);
+            } else {
+                self.handoff_command_pending = false;
+                self.handoff_bytes_after_command.clear();
+            }
+        }
     }
 
     /// The queued write of a parked user command. Its `before_write_fn` starts the command's
@@ -3007,11 +3094,26 @@ impl<T: EventLoopSender> PtyController<T> {
                     if let Some(annotate_block) = for_start.annotate_block.lock().take() {
                         annotate_block(&mut model);
                     }
-                    engaged = note_command_block_started(
-                        &mut model,
-                        &for_start.command,
-                        matches!(for_start.source, CommandExecutionSource::User),
-                    );
+                    if for_start.expects_handoff {
+                        // The hand-off was told at the park (review B1): what is left is the
+                        // block's own bookkeeping and what a write adds to the park.
+                        model.publish_key_facts();
+                        model.end_in_band_command_output(false);
+                        model
+                            .typeahead_handoff_mut()
+                            .on_parked_command_written(&for_start.command);
+                        model
+                            .block_list_mut()
+                            .early_output_mut()
+                            .clear_typeahead_for_new_command();
+                        engaged = true;
+                    } else {
+                        engaged = note_command_block_started(
+                            &mut model,
+                            &for_start.command,
+                            matches!(for_start.source, CommandExecutionSource::User),
+                        );
+                    }
                 }
                 *for_start.started.lock() = Some(ParkedStart { outcome, engaged });
                 outcome
@@ -3057,6 +3159,7 @@ impl<T: EventLoopSender> PtyController<T> {
                     "Dropped a submitted command parked behind an in-band command: the shell exited."
                 );
                 self.is_user_command_executing = self.has_parked_user_command();
+                self.forget_parked_handoff(usize::from(parked.expects_handoff), false, ctx);
                 if is_editor_command {
                     ctx.emit(PtyControllerEvent::TypeaheadHandoffNotEngaged);
                 }
@@ -3082,6 +3185,9 @@ impl<T: EventLoopSender> PtyController<T> {
                     "A submitted command parked behind an in-band command was not started at its write."
                 );
                 self.is_user_command_executing = self.has_parked_user_command();
+                // The keys typed behind it are written: tmux control mode took the command's
+                // bytes (or refused them, and said so), and they belong behind those.
+                self.forget_parked_handoff(usize::from(parked.expects_handoff), true, ctx);
                 if is_editor_command {
                     ctx.emit(PtyControllerEvent::TypeaheadHandoffNotEngaged);
                 }
@@ -3090,23 +3196,53 @@ impl<T: EventLoopSender> PtyController<T> {
         }
     }
 
-    /// #2182 (b): the shell exited (or the like, `reason`) with a user command still parked:
-    /// it goes with the queue, as every queued write does, and says so.
-    fn drop_parked_user_commands(&mut self, reason: &'static str) {
-        let before = self.pending_writes.len();
-        self.pending_writes
-            .retain(|write| !is_parked_user_command(write));
-        let dropped = before - self.pending_writes.len();
+    /// #2182 (b): a user command still parked will not run (`reason`): the shell exited, or a
+    /// real Ctrl-C came (owner's #2209 Q3: a real ^C voids typed-ahead input, and a command
+    /// submitted but not yet written is that). It goes with a log line, the hand-off forgets the
+    /// Enter it counted for it, and the view is told nothing will take the command
+    /// (`TypeaheadHandoffNotEngaged`, review m4: a deferred Enter's gate must not wait for its
+    /// 10 s net). `write_keys` is [`Self::forget_parked_handoff`]'s. Returns how many went.
+    fn drop_parked_user_commands(
+        &mut self,
+        reason: &'static str,
+        write_keys: bool,
+        ctx: &mut ModelContext<Self>,
+    ) -> usize {
+        let mut dropped = 0;
+        let mut told_handoff = 0;
+        self.pending_writes.retain(|write| match write {
+            PtyWrite::Command {
+                park: CommandPark::BehindInBand(parked),
+                ..
+            } => {
+                dropped += 1;
+                told_handoff += usize::from(parked.expects_handoff);
+                false
+            }
+            _ => true,
+        });
         if dropped == 0 {
-            return;
+            return 0;
         }
         self.is_user_command_executing = false;
         warpui::input_order::log_hop("parked_user_command_dropped", || {
-            format!("reason={reason} commands={dropped}")
+            format!("reason={reason} commands={dropped} write_keys={write_keys}")
         });
         log::warn!(
             "Dropped {dropped} submitted command(s) parked behind an in-band command: {reason}."
         );
+        self.forget_parked_handoff(told_handoff, write_keys, ctx);
+        ctx.emit(PtyControllerEvent::TypeaheadHandoffNotEngaged);
+        dropped
+    }
+
+    /// Review m5: a real Ctrl-C drops a user command that is still parked; the keys typed
+    /// behind it are written ahead of the ^C, where the tty's interrupt handling decides what is
+    /// left of them, exactly as if they had been written when they were typed.
+    fn drop_parked_user_commands_on_interrupt(&mut self, ctx: &mut ModelContext<Self>) {
+        if self.has_parked_user_command() {
+            self.drop_parked_user_commands("ctrl_c", true, ctx);
+        }
     }
 
     /// Typeahead hand-off: whether a command the hand-off does not own (a queued-prompt-panel or
@@ -3282,11 +3418,14 @@ impl<T: EventLoopSender> PtyController<T> {
     /// when written (an in-band or held command) while the shell may still have user lines to
     /// run. It waits, or the output of those lines would land in its block.
     fn handoff_holds_front_command(&self) -> bool {
+        // Not a parked user command (#2182 b): its own Enter is counted from the park on, so
+        // it would wait for itself. The side call ahead of it keeps the line editor inactive.
         FeatureFlag::TypeaheadHandoff.is_enabled()
             && matches!(
                 self.pending_writes.front(),
                 Some(PtyWrite::Command {
                     before_write_fn: Some(_),
+                    park: CommandPark::None | CommandPark::BehindUserLine,
                     ..
                 })
             )
@@ -3398,6 +3537,8 @@ impl<T: EventLoopSender> PtyController<T> {
         // Whatever of a big paste is still waiting to be written must not outlive the interrupt,
         // nor the rest of a paced bootstrap.
         self.cancel_paced_writes(ctx);
+        // #2182 (b) review m5: the interrupt also voids a user command still parked.
+        self.drop_parked_user_commands_on_interrupt(ctx);
         self.send_message_to_event_loop(Message::DiscardQueuedInput, ctx);
         if self.foreground_sigint.as_ref().is_some_and(|f| f()) {
             return;
@@ -3642,6 +3783,8 @@ impl<T: EventLoopSender> PtyController<T> {
         );
         if is_interrupt {
             self.cancel_paced_writes(ctx);
+            // #2182 (b) review m5: the ^C also voids a user command still parked.
+            self.drop_parked_user_commands_on_interrupt(ctx);
         }
 
         // A paste is streamed by the event loop a tty-buffer at a time (the remote program or ssh
@@ -4204,6 +4347,36 @@ pub enum EventLoopSendError {
     Disconnected,
     #[error(transparent)]
     Other(#[from] anyhow::Error),
+}
+
+/// Test seam (#2182 b): the event loop of a real `PtyController` wired to a test view. Records
+/// the messages the controller sends, so a view test can read what would reach the pty.
+#[cfg(test)]
+#[derive(Clone, Default)]
+pub(crate) struct RecordingEventLoop {
+    messages: Arc<parking_lot::Mutex<Vec<Message>>>,
+}
+
+#[cfg(test)]
+impl EventLoopSender for RecordingEventLoop {
+    fn send(&self, message: Message) -> Result<(), EventLoopSendError> {
+        self.messages.lock().push(message);
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+impl RecordingEventLoop {
+    /// Everything written to the pty so far (commands and keys), as text.
+    pub(crate) fn written_text(&self) -> String {
+        let mut bytes = Vec::new();
+        for message in self.messages.lock().iter() {
+            if let Message::Input(input) | Message::CommandInput(input) = message {
+                bytes.extend_from_slice(input);
+            }
+        }
+        String::from_utf8_lossy(&bytes).into_owned()
+    }
 }
 
 pub trait EventLoopSender: 'static {

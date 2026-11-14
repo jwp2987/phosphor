@@ -1015,36 +1015,6 @@ fn a_model_that_is_never_free_ends_in_the_holds_give_up_and_the_line_is_not_spli
 
 // ---- #2182 (b): a submitted command is never dropped behind the app's own side call ------------
 
-/// The event loop of a real `PtyController` wired to a test view: records what would be written.
-#[derive(Clone, Default)]
-struct RecordingEventLoop {
-    messages: std::sync::Arc<parking_lot::Mutex<Vec<crate::terminal::writeable_pty::Message>>>,
-}
-
-impl crate::terminal::writeable_pty::pty_controller::EventLoopSender for RecordingEventLoop {
-    fn send(
-        &self,
-        message: crate::terminal::writeable_pty::Message,
-    ) -> Result<(), crate::terminal::writeable_pty::pty_controller::EventLoopSendError> {
-        self.messages.lock().push(message);
-        Ok(())
-    }
-}
-
-impl RecordingEventLoop {
-    /// Everything written to the pty so far, as text.
-    fn written(&self) -> String {
-        use crate::terminal::writeable_pty::Message;
-        let mut bytes = Vec::new();
-        for message in self.messages.lock().iter() {
-            if let Message::Input(input) | Message::CommandInput(input) = message {
-                bytes.extend_from_slice(input);
-            }
-        }
-        String::from_utf8_lossy(&bytes).into_owned()
-    }
-}
-
 /// #2182 (b), the r30f sequence end to end through the real controller (a LOCAL bash session:
 /// the refusal is the same path as on the remote shell the lab found it on). The app's side call
 /// is written; the user's command is submitted before the side call's Preexec. It used to be
@@ -1077,7 +1047,8 @@ fn a_command_submitted_behind_a_side_call_reaches_the_pty_and_leaves_the_editor(
         });
         let line_editor_status =
             app.add_model(|ctx| LineEditorStatus::new(model_events.clone(), sessions.clone(), ctx));
-        let event_loop = RecordingEventLoop::default();
+        let event_loop =
+            crate::terminal::writeable_pty::pty_controller::RecordingEventLoop::default();
         let (_executor_command_tx, executor_command_rx) = async_channel::unbounded();
         let controller = app.add_model(|ctx| {
             PtyController::new(
@@ -1113,7 +1084,10 @@ fn a_command_submitted_behind_a_side_call_reaches_the_pty_and_leaves_the_editor(
                 ctx,
             );
         });
-        assert_eq!(event_loop.written().matches("echo side-call").count(), 1);
+        assert_eq!(
+            event_loop.written_text().matches("echo side-call").count(),
+            1
+        );
         assert!(
             model
                 .lock()
@@ -1137,7 +1111,10 @@ fn a_command_submitted_behind_a_side_call_reaches_the_pty_and_leaves_the_editor(
             );
         });
         assert_eq!(
-            event_loop.written().matches("echo typed-by-user").count(),
+            event_loop
+                .written_text()
+                .matches("echo typed-by-user")
+                .count(),
             0,
             "not written over the side call"
         );
@@ -1155,7 +1132,7 @@ fn a_command_submitted_behind_a_side_call_reaches_the_pty_and_leaves_the_editor(
             crate::terminal::model::ansi::Handler::preexec(
                 &mut *model,
                 PreexecValue {
-                    command: "echo side-call".to_owned(),
+                    command: "warp_run_generator_command side-1 'echo side-call'".to_owned(),
                     session_id: None,
                 },
             );
@@ -1165,7 +1142,7 @@ fn a_command_submitted_behind_a_side_call_reaches_the_pty_and_leaves_the_editor(
             status.set_line_editor_active_for_test(true);
             ctx.emit(LineEditorStatusEvent::Active);
         });
-        let written = event_loop.written();
+        let written = event_loop.written_text();
         assert_eq!(
             written.matches("echo typed-by-user").count(),
             1,
@@ -1199,7 +1176,10 @@ fn a_command_submitted_behind_a_side_call_reaches_the_pty_and_leaves_the_editor(
             );
         });
         assert_eq!(
-            event_loop.written().matches("echo typed-by-user").count(),
+            event_loop
+                .written_text()
+                .matches("echo typed-by-user")
+                .count(),
             1,
             "written once"
         );

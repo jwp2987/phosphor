@@ -22700,6 +22700,230 @@ fn test_a_stale_submission_is_not_taken_for_the_running_commands_text() {
     });
 }
 
+/// #2182 (b) review M1: the editor's submission was made over the app's own side call, so its
+/// command was parked and runs in a LATER block than the one the submission recorded. An Enter
+/// declined while that command runs still knows the submitted text: only what was typed since is
+/// sent to the command, never the command's own text.
+#[test]
+fn test_a_submission_parked_behind_a_side_call_is_known_when_its_command_runs() {
+    App::test((), move |mut app| async move {
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        initialize_app(&mut app);
+        let (terminal, input, _editor, writes) =
+            pane_and_terminal_for_ssh_escape_test(&mut app, false, SHELL_INPUT_FOR_SSH_ESCAPE_TEST)
+                .await;
+        // The side call holds the active block when the editor submits.
+        terminal.update(&mut app, |view, _| {
+            assert!(
+                view.model
+                    .lock()
+                    .start_in_band_command_execution()
+                    .is_accepted(),
+                "test setup: the side call's block"
+            );
+        });
+        input.update(&mut app, |input, ctx| {
+            input.clear_buffer_and_reset_undo_stack(ctx);
+            input.user_insert(RUNNING_FOR_2223, ctx);
+            input.note_editor_submission_for_test(ctx);
+            assert!(input.submitted_block_pending);
+        });
+        // The side call ends; the parked command is written and runs in its own block.
+        terminal.update(&mut app, |view, _| {
+            let mut model = view.model.lock();
+            model.preexec(crate::terminal::model::ansi::PreexecValue {
+                command: "warp_run_generator_command side-1 'echo side-call'".to_owned(),
+                session_id: None,
+            });
+            model.finish_block();
+            model.simulate_long_running_block(RUNNING_FOR_2223, "tick 1\r\n");
+        });
+        input.update(&mut app, |input, ctx| {
+            input.user_insert("echo hi", ctx);
+        });
+        decline_enter_while_a_command_runs(&mut app, &input);
+        assert_eq!(
+            writes.borrow().concat(),
+            b"echo hi\r".to_vec(),
+            "only what was typed since the submit goes to the running command"
+        );
+        input.read(&app, |input, ctx| {
+            assert_eq!(
+                input.buffer_text(ctx),
+                RUNNING_FOR_2223,
+                "the editor is back to the running command's text"
+            );
+            assert!(!input.submitted_block_pending);
+        });
+    });
+}
+
+/// #2182 (b) review B1, end to end through a real `PtyController` wired to the view. The side
+/// call holds the block; the user types a command in the editor and the INPUT submits it
+/// (`try_execute_command`, so the editor keeps the submitted text and `SubmittedPrefix` is set,
+/// as in the app). The command is parked. From that Enter on the pty owns the keys: what is
+/// typed before the parked command is written is not written ahead of it and is not typed onto
+/// the submitted text in the editor; it reaches the pty right behind the command.
+#[test]
+fn test_keys_typed_behind_a_command_parked_behind_a_side_call_follow_it_to_the_pty() {
+    fn zsh_session() -> SessionInfo {
+        SessionInfo::new_for_test()
+            .with_shell_type(crate::terminal::shell::ShellType::Zsh)
+            .with_histfile(Some(
+                std::env::temp_dir()
+                    .join("phosphor-input-test-no-such-histfile")
+                    .to_string_lossy()
+                    .into_owned(),
+            ))
+    }
+
+    App::test((), move |mut app| async move {
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        initialize_app(&mut app);
+        let terminal =
+            add_window_with_bootstrapped_terminal(&mut app, None, Some(zsh_session())).await;
+        let input = terminal.read(&app, |terminal, _| terminal.input().clone());
+        let (model, sessions) = input.read(&app, |input, _| {
+            (input.model.clone(), input.sessions.clone())
+        });
+        model
+            .lock()
+            .block_list_mut()
+            .early_output_mut()
+            .init_session(&zsh_session());
+
+        let (_model_events_tx, model_events_rx) = async_channel::unbounded();
+        let model_events = app.add_model(|ctx| {
+            crate::terminal::model_events::ModelEventDispatcher::new(
+                model_events_rx,
+                sessions.clone(),
+                ctx,
+            )
+        });
+        let line_editor_status = app.add_model(|ctx| {
+            crate::terminal::line_editor_status::LineEditorStatus::new(
+                model_events.clone(),
+                sessions.clone(),
+                ctx,
+            )
+        });
+        let event_loop =
+            crate::terminal::writeable_pty::pty_controller::RecordingEventLoop::default();
+        let (_executor_command_tx, executor_command_rx) = async_channel::unbounded();
+        let controller = app.add_model(|ctx| {
+            crate::terminal::writeable_pty::PtyController::new(
+                event_loop.clone(),
+                model_events.clone(),
+                line_editor_status.clone(),
+                sessions.clone(),
+                executor_command_rx,
+                model.clone(),
+                ctx,
+            )
+        });
+        app.update(|ctx| {
+            crate::terminal::writeable_pty::terminal_manager_util::wire_up_pty_controller_with_surface(
+                &controller,
+                &terminal,
+                model.clone(),
+                sessions.clone(),
+                None,
+                ctx,
+            )
+        });
+
+        // The shell is at its prompt; the app's side call is written and holds the block.
+        line_editor_status.update(&mut app, |status, _| {
+            status.set_line_editor_active_for_test(true)
+        });
+        controller.update(&mut app, |controller, ctx| {
+            controller.queue_in_band_command_for_test(
+                "echo side-call",
+                crate::terminal::shell::ShellType::Zsh,
+                "side-1",
+                ctx,
+            );
+        });
+        assert_eq!(
+            event_loop.written_text().matches("echo side-call").count(),
+            1,
+            "test setup: the side call is written"
+        );
+        assert!(
+            model
+                .lock()
+                .block_list()
+                .active_block()
+                .is_in_band_command_block(),
+            "test setup: the side call holds the block"
+        );
+
+        // Typed in the editor, submitted by the input.
+        input.update(&mut app, |input, ctx| {
+            input.clear_buffer_and_reset_undo_stack(ctx);
+            input.user_insert("echo one", ctx);
+            assert!(
+                input.try_execute_command("echo one", ctx),
+                "the Enter is accepted over the side call's block"
+            );
+        });
+        assert_eq!(
+            event_loop.written_text().matches("echo one").count(),
+            0,
+            "parked: not written over the side call"
+        );
+        assert!(
+            model.lock().typeahead_handoff().routes_keys_to_pty(),
+            "from the Enter on the pty owns the keys: none is typed onto the submitted text"
+        );
+
+        // Keys typed before the parked command is written.
+        terminal.update(&mut app, |view, ctx| {
+            view.write_user_bytes_for_test(b"pwd", ctx);
+        });
+        assert!(
+            !event_loop.written_text().contains("pwd"),
+            "the keys do not overtake the parked command: {:?}",
+            event_loop.written_text()
+        );
+        input.read(&app, |input, ctx| {
+            assert_eq!(
+                input.buffer_text(ctx),
+                "echo one",
+                "the editor holds the submitted command and nothing typed since"
+            );
+        });
+
+        // The side call's Preexec and Precmd; the shell's line editor is active again.
+        {
+            let mut model = model.lock();
+            model.preexec(crate::terminal::model::ansi::PreexecValue {
+                command: "warp_run_generator_command side-1 'echo side-call'".to_owned(),
+                session_id: None,
+            });
+            model.finish_block();
+        }
+        line_editor_status.update(&mut app, |status, ctx| {
+            status.set_line_editor_active_for_test(true);
+            ctx.emit(crate::terminal::line_editor_status::LineEditorStatusEvent::Active);
+        });
+        let written = event_loop.written_text();
+        assert_eq!(
+            written.matches("echo one").count(),
+            1,
+            "the command reaches the pty once: {written:?}"
+        );
+        let side_call_at = written.find("echo side-call");
+        let command_at = written.find("echo one");
+        let keys_at = written.find("pwd");
+        assert!(keys_at.is_some(), "the keys reach the pty: {written:?}");
+        assert!(
+            side_call_at < command_at && command_at < keys_at,
+            "typed order at the pty: {written:?}"
+        );
+    });
+}
+
 /// #2223 (review M7): an Enter the typeahead hand-off deferred, run while a command is running,
 /// is NOT written to the pty by the declined-Enter path: its line and the keys behind it belong
 /// to the hand-off (which releases or keeps them); written here too they would run twice.
