@@ -60,8 +60,10 @@ def judge_managed(r, facts, label, win, pinned):
 def raw_program_line(path, n, secs=25):
     """pure: the line typed to start the stand-in for a full-screen program (the lab image has no vim and no less): it enters the alternate screen, puts the tty in
     raw mode, stores EXACTLY `n` bytes of input in `path` (under $HOME) and gives the terminal back. `timeout` ends it when the keys never come, so a lost key
-    fails the byte comparison instead of leaving the pane in raw mode. Single quotes only; no `!` and no backslash that a shell would read."""
-    return ("sh -c 'printf \"\\033[?1049h\"; stty raw -echo; timeout %d head -c %d > \"$HOME/%s\"; stty sane; printf \"\\033[?1049l\"'" % (secs, n, path))
+    fails the byte comparison instead of leaving the pane in raw mode. `--foreground` is REQUIRED (#2217): without it GNU timeout puts the command in its own
+    process group, a background group of the tty, so `head` is stopped by SIGTTIN, reads nothing, and every key lands in the shell's line. Single quotes
+    only; no `!` and no backslash that a shell would read."""
+    return ("sh -c 'printf \"\\033[?1049h\"; stty raw -echo; timeout --foreground %d head -c %d > \"$HOME/%s\"; stty sane; printf \"\\033[?1049l\"'" % (secs, n, path))
 
 
 def raw_keys_expected(tok):
