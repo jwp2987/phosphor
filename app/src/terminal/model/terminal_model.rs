@@ -3499,6 +3499,14 @@ impl TerminalModel {
         if let (Some(id), Some(listing)) = (session_id, data.cwd_listing.as_deref()) {
             crate::completer::note_pushed_cwd_listing(id.into(), data.pwd.as_deref(), listing);
         }
+        // #2225: a remote zsh's report of whether compsys is loaded decides whether Tab asks it
+        // in-band.
+        if let Some(id) = session_id {
+            crate::terminal::input::native_completions::note_compsys_loaded(
+                id.into(),
+                data.compsys_loaded,
+            );
+        }
         self.block_list.apply_precmd_to_active(data);
         // The prompt's block is the active one now, with its own grid's modes (a program that
         // died with DECCKM or kitty flags set left them on the finished block only, #1411).

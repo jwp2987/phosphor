@@ -5,7 +5,7 @@ mod cli_agent;
 mod common;
 mod enter_queue;
 mod history_recall;
-mod native_completions;
+pub(crate) mod native_completions;
 mod remote_tab;
 pub(crate) use enter_queue::{
     ENTER_GATE_GIVE_UP_TOAST, EnterDiscard, KeysAfterEnter, VERDICT_GIVE_UP_TOAST,
@@ -13690,6 +13690,9 @@ impl Input {
                     || force_native_shell_completions,
                 remote_native_enabled: allow_native_first
                     && native_completions::remote_native_completions_enabled(),
+                remote_compsys_missing: native_completions::compsys_missing(
+                    completion_context.session.id(),
+                ),
             },
         );
         if completions_trigger == CompletionsTrigger::Keybinding
@@ -13698,7 +13701,7 @@ impl Input {
             // #1801 (r18w6): which input of the in-band decision said no, so a Tab that did not
             // take the in-band path names why. Booleans and the session id only.
             log::info!(
-                "Tab on remote session {:?}: native use {:?} (shell supports native: {}, remote without helper: {}, allowed: {}, ai input: {})",
+                "Tab on remote session {:?}: native use {:?} (shell supports native: {}, remote without helper: {}, allowed: {}, ai input: {}, compsys missing: {})",
                 completion_context.session.id(),
                 native_use,
                 completion_context
@@ -13708,6 +13711,7 @@ impl Input {
                 completion_context.session.is_remote_without_helper(),
                 allow_native_first && native_completions::remote_native_completions_enabled(),
                 input_type.is_ai(),
+                native_completions::compsys_missing(completion_context.session.id()),
             );
         }
         let use_native_shell_completions =

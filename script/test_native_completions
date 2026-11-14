@@ -687,6 +687,19 @@ def run_zsh_no_compsys(base, lab):
         text, want = command()
         sh.write(app_command(text))
         expect_runs(sh, "zsh (no compinit)", "the next command runs, the line is clean", want)
+        # #2225: the first Precmd reports compsys_loaded=false once (the app then skips the in-band
+        # Tab request); a compinit run later is reported as true at the next prompt, once.
+        sh.drain(0.5)
+        reports = [h["compsys_loaded"] for h in sh.hooks("Precmd") if "compsys_loaded" in h]
+        check("zsh (no compinit)", "Precmds report compsys_loaded=false exactly once", reports == [False], f"(got {reports})")
+        sh.write(app_command("autoload -Uz compinit && compinit -u -d %s" % shlex.quote(os.path.join(base, "late.zcompdump"))))
+        sh.drain(1.0)
+        text, want = command()
+        sh.write(app_command(text))
+        expect_runs(sh, "zsh (no compinit)", "a command after a late compinit runs", want)
+        sh.drain(0.5)
+        reports = [h["compsys_loaded"] for h in sh.hooks("Precmd") if "compsys_loaded" in h]
+        check("zsh (no compinit)", "a later compinit is reported as compsys_loaded=true, once", reports == [False, True], f"(got {reports})")
     finally:
         sh.close()
 
