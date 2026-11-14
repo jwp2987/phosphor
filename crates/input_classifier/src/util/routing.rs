@@ -468,7 +468,12 @@ pub fn route(input: &ParsedTokensSnapshot, ctx: &RoutingContext) -> Decision {
     {
         return Decision::agent(Rule::QuestionHead);
     }
-    if installed || head_is_keyword || head_is_path {
+    // #2200 (owner 2026-11-14): a bare word on the curated shell-command list (`exit`, `pwd`,
+    // `date`, `ls`, `clear`...) runs in the shell in the plain terminal, without asking the model,
+    // unless the session knows it is absent. In an unmanaged ssh session nothing is known about
+    // the remote's commands, and the model sent a bare `exit` to the agent (r30f).
+    let lone_curated = lone && head_is_curated && !known_absent;
+    if installed || head_is_keyword || head_is_path || lone_curated {
         return Decision::shell(Rule::InstalledHead);
     }
     // An assignment prefix is a command by construction (#833), so with one only the #696 colon

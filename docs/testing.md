@@ -8540,3 +8540,7 @@ Design: `docs/typeahead-handoff-826-827.md`, section "A report-rewritten line is
   line is on screen once and above the next command's line. `scroll_keys_position`: the NO-REFERENCE branch for the agent view is removed; the
   job's output and the newest lines after one key are judged in both modes (`skp_stream_state` no longer returns `agent_hidden`).
 - **State: worked, unproven on a build.** Not compiled or run on the laptop (owner rule); the box gate is the first compile.
+
+## #2200: a bare curated command word runs in the shell in the plain terminal (owner 2026-11-14)
+
+`crates/input_classifier/src/util/routing.rs`: in the plain terminal, a bare word on the curated shell-command list (`UNAMBIGUOUS_SHELL_COMMAND_WORDS` / one-off keywords: `exit`, `cd`, `pwd`, `ls`, `date`, `clear`...) routes to the shell by the installed-head rule when the session cannot place the head and does not know it is absent. r30f's Windows lab showed a bare `exit` in an unmanaged ssh session decided by the model, sent to the agent, and the next line glued on (`exitssh lab-u_bash`). Unit tests: `a_bare_curated_command_word_runs_in_the_shell_in_the_plain_terminal`, `the_bare_curated_word_rule_stays_narrow` (absent word, English openers, agent conversation unchanged). Proof rows: `routing_table` [terminal@gitbash] (bare `date`/`pwd`), `lab_connect_typeahead.bash.*` on the Windows lab (`exit` leaves the remote session).

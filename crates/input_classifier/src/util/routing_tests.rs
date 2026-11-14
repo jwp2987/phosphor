@@ -308,3 +308,51 @@ fn powershell_expression_rule_takes_nothing_else() {
         }
     }
 }
+
+/// #2200 (owner 2026-11-14): in the plain terminal a bare word on the curated shell-command list
+/// runs in the shell without the model, when the session cannot place the head (an unmanaged ssh
+/// session knows nothing about the remote's commands). r30f: a bare `exit` went to the agent.
+#[test]
+fn a_bare_curated_command_word_runs_in_the_shell_in_the_plain_terminal() {
+    for word in [
+        "exit", "pwd", "date", "ls", "clear", "cd", "whoami", "uptime",
+    ] {
+        let decision = route(
+            &unparsed(word),
+            &context(Surface::PlainTerminal, false, false),
+        );
+        assert_eq!(decision.route, Route::Shell, "{word:?}");
+        assert_eq!(decision.rule, Rule::InstalledHead, "{word:?}");
+    }
+}
+
+/// #2200: the rule needs the curated list, a bare word, the plain terminal, and a session that
+/// does not know the word is absent; everything else is unchanged.
+#[test]
+fn the_bare_curated_word_rule_stays_narrow() {
+    // A word the session knows is absent is not forced to the shell.
+    let absent = route(
+        &unparsed("date"),
+        &context(Surface::PlainTerminal, true, false),
+    );
+    assert_ne!(absent.rule, Rule::InstalledHead, "absent date: {absent:?}");
+    // English request openers are not on the curated list.
+    for word in ["help", "show", "list"] {
+        let decision = route(
+            &unparsed(word),
+            &context(Surface::PlainTerminal, false, false),
+        );
+        assert_ne!(decision.rule, Rule::InstalledHead, "{word:?}: {decision:?}");
+    }
+    // The rule is the plain terminal's: in an agent conversation a bare curated word is not
+    // decided by it (the conversation rules run first and return before the plain-terminal block).
+    let in_conversation = route(
+        &unparsed("exit"),
+        &context(Surface::AgentConversation, false, false),
+    );
+    assert_ne!(
+        (in_conversation.route, in_conversation.rule),
+        (Route::Shell, Rule::InstalledHead),
+        "agent conversation: {in_conversation:?}"
+    );
+}
