@@ -173,9 +173,15 @@ def set_ext_mode(ctx, mode):
     ctx.snapshot_log()                # r18e9: injector accounting spans the relaunch
     ctx.app.stop()
     time.sleep(1.0)
+    t_launch = time.time()
     ctx.app.start()
     up = ctx.until(lambda: ctx.prompts() > n, 90, step=0.5)
-    time.sleep(4)                     # first-run overlay settles
+    # #1918: the first-run overlay settles when the NEW instance's pane logs `hop=view_mode` (not the dead instance's line), plus a 0.5 s margin; the old
+    # fixed 4 s stay the give-up net when the log shows none (an older build, no log): the wait then ends after the same 4 s, never earlier
+    if ctx.log_path and ctx.until(lambda: any("hop=view_mode" in l for l in ctx.app_log_window(t_launch)), 4.0, step=0.2):
+        time.sleep(0.5)
+    else:
+        time.sleep(max(0.0, 4.0 - (time.time() - t_launch)) if not ctx.log_path else 0.0)
     try:
         ctx.be.key("Escape")          # Escape in a fresh agent view leaves agent mode (cases.py mode_proof), so only a terminal-mode dismissal is safe
     except Exception:

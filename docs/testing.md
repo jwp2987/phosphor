@@ -5382,7 +5382,8 @@ false fails. Each fix below names its finding (1-12) / cross-cutting letter (A-F
   `exit` is typed only after it, the next probe only after a further one).
 - **B / #1b / #2 — root pid once per launch, `Ctx.exit_nested`, one `relaunch()`.** `run.relaunch()` is the only relaunch path inside a pass
   (six copies before): keep the dying instance's log, stop, start, `await_shell`, `settle_first_run` (the pane's `hop=view_mode` line plus 0.5 s
-  instead of a fixed 4 s), then `record_root_pid` behind `be.guard()` while the pane is provably clean -- on POSIX only when the process tree shows
+  instead of a fixed 4 s; #1918: `set_ext_mode`'s own relaunch waits for a `hop=view_mode` line logged after the relaunch, give-up net the same 4 s),
+  then `record_root_pid` behind `be.guard()` while the pane is provably clean -- on POSIX only when the process tree shows
   exactly ONE shell under the app, else the depth check stays off and a `depth_check_off_after_<why>` skip row says so; Windows records it in
   `prove_keys` after the key proof put the pane in the case dir. The lazy capture at "the first checked case" is gone (it typed before
   `be.guard()`/`reset()` and once named a leaked nested shell as the root). A case that relaunches the app itself gets a fresh record before the
