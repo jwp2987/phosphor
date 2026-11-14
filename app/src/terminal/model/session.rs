@@ -645,6 +645,11 @@ impl Sessions {
         !self.pending_session_start_times.is_empty() || !self.sessions.is_empty()
     }
 
+    /// #2155: whether `session_id` announced itself (`InitShell`) and has not bootstrapped yet.
+    pub fn is_pending_session(&self, session_id: SessionId) -> bool {
+        self.pending_session_start_times.contains_key(&session_id)
+    }
+
     /// Returns whether the given `session_id` is tracked by this [`Sessions`]
     /// model, either as a pending session (registered via [`Self::register_pending_session`])
     /// or a fully bootstrapped one.
@@ -945,6 +950,61 @@ impl SessionInfo {
             legacy_ssh_spawning_command: None,
             ssh_spawning_local_pwd: None,
         }
+    }
+
+    /// #2155: this pending session is the shell that REPLACED `replaced`, a pending ssh session's
+    /// shell that had not bootstrapped yet (`exec zsh -l` in the remote `~/.bash_profile`; the
+    /// new shell announces itself with `InitShell` under the same session id, see the
+    /// `__warp_exec_zsh` block of `bash_body.sh`). The `SSH` hook that made `replaced` an ssh
+    /// session was consumed by its `InitShell`, so what it said is carried over: the connection
+    /// (socket, ownership, one-connection), the session type, the session it was started from
+    /// and the typed `ssh` command with its local directory.
+    ///
+    /// Two facts of the hook described the shell that is gone and are reset: the new shell did
+    /// not get its bootstrap in the remote command (the app writes it), and it never said it
+    /// can take a counted raw read (it gets the bootstrap the way every zsh over ssh does).
+    pub(crate) fn inherit_ssh_identity_of_replaced_shell(&mut self, replaced: &SessionInfo) {
+        if let IsLegacySSHSession::Yes {
+            socket_path,
+            external_control_master,
+            single_connection,
+            ..
+        } = &replaced.is_legacy_ssh_session
+        {
+            self.is_legacy_ssh_session = IsLegacySSHSession::Yes {
+                socket_path: socket_path.clone(),
+                external_control_master: *external_control_master,
+                raw_bootstrap: false,
+                single_connection: *single_connection,
+                bootstrap_in_command: false,
+            };
+        }
+        self.session_type = replaced.session_type.clone();
+        self.spawning_session_id = replaced.spawning_session_id;
+        self.legacy_ssh_spawning_command = replaced.legacy_ssh_spawning_command.clone();
+        self.ssh_spawning_local_pwd = replaced.ssh_spawning_local_pwd.clone();
+    }
+
+    /// #2155: whether an `InitShell` for `session_id` (a subshell's when `is_subshell`) comes
+    /// from the shell that replaced `pending`'s by `exec` before it bootstrapped: the same
+    /// session id, announced again, by a login shell of an ssh session, with no new `SSH` hook
+    /// in between (`new_ssh_hook_pending`: a new hook is a new ssh, never a replacement).
+    pub(crate) fn is_replaced_by_init_shell(
+        pending: Option<&SessionInfo>,
+        session_id: SessionId,
+        is_subshell: bool,
+        new_ssh_hook_pending: bool,
+    ) -> bool {
+        pending.is_some_and(|pending| {
+            pending.session_id == session_id
+                && !is_subshell
+                && !new_ssh_hook_pending
+                && pending.subshell_info.is_none()
+                && matches!(
+                    pending.is_legacy_ssh_session,
+                    IsLegacySSHSession::Yes { .. }
+                )
+        })
     }
 
     fn determine_session_type(

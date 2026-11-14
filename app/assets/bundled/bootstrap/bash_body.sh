@@ -3586,6 +3586,102 @@ fi' RETURN
                 set -e
             fi
         }
+        # #2155: a profile that replaces the login shell with zsh (`exec zsh -l` in
+        # ~/.bash_profile, the usual way to get zsh on a host whose login shell cannot be
+        # changed) left a zsh nobody had bootstrapped: no hook after this shell's first
+        # Precmd, keys straight to the pty, and an `exit` the app never saw. In a managed
+        # ssh session the rcfiles are therefore sourced with `exec` aliased to itself
+        # behind two environment assignments (an alias, not a function: a function cannot
+        # keep the redirections of `exec 2>>log`, and an assignment in front of the builtin
+        # changes nothing but the environment of the program it starts):
+        #   __WARP_EXEC_ZSH  this shell's pid, the session id and what ZDOTDIR was
+        #   ZDOTDIR          ~/.phosphor/zsh-exec, whose .zshenv (written below, on the
+        #                    first such exec) is the only thing that acts on the first
+        # A zsh that IS this process (same pid: the exec replaced the shell), interactive
+        # and on the tty, announces itself with InitShell under the same session id and
+        # waits for its own bootstrap, as the zsh arm of the ssh remote command does.
+        # Everything else that gets these two variables (a zsh under an `exec tmux`, a
+        # `zsh -c`) puts ZDOTDIR back and reads the user's own .zshenv; a program that is
+        # not zsh never looks at them. The directory is never removed, so an environment
+        # that outlives this login keeps working. Only an exec of the shell itself counts
+        # (BASH_SUBSHELL is 1 inside the alias's `$( )`): `( exec x )` and `exec x &` get
+        # ZDOTDIR as it was (HOME when it was unset, which zsh reads the same way).
+        # Kill switch, read on the remote side: PHOSPHOR_SSH_EXEC_ZSH=0 in the remote
+        # environment (no alias at all), or as a line of the profile above its `exec`
+        # (the exec then hands ZDOTDIR through like one in a subshell).
+        # No comment lines and no single quote inside the .zshenv text below.
+        : __warp_exec_zsh_begin
+        __warp_exec_zshenv='if [[ -n ${__WARP_EXEC_ZSH-} ]]; then
+  __warp_x=$__WARP_EXEC_ZSH
+  unset __WARP_EXEC_ZSH
+  __warp_x_pid=${__warp_x%%:*}; __warp_x=${__warp_x#*:}
+  __warp_x_sid=${__warp_x%%:*}; __warp_x=${__warp_x#*:}
+  __warp_x_ps1=${__warp_x%%:*}; __warp_x=${__warp_x#*:}
+  __warp_x_pty=${__warp_x%%:*}; __warp_x=${__warp_x#*:}
+  if [[ ${__warp_x%%:*} == 1 ]]; then
+    ZDOTDIR=${__warp_x#*:}
+  else
+    unset ZDOTDIR
+  fi
+  if [[ $__warp_x_pid == $$ && -n $__warp_x_sid && -z ${__warp_x_sid//[0-9]/} && -o interactive && -t 0 && -t 1 ]]; then
+    unsetopt ZLE RCS GLOBAL_RCS
+    setopt HIST_IGNORE_SPACE
+    export TMPPREFIX="$HOME/.zshtmp-"
+    WARP_SESSION_ID=$__warp_x_sid
+    WARP_USING_WINDOWS_CON_PTY=$__warp_x_pty
+    WARP_HONOR_PS1=$__warp_x_ps1
+    __warp_exec_replaced_shell=1
+    _hostname=$(command -pv hostname >/dev/null 2>&1 && command -p hostname 2>/dev/null || command -p uname -n)
+    _user=$(command -pv whoami >/dev/null 2>&1 && command -p whoami 2>/dev/null || builtin echo $USER)
+    _ju=${${_user//\\/\\\\}//\"/\\\"}; _ju=${_ju//[[:cntrl:]]/}
+    _jh=${${_hostname//\\/\\\\}//\"/\\\"}; _jh=${_jh//[[:cntrl:]]/}
+    _msg=$(builtin printf "{\"hook\": \"InitShell\", \"value\": {\"session_id\": $WARP_SESSION_ID, \"shell\": \"zsh\", \"user\": \"%s\", \"hostname\": \"%s\"}}" "$_ju" "$_jh" | command -p od -An -v -tx1 | command -p tr -d " \n")
+    builtin printf "\e]9278;d;%s\a" $_msg
+    unset _hostname _user _ju _jh _msg __warp_x __warp_x_pid __warp_x_sid __warp_x_ps1 __warp_x_pty
+    return 0
+  fi
+  unset __warp_x __warp_x_pid __warp_x_sid __warp_x_ps1 __warp_x_pty
+else
+  unset ZDOTDIR
+fi
+if [[ -f "${ZDOTDIR:-$HOME}/.zshenv" ]]; then
+  . "${ZDOTDIR:-$HOME}/.zshenv"
+fi'
+        __warp_exec_zsh_live () {
+            [[ -n ${__warp_exec_zsh_armed-} && ${PHOSPHOR_SSH_EXEC_ZSH-} != 0 && ${BASH_SUBSHELL-} == 1 && -n ${WARP_SESSION_ID-} && -z ${WARP_SESSION_ID//[0-9]/} ]]
+        }
+        __warp_exec_zsh_write () {
+            local __warp_d="$HOME/.phosphor/zsh-exec"
+            if [[ -r $__warp_d/.zshenv && "$(<"$__warp_d/.zshenv")" == "$__warp_exec_zshenv" ]]; then
+                return 0
+            fi
+            {
+                command -p mkdir -p "$__warp_d" &&
+                builtin printf '%s\n' "$__warp_exec_zshenv" > "$__warp_d/.zshenv.$$" &&
+                command -p mv -f "$__warp_d/.zshenv.$$" "$__warp_d/.zshenv"
+            } 2>/dev/null && return 0
+            command -p rm -f "$__warp_d/.zshenv.$$" 2>/dev/null
+            return 1
+        }
+        __warp_exec_zsh_info () {
+            if __warp_exec_zsh_live && __warp_exec_zsh_write; then
+                builtin printf '%s' "$$:$WARP_SESSION_ID:${WARP_HONOR_PS1-}:${WARP_USING_WINDOWS_CON_PTY-}:${ZDOTDIR+1}:${ZDOTDIR-}"
+            fi
+            return 0
+        }
+        __warp_exec_zsh_zdotdir () {
+            if __warp_exec_zsh_live && [[ -r $HOME/.phosphor/zsh-exec/.zshenv ]]; then
+                builtin printf '%s' "$HOME/.phosphor/zsh-exec"
+            else
+                builtin printf '%s' "${ZDOTDIR-$HOME}"
+            fi
+            return 0
+        }
+        if [[ ${WARP_IS_SSH-} == 1 && ${PHOSPHOR_SSH_EXEC_ZSH-} != 0 && :$SHELLOPTS: != *:posix:* ]] && shopt -q expand_aliases && ! alias exec >/dev/null 2>&1; then
+            __warp_exec_zsh_armed=1
+            alias exec='__WARP_EXEC_ZSH=$(__warp_exec_zsh_info) ZDOTDIR=$(__warp_exec_zsh_zdotdir) exec'
+        fi
+        : __warp_exec_zsh_end
         if [[ -e /etc/profile ]]; then
             builtin trap "$__warp_rc_return_trap" RETURN; source /etc/profile; __warp_rc_done
         elif [[ -e /etc/bash.bashrc ]]; then
@@ -3615,6 +3711,19 @@ fi' RETURN
             builtin trap "$__warp_rc_return_trap" RETURN; source "$HOME/.profile"; __warp_rc_done
         fi
         unset -f trap __warp_rc_done
+        # #2155: the rcfiles are done and this shell is still here. `exec` is itself again;
+        # the two functions the alias named stay (a function an rcfile defined keeps the
+        # alias's text) and from now on only hand ZDOTDIR through.
+        : __warp_exec_zsh_done_begin
+        if [[ -n ${__warp_exec_zsh_armed-} ]]; then
+            unset __warp_exec_zsh_armed
+            if [[ "$(alias exec 2>/dev/null)" == *__warp_exec_zsh_info* ]]; then
+                unalias exec
+            fi
+        fi
+        unset __warp_exec_zshenv
+        unset -f __warp_exec_zsh_write
+        : __warp_exec_zsh_done_end
         __warp_relax_opts __warp_bootstrap_opts_restore
 
         rcfiles_end_time="$(LC_ALL="C"; builtin echo $EPOCHREALTIME)"

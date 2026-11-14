@@ -298,6 +298,184 @@ fn init_shell_without_ssh_hook_records_no_ssh_command() {
     assert_eq!(info.ssh_spawning_local_pwd, None);
 }
 
+/// #2155: the remote `~/.bash_profile` runs `exec zsh -l` while the bash the ssh wrapper started
+/// is sourcing it. The hook order (`bash_body.sh`, the `__warp_exec_zsh` block): the SSH hook,
+/// bash's InitShell, bash's bootstrap Precmd, then the zsh that replaced it announces itself
+/// with InitShell under the SAME session id, and from there the ordinary zsh order (Precmd,
+/// Bootstrapped, Precmd). The SSH hook was consumed by the first InitShell: the second pending
+/// session must still be the ssh session (connection, typed command, local directory), must be
+/// written its own bootstrap, and the pane must end on a bootstrapped zsh prompt.
+/// Not compiled/run when written (no builds on the laptop).
+#[test]
+fn a_shell_that_replaces_the_pending_ssh_shell_is_bootstrapped_as_the_same_ssh_session() {
+    let mut terminal = TerminalModel::mock(None, None);
+    // The local `ssh` block, then the hook as the one-connection wrapper of Git Bash sends it:
+    // every fact that described the bash (bootstrap in the command, counted raw read) is set.
+    let _recovery_enabled = FeatureFlag::TerminalLifecycleRecovery.override_enabled(true);
+    command_finished_and_precmd(&mut terminal);
+    command_finished_and_precmd(&mut terminal);
+    terminal.bootstrapped(BootstrappedValue {
+        shell: String::from("bash"),
+        ..Default::default()
+    });
+    let completion_metadata = CompletionMetadata {
+        exit_code: ExitCode::from(0),
+        next_block_id: BlockId::new(),
+    };
+    terminal.command_finished(CommandFinishedValue {
+        completion_metadata: completion_metadata.clone(),
+        session_id: None,
+    });
+    terminal.precmd_with_completion_metadata(PrecmdValue {
+        completion_metadata,
+        prompt_metadata: PromptMetadata {
+            pwd: Some("/home/me/proj".to_owned()),
+            ..Default::default()
+        },
+    });
+    terminal.start_command_execution();
+    for c in "ssh me@box".chars() {
+        terminal.block_list_mut().input(c);
+    }
+    terminal.preexec(PreexecValue {
+        command: "ssh me@box".to_owned(),
+        session_id: None,
+    });
+    terminal.ssh(SSHValue {
+        socket_path: "/tmp/ssh-sock/1".into(),
+        remote_shell: "bash".to_owned(),
+        remote_session_id: Some(8_675_309_123),
+        external_control_master: true,
+        raw_bootstrap: true,
+        bootstrap_in_command: true,
+        ..Default::default()
+    });
+    let init_shell = |shell: &str| InitShellValue {
+        pid: None,
+        shell: shell.into(),
+        user: "me".to_owned(),
+        hostname: "box".to_owned(),
+        session_id: 0.into(),
+        ..Default::default()
+    };
+    terminal.init_shell(init_shell("bash"));
+    let bash = terminal
+        .pending_session_info
+        .clone()
+        .expect("bash's InitShell leaves a pending session");
+    use crate::terminal::model::session::IsLegacySSHSession;
+    assert!(matches!(
+        bash.is_legacy_ssh_session,
+        IsLegacySSHSession::Yes {
+            raw_bootstrap: true,
+            bootstrap_in_command: true,
+            ..
+        }
+    ));
+    // bash's bootstrap prompt: its rcfiles run in the script-execution block.
+    command_finished_and_precmd(&mut terminal);
+    assert!(terminal.block_list().is_script_execution());
+
+    // `exec zsh -l`: the zsh announces itself under the same session id, with no new SSH hook.
+    terminal.init_shell(init_shell("zsh"));
+    let zsh = terminal
+        .pending_session_info
+        .clone()
+        .expect("the replacing shell's InitShell leaves a pending session");
+    assert_eq!(zsh.shell.shell_type(), ShellType::Zsh);
+    assert_eq!(zsh.session_id, bash.session_id);
+    assert_eq!(
+        zsh.is_legacy_ssh_session,
+        IsLegacySSHSession::Yes {
+            socket_path: "/tmp/ssh-sock/1".into(),
+            external_control_master: true,
+            // What the hook said about the bash that is gone does not describe the zsh.
+            raw_bootstrap: false,
+            single_connection: false,
+            bootstrap_in_command: false,
+        }
+    );
+    assert!(crate::terminal::bootstrap::app_writes_bootstrap(&zsh));
+    assert_eq!(zsh.session_type, bash.session_type);
+    assert_eq!(zsh.spawning_session_id, bash.spawning_session_id);
+    assert_eq!(
+        zsh.legacy_ssh_spawning_command.as_deref(),
+        Some("ssh me@box")
+    );
+    assert_eq!(zsh.ssh_spawning_local_pwd.as_deref(), Some("/home/me/proj"));
+    assert!(zsh.subshell_info.is_none());
+    // The zsh bootstrap is written next: its echo goes to a fresh hidden bootstrap block, and
+    // what bash's rcfiles printed stays in the block that was active.
+    assert_eq!(
+        terminal.block_list().active_block().bootstrap_stage(),
+        BootstrapStage::WarpInput
+    );
+
+    // The ordinary zsh order from here.
+    command_finished_and_precmd(&mut terminal);
+    terminal.bootstrapped(BootstrappedValue {
+        shell: String::from("zsh"),
+        ..Default::default()
+    });
+    assert!(terminal.pending_session_info.is_none());
+    command_finished_and_precmd(&mut terminal);
+    assert!(terminal.is_active_block_bootstrapped());
+}
+
+/// #2155: only the shell that replaced a pending ssh login shell takes over its ssh identity.
+/// A second InitShell after a NEW SSH hook is a new ssh, a subshell's is a subshell, another
+/// session id is another session, and a pending session that is not ssh has nothing to hand on.
+#[test]
+fn only_a_reannounced_pending_ssh_login_shell_counts_as_replaced() {
+    let pending = |ssh: bool, subshell: bool| {
+        let mut info = SessionInfo::create_pending(
+            ShellType::Bash,
+            InitShellValue {
+                pid: None,
+                shell: "bash".into(),
+                user: "me".to_owned(),
+                hostname: "box".to_owned(),
+                session_id: 7.into(),
+                is_subshell: subshell,
+                ..Default::default()
+            },
+            subshell.then(|| SubshellInitializationInfo {
+                spawning_command: "bash".to_owned(),
+                was_triggered_by_rc_file_snippet: false,
+                env_var_collection_name: None,
+                ssh_connection_info: None,
+            }),
+            None,
+            ssh.then(|| SSHValue {
+                remote_shell: "bash".to_owned(),
+                remote_session_id: Some(7),
+                ..Default::default()
+            }),
+            false,
+            None,
+        );
+        info.legacy_ssh_spawning_command = ssh.then(|| "ssh box".to_owned());
+        info
+    };
+    let ssh_login = pending(true, false);
+    let replaced = |pending: Option<&SessionInfo>, id: u64, is_subshell, new_hook| {
+        SessionInfo::is_replaced_by_init_shell(pending, id.into(), is_subshell, new_hook)
+    };
+    assert!(replaced(Some(&ssh_login), 7, false, false));
+    assert!(!replaced(None, 7, false, false), "nothing was pending");
+    assert!(!replaced(Some(&ssh_login), 8, false, false), "another id");
+    assert!(!replaced(Some(&ssh_login), 7, true, false), "a subshell");
+    assert!(!replaced(Some(&ssh_login), 7, false, true), "a new ssh");
+    assert!(
+        !replaced(Some(&pending(false, false)), 7, false, false),
+        "the pending session is not an ssh session"
+    );
+    assert!(
+        !replaced(Some(&pending(true, true)), 7, false, false),
+        "the pending session is a subshell"
+    );
+}
+
 /// #966: the exact hook order a fish subshell emits (`fish.sh`): InitShell (is_subshell), then
 /// the explicit `warp_precmd` (CommandFinished + Precmd, same id), `Bootstrapped`, the first
 /// `fish_prompt` precmd (CommandFinished + Precmd), then per user command Preexec, and at the

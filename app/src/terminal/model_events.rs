@@ -54,6 +54,17 @@ impl SshRemoteServerSupport {
     }
 }
 
+/// #2155: whether an ssh session's `InitShell` starts the remote-helper setup
+/// (`ModelEvent::SshInitShell`: the bootstrap is stashed until the helper checks report).
+/// `uses_helper` is [`SshRemoteServerSupport::should_use_remote_server`]. Not when the session
+/// is `reannounced`: it was already pending, so this `InitShell` is from the shell that
+/// replaced the first one by `exec` (`exec zsh -l` in the remote profile). The setup started
+/// with the first announcement is keyed by the unchanged session id and must not start twice;
+/// the new shell gets its bootstrap at once.
+fn ssh_init_shell_goes_to_helper_setup(uses_helper: bool, reannounced: bool) -> bool {
+    uses_helper && !reannounced
+}
+
 /// Model that dispatches events that have been emitted by the [`crate::terminal::TerminalModel`],
 /// allowing other models/views to subscribe to `TerminalModel` events like it would any other
 /// entity within the UI framework.
@@ -129,6 +140,15 @@ impl ModelEventDispatcher {
             Event::Handler(HandlerEvent::InitShell {
                 pending_session_info,
             }) => {
+                // #2155: the session was already pending: its shell replaced itself before it
+                // bootstrapped (`exec zsh -l` in the remote profile) and the new one announces
+                // itself. The helper setup of this session ran (or runs) for the first
+                // announcement and is keyed by the session id, which is unchanged: the new
+                // shell only needs its bootstrap, written at once on the plain InitShell path.
+                let reannounced = self
+                    .sessions
+                    .as_ref(ctx)
+                    .is_pending_session(pending_session_info.session_id);
                 self.sessions.update(ctx, |sessions, ctx| {
                     sessions.register_pending_session(pending_session_info.as_ref(), ctx);
                 });
@@ -138,7 +158,10 @@ impl ModelEventDispatcher {
                 let is_legacy_ssh = pending_session_info
                     .is_legacy_ssh_session
                     .has_control_socket();
-                if self.should_use_ssh_remote_server(is_legacy_ssh) {
+                if ssh_init_shell_goes_to_helper_setup(
+                    self.should_use_ssh_remote_server(is_legacy_ssh),
+                    reannounced,
+                ) {
                     ModelEvent::SshInitShell {
                         pending_session_info,
                     }

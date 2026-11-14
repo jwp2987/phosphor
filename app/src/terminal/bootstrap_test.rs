@@ -6240,3 +6240,366 @@ fn fish_bootstrap_treats_an_unset_honor_ps1_as_not_honoring() {
         .unwrap();
     assert!(first_if.contains("!= \"1\""), "{first_if}");
 }
+
+/// #2155: `exec zsh -l` in the remote `~/.bash_profile` replaced the bash the ssh wrapper had
+/// started, in the middle of its bootstrap, with a zsh nobody bootstrapped (no hook after bash's
+/// first Precmd, an `exit` the app never saw). The `__warp_exec_zsh` block of `bash_body.sh`
+/// sources the rcfiles with `exec` aliased to itself behind two environment assignments, and the
+/// `.zshenv` it writes makes a zsh that IS the replaced shell (same pid, interactive, on the tty)
+/// announce itself with InitShell under the same session id and wait for its bootstrap.
+///
+/// The block is run here by a real bash on a pty (python3 `pty.fork`), raw and as the app sends
+/// it (trimmed, comment lines dropped), with a profile per case:
+/// - `exec zsh -l`, a conditional exec of a path held in a variable, and a profile that sets
+///   ZDOTDIR first: InitShell for zsh with the session id; the zsh has not read the user's
+///   startup files (the bootstrap sources them), ZDOTDIR is what it was and nothing is left in
+///   the environment;
+/// - `exec 7>file` (redirection only): the descriptor stays open in the shell, nothing leaks;
+/// - an exec that is not an interactive zsh in place (`zsh -c`, a zsh under an exec'd `sh`, an
+///   exec in a subshell): no InitShell, the zsh reads the user's own `.zshenv`;
+/// - the kill switch (in the environment: `exec` is untouched; as a line of the profile: the
+///   exec hands ZDOTDIR through) and a shell that is not a managed ssh session.
+#[test]
+#[cfg(unix)]
+fn bash_profile_that_execs_zsh_hands_the_ssh_session_to_the_zsh() {
+    use std::process::Command;
+
+    for tool in ["bash", "zsh", "python3"] {
+        if Command::new(tool).arg("--version").output().is_err() {
+            eprintln!("skipping: {tool} not installed");
+            return;
+        }
+    }
+    let source = include_str!("../../assets/bundled/bootstrap/bash_body.sh");
+    let between = |from: &str, to: &str| {
+        let start = source.find(from).unwrap_or_else(|| panic!("{from} moved"));
+        let end = start
+            + source[start..]
+                .find(to)
+                .unwrap_or_else(|| panic!("{to} moved"));
+        source[start..end].to_owned()
+    };
+    let block = between(": __warp_exec_zsh_begin", ": __warp_exec_zsh_end");
+    let done = between(": __warp_exec_zsh_done_begin", ": __warp_exec_zsh_done_end");
+    // The app's own trimming (`script_for_shell`): at most one leading space, no trailing
+    // whitespace, no empty and no comment-only lines.
+    let as_sent = |text: &str| {
+        text.lines()
+            .map(|line| {
+                let trimmed = line.trim_start();
+                let keep = usize::from(trimmed.len() < line.len());
+                line[line.len() - trimmed.len() - keep..].trim_end()
+            })
+            .filter(|line| !line.trim().is_empty() && !line.trim_start().starts_with('#'))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    // The .zshenv text is one single-quoted string: a single quote or a comment line inside
+    // it would end the string or be dropped on the way to the remote.
+    let zshenv_start = block.find("__warp_exec_zshenv='").unwrap() + "__warp_exec_zshenv='".len();
+    let zshenv = &block[zshenv_start..];
+    let zshenv = &zshenv[..zshenv.find('\'').unwrap()];
+    assert!(zshenv.trim_end().ends_with("fi"), "{zshenv}");
+    assert!(
+        zshenv
+            .lines()
+            .all(|line| !line.trim_start().starts_with('#')),
+        "{zshenv}"
+    );
+
+    let driver_source = r#"import os, pty, select, sys, time
+boot, trigger, typed = sys.argv[1], bytes.fromhex(sys.argv[2]), sys.argv[3].encode()
+pid, fd = pty.fork()
+if pid == 0:
+    os.execvp("bash", ["bash", "--noprofile", "--rcfile", boot, "-i"])
+out = b""
+sent = False
+deadline = time.time() + 20
+while time.time() < deadline:
+    ready, _, _ = select.select([fd], [], [], 0.1)
+    if ready:
+        try:
+            data = os.read(fd, 65536)
+        except OSError:
+            break
+        if not data:
+            break
+        out += data
+    if not sent and trigger and trigger in out:
+        sent = True
+        if not typed:
+            deadline = time.time() + 0.5
+        os.write(fd, typed)
+try:
+    os.kill(pid, 9)
+except OSError:
+    pass
+try:
+    os.waitpid(pid, 0)
+except OSError:
+    pass
+sys.stdout.write(out.hex())
+"#;
+
+    // What the driver types once the hook is complete (its BEL): the zsh has no line editor
+    // yet, so the line is read from the cooked tty.
+    const AFTER_HOOK: &str = "print -r -- ZD=${ZDOTDIR-unset} RS=${__warp_exec_replaced_shell-unset} SID=$WARP_SESSION_ID I=${__WARP_EXEC_ZSH-unset}\nexit\n";
+    const BEL: &str = "07";
+    // "USER_ZSHRC\r" (the user's .zshrc ran: a zsh nobody took over is at its prompt). With
+    // nothing to type the driver stops half a second after it.
+    const USER_ZSHRC: &str = "555345525f5a534852430d";
+    struct Case {
+        name: &'static str,
+        profile: &'static str,
+        /// (name, value) added to the environment; an empty value removes the variable.
+        env: Option<(&'static str, &'static str)>,
+        trigger: &'static str,
+        typed: &'static str,
+        /// The zsh announces itself; `{home}` in the expected lines is the case's HOME.
+        hook: bool,
+        expect: &'static [&'static str],
+        absent: &'static [&'static str],
+        /// `~/.phosphor/zsh-exec/.zshenv` exists afterwards.
+        zshenv_written: bool,
+    }
+    let cases = [
+        Case {
+            name: "exec",
+            profile: "exec zsh -l\n",
+            env: None,
+            trigger: BEL,
+            typed: AFTER_HOOK,
+            hook: true,
+            expect: &["ZD=unset RS=1 SID=4242 I=unset"],
+            absent: &["USER_ZSHENV", "USER_ZSHRC", "SURVIVED"],
+            zshenv_written: true,
+        },
+        Case {
+            name: "zdotdir",
+            profile: "export ZDOTDIR=\"$HOME/zd\"\nexec zsh -l\n",
+            env: None,
+            trigger: BEL,
+            typed: AFTER_HOOK,
+            hook: true,
+            expect: &["ZD={home}/zd RS=1 SID=4242 I=unset"],
+            absent: &["USER_ZSHENV", "USER_ZSHRC", "SURVIVED"],
+            zshenv_written: true,
+        },
+        Case {
+            name: "variable",
+            profile: "Z=$(command -v zsh)\n[ -x \"$Z\" ] && exec \"$Z\" -l\n",
+            env: None,
+            trigger: BEL,
+            typed: AFTER_HOOK,
+            hook: true,
+            expect: &["ZD=unset RS=1 SID=4242 I=unset"],
+            absent: &["USER_ZSHENV", "USER_ZSHRC", "SURVIVED"],
+            zshenv_written: true,
+        },
+        Case {
+            name: "redirect",
+            profile: "exec 7>\"$HOME/out7\"\necho seven >&7\necho AFTER zd=${ZDOTDIR-unset} i=${__WARP_EXEC_ZSH-unset}\n",
+            env: None,
+            trigger: "",
+            typed: "",
+            hook: false,
+            expect: &[
+                "AFTER zd=unset i=unset",
+                "SURVIVED zd=unset i=unset alias=no",
+            ],
+            absent: &[],
+            zshenv_written: true,
+        },
+        Case {
+            name: "inplace",
+            profile: "exec zsh -c 'echo INPLACE zd=${ZDOTDIR-unset} i=${__WARP_EXEC_ZSH-unset}'\n",
+            env: None,
+            trigger: "",
+            typed: "",
+            hook: false,
+            expect: &["USER_ZSHENV zd=unset", "INPLACE zd=unset i=unset"],
+            absent: &["SURVIVED"],
+            zshenv_written: true,
+        },
+        Case {
+            name: "child",
+            profile: "exec sh -c 'zsh -ic \"echo CHILD zd=\\${ZDOTDIR-unset} i=\\${__WARP_EXEC_ZSH-unset}\"'\n",
+            env: None,
+            trigger: "",
+            typed: "",
+            hook: false,
+            expect: &["USER_ZSHENV zd=unset", "CHILD zd=unset i=unset"],
+            absent: &["SURVIVED"],
+            zshenv_written: true,
+        },
+        Case {
+            name: "subshell",
+            profile: "( exec zsh -c 'echo SUB zd=${ZDOTDIR-unset} i=${__WARP_EXEC_ZSH-unset}.' )\n",
+            env: None,
+            trigger: "",
+            typed: "",
+            hook: false,
+            expect: &[
+                "USER_ZSHENV zd={home}\r",
+                "SUB zd={home} i=.",
+                "SURVIVED zd=unset i=unset alias=no",
+            ],
+            absent: &[],
+            zshenv_written: false,
+        },
+        Case {
+            name: "switch",
+            profile: "exec zsh -l\n",
+            env: Some(("PHOSPHOR_SSH_EXEC_ZSH", "0")),
+            trigger: USER_ZSHRC,
+            typed: "",
+            hook: false,
+            expect: &["USER_ZSHENV zd=unset", "USER_ZSHRC"],
+            absent: &["SURVIVED"],
+            zshenv_written: false,
+        },
+        Case {
+            name: "switchprofile",
+            profile: "PHOSPHOR_SSH_EXEC_ZSH=0\nexec zsh -l\n",
+            env: None,
+            trigger: USER_ZSHRC,
+            typed: "",
+            hook: false,
+            // ZDOTDIR goes through as it was: HOME when it was unset, which zsh reads the same.
+            expect: &["USER_ZSHENV zd={home}\r", "USER_ZSHRC"],
+            absent: &["SURVIVED"],
+            zshenv_written: false,
+        },
+        Case {
+            name: "notssh",
+            profile: "exec zsh -l\n",
+            env: Some(("WARP_IS_SSH", "")),
+            trigger: USER_ZSHRC,
+            typed: "",
+            hook: false,
+            expect: &["USER_ZSHENV zd=unset", "USER_ZSHRC"],
+            absent: &["SURVIVED"],
+            zshenv_written: false,
+        },
+    ];
+    for sent in [false, true] {
+        for case in &cases {
+            let name = case.name;
+            let home = std::env::temp_dir().join(format!(
+                "phosphor-2155-{name}-{}-{}",
+                u8::from(sent),
+                std::process::id()
+            ));
+            let _ = std::fs::remove_dir_all(&home);
+            std::fs::create_dir_all(home.join("zd")).unwrap();
+            std::fs::write(home.join(".bash_profile"), case.profile).unwrap();
+            for dir in [home.clone(), home.join("zd")] {
+                std::fs::write(
+                    dir.join(".zshenv"),
+                    "echo USER_ZSHENV zd=${ZDOTDIR-unset}\n",
+                )
+                .unwrap();
+                std::fs::write(dir.join(".zshrc"), "echo USER_ZSHRC\n").unwrap();
+            }
+            let (block, done) = if sent {
+                (as_sent(&block), as_sent(&done))
+            } else {
+                (block.clone(), done.clone())
+            };
+            let boot = home.join("boot.sh");
+            std::fs::write(
+                &boot,
+                format!(
+                    "WARP_SESSION_ID=4242\nWARP_HONOR_PS1=0\nWARP_USING_WINDOWS_CON_PTY=false\n{block}\nsource \"$HOME/.bash_profile\"\n{done}\necho \"SURVIVED zd=${{ZDOTDIR-unset}} i=${{__WARP_EXEC_ZSH-unset}} alias=$(alias exec >/dev/null 2>&1 && echo yes || echo no)\"\nexit 0\n"
+                ),
+            )
+            .unwrap();
+            let driver = home.join("driver.py");
+            std::fs::write(&driver, driver_source).unwrap();
+            let mut command = Command::new("python3");
+            command
+                .arg(&driver)
+                .arg(&boot)
+                .arg(case.trigger)
+                .arg(case.typed)
+                .env_clear()
+                .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+                .env("HOME", &home)
+                .env("TERM", "xterm")
+                .env("WARP_IS_SSH", "1")
+                .current_dir(&home);
+            match case.env {
+                Some((key, "")) => {
+                    command.env_remove(key);
+                }
+                Some((key, value)) => {
+                    command.env(key, value);
+                }
+                None => {}
+            }
+            let output = command.output().unwrap();
+            assert!(output.status.success(), "{name}: the pty driver failed");
+            let bytes = hex::decode(String::from_utf8_lossy(&output.stdout).trim()).unwrap();
+            let out = String::from_utf8_lossy(&bytes).into_owned();
+            let tag = format!("{name} (as sent: {sent}): {out:?}");
+
+            // The InitShell hook, in the OSC 9278 form the ssh arm of the wrapper uses.
+            let hooks: Vec<String> = out
+                .split("\u{1b}]9278;d;")
+                .skip(1)
+                .filter_map(|rest| rest.split('\u{7}').next())
+                .filter_map(|payload| hex::decode(payload).ok())
+                .map(|json| String::from_utf8_lossy(&json).into_owned())
+                .collect();
+            if case.hook {
+                assert_eq!(hooks.len(), 1, "{tag}");
+                assert!(
+                    hooks[0].starts_with(
+                        "{\"hook\": \"InitShell\", \"value\": {\"session_id\": 4242, \"shell\": \"zsh\", "
+                    ),
+                    "{tag}"
+                );
+            } else {
+                assert!(hooks.is_empty(), "{tag}");
+            }
+            let home_text = home.display().to_string();
+            for expected in case.expect {
+                let expected = expected.replace("{home}", &home_text);
+                assert!(out.contains(&expected), "missing {expected:?}: {tag}");
+            }
+            for absent in case.absent {
+                assert!(!out.contains(absent), "unexpected {absent:?}: {tag}");
+            }
+            assert_eq!(
+                home.join(".phosphor/zsh-exec/.zshenv").exists(),
+                case.zshenv_written,
+                "{tag}"
+            );
+            if name == "redirect" {
+                assert_eq!(
+                    std::fs::read_to_string(home.join("out7")).unwrap(),
+                    "seven\n",
+                    "{tag}"
+                );
+            }
+            std::fs::remove_dir_all(&home).ok();
+        }
+    }
+}
+
+/// #2155: the zsh that replaced a bootstrapping bash (`exec zsh -l` in its profile) must not
+/// print the MotD a second time, and the marker the hand-over `.zshenv` sets does not outlive
+/// the bootstrap.
+#[test]
+fn zsh_bootstrap_skips_the_motd_for_a_zsh_that_replaced_the_bootstrapping_bash() {
+    let zsh = include_str!("../../assets/bundled/bootstrap/zsh_body.sh");
+    let bash = include_str!("../../assets/bundled/bootstrap/bash_body.sh");
+    assert!(bash.contains("    __warp_exec_replaced_shell=1\n"));
+    assert!(zsh.contains(
+        "if [[ -o login && -z ${__warp_exec_replaced_shell-} && ! -e \"$HOME/.hushlogin\" ]]; then"
+    ));
+    let motd = zsh.find("-z ${__warp_exec_replaced_shell-}").unwrap();
+    let unset = zsh.find("unset __warp_exec_replaced_shell").unwrap();
+    let rcfiles = zsh.find("source \"${ZDOTDIR:-$HOME}/.zshenv\"").unwrap();
+    assert!(motd < unset && unset < rcfiles);
+}
