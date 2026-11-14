@@ -1,0 +1,77 @@
+{
+ "summary_line": "Summary [ 797.278s] 12035 tests run: 12034 passed (10 slow, 8 leaky), 1 failed, 47 skipped",
+ "duration_s": 797.278,
+ "run": 12035,
+ "passed": 12034,
+ "failed": 1,
+ "timed_out": 0,
+ "skipped": 47,
+ "slow": 10,
+ "flaky": 0,
+ "failures": [
+  {
+   "kind": "LEAK",
+   "crate": "warp",
+   "test": "ai::blocklist::agent_fuzz::matrix::triples_command::off",
+   "seconds": 131.522
+  },
+  {
+   "kind": "LEAK",
+   "crate": "warp",
+   "test": "context_chips::current_prompt::tests::test_chips_rerun_when_the_blocks_session_registers",
+   "seconds": 0.438
+  },
+  {
+   "kind": "LEAK",
+   "crate": "warp",
+   "test": "context_chips::current_prompt::tests::test_unchanged_chip_refetch_does_not_respawn_on_click_command",
+   "seconds": 0.506
+  },
+  {
+   "kind": "LEAK",
+   "crate": "warp",
+   "test": "terminal::input::tests::test_history_file_does_not_route_requests_or_bare_english_words_to_the_shell",
+   "seconds": 0.779
+  },
+  {
+   "kind": "FAIL",
+   "crate": "warp",
+   "test": "util::git::tests::commit_chain_commit_only_creates_a_commit_and_reports_delta",
+   "seconds": 1.388
+  },
+  {
+   "kind": "LEAK",
+   "crate": "warp",
+   "test": "workspace::view::tests::test_active_tab_bar_position_id_tracks_layout",
+   "seconds": 0.736
+  },
+  {
+   "kind": "LEAK",
+   "crate": "warp",
+   "test": "workspace::view::tests::test_closing_a_code_pane_drops_its_editor_and_buffer",
+   "seconds": 2.138
+  },
+  {
+   "kind": "LEAK",
+   "crate": "warp",
+   "test": "workspace::view::tests::test_closing_a_code_pane_releases_a_retained_editors_heavy_state",
+   "seconds": 2.09
+  },
+  {
+   "kind": "LEAK",
+   "crate": "warp",
+   "test": "workspace::view::tests::test_reopening_a_file_whose_code_pane_was_moved_away_still_opens_it",
+   "seconds": 1.815
+  }
+ ],
+ "regressions": [
+  "util::git::tests::commit_chain_commit_only_creates_a_commit_and_reports_delta"
+ ],
+ "notes": [
+  "REGRESSION -- this change broke test(s). Fix the code.",
+  "error: test(s) failed that are not in script/known_test_failures_windows.txt:"
+ ],
+ "job": "test-windows",
+ "status": "failed",
+ "duration": 2656.915148
+}

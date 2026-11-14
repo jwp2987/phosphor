@@ -1,0 +1,78 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="appci-macos" tests="26" failures="3" skipped="6">
+<testcase classname="terminal" name="lab_chips.bash.lan.nohelper" time="11.50">
+</testcase>
+<testcase classname="terminal" name="lab_chips.zsh.lan.nohelper" time="11.20">
+</testcase>
+<testcase classname="terminal" name="lab_chips.zsh.150.nohelper" time="16.70">
+<failure message="3 side-call exec channels for 1 prompt(s): the app must batch to at most one per prompt">3 side-call exec channels for 1 prompt(s): the app must batch to at most one per prompt
+exec_channel_timeline (s after the window opened, backend_route lines logged by then): 0.23/0, 0.23/0, 1.55/1
+side-call producers (#2156): shell exec lines by producer: none; prompts the app ran a batch for: []
+injector accounting: injector sent 88; app saw 88; lost-before-app 0 (Enter: sent 4, app saw 4); of the app's: 80 unbound keydown/typed, 2 taken by a key binding, 4 Enter by a binding; macOS: 88 key-down(s) reached NSApplication, 88 dispatched as key events (2 of them a menu key equivalent), 0 not (0 Cmd chord(s) injected)
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 4 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="terminal" name="lab_chips.fish.lan.nohelper" time="11.40">
+</testcase>
+<testcase classname="terminal" name="lab_fam_git_read.bash.lan.nohelper" time="13.10">
+<skipped message="NO-REFERENCE (not a pass): exec_channel_timeline (s after the window opened, backend_route lines logged by then): 0.89/1, 4.89/9"/>
+</testcase>
+<testcase classname="terminal" name="lab_fam_git_read.zsh.lan.nohelper" time="13.00">
+<skipped message="NO-REFERENCE (not a pass): exec_channel_timeline (s after the window opened, backend_route lines logged by then): 0.66/1, 4.42/9"/>
+</testcase>
+<testcase classname="terminal" name="lab_fam_git_read.zsh.150.nohelper" time="19.30">
+<skipped message="NO-REFERENCE (not a pass): exec_channel_timeline (s after the window opened, backend_route lines logged by then): 1.36/1, 5.26/9"/>
+</testcase>
+<testcase classname="terminal" name="lab_fam_run_command.bash.lan.nohelper" time="13.40">
+<skipped message="NO-REFERENCE (not a pass): exec_channel_timeline (s after the window opened, backend_route lines logged by then): 0.89/1, 4.64/9"/>
+</testcase>
+<testcase classname="terminal" name="lab_fam_run_command.zsh.lan.nohelper" time="13.80">
+<skipped message="NO-REFERENCE (not a pass): exec_channel_timeline (s after the window opened, backend_route lines logged by then): 1.11/1, 4.68/9"/>
+</testcase>
+<testcase classname="terminal" name="lab_fam_run_command.zsh.150.nohelper" time="19.20">
+<skipped message="NO-REFERENCE (not a pass): exec_channel_timeline (s after the window opened, backend_route lines logged by then): 1.54/1, 5.28/9"/>
+</testcase>
+<testcase classname="terminal" name="lab_tab_no_helper.bash.lan.nohelper" time="24.30">
+</testcase>
+<testcase classname="terminal" name="lab_tab_no_helper.bash.150.nohelper" time="30.70">
+</testcase>
+<testcase classname="terminal" name="lab_tab_no_helper.zsh.lan.nohelper" time="23.00">
+</testcase>
+<testcase classname="terminal" name="lab_tab_no_helper.zsh.150.nohelper" time="48.10">
+<failure message="Tab after the prefix should have completed the REMOTE directory: the remote shell received ['cd /work/u_zsh/tnh_t54q6n1bo/phxt54q6n1bo'], want 'cd /work/u_zsh/tnh_t54q6n1bo/phxt54q6n1bo_only/'">Tab after the prefix should have completed the REMOTE directory: the remote shell received ['cd /work/u_zsh/tnh_t54q6n1bo/phxt54q6n1bo'], want 'cd /work/u_zsh/tnh_t54q6n1bo/phxt54q6n1bo_only/'
+after the completed cd the remote cwd should be /work/u_zsh/tnh_t54q6n1bo/phxt54q6n1bo_only, got ['/work/u_zsh']
+Tab + Enter 30 ms later (trial 1): the shell received ['cd /work/u_zsh/tnh_t54q6n1bo/phxt56bzjck2'], want exactly one line, the completed 'cd /work/u_zsh/tnh_t54q6n1bo/phxt56bzjck2_only' (the uncompleted 'cd /work/u_zsh/tnh_t54q6n1bo/phxt56bzjck2' must never run)
+Tab + Enter 30 ms later (trial 2): the shell received ['cd /work/u_zsh/tnh_t54q6n1bo/phxt578o72o7'], want exactly one line, the completed 'cd /work/u_zsh/tnh_t54q6n1bo/phxt578o72o7_only' (the uncompleted 'cd /work/u_zsh/tnh_t54q6n1bo/phxt578o72o7' must never run)
+Tab + Enter 30 ms later (trial 3): the shell received ['cd /work/u_zsh/tnh_t54q6n1bo/phxt58zu1dti'], want exactly one line, the completed 'cd /work/u_zsh/tnh_t54q6n1bo/phxt58zu1dti_only' (the uncompleted 'cd /work/u_zsh/tnh_t54q6n1bo/phxt58zu1dti' must never run)
+injector accounting: injector sent 348; app saw 348; lost-before-app 0 (Enter: sent 12, app saw 12); of the app's: 328 unbound keydown/typed, 6 taken by a key binding, 12 Enter by a binding; macOS: 348 key-down(s) reached NSApplication, 348 dispatched as key events (2 of them a menu key equivalent), 0 not (0 Cmd chord(s) injected)
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 12 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="terminal" name="lab_tab_no_helper.zshc.lan.nohelper" time="23.50">
+</testcase>
+<testcase classname="terminal" name="lab_tab_no_helper.zshc.150.nohelper" time="30.00">
+</testcase>
+<testcase classname="agent" name="lab_chips.bash.lan.nohelper" time="10.90">
+</testcase>
+<testcase classname="agent" name="lab_chips.zsh.lan.nohelper" time="11.20">
+</testcase>
+<testcase classname="agent" name="lab_chips.zsh.150.nohelper" time="16.30">
+<failure message="3 side-call exec channels for 1 prompt(s): the app must batch to at most one per prompt">3 side-call exec channels for 1 prompt(s): the app must batch to at most one per prompt
+exec_channel_timeline (s after the window opened, backend_route lines logged by then): 0.23/0, 0.23/0, 1.34/1
+side-call producers (#2156): shell exec lines by producer: none; prompts the app ran a batch for: []
+injector accounting: injector sent 88; app saw 88; lost-before-app 0 (Enter: sent 4, app saw 4); of the app's: 80 unbound keydown/typed, 2 taken by a key binding, 4 Enter by a binding; macOS: 88 key-down(s) reached NSApplication, 88 dispatched as key events (2 of them a menu key equivalent), 0 not (0 Cmd chord(s) injected)
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 4 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="agent" name="lab_chips.fish.lan.nohelper" time="11.60">
+</testcase>
+<testcase classname="agent" name="lab_tab_no_helper.bash.lan.nohelper" time="22.60">
+</testcase>
+<testcase classname="agent" name="lab_tab_no_helper.bash.150.nohelper" time="30.00">
+</testcase>
+<testcase classname="agent" name="lab_tab_no_helper.zsh.lan.nohelper" time="22.90">
+</testcase>
+<testcase classname="agent" name="lab_tab_no_helper.zsh.150.nohelper" time="29.70">
+</testcase>
+<testcase classname="agent" name="lab_tab_no_helper.zshc.lan.nohelper" time="24.20">
+</testcase>
+<testcase classname="agent" name="lab_tab_no_helper.zshc.150.nohelper" time="29.40">
+</testcase>
+</testsuite>

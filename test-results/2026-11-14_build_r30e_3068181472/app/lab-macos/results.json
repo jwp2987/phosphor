@@ -1,0 +1,1855 @@
+{
+ "meta": {
+  "platform": "macos",
+  "backend": "mac",
+  "app_display": "macos",
+  "seed": "1",
+  "commit": "a997653c",
+  "sha": "a997653cfa99293dbda5c8314a76eb159dd6b26a",
+  "owner_settings": "sha256 81d188e9844d",
+  "tier": "targeted",
+  "scale": "1"
+ },
+ "generated": "2026-11-14T07:13:59-0600",
+ "summary": {
+  "pass": 17,
+  "fail": 3,
+  "skip": 0,
+  "noref": 6
+ },
+ "cases": [
+  {
+   "name": "lab_chips.bash.lan.nohelper",
+   "mode": "terminal",
+   "status": "pass",
+   "ran_mode": "terminal",
+   "seconds": 11.5,
+   "evidence": [
+    "enter_route: 4 Enter(s) reached the input editor: Shell=4 [Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794661405.257,
+    1794661416.755
+   ],
+   "detail": [
+    "exec_channel_timeline (s after the window opened, backend_route lines logged by then): 1.54/1",
+    "side-call producers (#2156): shell exec lines by producer: none; prompts the app ran a batch for: []",
+    "injector accounting: injector sent 90; app saw 90; lost-before-app 0 (Enter: sent 4, app saw 4); of the app's: 82 unbound keydown/typed, 2 taken by a key binding, 4 Enter by a binding; macOS: 90 key-down(s) reached NSApplication, 90 dispatched as key events (2 of them a menu key equivalent), 0 not (0 Cmd chord(s) injected)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 4 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 5.5,
+     "target": 0,
+     "n": 15,
+     "tol": 15.0
+    },
+    "exec_channel_timeline": [
+     [
+      1.54,
+      1
+     ]
+    ],
+    "side_calls": 1,
+    "prompts": 1,
+    "injector": {
+     "sent": 90,
+     "enters_sent": 4,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 90,
+     "unbound": 82,
+     "bound": 2,
+     "enters_bound": 4,
+     "os_keys": 90,
+     "undispatched": 0,
+     "cmd_chords": 0,
+     "menu": 2,
+     "menu_cmd": 0,
+     "cmd_allowed": 0,
+     "app_undelivered": 0,
+     "seen": 90,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 4
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 4
+    },
+    "enter_taint": {
+     "taps": 4,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_lab_chips.bash.lan.nohelper.png"
+   ]
+  },
+  {
+   "name": "lab_chips.zsh.lan.nohelper",
+   "mode": "terminal",
+   "status": "pass",
+   "ran_mode": "terminal",
+   "seconds": 11.2,
+   "evidence": [
+    "enter_route: 4 Enter(s) reached the input editor: Shell=4 [Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794661420.128,
+    1794661431.309
+   ],
+   "detail": [
+    "exec_channel_timeline (s after the window opened, backend_route lines logged by then): 1.55/5",
+    "side-call producers (#2156): shell exec lines by producer: none; prompts the app ran a batch for: []",
+    "injector accounting: injector sent 88; app saw 88; lost-before-app 0 (Enter: sent 4, app saw 4); of the app's: 80 unbound keydown/typed, 2 taken by a key binding, 4 Enter by a binding; macOS: 88 key-down(s) reached NSApplication, 88 dispatched as key events (2 of them a menu key equivalent), 0 not (0 Cmd chord(s) injected)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 4 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 3.2,
+     "target": 0,
+     "n": 15,
+     "tol": 15.0
+    },
+    "exec_channel_timeline": [
+     [
+      1.55,
+      5
+     ]
+    ],
+    "side_calls": 1,
+    "prompts": 1,
+    "injector": {
+     "sent": 88,
+     "enters_sent": 4,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 88,
+     "unbound": 80,
+     "bound": 2,
+     "enters_bound": 4,
+     "os_keys": 88,
+     "undispatched": 0,
+     "cmd_chords": 0,
+     "menu": 2,
+     "menu_cmd": 0,
+     "cmd_allowed": 0,
+     "app_undelivered": 0,
+     "seen": 88,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 4
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 4
+    },
+    "enter_taint": {
+     "taps": 4,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_lab_chips.zsh.lan.nohelper.png"
+   ]
+  },
+  {
+   "name": "lab_chips.zsh.150.nohelper",
+   "mode": "terminal",
+   "status": "fail",
+   "ran_mode": "terminal",
+   "seconds": 16.7,
+   "evidence": [
+    "enter_route: 4 Enter(s) reached the input editor: Shell=4 [Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794661434.839,
+    1794661451.491
+   ],
+   "detail": [
+    "3 side-call exec channels for 1 prompt(s): the app must batch to at most one per prompt",
+    "exec_channel_timeline (s after the window opened, backend_route lines logged by then): 0.23/0, 0.23/0, 1.55/1",
+    "side-call producers (#2156): shell exec lines by producer: none; prompts the app ran a batch for: []",
+    "injector accounting: injector sent 88; app saw 88; lost-before-app 0 (Enter: sent 4, app saw 4); of the app's: 80 unbound keydown/typed, 2 taken by a key binding, 4 Enter by a binding; macOS: 88 key-down(s) reached NSApplication, 88 dispatched as key events (2 of them a menu key equivalent), 0 not (0 Cmd chord(s) injected)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 4 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 154.2,
+     "target": 150,
+     "n": 15,
+     "tol": 15.0
+    },
+    "exec_channel_timeline": [
+     [
+      0.23,
+      0
+     ],
+     [
+      0.23,
+      0
+     ],
+     [
+      1.55,
+      1
+     ]
+    ],
+    "side_calls": 3,
+    "prompts": 1,
+    "injector": {
+     "sent": 88,
+     "enters_sent": 4,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 88,
+     "unbound": 80,
+     "bound": 2,
+     "enters_bound": 4,
+     "os_keys": 88,
+     "undispatched": 0,
+     "cmd_chords": 0,
+     "menu": 2,
+     "menu_cmd": 0,
+     "cmd_allowed": 0,
+     "app_undelivered": 0,
+     "seen": 88,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 4
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 4
+    },
+    "enter_taint": {
+     "taps": 4,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_lab_chips.zsh.150.nohelper_FAIL.png"
+   ]
+  },
+  {
+   "name": "lab_chips.fish.lan.nohelper",
+   "mode": "terminal",
+   "status": "pass",
+   "ran_mode": "terminal",
+   "seconds": 11.4,
+   "evidence": [
+    "enter_route: 5 Enter(s) reached the input editor: Shell=5 [Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794661456.681,
+    1794661468.043
+   ],
+   "detail": [
+    "exec_channel_timeline (s after the window opened, backend_route lines logged by then): 1.53/1",
+    "side-call producers (#2156): shell exec lines by producer: none; prompts the app ran a batch for: []",
+    "injector accounting: injector sent 92; app saw 92; lost-before-app 0 (Enter: sent 4, app saw 4); of the app's: 84 unbound keydown/typed, 2 taken by a key binding, 4 Enter by a binding; macOS: 92 key-down(s) reached NSApplication, 92 dispatched as key events (2 of them a menu key equivalent), 0 not (0 Cmd chord(s) injected)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 4 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 3.9,
+     "target": 0,
+     "n": 15,
+     "tol": 15.0
+    },
+    "exec_channel_timeline": [
+     [
+      1.53,
+      1
+     ]
+    ],
+    "side_calls": 1,
+    "prompts": 1,
+    "injector": {
+     "sent": 92,
+     "enters_sent": 4,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 92,
+     "unbound": 84,
+     "bound": 2,
+     "enters_bound": 4,
+     "os_keys": 92,
+     "undispatched": 0,
+     "cmd_chords": 0,
+     "menu": 2,
+     "menu_cmd": 0,
+     "cmd_allowed": 0,
+     "app_undelivered": 0,
+     "seen": 92,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 4
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 4
+    },
+    "enter_taint": {
+     "taps": 4,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_lab_chips.fish.lan.nohelper.png"
+   ]
+  },
+  {
+   "name": "lab_fam_git_read.bash.lan.nohelper",
+   "mode": "terminal",
+   "status": "noref",
+   "ran_mode": "terminal",
+   "seconds": 13.1,
+   "evidence": [
+    "enter_route: 5 Enter(s) reached the input editor: Shell=5 [Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794661471.693,
+    1794661484.779
+   ],
+   "detail": [
+    "exec_channel_timeline (s after the window opened, backend_route lines logged by then): 0.89/1, 4.89/9",
+    "NO-REFERENCE: UNVERIFIABLE: [hook] the app logged no `hop=backend_route family=git_read backend=..` line: the route is not proven",
+    "injector accounting: injector sent 93; app saw 93; lost-before-app 0 (Enter: sent 5, app saw 5); of the app's: 84 unbound keydown/typed, 2 taken by a key binding, 5 Enter by a binding; macOS: 93 key-down(s) reached NSApplication, 93 dispatched as key events (2 of them a menu key equivalent), 0 not (0 Cmd chord(s) injected)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 5 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 4.0,
+     "target": 0,
+     "n": 15,
+     "tol": 15.0
+    },
+    "exec_channel_timeline": [
+     [
+      0.89,
+      1
+     ],
+     [
+      4.89,
+      9
+     ]
+    ],
+    "exec_channels": 2,
+    "prompts": 2,
+    "injector": {
+     "sent": 93,
+     "enters_sent": 5,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 93,
+     "unbound": 84,
+     "bound": 2,
+     "enters_bound": 5,
+     "os_keys": 93,
+     "undispatched": 0,
+     "cmd_chords": 0,
+     "menu": 2,
+     "menu_cmd": 0,
+     "cmd_allowed": 0,
+     "app_undelivered": 0,
+     "seen": 93,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 5
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 5
+    },
+    "enter_taint": {
+     "taps": 5,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_lab_fam_git_read.bash.lan.nohelper.png"
+   ]
+  },
+  {
+   "name": "lab_fam_git_read.zsh.lan.nohelper",
+   "mode": "terminal",
+   "status": "noref",
+   "ran_mode": "terminal",
+   "seconds": 13.0,
+   "evidence": [
+    "enter_route: 5 Enter(s) reached the input editor: Shell=5 [Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794661488.276,
+    1794661501.306
+   ],
+   "detail": [
+    "exec_channel_timeline (s after the window opened, backend_route lines logged by then): 0.66/1, 4.42/9",
+    "NO-REFERENCE: UNVERIFIABLE: [hook] the app logged no `hop=backend_route family=git_read backend=..` line: the route is not proven",
+    "injector accounting: injector sent 91; app saw 91; lost-before-app 0 (Enter: sent 5, app saw 5); of the app's: 82 unbound keydown/typed, 2 taken by a key binding, 5 Enter by a binding; macOS: 91 key-down(s) reached NSApplication, 91 dispatched as key events (2 of them a menu key equivalent), 0 not (0 Cmd chord(s) injected)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 5 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 2.9,
+     "target": 0,
+     "n": 15,
+     "tol": 15.0
+    },
+    "exec_channel_timeline": [
+     [
+      0.66,
+      1
+     ],
+     [
+      4.42,
+      9
+     ]
+    ],
+    "exec_channels": 2,
+    "prompts": 2,
+    "injector": {
+     "sent": 91,
+     "enters_sent": 5,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 91,
+     "unbound": 82,
+     "bound": 2,
+     "enters_bound": 5,
+     "os_keys": 91,
+     "undispatched": 0,
+     "cmd_chords": 0,
+     "menu": 2,
+     "menu_cmd": 0,
+     "cmd_allowed": 0,
+     "app_undelivered": 0,
+     "seen": 91,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 5
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 5
+    },
+    "enter_taint": {
+     "taps": 5,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_lab_fam_git_read.zsh.lan.nohelper.png"
+   ]
+  },
+  {
+   "name": "lab_fam_git_read.zsh.150.nohelper",
+   "mode": "terminal",
+   "status": "noref",
+   "ran_mode": "terminal",
+   "seconds": 19.3,
+   "evidence": [
+    "enter_route: 5 Enter(s) reached the input editor: Shell=5 [Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794661504.851,
+    1794661524.141
+   ],
+   "detail": [
+    "exec_channel_timeline (s after the window opened, backend_route lines logged by then): 1.36/1, 5.26/9",
+    "NO-REFERENCE: UNVERIFIABLE: [hook] the app logged no `hop=backend_route family=git_read backend=..` line: the route is not proven",
+    "injector accounting: injector sent 91; app saw 91; lost-before-app 0 (Enter: sent 5, app saw 5); of the app's: 82 unbound keydown/typed, 2 taken by a key binding, 5 Enter by a binding; macOS: 91 key-down(s) reached NSApplication, 91 dispatched as key events (2 of them a menu key equivalent), 0 not (0 Cmd chord(s) injected)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 5 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 153.9,
+     "target": 150,
+     "n": 15,
+     "tol": 15.0
+    },
+    "exec_channel_timeline": [
+     [
+      1.36,
+      1
+     ],
+     [
+      5.26,
+      9
+     ]
+    ],
+    "exec_channels": 2,
+    "prompts": 2,
+    "injector": {
+     "sent": 91,
+     "enters_sent": 5,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 91,
+     "unbound": 82,
+     "bound": 2,
+     "enters_bound": 5,
+     "os_keys": 91,
+     "undispatched": 0,
+     "cmd_chords": 0,
+     "menu": 2,
+     "menu_cmd": 0,
+     "cmd_allowed": 0,
+     "app_undelivered": 0,
+     "seen": 91,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 5
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 5
+    },
+    "enter_taint": {
+     "taps": 5,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_lab_fam_git_read.zsh.150.nohelper.png"
+   ]
+  },
+  {
+   "name": "lab_fam_run_command.bash.lan.nohelper",
+   "mode": "terminal",
+   "status": "noref",
+   "ran_mode": "terminal",
+   "seconds": 13.4,
+   "evidence": [
+    "enter_route: 5 Enter(s) reached the input editor: Shell=5 [Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794661527.671,
+    1794661541.024
+   ],
+   "detail": [
+    "exec_channel_timeline (s after the window opened, backend_route lines logged by then): 0.89/1, 4.64/9",
+    "NO-REFERENCE: UNVERIFIABLE: [hook] the app logged no `hop=backend_route family=run_command backend=..` line: the route is not proven",
+    "injector accounting: injector sent 93; app saw 93; lost-before-app 0 (Enter: sent 5, app saw 5); of the app's: 84 unbound keydown/typed, 2 taken by a key binding, 5 Enter by a binding; macOS: 93 key-down(s) reached NSApplication, 93 dispatched as key events (2 of them a menu key equivalent), 0 not (0 Cmd chord(s) injected)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 5 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 3.1,
+     "target": 0,
+     "n": 15,
+     "tol": 15.0
+    },
+    "exec_channel_timeline": [
+     [
+      0.89,
+      1
+     ],
+     [
+      4.64,
+      9
+     ]
+    ],
+    "exec_channels": 2,
+    "prompts": 2,
+    "injector": {
+     "sent": 93,
+     "enters_sent": 5,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 93,
+     "unbound": 84,
+     "bound": 2,
+     "enters_bound": 5,
+     "os_keys": 93,
+     "undispatched": 0,
+     "cmd_chords": 0,
+     "menu": 2,
+     "menu_cmd": 0,
+     "cmd_allowed": 0,
+     "app_undelivered": 0,
+     "seen": 93,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 5
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 5
+    },
+    "enter_taint": {
+     "taps": 5,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_lab_fam_run_command.bash.lan.nohelper.png"
+   ]
+  },
+  {
+   "name": "lab_fam_run_command.zsh.lan.nohelper",
+   "mode": "terminal",
+   "status": "noref",
+   "ran_mode": "terminal",
+   "seconds": 13.8,
+   "evidence": [
+    "enter_route: 5 Enter(s) reached the input editor: Shell=5 [Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794661544.534,
+    1794661558.299
+   ],
+   "detail": [
+    "exec_channel_timeline (s after the window opened, backend_route lines logged by then): 1.11/1, 4.68/9",
+    "NO-REFERENCE: UNVERIFIABLE: [hook] the app logged no `hop=backend_route family=run_command backend=..` line: the route is not proven",
+    "injector accounting: injector sent 91; app saw 91; lost-before-app 0 (Enter: sent 5, app saw 5); of the app's: 82 unbound keydown/typed, 2 taken by a key binding, 5 Enter by a binding; macOS: 91 key-down(s) reached NSApplication, 91 dispatched as key events (2 of them a menu key equivalent), 0 not (0 Cmd chord(s) injected)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 5 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 3.7,
+     "target": 0,
+     "n": 15,
+     "tol": 15.0
+    },
+    "exec_channel_timeline": [
+     [
+      1.11,
+      1
+     ],
+     [
+      4.68,
+      9
+     ]
+    ],
+    "exec_channels": 2,
+    "prompts": 2,
+    "injector": {
+     "sent": 91,
+     "enters_sent": 5,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 91,
+     "unbound": 82,
+     "bound": 2,
+     "enters_bound": 5,
+     "os_keys": 91,
+     "undispatched": 0,
+     "cmd_chords": 0,
+     "menu": 2,
+     "menu_cmd": 0,
+     "cmd_allowed": 0,
+     "app_undelivered": 0,
+     "seen": 91,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 5
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 5
+    },
+    "enter_taint": {
+     "taps": 5,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_lab_fam_run_command.zsh.lan.nohelper.png"
+   ]
+  },
+  {
+   "name": "lab_fam_run_command.zsh.150.nohelper",
+   "mode": "terminal",
+   "status": "noref",
+   "ran_mode": "terminal",
+   "seconds": 19.2,
+   "evidence": [
+    "enter_route: 5 Enter(s) reached the input editor: Shell=5 [Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794661561.913,
+    1794661581.077
+   ],
+   "detail": [
+    "exec_channel_timeline (s after the window opened, backend_route lines logged by then): 1.54/1, 5.28/9",
+    "NO-REFERENCE: UNVERIFIABLE: [hook] the app logged no `hop=backend_route family=run_command backend=..` line: the route is not proven",
+    "injector accounting: injector sent 91; app saw 91; lost-before-app 0 (Enter: sent 5, app saw 5); of the app's: 82 unbound keydown/typed, 2 taken by a key binding, 5 Enter by a binding; macOS: 91 key-down(s) reached NSApplication, 91 dispatched as key events (2 of them a menu key equivalent), 0 not (0 Cmd chord(s) injected)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 5 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 153.5,
+     "target": 150,
+     "n": 15,
+     "tol": 15.0
+    },
+    "exec_channel_timeline": [
+     [
+      1.54,
+      1
+     ],
+     [
+      5.28,
+      9
+     ]
+    ],
+    "exec_channels": 2,
+    "prompts": 2,
+    "injector": {
+     "sent": 91,
+     "enters_sent": 5,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 91,
+     "unbound": 82,
+     "bound": 2,
+     "enters_bound": 5,
+     "os_keys": 91,
+     "undispatched": 0,
+     "cmd_chords": 0,
+     "menu": 2,
+     "menu_cmd": 0,
+     "cmd_allowed": 0,
+     "app_undelivered": 0,
+     "seen": 91,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 5
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 5
+    },
+    "enter_taint": {
+     "taps": 5,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_lab_fam_run_command.zsh.150.nohelper.png"
+   ]
+  },
+  {
+   "name": "lab_tab_no_helper.bash.lan.nohelper",
+   "mode": "terminal",
+   "status": "pass",
+   "ran_mode": "terminal",
+   "seconds": 24.3,
+   "evidence": [
+    "enter_route: 12 Enter(s) reached the input editor: Shell=12 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794661584.63,
+    1794661608.921
+   ],
+   "detail": [
+    "injector accounting: injector sent 357; app saw 357; lost-before-app 0 (Enter: sent 12, app saw 12); of the app's: 337 unbound keydown/typed, 6 taken by a key binding, 12 Enter by a binding; macOS: 357 key-down(s) reached NSApplication, 357 dispatched as key events (2 of them a menu key equivalent), 0 not (0 Cmd chord(s) injected)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 12 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 3.3,
+     "target": 0,
+     "n": 15,
+     "tol": 15.0
+    },
+    "remote_tab_in_band_ms": 69,
+    "injector": {
+     "sent": 357,
+     "enters_sent": 12,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 357,
+     "unbound": 337,
+     "bound": 6,
+     "enters_bound": 12,
+     "os_keys": 357,
+     "undispatched": 0,
+     "cmd_chords": 0,
+     "menu": 2,
+     "menu_cmd": 0,
+     "cmd_allowed": 0,
+     "app_undelivered": 0,
+     "seen": 357,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 12
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 12
+    },
+    "enter_taint": {
+     "taps": 12,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_lab_tab_no_helper.bash.lan.nohelper.png"
+   ]
+  },
+  {
+   "name": "lab_tab_no_helper.bash.150.nohelper",
+   "mode": "terminal",
+   "status": "pass",
+   "ran_mode": "terminal",
+   "seconds": 30.7,
+   "evidence": [
+    "enter_route: 15 Enter(s) reached the input editor: Shell=15 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794661612.363,
+    1794661643.092
+   ],
+   "detail": [
+    "injector accounting: injector sent 357; app saw 357; lost-before-app 0 (Enter: sent 12, app saw 12); of the app's: 337 unbound keydown/typed, 6 taken by a key binding, 12 Enter by a binding; macOS: 357 key-down(s) reached NSApplication, 357 dispatched as key events (2 of them a menu key equivalent), 0 not (0 Cmd chord(s) injected)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 12 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 154.1,
+     "target": 150,
+     "n": 15,
+     "tol": 15.0
+    },
+    "remote_tab_in_band_ms": 372,
+    "injector": {
+     "sent": 357,
+     "enters_sent": 12,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 357,
+     "unbound": 337,
+     "bound": 6,
+     "enters_bound": 12,
+     "os_keys": 357,
+     "undispatched": 0,
+     "cmd_chords": 0,
+     "menu": 2,
+     "menu_cmd": 0,
+     "cmd_allowed": 0,
+     "app_undelivered": 0,
+     "seen": 357,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 12
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 12
+    },
+    "enter_taint": {
+     "taps": 12,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_lab_tab_no_helper.bash.150.nohelper.png"
+   ]
+  },
+  {
+   "name": "lab_tab_no_helper.zsh.lan.nohelper",
+   "mode": "terminal",
+   "status": "pass",
+   "ran_mode": "terminal",
+   "seconds": 23.0,
+   "evidence": [
+    "enter_route: 12 Enter(s) reached the input editor: Shell=12 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794661646.612,
+    1794661669.601
+   ],
+   "detail": [
+    "injector accounting: injector sent 348; app saw 348; lost-before-app 0 (Enter: sent 12, app saw 12); of the app's: 328 unbound keydown/typed, 6 taken by a key binding, 12 Enter by a binding; macOS: 348 key-down(s) reached NSApplication, 348 dispatched as key events (2 of them a menu key equivalent), 0 not (0 Cmd chord(s) injected)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 12 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 3.2,
+     "target": 0,
+     "n": 15,
+     "tol": 15.0
+    },
+    "injector": {
+     "sent": 348,
+     "enters_sent": 12,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 348,
+     "unbound": 328,
+     "bound": 6,
+     "enters_bound": 12,
+     "os_keys": 348,
+     "undispatched": 0,
+     "cmd_chords": 0,
+     "menu": 2,
+     "menu_cmd": 0,
+     "cmd_allowed": 0,
+     "app_undelivered": 0,
+     "seen": 348,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 12
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 12
+    },
+    "enter_taint": {
+     "taps": 12,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_lab_tab_no_helper.zsh.lan.nohelper.png"
+   ]
+  },
+  {
+   "name": "lab_tab_no_helper.zsh.150.nohelper",
+   "mode": "terminal",
+   "status": "fail",
+   "ran_mode": "terminal",
+   "seconds": 48.1,
+   "evidence": [
+    "enter_route: 15 Enter(s) reached the input editor: Shell=15 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794661673.111,
+    1794661721.181
+   ],
+   "detail": [
+    "Tab after the prefix should have completed the REMOTE directory: the remote shell received ['cd /work/u_zsh/tnh_t54q6n1bo/phxt54q6n1bo'], want 'cd /work/u_zsh/tnh_t54q6n1bo/phxt54q6n1bo_only/'",
+    "after the completed cd the remote cwd should be /work/u_zsh/tnh_t54q6n1bo/phxt54q6n1bo_only, got ['/work/u_zsh']",
+    "Tab + Enter 30 ms later (trial 1): the shell received ['cd /work/u_zsh/tnh_t54q6n1bo/phxt56bzjck2'], want exactly one line, the completed 'cd /work/u_zsh/tnh_t54q6n1bo/phxt56bzjck2_only' (the uncompleted 'cd /work/u_zsh/tnh_t54q6n1bo/phxt56bzjck2' must never run)",
+    "Tab + Enter 30 ms later (trial 2): the shell received ['cd /work/u_zsh/tnh_t54q6n1bo/phxt578o72o7'], want exactly one line, the completed 'cd /work/u_zsh/tnh_t54q6n1bo/phxt578o72o7_only' (the uncompleted 'cd /work/u_zsh/tnh_t54q6n1bo/phxt578o72o7' must never run)",
+    "Tab + Enter 30 ms later (trial 3): the shell received ['cd /work/u_zsh/tnh_t54q6n1bo/phxt58zu1dti'], want exactly one line, the completed 'cd /work/u_zsh/tnh_t54q6n1bo/phxt58zu1dti_only' (the uncompleted 'cd /work/u_zsh/tnh_t54q6n1bo/phxt58zu1dti' must never run)",
+    "injector accounting: injector sent 348; app saw 348; lost-before-app 0 (Enter: sent 12, app saw 12); of the app's: 328 unbound keydown/typed, 6 taken by a key binding, 12 Enter by a binding; macOS: 348 key-down(s) reached NSApplication, 348 dispatched as key events (2 of them a menu key equivalent), 0 not (0 Cmd chord(s) injected)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 12 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 154.3,
+     "target": 150,
+     "n": 15,
+     "tol": 15.0
+    },
+    "injector": {
+     "sent": 348,
+     "enters_sent": 12,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 348,
+     "unbound": 328,
+     "bound": 6,
+     "enters_bound": 12,
+     "os_keys": 348,
+     "undispatched": 0,
+     "cmd_chords": 0,
+     "menu": 2,
+     "menu_cmd": 0,
+     "cmd_allowed": 0,
+     "app_undelivered": 0,
+     "seen": 348,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 12
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 12
+    },
+    "enter_taint": {
+     "taps": 12,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_lab_tab_no_helper.zsh.150.nohelper_FAIL.png"
+   ]
+  },
+  {
+   "name": "lab_tab_no_helper.zshc.lan.nohelper",
+   "mode": "terminal",
+   "status": "pass",
+   "ran_mode": "terminal",
+   "seconds": 23.5,
+   "evidence": [
+    "enter_route: 13 Enter(s) reached the input editor: Shell=13 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794661726.388,
+    1794661749.84
+   ],
+   "detail": [
+    "injector accounting: injector sent 357; app saw 357; lost-before-app 0 (Enter: sent 12, app saw 12); of the app's: 337 unbound keydown/typed, 6 taken by a key binding, 12 Enter by a binding; macOS: 357 key-down(s) reached NSApplication, 357 dispatched as key events (2 of them a menu key equivalent), 0 not (0 Cmd chord(s) injected)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 12 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 4.0,
+     "target": 0,
+     "n": 15,
+     "tol": 15.0
+    },
+    "remote_tab_in_band_ms": 47,
+    "injector": {
+     "sent": 357,
+     "enters_sent": 12,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 357,
+     "unbound": 337,
+     "bound": 6,
+     "enters_bound": 12,
+     "os_keys": 357,
+     "undispatched": 0,
+     "cmd_chords": 0,
+     "menu": 2,
+     "menu_cmd": 0,
+     "cmd_allowed": 0,
+     "app_undelivered": 0,
+     "seen": 357,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 12
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 12
+    },
+    "enter_taint": {
+     "taps": 12,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_lab_tab_no_helper.zshc.lan.nohelper.png"
+   ]
+  },
+  {
+   "name": "lab_tab_no_helper.zshc.150.nohelper",
+   "mode": "terminal",
+   "status": "pass",
+   "ran_mode": "terminal",
+   "seconds": 30.0,
+   "evidence": [
+    "enter_route: 15 Enter(s) reached the input editor: Shell=15 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794661753.458,
+    1794661783.456
+   ],
+   "detail": [
+    "injector accounting: injector sent 357; app saw 357; lost-before-app 0 (Enter: sent 12, app saw 12); of the app's: 337 unbound keydown/typed, 6 taken by a key binding, 12 Enter by a binding; macOS: 357 key-down(s) reached NSApplication, 357 dispatched as key events (2 of them a menu key equivalent), 0 not (0 Cmd chord(s) injected)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 12 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 154.5,
+     "target": 150,
+     "n": 15,
+     "tol": 15.0
+    },
+    "remote_tab_in_band_ms": 380,
+    "injector": {
+     "sent": 357,
+     "enters_sent": 12,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 357,
+     "unbound": 337,
+     "bound": 6,
+     "enters_bound": 12,
+     "os_keys": 357,
+     "undispatched": 0,
+     "cmd_chords": 0,
+     "menu": 2,
+     "menu_cmd": 0,
+     "cmd_allowed": 0,
+     "app_undelivered": 0,
+     "seen": 357,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 12
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 12
+    },
+    "enter_taint": {
+     "taps": 12,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_lab_tab_no_helper.zshc.150.nohelper.png"
+   ]
+  },
+  {
+   "name": "lab_chips.bash.lan.nohelper",
+   "mode": "agent",
+   "status": "pass",
+   "ran_mode": "agent",
+   "seconds": 10.9,
+   "evidence": [
+    "enter_route: 4 Enter(s) reached the input editor: AI=1 Shell=3 [Shell,Shell,Shell,AI]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794661793.836,
+    1794661804.778
+   ],
+   "detail": [
+    "exec_channel_timeline (s after the window opened, backend_route lines logged by then): 1.57/1",
+    "side-call producers (#2156): shell exec lines by producer: none; prompts the app ran a batch for: []",
+    "injector accounting: injector sent 90; app saw 90; lost-before-app 0 (Enter: sent 4, app saw 4); of the app's: 82 unbound keydown/typed, 2 taken by a key binding, 4 Enter by a binding; macOS: 90 key-down(s) reached NSApplication, 90 dispatched as key events (2 of them a menu key equivalent), 0 not (0 Cmd chord(s) injected)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 4 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 3.8,
+     "target": 0,
+     "n": 15,
+     "tol": 15.0
+    },
+    "exec_channel_timeline": [
+     [
+      1.57,
+      1
+     ]
+    ],
+    "side_calls": 1,
+    "prompts": 1,
+    "injector": {
+     "sent": 90,
+     "enters_sent": 4,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 90,
+     "unbound": 82,
+     "bound": 2,
+     "enters_bound": 4,
+     "os_keys": 90,
+     "undispatched": 0,
+     "cmd_chords": 0,
+     "menu": 2,
+     "menu_cmd": 0,
+     "cmd_allowed": 0,
+     "app_undelivered": 0,
+     "seen": 90,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 4
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 4
+    },
+    "enter_taint": {
+     "taps": 4,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/agent_lab_chips.bash.lan.nohelper.png"
+   ]
+  },
+  {
+   "name": "lab_chips.zsh.lan.nohelper",
+   "mode": "agent",
+   "status": "pass",
+   "ran_mode": "agent",
+   "seconds": 11.2,
+   "evidence": [
+    "enter_route: 4 Enter(s) reached the input editor: AI=1 Shell=3 [Shell,Shell,Shell,AI]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794661808.327,
+    1794661819.48
+   ],
+   "detail": [
+    "exec_channel_timeline (s after the window opened, backend_route lines logged by then): 1.36/1",
+    "side-call producers (#2156): shell exec lines by producer: none; prompts the app ran a batch for: []",
+    "injector accounting: injector sent 88; app saw 88; lost-before-app 0 (Enter: sent 4, app saw 4); of the app's: 80 unbound keydown/typed, 2 taken by a key binding, 4 Enter by a binding; macOS: 88 key-down(s) reached NSApplication, 88 dispatched as key events (2 of them a menu key equivalent), 0 not (0 Cmd chord(s) injected)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 4 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 3.7,
+     "target": 0,
+     "n": 15,
+     "tol": 15.0
+    },
+    "exec_channel_timeline": [
+     [
+      1.36,
+      1
+     ]
+    ],
+    "side_calls": 1,
+    "prompts": 1,
+    "injector": {
+     "sent": 88,
+     "enters_sent": 4,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 88,
+     "unbound": 80,
+     "bound": 2,
+     "enters_bound": 4,
+     "os_keys": 88,
+     "undispatched": 0,
+     "cmd_chords": 0,
+     "menu": 2,
+     "menu_cmd": 0,
+     "cmd_allowed": 0,
+     "app_undelivered": 0,
+     "seen": 88,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 4
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 4
+    },
+    "enter_taint": {
+     "taps": 4,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/agent_lab_chips.zsh.lan.nohelper.png"
+   ]
+  },
+  {
+   "name": "lab_chips.zsh.150.nohelper",
+   "mode": "agent",
+   "status": "fail",
+   "ran_mode": "agent",
+   "seconds": 16.3,
+   "evidence": [
+    "enter_route: 4 Enter(s) reached the input editor: AI=1 Shell=3 [Shell,Shell,Shell,AI]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794661823.003,
+    1794661839.312
+   ],
+   "detail": [
+    "3 side-call exec channels for 1 prompt(s): the app must batch to at most one per prompt",
+    "exec_channel_timeline (s after the window opened, backend_route lines logged by then): 0.23/0, 0.23/0, 1.34/1",
+    "side-call producers (#2156): shell exec lines by producer: none; prompts the app ran a batch for: []",
+    "injector accounting: injector sent 88; app saw 88; lost-before-app 0 (Enter: sent 4, app saw 4); of the app's: 80 unbound keydown/typed, 2 taken by a key binding, 4 Enter by a binding; macOS: 88 key-down(s) reached NSApplication, 88 dispatched as key events (2 of them a menu key equivalent), 0 not (0 Cmd chord(s) injected)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 4 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 153.7,
+     "target": 150,
+     "n": 15,
+     "tol": 15.0
+    },
+    "exec_channel_timeline": [
+     [
+      0.23,
+      0
+     ],
+     [
+      0.23,
+      0
+     ],
+     [
+      1.34,
+      1
+     ]
+    ],
+    "side_calls": 3,
+    "prompts": 1,
+    "injector": {
+     "sent": 88,
+     "enters_sent": 4,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 88,
+     "unbound": 80,
+     "bound": 2,
+     "enters_bound": 4,
+     "os_keys": 88,
+     "undispatched": 0,
+     "cmd_chords": 0,
+     "menu": 2,
+     "menu_cmd": 0,
+     "cmd_allowed": 0,
+     "app_undelivered": 0,
+     "seen": 88,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 4
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 4
+    },
+    "enter_taint": {
+     "taps": 4,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/agent_lab_chips.zsh.150.nohelper_FAIL.png"
+   ]
+  },
+  {
+   "name": "lab_chips.fish.lan.nohelper",
+   "mode": "agent",
+   "status": "pass",
+   "ran_mode": "agent",
+   "seconds": 11.6,
+   "evidence": [
+    "enter_route: 4 Enter(s) reached the input editor: AI=1 Shell=3 [Shell,Shell,Shell,AI]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794661844.498,
+    1794661856.071
+   ],
+   "detail": [
+    "exec_channel_timeline (s after the window opened, backend_route lines logged by then): 1.54/1",
+    "side-call producers (#2156): shell exec lines by producer: none; prompts the app ran a batch for: []",
+    "injector accounting: injector sent 92; app saw 92; lost-before-app 0 (Enter: sent 4, app saw 4); of the app's: 84 unbound keydown/typed, 2 taken by a key binding, 4 Enter by a binding; macOS: 92 key-down(s) reached NSApplication, 92 dispatched as key events (2 of them a menu key equivalent), 0 not (0 Cmd chord(s) injected)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 4 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 5.8,
+     "target": 0,
+     "n": 15,
+     "tol": 15.0
+    },
+    "exec_channel_timeline": [
+     [
+      1.54,
+      1
+     ]
+    ],
+    "side_calls": 1,
+    "prompts": 1,
+    "injector": {
+     "sent": 92,
+     "enters_sent": 4,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 92,
+     "unbound": 84,
+     "bound": 2,
+     "enters_bound": 4,
+     "os_keys": 92,
+     "undispatched": 0,
+     "cmd_chords": 0,
+     "menu": 2,
+     "menu_cmd": 0,
+     "cmd_allowed": 0,
+     "app_undelivered": 0,
+     "seen": 92,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 4
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 4
+    },
+    "enter_taint": {
+     "taps": 4,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/agent_lab_chips.fish.lan.nohelper.png"
+   ]
+  },
+  {
+   "name": "lab_tab_no_helper.bash.lan.nohelper",
+   "mode": "agent",
+   "status": "pass",
+   "ran_mode": "agent",
+   "seconds": 22.6,
+   "evidence": [
+    "enter_route: 12 Enter(s) reached the input editor: AI=1 Shell=11 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,AI]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794661859.819,
+    1794661882.413
+   ],
+   "detail": [
+    "injector accounting: injector sent 357; app saw 357; lost-before-app 0 (Enter: sent 12, app saw 12); of the app's: 337 unbound keydown/typed, 6 taken by a key binding, 12 Enter by a binding; macOS: 357 key-down(s) reached NSApplication, 357 dispatched as key events (2 of them a menu key equivalent), 0 not (0 Cmd chord(s) injected)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 12 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 3.7,
+     "target": 0,
+     "n": 15,
+     "tol": 15.0
+    },
+    "remote_tab_in_band_ms": 78,
+    "injector": {
+     "sent": 357,
+     "enters_sent": 12,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 357,
+     "unbound": 337,
+     "bound": 6,
+     "enters_bound": 12,
+     "os_keys": 357,
+     "undispatched": 0,
+     "cmd_chords": 0,
+     "menu": 2,
+     "menu_cmd": 0,
+     "cmd_allowed": 0,
+     "app_undelivered": 0,
+     "seen": 357,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 12
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 12
+    },
+    "enter_taint": {
+     "taps": 12,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/agent_lab_tab_no_helper.bash.lan.nohelper.png"
+   ]
+  },
+  {
+   "name": "lab_tab_no_helper.bash.150.nohelper",
+   "mode": "agent",
+   "status": "pass",
+   "ran_mode": "agent",
+   "seconds": 30.0,
+   "evidence": [
+    "enter_route: 15 Enter(s) reached the input editor: AI=1 Shell=14 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,AI]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794661886.186,
+    1794661916.166
+   ],
+   "detail": [
+    "injector accounting: injector sent 357; app saw 357; lost-before-app 0 (Enter: sent 12, app saw 12); of the app's: 337 unbound keydown/typed, 6 taken by a key binding, 12 Enter by a binding; macOS: 357 key-down(s) reached NSApplication, 357 dispatched as key events (2 of them a menu key equivalent), 0 not (0 Cmd chord(s) injected)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 12 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 153.4,
+     "target": 150,
+     "n": 15,
+     "tol": 15.0
+    },
+    "remote_tab_in_band_ms": 352,
+    "injector": {
+     "sent": 357,
+     "enters_sent": 12,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 357,
+     "unbound": 337,
+     "bound": 6,
+     "enters_bound": 12,
+     "os_keys": 357,
+     "undispatched": 0,
+     "cmd_chords": 0,
+     "menu": 2,
+     "menu_cmd": 0,
+     "cmd_allowed": 0,
+     "app_undelivered": 0,
+     "seen": 357,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 12
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 12
+    },
+    "enter_taint": {
+     "taps": 12,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/agent_lab_tab_no_helper.bash.150.nohelper.png"
+   ]
+  },
+  {
+   "name": "lab_tab_no_helper.zsh.lan.nohelper",
+   "mode": "agent",
+   "status": "pass",
+   "ran_mode": "agent",
+   "seconds": 22.9,
+   "evidence": [
+    "enter_route: 12 Enter(s) reached the input editor: AI=1 Shell=11 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,AI]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794661919.931,
+    1794661942.786
+   ],
+   "detail": [
+    "injector accounting: injector sent 348; app saw 348; lost-before-app 0 (Enter: sent 12, app saw 12); of the app's: 328 unbound keydown/typed, 6 taken by a key binding, 12 Enter by a binding; macOS: 348 key-down(s) reached NSApplication, 348 dispatched as key events (2 of them a menu key equivalent), 0 not (0 Cmd chord(s) injected)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 12 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 3.6,
+     "target": 0,
+     "n": 15,
+     "tol": 15.0
+    },
+    "injector": {
+     "sent": 348,
+     "enters_sent": 12,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 348,
+     "unbound": 328,
+     "bound": 6,
+     "enters_bound": 12,
+     "os_keys": 348,
+     "undispatched": 0,
+     "cmd_chords": 0,
+     "menu": 2,
+     "menu_cmd": 0,
+     "cmd_allowed": 0,
+     "app_undelivered": 0,
+     "seen": 348,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 12
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 12
+    },
+    "enter_taint": {
+     "taps": 12,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/agent_lab_tab_no_helper.zsh.lan.nohelper.png"
+   ]
+  },
+  {
+   "name": "lab_tab_no_helper.zsh.150.nohelper",
+   "mode": "agent",
+   "status": "pass",
+   "ran_mode": "agent",
+   "seconds": 29.7,
+   "evidence": [
+    "enter_route: 15 Enter(s) reached the input editor: AI=1 Shell=14 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,AI]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794661946.577,
+    1794661976.322
+   ],
+   "detail": [
+    "injector accounting: injector sent 348; app saw 348; lost-before-app 0 (Enter: sent 12, app saw 12); of the app's: 328 unbound keydown/typed, 6 taken by a key binding, 12 Enter by a binding; macOS: 348 key-down(s) reached NSApplication, 348 dispatched as key events (2 of them a menu key equivalent), 0 not (0 Cmd chord(s) injected)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 12 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 154.0,
+     "target": 150,
+     "n": 15,
+     "tol": 15.0
+    },
+    "injector": {
+     "sent": 348,
+     "enters_sent": 12,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 348,
+     "unbound": 328,
+     "bound": 6,
+     "enters_bound": 12,
+     "os_keys": 348,
+     "undispatched": 0,
+     "cmd_chords": 0,
+     "menu": 2,
+     "menu_cmd": 0,
+     "cmd_allowed": 0,
+     "app_undelivered": 0,
+     "seen": 348,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 12
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 12
+    },
+    "enter_taint": {
+     "taps": 12,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/agent_lab_tab_no_helper.zsh.150.nohelper.png"
+   ]
+  },
+  {
+   "name": "lab_tab_no_helper.zshc.lan.nohelper",
+   "mode": "agent",
+   "status": "pass",
+   "ran_mode": "agent",
+   "seconds": 24.2,
+   "evidence": [
+    "enter_route: 12 Enter(s) reached the input editor: AI=1 Shell=11 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,AI]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794661980.158,
+    1794662004.355
+   ],
+   "detail": [
+    "injector accounting: injector sent 357; app saw 357; lost-before-app 0 (Enter: sent 12, app saw 12); of the app's: 337 unbound keydown/typed, 6 taken by a key binding, 12 Enter by a binding; macOS: 357 key-down(s) reached NSApplication, 357 dispatched as key events (2 of them a menu key equivalent), 0 not (0 Cmd chord(s) injected)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 12 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 3.3,
+     "target": 0,
+     "n": 15,
+     "tol": 15.0
+    },
+    "remote_tab_in_band_ms": 82,
+    "injector": {
+     "sent": 357,
+     "enters_sent": 12,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 357,
+     "unbound": 337,
+     "bound": 6,
+     "enters_bound": 12,
+     "os_keys": 357,
+     "undispatched": 0,
+     "cmd_chords": 0,
+     "menu": 2,
+     "menu_cmd": 0,
+     "cmd_allowed": 0,
+     "app_undelivered": 0,
+     "seen": 357,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 12
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 12
+    },
+    "enter_taint": {
+     "taps": 12,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/agent_lab_tab_no_helper.zshc.lan.nohelper.png"
+   ]
+  },
+  {
+   "name": "lab_tab_no_helper.zshc.150.nohelper",
+   "mode": "agent",
+   "status": "pass",
+   "ran_mode": "agent",
+   "seconds": 29.4,
+   "evidence": [
+    "enter_route: 15 Enter(s) reached the input editor: AI=1 Shell=14 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,AI]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794662008.254,
+    1794662037.658
+   ],
+   "detail": [
+    "injector accounting: injector sent 357; app saw 357; lost-before-app 0 (Enter: sent 12, app saw 12); of the app's: 337 unbound keydown/typed, 6 taken by a key binding, 12 Enter by a binding; macOS: 357 key-down(s) reached NSApplication, 357 dispatched as key events (2 of them a menu key equivalent), 0 not (0 Cmd chord(s) injected)",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 12 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 153.6,
+     "target": 150,
+     "n": 15,
+     "tol": 15.0
+    },
+    "remote_tab_in_band_ms": 376,
+    "injector": {
+     "sent": 357,
+     "enters_sent": 12,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 357,
+     "unbound": 337,
+     "bound": 6,
+     "enters_bound": 12,
+     "os_keys": 357,
+     "undispatched": 0,
+     "cmd_chords": 0,
+     "menu": 2,
+     "menu_cmd": 0,
+     "cmd_allowed": 0,
+     "app_undelivered": 0,
+     "seen": 357,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 12
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 12
+    },
+    "enter_taint": {
+     "taps": 12,
+     "lost": 0,
+     "uncovered": 0,
+     "elsewhere": 0
+    }
+   },
+   "shots": [
+    "shots/agent_lab_tab_no_helper.zshc.150.nohelper.png"
+   ]
+  }
+ ]
+}

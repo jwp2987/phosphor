@@ -1,0 +1,1476 @@
+{
+ "pipeline": 3068181472,
+ "web_url": "https://gitlab.com/winters-phosphor/phosphor/-/pipelines/3068181472",
+ "ref": "build/r30e",
+ "commit": "a997653cfa99293dbda5c8314a76eb159dd6b26a",
+ "created_at": "2026-11-14T11:47:02.622Z",
+ "date": "2026-11-14",
+ "tier": "targeted",
+ "pipeline_status": "success",
+ "jobs": {
+  "app-test-windows-reuse": {
+   "status": "manual",
+   "duration": null,
+   "id": 18031556517,
+   "runner": null,
+   "note": "not run"
+  },
+  "app-test-macos-reuse": {
+   "status": "manual",
+   "duration": null,
+   "id": 18031556516,
+   "runner": null,
+   "note": "not run"
+  },
+  "app-test-lab-linux-reuse": {
+   "status": "manual",
+   "duration": null,
+   "id": 18031556515,
+   "runner": null,
+   "note": "not run"
+  },
+  "app-test-linux-x11-reuse": {
+   "status": "manual",
+   "duration": null,
+   "id": 18031556514,
+   "runner": null,
+   "note": "not run"
+  },
+  "app-test-linux-wayland-reuse": {
+   "status": "manual",
+   "duration": null,
+   "id": 18031556513,
+   "runner": null,
+   "note": "not run"
+  },
+  "collect-windows-run": {
+   "status": "manual",
+   "duration": null,
+   "id": 18031556512,
+   "runner": null,
+   "note": "not run"
+  },
+  "collect-macos-run": {
+   "status": "manual",
+   "duration": null,
+   "id": 18031556511,
+   "runner": null,
+   "note": "not run"
+  },
+  "app-test-replay-linux": {
+   "status": "manual",
+   "duration": null,
+   "id": 18031556510,
+   "runner": null,
+   "note": "not run"
+  },
+  "app-test-lab-windows": {
+   "status": "skipped",
+   "duration": null,
+   "id": 18031556509,
+   "runner": null
+  },
+  "app-test-lab-macos": {
+   "status": "failed",
+   "duration": 687.235238,
+   "id": 18031556508,
+   "runner": "MacBookPro-gitrunner"
+  },
+  "app-test-lab-linux": {
+   "status": "failed",
+   "duration": 497.390484,
+   "id": 18031556507,
+   "runner": ""
+  },
+  "lab-helper": {
+   "status": "success",
+   "duration": 43.629205,
+   "id": 18031556506,
+   "runner": ""
+  },
+  "sshlab-image": {
+   "status": "success",
+   "duration": 23.760806,
+   "id": 18031556505,
+   "runner": ""
+  },
+  "app-test-windows": {
+   "status": "skipped",
+   "duration": null,
+   "id": 18031556504,
+   "runner": null
+  },
+  "app-test-macos": {
+   "status": "manual",
+   "duration": null,
+   "id": 18031556503,
+   "runner": null,
+   "note": "not run"
+  },
+  "app-test-linux-x11": {
+   "status": "manual",
+   "duration": null,
+   "id": 18031556502,
+   "runner": null,
+   "note": "not run"
+  },
+  "app-test-linux-wayland": {
+   "status": "manual",
+   "duration": null,
+   "id": 18031556501,
+   "runner": null,
+   "note": "not run"
+  },
+  "build-windows-profiling": {
+   "status": "manual",
+   "duration": null,
+   "id": 18031556500,
+   "runner": null,
+   "note": "not run"
+  },
+  "build-macos-profiling": {
+   "status": "manual",
+   "duration": null,
+   "id": 18031556499,
+   "runner": null,
+   "note": "not run"
+  },
+  "build-linux-profiling": {
+   "status": "manual",
+   "duration": null,
+   "id": 18031556498,
+   "runner": null,
+   "note": "not run"
+  },
+  "build-windows-x86_64": {
+   "status": "manual",
+   "duration": null,
+   "id": 18031556497,
+   "runner": null,
+   "note": "not run"
+  },
+  "build-linux-x86_64": {
+   "status": "success",
+   "duration": 1847.204372,
+   "id": 18031556496,
+   "runner": ""
+  },
+  "build-macos-arm64": {
+   "status": "success",
+   "duration": 1130.151104,
+   "id": 18031556495,
+   "runner": "MacBookPro-gitrunner"
+  },
+  "guards-helper-deps": {
+   "status": "success",
+   "duration": 19.987838,
+   "id": 18031556494,
+   "runner": ""
+  },
+  "bench-remote-server": {
+   "status": "manual",
+   "duration": null,
+   "id": 18031556493,
+   "runner": null,
+   "note": "not run"
+  },
+  "usage-test-macos": {
+   "status": "manual",
+   "duration": null,
+   "id": 18031556492,
+   "runner": null,
+   "note": "not run"
+  },
+  "usage-test-linux": {
+   "status": "manual",
+   "duration": null,
+   "id": 18031556491,
+   "runner": null,
+   "note": "not run"
+  },
+  "bench-windows": {
+   "status": "manual",
+   "duration": null,
+   "id": 18031556490,
+   "runner": null,
+   "note": "not run"
+  },
+  "mutants-warpui-core-windows": {
+   "status": "manual",
+   "duration": null,
+   "id": 18031556489,
+   "runner": null,
+   "note": "not run"
+  },
+  "mutants-windows": {
+   "status": "manual",
+   "duration": null,
+   "id": 18031556488,
+   "runner": null,
+   "note": "not run"
+  },
+  "fuzz-smoke-windows": {
+   "status": "manual",
+   "duration": null,
+   "id": 18031556487,
+   "runner": null,
+   "note": "not run"
+  },
+  "test-shuttle-loom-windows": {
+   "status": "manual",
+   "duration": null,
+   "id": 18031556486,
+   "runner": null,
+   "note": "not run"
+  },
+  "test-workspace-rest-windows": {
+   "status": "success",
+   "duration": 429.562308,
+   "id": 18031556485,
+   "runner": "phosphor-windows-vm"
+  },
+  "test-warpui-core-windows": {
+   "status": "success",
+   "duration": 303.671962,
+   "id": 18031556484,
+   "runner": "phosphor-windows-vm"
+  },
+  "test-windows": {
+   "status": "failed",
+   "duration": 2656.915148,
+   "id": 18031556483,
+   "runner": "phosphor-windows-vm"
+  },
+  "bench-macos": {
+   "status": "manual",
+   "duration": null,
+   "id": 18031556482,
+   "runner": null,
+   "note": "not run"
+  },
+  "mutants-warpui-core-macos": {
+   "status": "manual",
+   "duration": null,
+   "id": 18031556481,
+   "runner": null,
+   "note": "not run"
+  },
+  "mutants-macos": {
+   "status": "manual",
+   "duration": null,
+   "id": 18031556480,
+   "runner": null,
+   "note": "not run"
+  },
+  "fuzz-smoke-macos": {
+   "status": "manual",
+   "duration": null,
+   "id": 18031556479,
+   "runner": null,
+   "note": "not run"
+  },
+  "test-shuttle-loom-macos": {
+   "status": "manual",
+   "duration": null,
+   "id": 18031556478,
+   "runner": null,
+   "note": "not run"
+  },
+  "test-workspace-rest-macos": {
+   "status": "success",
+   "duration": 216.781227,
+   "id": 18031556477,
+   "runner": "MacBookPro-gitrunner"
+  },
+  "test-warpui-core-macos": {
+   "status": "success",
+   "duration": 66.374524,
+   "id": 18031556476,
+   "runner": "MacBookPro-gitrunner"
+  },
+  "test-macos": {
+   "status": "success",
+   "duration": 1754.157239,
+   "id": 18031556475,
+   "runner": "MacBookPro-gitrunner"
+  },
+  "bench": {
+   "status": "manual",
+   "duration": null,
+   "id": 18031556474,
+   "runner": null,
+   "note": "not run"
+  },
+  "mutants-warpui-core": {
+   "status": "manual",
+   "duration": null,
+   "id": 18031556473,
+   "runner": null,
+   "note": "not run"
+  },
+  "mutants": {
+   "status": "manual",
+   "duration": null,
+   "id": 18031556472,
+   "runner": null,
+   "note": "not run"
+  },
+  "fuzz-smoke": {
+   "status": "manual",
+   "duration": null,
+   "id": 18031556471,
+   "runner": null,
+   "note": "not run"
+  },
+  "test-shuttle-loom": {
+   "status": "manual",
+   "duration": null,
+   "id": 18031556470,
+   "runner": null,
+   "note": "not run"
+  },
+  "input-timers-strict": {
+   "status": "manual",
+   "duration": null,
+   "id": 18031556469,
+   "runner": null,
+   "note": "not run"
+  },
+  "integration-linux-pwsh": {
+   "status": "manual",
+   "duration": null,
+   "id": 18031556468,
+   "runner": null,
+   "note": "not run"
+  },
+  "integration-linux: [3]": {
+   "status": "manual",
+   "duration": null,
+   "id": 18031556467,
+   "runner": null,
+   "note": "not run"
+  },
+  "integration-linux: [2]": {
+   "status": "manual",
+   "duration": null,
+   "id": 18031556466,
+   "runner": null,
+   "note": "not run"
+  },
+  "integration-linux: [1]": {
+   "status": "manual",
+   "duration": null,
+   "id": 18031556465,
+   "runner": null,
+   "note": "not run"
+  },
+  "test-workspace-rest": {
+   "status": "success",
+   "duration": 96.170426,
+   "id": 18031556464,
+   "runner": ""
+  },
+  "insta-snapshots": {
+   "status": "manual",
+   "duration": null,
+   "id": 18031556463,
+   "runner": null,
+   "note": "not run"
+  },
+  "test-warpui-core": {
+   "status": "success",
+   "duration": 68.935622,
+   "id": 18031556462,
+   "runner": ""
+  },
+  "test-linux": {
+   "status": "success",
+   "duration": 1342.988023,
+   "id": 18031556461,
+   "runner": ""
+  },
+  "advisories": {
+   "status": "success",
+   "duration": 10.131345,
+   "id": 18031556460,
+   "runner": ""
+  },
+  "licenses": {
+   "status": "success",
+   "duration": 19.022145,
+   "id": 18031556459,
+   "runner": ""
+  },
+  "check-windows": {
+   "status": "manual",
+   "duration": null,
+   "id": 18031556458,
+   "runner": null,
+   "note": "not run"
+  },
+  "guards-windows": {
+   "status": "manual",
+   "duration": null,
+   "id": 18031556457,
+   "runner": null,
+   "note": "not run"
+  },
+  "diag-windows": {
+   "status": "manual",
+   "duration": null,
+   "id": 18031556456,
+   "runner": null,
+   "note": "not run"
+  },
+  "check-macos": {
+   "status": "manual",
+   "duration": null,
+   "id": 18031556455,
+   "runner": null,
+   "note": "not run"
+  },
+  "diag-mac": {
+   "status": "manual",
+   "duration": null,
+   "id": 18031556454,
+   "runner": null,
+   "note": "not run"
+  },
+  "check-linux": {
+   "status": "success",
+   "duration": 647.144017,
+   "id": 18031556453,
+   "runner": ""
+  },
+  "guards": {
+   "status": "success",
+   "duration": 521.731657,
+   "id": 18031556452,
+   "runner": ""
+  }
+ },
+ "unit": {
+  "test-workspace-rest-windows": {
+   "summary_line": "Summary [  40.735s] 3552 tests run: 3552 passed, 24 skipped",
+   "duration_s": 40.735,
+   "run": 3552,
+   "passed": 3552,
+   "failed": 0,
+   "timed_out": 0,
+   "skipped": 24,
+   "slow": 0,
+   "flaky": 0,
+   "failures": [],
+   "regressions": [],
+   "notes": [
+    "tests: ok (0 known failure(s), no regressions)"
+   ],
+   "job": "test-workspace-rest-windows",
+   "status": "success",
+   "duration": 429.562308
+  },
+  "test-warpui-core-windows": {
+   "summary_line": "Summary [   5.478s] 864 tests run: 864 passed, 7 skipped",
+   "duration_s": 5.478,
+   "run": 864,
+   "passed": 864,
+   "failed": 0,
+   "timed_out": 0,
+   "skipped": 7,
+   "slow": 0,
+   "flaky": 0,
+   "failures": [],
+   "regressions": [],
+   "notes": [
+    "tests: ok (0 known failure(s), no regressions)"
+   ],
+   "job": "test-warpui-core-windows",
+   "status": "success",
+   "duration": 303.671962
+  },
+  "test-windows": {
+   "summary_line": "Summary [ 797.278s] 12035 tests run: 12034 passed (10 slow, 8 leaky), 1 failed, 47 skipped",
+   "duration_s": 797.278,
+   "run": 12035,
+   "passed": 12034,
+   "failed": 1,
+   "timed_out": 0,
+   "skipped": 47,
+   "slow": 10,
+   "flaky": 0,
+   "failures": [
+    {
+     "kind": "LEAK",
+     "crate": "warp",
+     "test": "ai::blocklist::agent_fuzz::matrix::triples_command::off",
+     "seconds": 131.522
+    },
+    {
+     "kind": "LEAK",
+     "crate": "warp",
+     "test": "context_chips::current_prompt::tests::test_chips_rerun_when_the_blocks_session_registers",
+     "seconds": 0.438
+    },
+    {
+     "kind": "LEAK",
+     "crate": "warp",
+     "test": "context_chips::current_prompt::tests::test_unchanged_chip_refetch_does_not_respawn_on_click_command",
+     "seconds": 0.506
+    },
+    {
+     "kind": "LEAK",
+     "crate": "warp",
+     "test": "terminal::input::tests::test_history_file_does_not_route_requests_or_bare_english_words_to_the_shell",
+     "seconds": 0.779
+    },
+    {
+     "kind": "FAIL",
+     "crate": "warp",
+     "test": "util::git::tests::commit_chain_commit_only_creates_a_commit_and_reports_delta",
+     "seconds": 1.388
+    },
+    {
+     "kind": "LEAK",
+     "crate": "warp",
+     "test": "workspace::view::tests::test_active_tab_bar_position_id_tracks_layout",
+     "seconds": 0.736
+    },
+    {
+     "kind": "LEAK",
+     "crate": "warp",
+     "test": "workspace::view::tests::test_closing_a_code_pane_drops_its_editor_and_buffer",
+     "seconds": 2.138
+    },
+    {
+     "kind": "LEAK",
+     "crate": "warp",
+     "test": "workspace::view::tests::test_closing_a_code_pane_releases_a_retained_editors_heavy_state",
+     "seconds": 2.09
+    },
+    {
+     "kind": "LEAK",
+     "crate": "warp",
+     "test": "workspace::view::tests::test_reopening_a_file_whose_code_pane_was_moved_away_still_opens_it",
+     "seconds": 1.815
+    }
+   ],
+   "regressions": [
+    "util::git::tests::commit_chain_commit_only_creates_a_commit_and_reports_delta"
+   ],
+   "notes": [
+    "REGRESSION -- this change broke test(s). Fix the code.",
+    "error: test(s) failed that are not in script/known_test_failures_windows.txt:"
+   ],
+   "job": "test-windows",
+   "status": "failed",
+   "duration": 2656.915148
+  },
+  "test-workspace-rest-macos": {
+   "summary_line": "Summary [  48.461s] 3654 tests run: 3654 passed, 11 skipped",
+   "duration_s": 48.461,
+   "run": 3654,
+   "passed": 3654,
+   "failed": 0,
+   "timed_out": 0,
+   "skipped": 11,
+   "slow": 0,
+   "flaky": 0,
+   "failures": [],
+   "regressions": [],
+   "notes": [
+    "tests: ok (0 known failure(s), no regressions)"
+   ],
+   "job": "test-workspace-rest-macos",
+   "status": "success",
+   "duration": 216.781227
+  },
+  "test-warpui-core-macos": {
+   "summary_line": "Summary [   6.904s] 857 tests run: 857 passed, 7 skipped",
+   "duration_s": 6.904,
+   "run": 857,
+   "passed": 857,
+   "failed": 0,
+   "timed_out": 0,
+   "skipped": 7,
+   "slow": 0,
+   "flaky": 0,
+   "failures": [],
+   "regressions": [],
+   "notes": [
+    "tests: ok (0 known failure(s), no regressions)"
+   ],
+   "job": "test-warpui-core-macos",
+   "status": "success",
+   "duration": 66.374524
+  },
+  "test-macos": {
+   "summary_line": "Summary [1248.773s] 12280 tests run: 12280 passed (10 slow), 34 skipped",
+   "duration_s": 1248.773,
+   "run": 12280,
+   "passed": 12280,
+   "failed": 0,
+   "timed_out": 0,
+   "skipped": 34,
+   "slow": 10,
+   "flaky": 0,
+   "failures": [],
+   "regressions": [],
+   "notes": [
+    "tests: ok (0 known failure(s), no regressions)"
+   ],
+   "job": "test-macos",
+   "status": "success",
+   "duration": 1754.157239
+  },
+  "test-workspace-rest": {
+   "summary_line": "Summary [  33.078s] 3813 tests run: 3813 passed, 19 skipped",
+   "duration_s": 33.078,
+   "run": 3813,
+   "passed": 3813,
+   "failed": 0,
+   "timed_out": 0,
+   "skipped": 19,
+   "slow": 0,
+   "flaky": 0,
+   "failures": [],
+   "regressions": [],
+   "notes": [
+    "tests: ok (0 known failure(s), no regressions)"
+   ],
+   "job": "test-workspace-rest",
+   "status": "success",
+   "duration": 96.170426
+  },
+  "test-warpui-core": {
+   "summary_line": "Summary [   5.145s] 864 tests run: 864 passed, 7 skipped",
+   "duration_s": 5.145,
+   "run": 864,
+   "passed": 864,
+   "failed": 0,
+   "timed_out": 0,
+   "skipped": 7,
+   "slow": 0,
+   "flaky": 0,
+   "failures": [],
+   "regressions": [],
+   "notes": [
+    "tests: ok (0 known failure(s), no regressions)"
+   ],
+   "job": "test-warpui-core",
+   "status": "success",
+   "duration": 68.935622
+  },
+  "test-linux": {
+   "summary_line": "Summary [1022.442s] 12319 tests run: 12319 passed (9 slow), 35 skipped",
+   "duration_s": 1022.442,
+   "run": 12319,
+   "passed": 12319,
+   "failed": 0,
+   "timed_out": 0,
+   "skipped": 35,
+   "slow": 9,
+   "flaky": 0,
+   "failures": [],
+   "regressions": [],
+   "notes": [
+    "tests: ok (0 known failure(s), no regressions)"
+   ],
+   "job": "test-linux",
+   "status": "success",
+   "duration": 1342.988023
+  }
+ },
+ "app": {
+  "lab-macos": {
+   "job": "app-test-lab-macos",
+   "job_id": 18031556508,
+   "status": "failed",
+   "reuse": false,
+   "cases": [
+    {
+     "mode": "terminal",
+     "name": "lab_chips.bash.lan.nohelper",
+     "status": "pass",
+     "seconds": 11.5,
+     "detail": [
+      "exec_channel_timeline (s after the window opened, backend_route lines logged by then): 1.54/1",
+      "side-call producers (#2156): shell exec lines by producer: none; prompts the app ran a batch for: []",
+      "injector accounting: injector sent 90; app saw 90; lost-before-app 0 (Enter: sent 4, app saw 4); of the app's: 82 unbound keydown/typed, 2 taken by a key binding, 4 Enter by a binding; macOS: 90 key-down(s) reached NSApplication, 90 dispatched as key events (2 of them a menu key equivalent), 0 not (",
+      "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 4 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "lab_chips.zsh.lan.nohelper",
+     "status": "pass",
+     "seconds": 11.2,
+     "detail": [
+      "exec_channel_timeline (s after the window opened, backend_route lines logged by then): 1.55/5",
+      "side-call producers (#2156): shell exec lines by producer: none; prompts the app ran a batch for: []",
+      "injector accounting: injector sent 88; app saw 88; lost-before-app 0 (Enter: sent 4, app saw 4); of the app's: 80 unbound keydown/typed, 2 taken by a key binding, 4 Enter by a binding; macOS: 88 key-down(s) reached NSApplication, 88 dispatched as key events (2 of them a menu key equivalent), 0 not (",
+      "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 4 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "lab_chips.zsh.150.nohelper",
+     "status": "fail",
+     "seconds": 16.7,
+     "detail": [
+      "3 side-call exec channels for 1 prompt(s): the app must batch to at most one per prompt",
+      "exec_channel_timeline (s after the window opened, backend_route lines logged by then): 0.23/0, 0.23/0, 1.55/1",
+      "side-call producers (#2156): shell exec lines by producer: none; prompts the app ran a batch for: []",
+      "injector accounting: injector sent 88; app saw 88; lost-before-app 0 (Enter: sent 4, app saw 4); of the app's: 80 unbound keydown/typed, 2 taken by a key binding, 4 Enter by a binding; macOS: 88 key-down(s) reached NSApplication, 88 dispatched as key events (2 of them a menu key equivalent), 0 not (",
+      "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 4 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "lab_chips.fish.lan.nohelper",
+     "status": "pass",
+     "seconds": 11.4,
+     "detail": [
+      "exec_channel_timeline (s after the window opened, backend_route lines logged by then): 1.53/1",
+      "side-call producers (#2156): shell exec lines by producer: none; prompts the app ran a batch for: []",
+      "injector accounting: injector sent 92; app saw 92; lost-before-app 0 (Enter: sent 4, app saw 4); of the app's: 84 unbound keydown/typed, 2 taken by a key binding, 4 Enter by a binding; macOS: 92 key-down(s) reached NSApplication, 92 dispatched as key events (2 of them a menu key equivalent), 0 not (",
+      "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 4 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "lab_fam_git_read.bash.lan.nohelper",
+     "status": "noref",
+     "seconds": 13.1,
+     "detail": [
+      "exec_channel_timeline (s after the window opened, backend_route lines logged by then): 0.89/1, 4.89/9",
+      "NO-REFERENCE: UNVERIFIABLE: [hook] the app logged no `hop=backend_route family=git_read backend=..` line: the route is not proven",
+      "injector accounting: injector sent 93; app saw 93; lost-before-app 0 (Enter: sent 5, app saw 5); of the app's: 84 unbound keydown/typed, 2 taken by a key binding, 5 Enter by a binding; macOS: 93 key-down(s) reached NSApplication, 93 dispatched as key events (2 of them a menu key equivalent), 0 not (",
+      "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 5 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "lab_fam_git_read.zsh.lan.nohelper",
+     "status": "noref",
+     "seconds": 13.0,
+     "detail": [
+      "exec_channel_timeline (s after the window opened, backend_route lines logged by then): 0.66/1, 4.42/9",
+      "NO-REFERENCE: UNVERIFIABLE: [hook] the app logged no `hop=backend_route family=git_read backend=..` line: the route is not proven",
+      "injector accounting: injector sent 91; app saw 91; lost-before-app 0 (Enter: sent 5, app saw 5); of the app's: 82 unbound keydown/typed, 2 taken by a key binding, 5 Enter by a binding; macOS: 91 key-down(s) reached NSApplication, 91 dispatched as key events (2 of them a menu key equivalent), 0 not (",
+      "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 5 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "lab_fam_git_read.zsh.150.nohelper",
+     "status": "noref",
+     "seconds": 19.3,
+     "detail": [
+      "exec_channel_timeline (s after the window opened, backend_route lines logged by then): 1.36/1, 5.26/9",
+      "NO-REFERENCE: UNVERIFIABLE: [hook] the app logged no `hop=backend_route family=git_read backend=..` line: the route is not proven",
+      "injector accounting: injector sent 91; app saw 91; lost-before-app 0 (Enter: sent 5, app saw 5); of the app's: 82 unbound keydown/typed, 2 taken by a key binding, 5 Enter by a binding; macOS: 91 key-down(s) reached NSApplication, 91 dispatched as key events (2 of them a menu key equivalent), 0 not (",
+      "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 5 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "lab_fam_run_command.bash.lan.nohelper",
+     "status": "noref",
+     "seconds": 13.4,
+     "detail": [
+      "exec_channel_timeline (s after the window opened, backend_route lines logged by then): 0.89/1, 4.64/9",
+      "NO-REFERENCE: UNVERIFIABLE: [hook] the app logged no `hop=backend_route family=run_command backend=..` line: the route is not proven",
+      "injector accounting: injector sent 93; app saw 93; lost-before-app 0 (Enter: sent 5, app saw 5); of the app's: 84 unbound keydown/typed, 2 taken by a key binding, 5 Enter by a binding; macOS: 93 key-down(s) reached NSApplication, 93 dispatched as key events (2 of them a menu key equivalent), 0 not (",
+      "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 5 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "lab_fam_run_command.zsh.lan.nohelper",
+     "status": "noref",
+     "seconds": 13.8,
+     "detail": [
+      "exec_channel_timeline (s after the window opened, backend_route lines logged by then): 1.11/1, 4.68/9",
+      "NO-REFERENCE: UNVERIFIABLE: [hook] the app logged no `hop=backend_route family=run_command backend=..` line: the route is not proven",
+      "injector accounting: injector sent 91; app saw 91; lost-before-app 0 (Enter: sent 5, app saw 5); of the app's: 82 unbound keydown/typed, 2 taken by a key binding, 5 Enter by a binding; macOS: 91 key-down(s) reached NSApplication, 91 dispatched as key events (2 of them a menu key equivalent), 0 not (",
+      "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 5 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "lab_fam_run_command.zsh.150.nohelper",
+     "status": "noref",
+     "seconds": 19.2,
+     "detail": [
+      "exec_channel_timeline (s after the window opened, backend_route lines logged by then): 1.54/1, 5.28/9",
+      "NO-REFERENCE: UNVERIFIABLE: [hook] the app logged no `hop=backend_route family=run_command backend=..` line: the route is not proven",
+      "injector accounting: injector sent 91; app saw 91; lost-before-app 0 (Enter: sent 5, app saw 5); of the app's: 82 unbound keydown/typed, 2 taken by a key binding, 5 Enter by a binding; macOS: 91 key-down(s) reached NSApplication, 91 dispatched as key events (2 of them a menu key equivalent), 0 not (",
+      "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 5 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "lab_tab_no_helper.bash.lan.nohelper",
+     "status": "pass",
+     "seconds": 24.3,
+     "detail": [
+      "injector accounting: injector sent 357; app saw 357; lost-before-app 0 (Enter: sent 12, app saw 12); of the app's: 337 unbound keydown/typed, 6 taken by a key binding, 12 Enter by a binding; macOS: 357 key-down(s) reached NSApplication, 357 dispatched as key events (2 of them a menu key equivalent),",
+      "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 12 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "lab_tab_no_helper.bash.150.nohelper",
+     "status": "pass",
+     "seconds": 30.7,
+     "detail": [
+      "injector accounting: injector sent 357; app saw 357; lost-before-app 0 (Enter: sent 12, app saw 12); of the app's: 337 unbound keydown/typed, 6 taken by a key binding, 12 Enter by a binding; macOS: 357 key-down(s) reached NSApplication, 357 dispatched as key events (2 of them a menu key equivalent),",
+      "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 12 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "lab_tab_no_helper.zsh.lan.nohelper",
+     "status": "pass",
+     "seconds": 23.0,
+     "detail": [
+      "injector accounting: injector sent 348; app saw 348; lost-before-app 0 (Enter: sent 12, app saw 12); of the app's: 328 unbound keydown/typed, 6 taken by a key binding, 12 Enter by a binding; macOS: 348 key-down(s) reached NSApplication, 348 dispatched as key events (2 of them a menu key equivalent),",
+      "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 12 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "lab_tab_no_helper.zsh.150.nohelper",
+     "status": "fail",
+     "seconds": 48.1,
+     "detail": [
+      "Tab after the prefix should have completed the REMOTE directory: the remote shell received ['cd /work/u_zsh/tnh_t54q6n1bo/phxt54q6n1bo'], want 'cd /work/u_zsh/tnh_t54q6n1bo/phxt54q6n1bo_only/'",
+      "after the completed cd the remote cwd should be /work/u_zsh/tnh_t54q6n1bo/phxt54q6n1bo_only, got ['/work/u_zsh']",
+      "Tab + Enter 30 ms later (trial 1): the shell received ['cd /work/u_zsh/tnh_t54q6n1bo/phxt56bzjck2'], want exactly one line, the completed 'cd /work/u_zsh/tnh_t54q6n1bo/phxt56bzjck2_only' (the uncompleted 'cd /work/u_zsh/tnh_t54q6n1bo/phxt56bzjck2' must never run)",
+      "Tab + Enter 30 ms later (trial 2): the shell received ['cd /work/u_zsh/tnh_t54q6n1bo/phxt578o72o7'], want exactly one line, the completed 'cd /work/u_zsh/tnh_t54q6n1bo/phxt578o72o7_only' (the uncompleted 'cd /work/u_zsh/tnh_t54q6n1bo/phxt578o72o7' must never run)",
+      "Tab + Enter 30 ms later (trial 3): the shell received ['cd /work/u_zsh/tnh_t54q6n1bo/phxt58zu1dti'], want exactly one line, the completed 'cd /work/u_zsh/tnh_t54q6n1bo/phxt58zu1dti_only' (the uncompleted 'cd /work/u_zsh/tnh_t54q6n1bo/phxt58zu1dti' must never run)",
+      "injector accounting: injector sent 348; app saw 348; lost-before-app 0 (Enter: sent 12, app saw 12); of the app's: 328 unbound keydown/typed, 6 taken by a key binding, 12 Enter by a binding; macOS: 348 key-down(s) reached NSApplication, 348 dispatched as key events (2 of them a menu key equivalent),"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "lab_tab_no_helper.zshc.lan.nohelper",
+     "status": "pass",
+     "seconds": 23.5,
+     "detail": [
+      "injector accounting: injector sent 357; app saw 357; lost-before-app 0 (Enter: sent 12, app saw 12); of the app's: 337 unbound keydown/typed, 6 taken by a key binding, 12 Enter by a binding; macOS: 357 key-down(s) reached NSApplication, 357 dispatched as key events (2 of them a menu key equivalent),",
+      "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 12 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "lab_tab_no_helper.zshc.150.nohelper",
+     "status": "pass",
+     "seconds": 30.0,
+     "detail": [
+      "injector accounting: injector sent 357; app saw 357; lost-before-app 0 (Enter: sent 12, app saw 12); of the app's: 337 unbound keydown/typed, 6 taken by a key binding, 12 Enter by a binding; macOS: 357 key-down(s) reached NSApplication, 357 dispatched as key events (2 of them a menu key equivalent),",
+      "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 12 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "lab_chips.bash.lan.nohelper",
+     "status": "pass",
+     "seconds": 10.9,
+     "detail": [
+      "exec_channel_timeline (s after the window opened, backend_route lines logged by then): 1.57/1",
+      "side-call producers (#2156): shell exec lines by producer: none; prompts the app ran a batch for: []",
+      "injector accounting: injector sent 90; app saw 90; lost-before-app 0 (Enter: sent 4, app saw 4); of the app's: 82 unbound keydown/typed, 2 taken by a key binding, 4 Enter by a binding; macOS: 90 key-down(s) reached NSApplication, 90 dispatched as key events (2 of them a menu key equivalent), 0 not (",
+      "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 4 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "lab_chips.zsh.lan.nohelper",
+     "status": "pass",
+     "seconds": 11.2,
+     "detail": [
+      "exec_channel_timeline (s after the window opened, backend_route lines logged by then): 1.36/1",
+      "side-call producers (#2156): shell exec lines by producer: none; prompts the app ran a batch for: []",
+      "injector accounting: injector sent 88; app saw 88; lost-before-app 0 (Enter: sent 4, app saw 4); of the app's: 80 unbound keydown/typed, 2 taken by a key binding, 4 Enter by a binding; macOS: 88 key-down(s) reached NSApplication, 88 dispatched as key events (2 of them a menu key equivalent), 0 not (",
+      "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 4 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "lab_chips.zsh.150.nohelper",
+     "status": "fail",
+     "seconds": 16.3,
+     "detail": [
+      "3 side-call exec channels for 1 prompt(s): the app must batch to at most one per prompt",
+      "exec_channel_timeline (s after the window opened, backend_route lines logged by then): 0.23/0, 0.23/0, 1.34/1",
+      "side-call producers (#2156): shell exec lines by producer: none; prompts the app ran a batch for: []",
+      "injector accounting: injector sent 88; app saw 88; lost-before-app 0 (Enter: sent 4, app saw 4); of the app's: 80 unbound keydown/typed, 2 taken by a key binding, 4 Enter by a binding; macOS: 88 key-down(s) reached NSApplication, 88 dispatched as key events (2 of them a menu key equivalent), 0 not (",
+      "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 4 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "lab_chips.fish.lan.nohelper",
+     "status": "pass",
+     "seconds": 11.6,
+     "detail": [
+      "exec_channel_timeline (s after the window opened, backend_route lines logged by then): 1.54/1",
+      "side-call producers (#2156): shell exec lines by producer: none; prompts the app ran a batch for: []",
+      "injector accounting: injector sent 92; app saw 92; lost-before-app 0 (Enter: sent 4, app saw 4); of the app's: 84 unbound keydown/typed, 2 taken by a key binding, 4 Enter by a binding; macOS: 92 key-down(s) reached NSApplication, 92 dispatched as key events (2 of them a menu key equivalent), 0 not (",
+      "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 4 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "lab_tab_no_helper.bash.lan.nohelper",
+     "status": "pass",
+     "seconds": 22.6,
+     "detail": [
+      "injector accounting: injector sent 357; app saw 357; lost-before-app 0 (Enter: sent 12, app saw 12); of the app's: 337 unbound keydown/typed, 6 taken by a key binding, 12 Enter by a binding; macOS: 357 key-down(s) reached NSApplication, 357 dispatched as key events (2 of them a menu key equivalent),",
+      "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 12 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "lab_tab_no_helper.bash.150.nohelper",
+     "status": "pass",
+     "seconds": 30.0,
+     "detail": [
+      "injector accounting: injector sent 357; app saw 357; lost-before-app 0 (Enter: sent 12, app saw 12); of the app's: 337 unbound keydown/typed, 6 taken by a key binding, 12 Enter by a binding; macOS: 357 key-down(s) reached NSApplication, 357 dispatched as key events (2 of them a menu key equivalent),",
+      "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 12 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "lab_tab_no_helper.zsh.lan.nohelper",
+     "status": "pass",
+     "seconds": 22.9,
+     "detail": [
+      "injector accounting: injector sent 348; app saw 348; lost-before-app 0 (Enter: sent 12, app saw 12); of the app's: 328 unbound keydown/typed, 6 taken by a key binding, 12 Enter by a binding; macOS: 348 key-down(s) reached NSApplication, 348 dispatched as key events (2 of them a menu key equivalent),",
+      "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 12 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "lab_tab_no_helper.zsh.150.nohelper",
+     "status": "pass",
+     "seconds": 29.7,
+     "detail": [
+      "injector accounting: injector sent 348; app saw 348; lost-before-app 0 (Enter: sent 12, app saw 12); of the app's: 328 unbound keydown/typed, 6 taken by a key binding, 12 Enter by a binding; macOS: 348 key-down(s) reached NSApplication, 348 dispatched as key events (2 of them a menu key equivalent),",
+      "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 12 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "lab_tab_no_helper.zshc.lan.nohelper",
+     "status": "pass",
+     "seconds": 24.2,
+     "detail": [
+      "injector accounting: injector sent 357; app saw 357; lost-before-app 0 (Enter: sent 12, app saw 12); of the app's: 337 unbound keydown/typed, 6 taken by a key binding, 12 Enter by a binding; macOS: 357 key-down(s) reached NSApplication, 357 dispatched as key events (2 of them a menu key equivalent),",
+      "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 12 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "lab_tab_no_helper.zshc.150.nohelper",
+     "status": "pass",
+     "seconds": 29.4,
+     "detail": [
+      "injector accounting: injector sent 357; app saw 357; lost-before-app 0 (Enter: sent 12, app saw 12); of the app's: 337 unbound keydown/typed, 6 taken by a key binding, 12 Enter by a binding; macOS: 357 key-down(s) reached NSApplication, 357 dispatched as key events (2 of them a menu key equivalent),",
+      "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 12 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+     ],
+     "lat": {}
+    }
+   ],
+   "files": [
+    "lab-macos/summary.md",
+    "lab-macos/junit.xml",
+    "lab-macos/results.json",
+    "lab-macos/run_slim/logs/agent/ctl/hook.err",
+    "lab-macos/run_slim/logs/agent/ctl/hook.enter",
+    "lab-macos/run_slim/logs/enter_route.txt",
+    "lab-macos/run_slim/logs/terminal/ctl/hook.enter",
+    "lab-macos/run_slim/logs/terminal/ctl/hook.err"
+   ],
+   "meta": {
+    "platform": "macos",
+    "backend": "mac",
+    "app_display": "macos",
+    "seed": "1",
+    "commit": "a997653c",
+    "sha": "a997653cfa99293dbda5c8314a76eb159dd6b26a",
+    "owner_settings": "sha256 81d188e9844d",
+    "tier": "targeted",
+    "scale": "1"
+   },
+   "summary": {
+    "pass": 17,
+    "fail": 3,
+    "skip": 0,
+    "noref": 6
+   },
+   "screenshots_in_ci_artifacts": [
+    "shots/terminal_lab_chips.zsh.150.nohelper_FAIL.png",
+    "shots/terminal_lab_tab_no_helper.zsh.150.nohelper_FAIL.png",
+    "shots/agent_lab_chips.zsh.150.nohelper_FAIL.png"
+   ]
+  },
+  "lab-wayland": {
+   "job": "app-test-lab-linux",
+   "job_id": 18031556507,
+   "status": "failed",
+   "reuse": false,
+   "cases": [
+    {
+     "mode": "terminal",
+     "name": "lab_chips.bash.lan.nohelper",
+     "status": "pass",
+     "seconds": 7.2,
+     "detail": [
+      "exec_channel_timeline (s after the window opened, backend_route lines logged by then): 1.43/5",
+      "side-call producers (#2156): batched exec #3 (ok): navigate_tree+chip_branch_dropdown+chip_diff_shortstat; shell exec lines by producer: run_script=1; prompts the app ran a batch for: [2]",
+      "injector accounting: injector sent 90; app saw 90; lost-before-app 0 (Enter: sent 4, app saw 4); of the app's: 82 unbound keydown/typed, 4 taken by a key binding, 4 Enter by a binding",
+      "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 4 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "lab_chips.zsh.lan.nohelper",
+     "status": "pass",
+     "seconds": 7.2,
+     "detail": [
+      "exec_channel_timeline (s after the window opened, backend_route lines logged by then): 1.22/1",
+      "side-call producers (#2156): batched exec #4 (ok): navigate_tree+chip_branch_dropdown+chip_diff_shortstat; shell exec lines by producer: run_script=1; prompts the app ran a batch for: [3]",
+      "injector accounting: injector sent 88; app saw 88; lost-before-app 0 (Enter: sent 4, app saw 4); of the app's: 80 unbound keydown/typed, 4 taken by a key binding, 4 Enter by a binding",
+      "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 4 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "lab_chips.fish.lan.nohelper",
+     "status": "pass",
+     "seconds": 6.7,
+     "detail": [
+      "exec_channel_timeline (s after the window opened, backend_route lines logged by then): 1.02/1",
+      "side-call producers (#2156): batched exec #3 (ok): navigate_tree+chip_branch_dropdown+chip_diff_shortstat+chip_kube_context; shell exec lines by producer: run_script=1; prompts the app ran a batch for: [2]",
+      "injector accounting: injector sent 90; app saw 90; lost-before-app 0 (Enter: sent 4, app saw 4); of the app's: 82 unbound keydown/typed, 4 taken by a key binding, 4 Enter by a binding",
+      "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 4 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "lab_fam_git_read.bash.lan.nohelper",
+     "status": "noref",
+     "seconds": 8.7,
+     "detail": [
+      "exec_channel_timeline (s after the window opened, backend_route lines logged by then): 1.03/5, 2.65/9",
+      "NO-REFERENCE: UNVERIFIABLE: [hook] the app logged no `hop=backend_route family=git_read backend=..` line: the route is not proven",
+      "injector accounting: injector sent 93; app saw 93; lost-before-app 0 (Enter: sent 5, app saw 5); of the app's: 84 unbound keydown/typed, 4 taken by a key binding, 5 Enter by a binding",
+      "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 5 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "lab_fam_git_read.zsh.lan.nohelper",
+     "status": "noref",
+     "seconds": 8.9,
+     "detail": [
+      "exec_channel_timeline (s after the window opened, backend_route lines logged by then): 0.82/1, 2.65/9",
+      "NO-REFERENCE: UNVERIFIABLE: [hook] the app logged no `hop=backend_route family=git_read backend=..` line: the route is not proven",
+      "injector accounting: injector sent 91; app saw 91; lost-before-app 0 (Enter: sent 5, app saw 5); of the app's: 82 unbound keydown/typed, 4 taken by a key binding, 5 Enter by a binding",
+      "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 5 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "lab_fam_run_command.bash.lan.nohelper",
+     "status": "noref",
+     "seconds": 8.4,
+     "detail": [
+      "exec_channel_timeline (s after the window opened, backend_route lines logged by then): 0.61/1, 2.44/9",
+      "NO-REFERENCE: UNVERIFIABLE: [hook] the app logged no `hop=backend_route family=run_command backend=..` line: the route is not proven",
+      "injector accounting: injector sent 93; app saw 93; lost-before-app 0 (Enter: sent 5, app saw 5); of the app's: 84 unbound keydown/typed, 4 taken by a key binding, 5 Enter by a binding",
+      "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 5 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "lab_tab_no_helper.bash.lan.nohelper",
+     "status": "pass",
+     "seconds": 17.3,
+     "detail": [
+      "injector accounting: injector sent 357; app saw 357; lost-before-app 0 (Enter: sent 12, app saw 12); of the app's: 337 unbound keydown/typed, 8 taken by a key binding, 12 Enter by a binding",
+      "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 12 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "lab_tab_no_helper.bash.150.nohelper",
+     "status": "pass",
+     "seconds": 25.2,
+     "detail": [
+      "injector accounting: injector sent 357; app saw 357; lost-before-app 0 (Enter: sent 12, app saw 12); of the app's: 337 unbound keydown/typed, 8 taken by a key binding, 12 Enter by a binding",
+      "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 12 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "lab_tab_no_helper.zsh.lan.nohelper",
+     "status": "fail",
+     "seconds": 32.4,
+     "detail": [
+      "Tab + Enter 30 ms later (trial 1): the shell received ['cd /work/u_zsh/tnh_t3479n1d4/phxt36x9m605'], want exactly one line, the completed 'cd /work/u_zsh/tnh_t3479n1d4/phxt36x9m605_only' (the uncompleted 'cd /work/u_zsh/tnh_t3479n1d4/phxt36x9m605' must never run)",
+      "Tab + Enter 30 ms later (trial 2): the shell received ['cd /work/u_zsh/tnh_t3479n1d4/phxt370wa88v'], want exactly one line, the completed 'cd /work/u_zsh/tnh_t3479n1d4/phxt370wa88v_only' (the uncompleted 'cd /work/u_zsh/tnh_t3479n1d4/phxt370wa88v' must never run)",
+      "Tab + Enter 30 ms later (trial 3): the shell received ['cd /work/u_zsh/tnh_t3479n1d4/phxt38bol9lf'], want exactly one line, the completed 'cd /work/u_zsh/tnh_t3479n1d4/phxt38bol9lf_only' (the uncompleted 'cd /work/u_zsh/tnh_t3479n1d4/phxt38bol9lf' must never run)",
+      "injector accounting: injector sent 348; app saw 348; lost-before-app 0 (Enter: sent 12, app saw 12); of the app's: 328 unbound keydown/typed, 8 taken by a key binding, 12 Enter by a binding",
+      "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 12 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "lab_tab_no_helper.zsh.150.nohelper",
+     "status": "fail",
+     "seconds": 43.1,
+     "detail": [
+      "Tab after the prefix should have completed the REMOTE directory: the remote shell received ['cd /work/u_zsh/tnh_t42cefb2a/phxt42cefb2a'], want 'cd /work/u_zsh/tnh_t42cefb2a/phxt42cefb2a_only/'",
+      "after the completed cd the remote cwd should be /work/u_zsh/tnh_t42cefb2a/phxt42cefb2a_only, got ['/work/u_zsh']",
+      "Tab + Enter 30 ms later (trial 1): the shell received ['cd /work/u_zsh/tnh_t42cefb2a/phxt44rprhlw'], want exactly one line, the completed 'cd /work/u_zsh/tnh_t42cefb2a/phxt44rprhlw_only' (the uncompleted 'cd /work/u_zsh/tnh_t42cefb2a/phxt44rprhlw' must never run)",
+      "Tab + Enter 30 ms later (trial 2): the shell received ['cd /work/u_zsh/tnh_t42cefb2a/phxt45ekkq7k'], want exactly one line, the completed 'cd /work/u_zsh/tnh_t42cefb2a/phxt45ekkq7k_only' (the uncompleted 'cd /work/u_zsh/tnh_t42cefb2a/phxt45ekkq7k' must never run)",
+      "Tab + Enter 30 ms later (trial 3): the shell received ['cd /work/u_zsh/tnh_t42cefb2a/phxt46s3u54h'], want exactly one line, the completed 'cd /work/u_zsh/tnh_t42cefb2a/phxt46s3u54h_only' (the uncompleted 'cd /work/u_zsh/tnh_t42cefb2a/phxt46s3u54h' must never run)",
+      "injector accounting: injector sent 348; app saw 348; lost-before-app 0 (Enter: sent 12, app saw 12); of the app's: 328 unbound keydown/typed, 8 taken by a key binding, 12 Enter by a binding"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "lab_tab_no_helper.zshc.lan.nohelper",
+     "status": "pass",
+     "seconds": 18.0,
+     "detail": [
+      "injector accounting: injector sent 357; app saw 357; lost-before-app 0 (Enter: sent 12, app saw 12); of the app's: 337 unbound keydown/typed, 8 taken by a key binding, 12 Enter by a binding",
+      "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 12 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "lab_tab_no_helper.zshc.150.nohelper",
+     "status": "pass",
+     "seconds": 25.2,
+     "detail": [
+      "injector accounting: injector sent 357; app saw 357; lost-before-app 0 (Enter: sent 12, app saw 12); of the app's: 337 unbound keydown/typed, 8 taken by a key binding, 12 Enter by a binding",
+      "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 12 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "lab_chips.bash.lan.nohelper",
+     "status": "pass",
+     "seconds": 7.1,
+     "detail": [
+      "exec_channel_timeline (s after the window opened, backend_route lines logged by then): 1.43/1",
+      "side-call producers (#2156): batched exec #3 (ok): navigate_tree+chip_branch_dropdown+chip_diff_shortstat; shell exec lines by producer: run_script=1; prompts the app ran a batch for: [2]",
+      "injector accounting: injector sent 90; app saw 90; lost-before-app 0 (Enter: sent 4, app saw 4); of the app's: 82 unbound keydown/typed, 4 taken by a key binding, 4 Enter by a binding",
+      "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 4 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "lab_chips.zsh.lan.nohelper",
+     "status": "pass",
+     "seconds": 7.2,
+     "detail": [
+      "exec_channel_timeline (s after the window opened, backend_route lines logged by then): 1.23/1",
+      "side-call producers (#2156): batched exec #4 (ok): navigate_tree+chip_branch_dropdown; shell exec lines by producer: run_script=1; prompts the app ran a batch for: [3]",
+      "injector accounting: injector sent 88; app saw 88; lost-before-app 0 (Enter: sent 4, app saw 4); of the app's: 80 unbound keydown/typed, 4 taken by a key binding, 4 Enter by a binding",
+      "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 4 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "lab_chips.fish.lan.nohelper",
+     "status": "pass",
+     "seconds": 6.6,
+     "detail": [
+      "exec_channel_timeline (s after the window opened, backend_route lines logged by then): 1.03/5",
+      "side-call producers (#2156): batched exec #3 (ok): navigate_tree+chip_branch_dropdown+chip_kube_context; shell exec lines by producer: run_script=1; prompts the app ran a batch for: [2]",
+      "injector accounting: injector sent 90; app saw 90; lost-before-app 0 (Enter: sent 4, app saw 4); of the app's: 82 unbound keydown/typed, 4 taken by a key binding, 4 Enter by a binding",
+      "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 4 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "lab_tab_no_helper.bash.lan.nohelper",
+     "status": "pass",
+     "seconds": 17.4,
+     "detail": [
+      "injector accounting: injector sent 357; app saw 357; lost-before-app 0 (Enter: sent 12, app saw 12); of the app's: 337 unbound keydown/typed, 8 taken by a key binding, 12 Enter by a binding",
+      "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 12 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "lab_tab_no_helper.bash.150.nohelper",
+     "status": "pass",
+     "seconds": 25.1,
+     "detail": [
+      "injector accounting: injector sent 357; app saw 357; lost-before-app 0 (Enter: sent 12, app saw 12); of the app's: 337 unbound keydown/typed, 8 taken by a key binding, 12 Enter by a binding",
+      "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 12 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "lab_tab_no_helper.zsh.lan.nohelper",
+     "status": "fail",
+     "seconds": 32.3,
+     "detail": [
+      "Tab + Enter 30 ms later (trial 1): the shell received ['cd /work/u_zsh/tnh_t25ctzkk6/phxt27oam89o'], want exactly one line, the completed 'cd /work/u_zsh/tnh_t25ctzkk6/phxt27oam89o_only' (the uncompleted 'cd /work/u_zsh/tnh_t25ctzkk6/phxt27oam89o' must never run)",
+      "Tab + Enter 30 ms later (trial 2): the shell received ['cd /work/u_zsh/tnh_t25ctzkk6/phxt286ww3r9'], want exactly one line, the completed 'cd /work/u_zsh/tnh_t25ctzkk6/phxt286ww3r9_only' (the uncompleted 'cd /work/u_zsh/tnh_t25ctzkk6/phxt286ww3r9' must never run)",
+      "Tab + Enter 30 ms later (trial 3): the shell received ['cd /work/u_zsh/tnh_t25ctzkk6/phxt29y6i79n'], want exactly one line, the completed 'cd /work/u_zsh/tnh_t25ctzkk6/phxt29y6i79n_only' (the uncompleted 'cd /work/u_zsh/tnh_t25ctzkk6/phxt29y6i79n' must never run)",
+      "injector accounting: injector sent 348; app saw 348; lost-before-app 0 (Enter: sent 12, app saw 12); of the app's: 328 unbound keydown/typed, 8 taken by a key binding, 12 Enter by a binding",
+      "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 12 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "lab_tab_no_helper.zsh.150.nohelper",
+     "status": "fail",
+     "seconds": 43.6,
+     "detail": [
+      "Tab after the prefix should have completed the REMOTE directory: the remote shell received ['cd /work/u_zsh/tnh_t33d4x9m6/phxt33d4x9m6'], want 'cd /work/u_zsh/tnh_t33d4x9m6/phxt33d4x9m6_only/'",
+      "after the completed cd the remote cwd should be /work/u_zsh/tnh_t33d4x9m6/phxt33d4x9m6_only, got ['/work/u_zsh']",
+      "Tab + Enter 30 ms later (trial 1): the shell received ['cd /work/u_zsh/tnh_t33d4x9m6/phxt3505w0wa'], want exactly one line, the completed 'cd /work/u_zsh/tnh_t33d4x9m6/phxt3505w0wa_only' (the uncompleted 'cd /work/u_zsh/tnh_t33d4x9m6/phxt3505w0wa' must never run)",
+      "Tab + Enter 30 ms later (trial 2): the shell received ['cd /work/u_zsh/tnh_t33d4x9m6/phxt363bol9l'], want exactly one line, the completed 'cd /work/u_zsh/tnh_t33d4x9m6/phxt363bol9l_only' (the uncompleted 'cd /work/u_zsh/tnh_t33d4x9m6/phxt363bol9l' must never run)",
+      "Tab + Enter 30 ms later (trial 3): the shell received ['cd /work/u_zsh/tnh_t33d4x9m6/phxt379qcefb'], want exactly one line, the completed 'cd /work/u_zsh/tnh_t33d4x9m6/phxt379qcefb_only' (the uncompleted 'cd /work/u_zsh/tnh_t33d4x9m6/phxt379qcefb' must never run)",
+      "injector accounting: injector sent 348; app saw 348; lost-before-app 0 (Enter: sent 12, app saw 12); of the app's: 328 unbound keydown/typed, 8 taken by a key binding, 12 Enter by a binding"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "lab_tab_no_helper.zshc.lan.nohelper",
+     "status": "pass",
+     "seconds": 17.7,
+     "detail": [
+      "injector accounting: injector sent 357; app saw 357; lost-before-app 0 (Enter: sent 12, app saw 12); of the app's: 337 unbound keydown/typed, 8 taken by a key binding, 12 Enter by a binding",
+      "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 12 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "lab_tab_no_helper.zshc.150.nohelper",
+     "status": "pass",
+     "seconds": 25.5,
+     "detail": [
+      "injector accounting: injector sent 357; app saw 357; lost-before-app 0 (Enter: sent 12, app saw 12); of the app's: 337 unbound keydown/typed, 8 taken by a key binding, 12 Enter by a binding",
+      "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 12 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+     ],
+     "lat": {}
+    }
+   ],
+   "files": [
+    "lab-wayland/run_slim/logs/agent/app.stdout",
+    "lab-wayland/summary.md",
+    "lab-wayland/results.json",
+    "lab-wayland/junit.xml",
+    "lab-wayland/results.jsonl",
+    "lab-wayland/run_slim/logs/gpu.txt",
+    "lab-wayland/run_slim/logs/terminal/app.stdout"
+   ],
+   "meta": {
+    "platform": "linux-wayland",
+    "backend": "wayland",
+    "app_display": "wayland",
+    "seed": "1",
+    "commit": "a997653c",
+    "sha": "a997653cfa99293dbda5c8314a76eb159dd6b26a",
+    "owner_settings": "sha256 81d188e9844d",
+    "tier": "targeted",
+    "scale": "1"
+   },
+   "summary": {
+    "pass": 14,
+    "fail": 4,
+    "skip": 0,
+    "noref": 3
+   },
+   "screenshots_in_ci_artifacts": [
+    "shots/terminal_lab_tab_no_helper.zsh.lan.nohelper_FAIL.png",
+    "shots/terminal_lab_tab_no_helper.zsh.150.nohelper_FAIL.png",
+    "shots/agent_lab_tab_no_helper.zsh.lan.nohelper_FAIL.png",
+    "shots/agent_lab_tab_no_helper.zsh.150.nohelper_FAIL.png"
+   ]
+  }
+ },
+ "notes": [
+  "TARGETED run (ci_seq.py --tier targeted): only the cases and suites of its cases file were played. A pass here proves those cases on those platforms and nothing else; a job with the note `not run` was not part of it."
+ ],
+ "targeted": {
+  "platforms": {
+   "linux-lab": {
+    "cases": [
+     "lab_chips.bash.lan.nohelper",
+     "lab_chips.zsh.lan.nohelper",
+     "lab_chips.fish.lan.nohelper",
+     "lab_fam_git_read.bash.lan.nohelper",
+     "lab_fam_git_read.zsh.lan.nohelper",
+     "lab_fam_run_command.bash.lan.nohelper",
+     "lab_tab_no_helper.*"
+    ]
+   },
+   "macos-lab": {
+    "cases": [
+     "lab_chips.bash.lan.nohelper",
+     "lab_chips.zsh.lan.nohelper",
+     "lab_chips.zsh.150.nohelper",
+     "lab_chips.fish.lan.nohelper",
+     "lab_fam_git_read.bash.lan.nohelper",
+     "lab_fam_git_read.zsh.lan.nohelper",
+     "lab_fam_git_read.zsh.150.nohelper",
+     "lab_fam_run_command.bash.lan.nohelper",
+     "lab_fam_run_command.zsh.lan.nohelper",
+     "lab_fam_run_command.zsh.150.nohelper",
+     "lab_tab_no_helper.*"
+    ]
+   },
+   "windows": {
+    "cases": [
+     "routing_table_powershell"
+    ]
+   },
+   "windows-lab": {
+    "cases": [
+     "lab_chips.bash.lan.nohelper",
+     "lab_chips.zsh.lan.nohelper",
+     "lab_fam_git_read.bash.lan.nohelper",
+     "lab_tab_no_helper.*",
+     "lab_connect_typeahead.*"
+    ]
+   }
+  },
+  "suites": {
+   "linux": [
+    "test-linux",
+    "test-warpui-core",
+    "test-workspace-rest"
+   ],
+   "macos": [
+    "test-macos",
+    "test-warpui-core-macos",
+    "test-workspace-rest-macos"
+   ],
+   "windows": [
+    "test-windows",
+    "test-warpui-core-windows",
+    "test-workspace-rest-windows"
+   ]
+  },
+  "note": "r30e: ONLY cases tied to an issue being proven. #2216 chips/side channels (no-helper), #2196 zsh Tab (new zshc arm), #2213 connect typeahead on Windows Git Bash, #2220 routing_table_powershell. No soak/perf/latency."
+ },
+ "setup": {
+  "lab-helper": {
+   "failing_lines": [],
+   "job": "lab-helper",
+   "status": "success",
+   "duration": 43.629205
+  },
+  "sshlab-image": {
+   "failing_lines": [],
+   "job": "sshlab-image",
+   "status": "success",
+   "duration": 23.760806
+  }
+ },
+ "compile": {
+  "warning_count": 125,
+  "warnings_by_crate": {
+   "yaml-rust (lib)": 10,
+   "font-kit (lib)": 3,
+   "arboard (lib)": 2,
+   "cosmic-text (lib)": 2,
+   "warpui_extras (lib)": 1,
+   "watcher (lib)": 1,
+   "ai (lib)": 4,
+   "remote_server (lib)": 4,
+   "difflib (lib)": 3,
+   "warp (lib)": 47,
+   "warp (lib test)": 48
+  },
+  "warning_lines_by_kind": {
+   "function": 49,
+   "unused import": 38,
+   "method": 35,
+   "field": 20,
+   "variant": 17,
+   "unexpected": 16,
+   "unused variable": 16,
+   "use of deprecated constant": 12,
+   "use of deprecated struct": 12,
+   "use of deprecated method": 12,
+   "use of deprecated type alias": 8,
+   "use of deprecated associated function": 8,
+   "methods": 8,
+   "constant": 8,
+   "struct": 8,
+   "associated function": 6,
+   "type": 5,
+   "use of deprecated module": 4,
+   "hiding a lifetime that": 4,
+   "missing documentation for an associated function": 4,
+   "missing documentation for a method": 4,
+   "unused attribute": 4,
+   "variable does not need to be mutable": 4,
+   "value assigned to": 4,
+   "enum": 4,
+   "the following packages contain code that will be rejected by": 4,
+   "unused imports": 2,
+   "use of deprecated field": 2
+  },
+  "errors": 0,
+  "status": "success",
+  "duration": 647.144017
+ }
+}

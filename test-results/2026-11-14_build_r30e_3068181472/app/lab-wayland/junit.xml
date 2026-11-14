@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="appci-linux-wayland" tests="21" failures="4" skipped="3">
+<testcase classname="terminal" name="lab_chips.bash.lan.nohelper" time="7.20">
+</testcase>
+<testcase classname="terminal" name="lab_chips.zsh.lan.nohelper" time="7.20">
+</testcase>
+<testcase classname="terminal" name="lab_chips.fish.lan.nohelper" time="6.70">
+</testcase>
+<testcase classname="terminal" name="lab_fam_git_read.bash.lan.nohelper" time="8.70">
+<skipped message="NO-REFERENCE (not a pass): exec_channel_timeline (s after the window opened, backend_route lines logged by then): 1.03/5, 2.65/9"/>
+</testcase>
+<testcase classname="terminal" name="lab_fam_git_read.zsh.lan.nohelper" time="8.90">
+<skipped message="NO-REFERENCE (not a pass): exec_channel_timeline (s after the window opened, backend_route lines logged by then): 0.82/1, 2.65/9"/>
+</testcase>
+<testcase classname="terminal" name="lab_fam_run_command.bash.lan.nohelper" time="8.40">
+<skipped message="NO-REFERENCE (not a pass): exec_channel_timeline (s after the window opened, backend_route lines logged by then): 0.61/1, 2.44/9"/>
+</testcase>
+<testcase classname="terminal" name="lab_tab_no_helper.bash.lan.nohelper" time="17.30">
+</testcase>
+<testcase classname="terminal" name="lab_tab_no_helper.bash.150.nohelper" time="25.20">
+</testcase>
+<testcase classname="terminal" name="lab_tab_no_helper.zsh.lan.nohelper" time="32.40">
+<failure message="Tab + Enter 30 ms later (trial 1): the shell received ['cd /work/u_zsh/tnh_t3479n1d4/phxt36x9m605'], want exactly one line, the completed 'cd /work/u_zsh/tnh_t3479n1d4/phxt36x9m605_only' (the uncompleted 'cd /work/u_zsh/tnh_t3479n1d4/phxt36x9m605' must never run)">Tab + Enter 30 ms later (trial 1): the shell received ['cd /work/u_zsh/tnh_t3479n1d4/phxt36x9m605'], want exactly one line, the completed 'cd /work/u_zsh/tnh_t3479n1d4/phxt36x9m605_only' (the uncompleted 'cd /work/u_zsh/tnh_t3479n1d4/phxt36x9m605' must never run)
+Tab + Enter 30 ms later (trial 2): the shell received ['cd /work/u_zsh/tnh_t3479n1d4/phxt370wa88v'], want exactly one line, the completed 'cd /work/u_zsh/tnh_t3479n1d4/phxt370wa88v_only' (the uncompleted 'cd /work/u_zsh/tnh_t3479n1d4/phxt370wa88v' must never run)
+Tab + Enter 30 ms later (trial 3): the shell received ['cd /work/u_zsh/tnh_t3479n1d4/phxt38bol9lf'], want exactly one line, the completed 'cd /work/u_zsh/tnh_t3479n1d4/phxt38bol9lf_only' (the uncompleted 'cd /work/u_zsh/tnh_t3479n1d4/phxt38bol9lf' must never run)
+injector accounting: injector sent 348; app saw 348; lost-before-app 0 (Enter: sent 12, app saw 12); of the app's: 328 unbound keydown/typed, 8 taken by a key binding, 12 Enter by a binding
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 12 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="terminal" name="lab_tab_no_helper.zsh.150.nohelper" time="43.10">
+<failure message="Tab after the prefix should have completed the REMOTE directory: the remote shell received ['cd /work/u_zsh/tnh_t42cefb2a/phxt42cefb2a'], want 'cd /work/u_zsh/tnh_t42cefb2a/phxt42cefb2a_only/'">Tab after the prefix should have completed the REMOTE directory: the remote shell received ['cd /work/u_zsh/tnh_t42cefb2a/phxt42cefb2a'], want 'cd /work/u_zsh/tnh_t42cefb2a/phxt42cefb2a_only/'
+after the completed cd the remote cwd should be /work/u_zsh/tnh_t42cefb2a/phxt42cefb2a_only, got ['/work/u_zsh']
+Tab + Enter 30 ms later (trial 1): the shell received ['cd /work/u_zsh/tnh_t42cefb2a/phxt44rprhlw'], want exactly one line, the completed 'cd /work/u_zsh/tnh_t42cefb2a/phxt44rprhlw_only' (the uncompleted 'cd /work/u_zsh/tnh_t42cefb2a/phxt44rprhlw' must never run)
+Tab + Enter 30 ms later (trial 2): the shell received ['cd /work/u_zsh/tnh_t42cefb2a/phxt45ekkq7k'], want exactly one line, the completed 'cd /work/u_zsh/tnh_t42cefb2a/phxt45ekkq7k_only' (the uncompleted 'cd /work/u_zsh/tnh_t42cefb2a/phxt45ekkq7k' must never run)
+Tab + Enter 30 ms later (trial 3): the shell received ['cd /work/u_zsh/tnh_t42cefb2a/phxt46s3u54h'], want exactly one line, the completed 'cd /work/u_zsh/tnh_t42cefb2a/phxt46s3u54h_only' (the uncompleted 'cd /work/u_zsh/tnh_t42cefb2a/phxt46s3u54h' must never run)
+injector accounting: injector sent 348; app saw 348; lost-before-app 0 (Enter: sent 12, app saw 12); of the app's: 328 unbound keydown/typed, 8 taken by a key binding, 12 Enter by a binding
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 13 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="terminal" name="lab_tab_no_helper.zshc.lan.nohelper" time="18.00">
+</testcase>
+<testcase classname="terminal" name="lab_tab_no_helper.zshc.150.nohelper" time="25.20">
+</testcase>
+<testcase classname="agent" name="lab_chips.bash.lan.nohelper" time="7.10">
+</testcase>
+<testcase classname="agent" name="lab_chips.zsh.lan.nohelper" time="7.20">
+</testcase>
+<testcase classname="agent" name="lab_chips.fish.lan.nohelper" time="6.60">
+</testcase>
+<testcase classname="agent" name="lab_tab_no_helper.bash.lan.nohelper" time="17.40">
+</testcase>
+<testcase classname="agent" name="lab_tab_no_helper.bash.150.nohelper" time="25.10">
+</testcase>
+<testcase classname="agent" name="lab_tab_no_helper.zsh.lan.nohelper" time="32.30">
+<failure message="Tab + Enter 30 ms later (trial 1): the shell received ['cd /work/u_zsh/tnh_t25ctzkk6/phxt27oam89o'], want exactly one line, the completed 'cd /work/u_zsh/tnh_t25ctzkk6/phxt27oam89o_only' (the uncompleted 'cd /work/u_zsh/tnh_t25ctzkk6/phxt27oam89o' must never run)">Tab + Enter 30 ms later (trial 1): the shell received ['cd /work/u_zsh/tnh_t25ctzkk6/phxt27oam89o'], want exactly one line, the completed 'cd /work/u_zsh/tnh_t25ctzkk6/phxt27oam89o_only' (the uncompleted 'cd /work/u_zsh/tnh_t25ctzkk6/phxt27oam89o' must never run)
+Tab + Enter 30 ms later (trial 2): the shell received ['cd /work/u_zsh/tnh_t25ctzkk6/phxt286ww3r9'], want exactly one line, the completed 'cd /work/u_zsh/tnh_t25ctzkk6/phxt286ww3r9_only' (the uncompleted 'cd /work/u_zsh/tnh_t25ctzkk6/phxt286ww3r9' must never run)
+Tab + Enter 30 ms later (trial 3): the shell received ['cd /work/u_zsh/tnh_t25ctzkk6/phxt29y6i79n'], want exactly one line, the completed 'cd /work/u_zsh/tnh_t25ctzkk6/phxt29y6i79n_only' (the uncompleted 'cd /work/u_zsh/tnh_t25ctzkk6/phxt29y6i79n' must never run)
+injector accounting: injector sent 348; app saw 348; lost-before-app 0 (Enter: sent 12, app saw 12); of the app's: 328 unbound keydown/typed, 8 taken by a key binding, 12 Enter by a binding
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 12 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="agent" name="lab_tab_no_helper.zsh.150.nohelper" time="43.60">
+<failure message="Tab after the prefix should have completed the REMOTE directory: the remote shell received ['cd /work/u_zsh/tnh_t33d4x9m6/phxt33d4x9m6'], want 'cd /work/u_zsh/tnh_t33d4x9m6/phxt33d4x9m6_only/'">Tab after the prefix should have completed the REMOTE directory: the remote shell received ['cd /work/u_zsh/tnh_t33d4x9m6/phxt33d4x9m6'], want 'cd /work/u_zsh/tnh_t33d4x9m6/phxt33d4x9m6_only/'
+after the completed cd the remote cwd should be /work/u_zsh/tnh_t33d4x9m6/phxt33d4x9m6_only, got ['/work/u_zsh']
+Tab + Enter 30 ms later (trial 1): the shell received ['cd /work/u_zsh/tnh_t33d4x9m6/phxt3505w0wa'], want exactly one line, the completed 'cd /work/u_zsh/tnh_t33d4x9m6/phxt3505w0wa_only' (the uncompleted 'cd /work/u_zsh/tnh_t33d4x9m6/phxt3505w0wa' must never run)
+Tab + Enter 30 ms later (trial 2): the shell received ['cd /work/u_zsh/tnh_t33d4x9m6/phxt363bol9l'], want exactly one line, the completed 'cd /work/u_zsh/tnh_t33d4x9m6/phxt363bol9l_only' (the uncompleted 'cd /work/u_zsh/tnh_t33d4x9m6/phxt363bol9l' must never run)
+Tab + Enter 30 ms later (trial 3): the shell received ['cd /work/u_zsh/tnh_t33d4x9m6/phxt379qcefb'], want exactly one line, the completed 'cd /work/u_zsh/tnh_t33d4x9m6/phxt379qcefb_only' (the uncompleted 'cd /work/u_zsh/tnh_t33d4x9m6/phxt379qcefb' must never run)
+injector accounting: injector sent 348; app saw 348; lost-before-app 0 (Enter: sent 12, app saw 12); of the app's: 328 unbound keydown/typed, 8 taken by a key binding, 12 Enter by a binding
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 13 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="agent" name="lab_tab_no_helper.zshc.lan.nohelper" time="17.70">
+</testcase>
+<testcase classname="agent" name="lab_tab_no_helper.zshc.150.nohelper" time="25.50">
+</testcase>
+</testsuite>
