@@ -19,6 +19,8 @@ struct FakePty {
     mode: Arc<AtomicU8>,
     /// Every `on_resize` call, as (rows, columns).
     resizes: Arc<Mutex<Vec<(usize, usize)>>>,
+    /// What `max_write_chunk` reports (#1887).
+    max_chunk: Option<usize>,
 }
 
 /// A pty reader that reports end-of-file, or fails with a fixed errno on every read.
@@ -76,6 +78,8 @@ struct CaptureWriter(
     /// flag (the write is in flight); every write while it is set answers `WouldBlock`, until a
     /// test clears it (the completion event).
     Option<Arc<AtomicBool>>,
+    /// The size of every write taken (#1887).
+    Option<Arc<Mutex<Vec<usize>>>>,
 );
 
 /// Records how many reads had been made when the first write happened.
@@ -110,6 +114,9 @@ impl io::Write for CaptureWriter {
             *budget -= take;
         }
         self.0.lock().unwrap().extend_from_slice(&buf[..take]);
+        if let Some(sizes) = &self.4 {
+            sizes.lock().unwrap().push(take);
+        }
         Ok(take)
     }
 
@@ -133,6 +140,7 @@ impl FakePty {
                 writer: CaptureWriter::default(),
                 mode: Arc::new(AtomicU8::new(MODE_UNKNOWN)),
                 resizes: Arc::default(),
+                max_chunk: None,
             },
             killed,
         )
@@ -176,6 +184,10 @@ impl EventedReadWrite for FakePty {
 }
 
 impl local_tty::EventedPty for FakePty {
+    fn max_write_chunk(&self) -> Option<usize> {
+        self.max_chunk
+    }
+
     fn is_canonical(&self) -> Option<bool> {
         match self.mode.load(Ordering::SeqCst) {
             MODE_RAW => Some(false),
@@ -1586,8 +1598,9 @@ fn ctrl_c_preempts_a_setup_job_through_the_event_loop() {
         "the first chunk goes at once"
     );
 
-    // A key and the ^C arrive during the gap. The ^C aborts the job and goes out; the key typed
-    // before it keeps its place ahead of it.
+    // A key and the ^C arrive during the gap. The ^C aborts the job and goes out ahead of the key
+    // typed before it (#1887, owner answer Q-A2); the key still goes out after it, behind the
+    // paste close.
     tx.send(Message::Input(Cow::Borrowed(b"k"))).unwrap();
     tx.send(Message::Input(Cow::Borrowed(&[0x03]))).unwrap();
     event_loop.drain_recv_channel(&mut state);
@@ -1595,8 +1608,8 @@ fn ctrl_c_preempts_a_setup_job_through_the_event_loop() {
 
     let mut expected = open;
     expected.extend_from_slice(BRACKETED_PASTE_END);
-    expected.extend_from_slice(b"k");
     expected.push(0x03);
+    expected.extend_from_slice(b"k");
     assert_eq!(*written.lock().unwrap(), expected);
     assert!(state.active_job.is_none());
 }
@@ -1990,7 +2003,8 @@ fn keys_are_not_merged_when_the_pty_does_not_coalesce() {
 
 /// A merge never crosses a reply, a command, a paste, an agent write, an escape sequence, a
 /// signal byte or a control byte: the concatenation of the writes is exactly the queue order, and
-/// each of those stays its own write.
+/// each of those stays its own write. The ^C is queued behind the reply, ahead of the typed key
+/// `i` before it (#1887), so `i` and `j` are then adjacent plain text and merge.
 #[test]
 fn coalescing_never_moves_or_merges_anything_but_adjacent_plain_text() {
     let mut state = coalescing_state();
@@ -2022,9 +2036,8 @@ fn coalescing_never_moves_or_merges_anything_but_adjacent_plain_text() {
             b"g\r".to_vec(),
             b"h".to_vec(),
             b"\x1b[0n".to_vec(),
-            b"i".to_vec(),
             b"\x03".to_vec(),
-            b"j".to_vec(),
+            b"ij".to_vec(),
             b"k".to_vec(),
             b"l".to_vec(),
             b"m".to_vec(),
@@ -2229,4 +2242,188 @@ fn only_typed_and_pasted_pty_writes_are_logged_as_user_key_bytes() {
         );
         assert_eq!(describe_pty_write(JobClass::Paste, b"4711"), "<4 bytes>");
     }
+}
+
+/// #1887: an event loop over an overlapped-pipe fake (one write in flight, `WouldBlock` until the
+/// completion event) that offers at most `max_chunk` bytes per write, with the in-flight flag, the
+/// bytes written and the size of each write.
+fn chunk_harness(
+    max_chunk: Option<usize>,
+) -> (
+    EventLoop<FakePty>,
+    Arc<AtomicBool>,
+    Arc<Mutex<Vec<u8>>>,
+    Arc<Mutex<Vec<usize>>>,
+) {
+    let (mut pty, _) = FakePty::new(None);
+    pty.max_chunk = max_chunk;
+    let in_flight = Arc::new(AtomicBool::new(false));
+    pty.writer.3 = Some(in_flight.clone());
+    let sizes = Arc::new(Mutex::new(Vec::new()));
+    pty.writer.4 = Some(sizes.clone());
+    let written = pty.writer.0.clone();
+    (
+        new_event_loop(pty).expect("event loop"),
+        in_flight,
+        written,
+        sizes,
+    )
+}
+
+/// One completion event and the write pass it triggers.
+fn complete_and_write(
+    event_loop: &mut EventLoop<FakePty>,
+    state: &mut State,
+    in_flight: &AtomicBool,
+) {
+    in_flight.store(false, Ordering::SeqCst);
+    let mut can_write = true;
+    event_loop.pty_write(state, &mut can_write).unwrap();
+}
+
+fn plain_paste(n: usize) -> Vec<u8> {
+    (0..n).map(|i| b'a' + (i % 26) as u8).collect()
+}
+
+/// #1887: a pty that bounds its writes is offered the entry in pieces; the pieces concatenate to
+/// the input, none is over the bound, and a pty that does not bound is offered the whole entry.
+#[test]
+fn a_bounded_pty_is_offered_a_paste_in_pieces_and_an_unbounded_one_whole() {
+    let mut bounded_sizes = vec![8usize; 12];
+    bounded_sizes.push(4);
+    for (bound, expected_sizes) in [(Some(8usize), bounded_sizes), (None, vec![100usize])] {
+        let (mut event_loop, in_flight, written, sizes) = chunk_harness(bound);
+        let paste = plain_paste(100);
+        let mut state = State::default();
+        state.queue_paste_input(Cow::Owned(paste.clone()));
+        let mut can_write = true;
+        event_loop.pty_write(&mut state, &mut can_write).unwrap();
+        while state.needs_write() {
+            complete_and_write(&mut event_loop, &mut state, &in_flight);
+        }
+        assert_eq!(*sizes.lock().unwrap(), expected_sizes, "{bound:?}");
+        assert_eq!(*written.lock().unwrap(), paste, "{bound:?}");
+    }
+}
+
+/// #1887: a ^C that arrives while a paste is part-written goes out after at most one more chunk,
+/// the rest of the paste and the key typed before the ^C follow it, in order, and nothing is lost
+/// or duplicated. With no bound the ^C waits for the whole paste, as before.
+#[test]
+fn a_ctrl_c_goes_out_between_two_chunks_of_a_big_paste() {
+    let paste = plain_paste(100);
+    for bound in [Some(8usize), None] {
+        let (mut event_loop, in_flight, written, sizes) = chunk_harness(bound);
+        let mut state = State::default();
+        state.queue_paste_input(Cow::Owned(paste.clone()));
+        let mut can_write = true;
+        event_loop.pty_write(&mut state, &mut can_write).unwrap();
+        // The first piece is in flight; a key and then the ^C arrive.
+        state.queue_input(Cow::Borrowed(b"k"));
+        state.queue_input(Cow::Borrowed(b"\x03"));
+        complete_and_write(&mut event_loop, &mut state, &in_flight);
+        let so_far = written.lock().unwrap().clone();
+        match bound {
+            Some(8) => {
+                assert_eq!(
+                    so_far.len(),
+                    9,
+                    "one more chunk is not needed: the ^C is next"
+                );
+                assert_eq!(so_far[8], 0x03);
+            }
+            _ => assert!(
+                so_far.starts_with(&paste),
+                "unbounded: the whole paste goes first"
+            ),
+        }
+        while state.needs_write() {
+            complete_and_write(&mut event_loop, &mut state, &in_flight);
+        }
+        let mut expected = Vec::new();
+        match bound {
+            Some(_) => {
+                expected.extend_from_slice(&paste[..8]);
+                expected.push(0x03);
+                expected.extend_from_slice(&paste[8..]);
+            }
+            None => {
+                expected.extend_from_slice(&paste);
+                expected.push(0x03);
+            }
+        }
+        expected.push(b'k');
+        assert_eq!(*written.lock().unwrap(), expected, "{bound:?}");
+        assert!(
+            sizes
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|n| bound.is_none_or(|b| *n <= b))
+        );
+        assert!(state.parked.is_none());
+    }
+}
+
+/// #1887: a paste cut inside its bracketed paste while chunked is closed exactly once, ahead of
+/// the ^C that arrived behind it (the ^C is never parked in front of an open paste), and no byte
+/// is duplicated.
+#[test]
+fn a_chunked_paste_cut_inside_its_brackets_is_closed_exactly_once() {
+    let (mut event_loop, in_flight, written, _) = chunk_harness(Some(8));
+    let mut state = State::default();
+    state.queue_command_input(Cow::Owned(big_paste(20)));
+    let mut can_write = true;
+    event_loop.pty_write(&mut state, &mut can_write).unwrap();
+    assert_eq!(written.lock().unwrap().len(), 8);
+    state.queue_input(Cow::Borrowed(b"\x03"));
+    state.discard_queued_input();
+    while state.needs_write() {
+        complete_and_write(&mut event_loop, &mut state, &in_flight);
+    }
+    let out = written.lock().unwrap().clone();
+    let mut expected = big_paste(20)[..8].to_vec();
+    expected.extend_from_slice(BRACKETED_PASTE_END);
+    expected.push(0x03);
+    assert_eq!(out, expected);
+    let closes = out
+        .windows(BRACKETED_PASTE_END.len())
+        .filter(|w| *w == BRACKETED_PASTE_END)
+        .count();
+    assert_eq!(closes, 1);
+}
+
+/// #1887 (owner answer Q-A2): a ^C goes ahead of the typed keys queued before it, which still go
+/// out after it in order, but stays behind an earlier reply, setup chunk and agent write.
+#[test]
+fn a_queued_ctrl_c_goes_ahead_of_typed_keys_but_behind_replies_setup_and_agent_writes() {
+    let mut state = State::default();
+    state.queue_input(Cow::Borrowed(b"a"));
+    state.queue_response(b"\x1b[0n".to_vec(), None);
+    state.queue_input(Cow::Borrowed(b"b"));
+    state.queue_setup(setup_chunks(&[b"S1", b"S2"]), Pacing::None);
+    state.queue_input(Cow::Borrowed(b"c"));
+    state.queue_agent_input(Cow::Borrowed(b"ag"));
+    state.queue_input(Cow::Borrowed(b"d"));
+    state.queue_command_input(Cow::Borrowed(b"cmd\r"));
+    state.queue_paste_input(Cow::Borrowed(b"p"));
+    state.queue_input(Cow::Borrowed(b"\x03"));
+    state.queue_input(Cow::Borrowed(b"e"));
+    assert_eq!(
+        drain(&mut state),
+        vec![
+            b"a".to_vec(),
+            b"\x1b[0n".to_vec(),
+            b"b".to_vec(),
+            b"S1".to_vec(),
+            b"S2".to_vec(),
+            b"c".to_vec(),
+            b"ag".to_vec(),
+            b"\x03".to_vec(),
+            b"d".to_vec(),
+            b"cmd\r".to_vec(),
+            b"p".to_vec(),
+            b"e".to_vec(),
+        ]
+    );
 }

@@ -131,6 +131,11 @@ pub struct State {
     /// earlier terminal-query reply.
     write_list: VecDeque<QueuedWrite>,
     writing: Option<Writing>,
+    /// #1887: a partly written typed/paste/command entry set aside, with its `written` offset
+    /// intact, while a ^C that arrived behind it goes out between two of its chunks (only a pty
+    /// with a write-chunk bound parks, see [`Self::park_for_signal`]). Resumed first, as soon as
+    /// the signal is written.
+    parked: Option<Writing>,
     /// The `SetupChunked` job being written (#1384). Strict FIFO: it was taken off the front of
     /// `write_list`, and until it is finished nothing from the list is started except a reply at
     /// the head, and only between two of its chunks. A user key behind it waits for all of it.
@@ -230,6 +235,13 @@ enum PollErrorAction {
 /// length unless the tester took the opt-in that names the risk. (`UserKey` also carries what
 /// the app writes in the user's place, a typed bootstrap for one; nothing tells those apart
 /// here, so they are logged the same way.)
+fn is_user_typed_class(class: JobClass) -> bool {
+    matches!(
+        class,
+        JobClass::UserKey | JobClass::Paste | JobClass::UserCommand
+    )
+}
+
 fn pty_write_is_user_typed(class: JobClass) -> bool {
     matches!(class, JobClass::UserKey | JobClass::Paste)
 }
@@ -308,6 +320,7 @@ impl Default for State {
             write_list: VecDeque::new(),
             parser: ansi::Processor::new(),
             writing: None,
+            parked: None,
             active_job: None,
             pty_canonical: None,
             next_job_id: 1,
@@ -364,6 +377,10 @@ impl State {
     /// written, except a reply at the head of the list (a chunk boundary is the one place a reply
     /// may land without corrupting the job); its next chunk is picked once its gap has passed.
     fn goto_next_at(&mut self, now: Instant) {
+        if let Some(parked) = self.parked.take() {
+            self.writing = Some(parked);
+            return;
+        }
         loop {
             match self
                 .active_job
@@ -662,13 +679,63 @@ impl State {
             return;
         }
         let id = self.alloc_job_id();
-        self.write_list.push_back(QueuedWrite {
+        let entry = QueuedWrite {
             id,
             bytes,
             produced_while_executing: None,
             class: JobClass::UserKey,
             setup: None,
+        };
+        // #1887: a ^C goes ahead of the typed keys, pastes and commands queued before it (they
+        // still go out after it, in order), but stays behind replies, setup chunks and agent
+        // writes: it is inserted ahead of the trailing run of user-class entries only.
+        if is_signal_byte(&entry.bytes) {
+            let at = self
+                .write_list
+                .iter()
+                // The close of a cut bracketed paste is a barrier too: a ^C ahead of it would
+                // be read as pasted text.
+                .rposition(|queued| {
+                    !is_user_typed_class(queued.class) || &*queued.bytes == BRACKETED_PASTE_END
+                })
+                .map_or(0, |last| last + 1);
+            self.write_list.insert(at, entry);
+        } else {
+            self.write_list.push_back(entry);
+        }
+    }
+
+    /// #1887: sets the partly written `current` aside and returns the ^C waiting at the head of
+    /// the list in its place, so the signal goes out after the chunk just written instead of
+    /// after the whole entry. Only for a pty that bounds its writes, only for a typed-class
+    /// entry, and never inside an open bracketed paste (the shell would take the ^C as pasted
+    /// text; the app's discard cuts and closes such a paste). `Err` gives `current` back.
+    fn park_for_signal(&mut self, current: Writing) -> Result<Writing, Writing> {
+        let signal_waiting = self
+            .write_list
+            .front()
+            .is_some_and(|front| front.class == JobClass::UserKey && is_signal_byte(&front.bytes));
+        if self.parked.is_some()
+            || !signal_waiting
+            || current.written == 0
+            || current.finished()
+            || !is_user_typed_class(current.class)
+            || current.cut_inside_bracketed_paste()
+        {
+            return Err(current);
+        }
+        let Some(signal) = self.write_list.pop_front() else {
+            return Err(current);
+        };
+        warpui::input_order::log_hop("pty_write_signal_between_chunks", || {
+            format!(
+                "held={} of={}",
+                current.remaining_bytes().len(),
+                current.source.len()
+            )
         });
+        self.parked = Some(current);
+        Ok(Writing::new(signal.bytes, signal.class))
     }
 
     /// Queues a bootstrap script as one paced job (#1384). A job still queued or in flight is
@@ -730,6 +797,9 @@ impl State {
     /// swallow what comes next as pasted text.
     fn abort_class(&mut self, class: JobClass) {
         self.write_list.retain(|entry| entry.class != class);
+        if self.parked.as_ref().is_some_and(|w| w.class == class) {
+            self.parked = None;
+        }
         if self.writing.as_ref().is_some_and(|w| w.class == class) {
             let cut_paste = self
                 .writing
@@ -813,6 +883,7 @@ impl State {
     fn discard_pending_writes(&mut self) {
         self.write_list.clear();
         self.writing = None;
+        self.parked = None;
         self.active_job = None;
         self.gated_count = 0;
         self.withheld_since = None;
@@ -828,6 +899,14 @@ impl State {
     fn discard_queued_input(&mut self) {
         self.write_list
             .retain(|entry| !entry.class.is_discardable());
+        if self
+            .parked
+            .as_ref()
+            .is_some_and(|w| w.class.is_discardable())
+        {
+            // Parked only outside an open bracketed paste, so there is no close to push.
+            self.parked = None;
+        }
         if self
             .writing
             .as_ref()
@@ -897,7 +976,7 @@ impl State {
 
     #[inline]
     fn needs_write(&self) -> bool {
-        if self.writing.is_some() {
+        if self.writing.is_some() || self.parked.is_some() {
             return true;
         }
         // Inside a setup job the list is not written from: only a reply at its head may go, and
@@ -1466,9 +1545,20 @@ where
         warpui::profiling::zone!("pty_write");
         state.ensure_next();
 
+        // #1887: a pty that takes only so much per write (the Windows ConPTY pipe) is offered one
+        // bounded piece at a time, so a ^C or a discard waits for one chunk, not a whole paste.
+        let max_chunk = self.pty.max_write_chunk().filter(|n| *n > 0);
         'write_many: while let Some(mut current) = state.take_current() {
             'write_one: loop {
-                match self.pty.writer().write(current.remaining_bytes()) {
+                if max_chunk.is_some() {
+                    current = match state.park_for_signal(current) {
+                        Ok(signal) => signal,
+                        Err(same) => same,
+                    };
+                }
+                let remaining = current.remaining_bytes();
+                let offered = remaining.len().min(max_chunk.unwrap_or(usize::MAX));
+                match self.pty.writer().write(&remaining[..offered]) {
                     Ok(0) => {
                         state.set_current(Some(current));
                         // We never attempt to write an empty buffer, so if we
@@ -1480,9 +1570,9 @@ where
                     Ok(n) => {
                         // #1162: a short write (a ConPTY pipe taking part of a buffer), and every
                         // reply written between user bytes, to place a lost or reordered byte.
-                        if n < current.remaining_bytes().len() {
+                        if n < offered {
                             warpui::input_order::log_hop("pty_write_partial", || {
-                                format!("wrote={n} of={}", current.remaining_bytes().len())
+                                format!("wrote={n} of={offered}")
                             });
                         }
                         // #1490: the exact bytes the ConPTY pipe accepted, in write order, with

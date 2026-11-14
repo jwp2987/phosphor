@@ -3978,6 +3978,14 @@ pub struct TerminalView {
     /// The model's setup-marker count when the Ctrl-C was written: only a marker that arrives
     /// after it is the shell's answer to it.
     powershell_abort_marker_count: u64,
+    /// #1890: how many `Precmd` events this view has handled (monotonic), and how many it had when
+    /// the Ctrl-C that skipped (or stopped the profiles of) a PowerShell setup was written. A
+    /// prompt that arrives after it is the shell's answer to the Ctrl-C; an earlier one is not.
+    precmd_events_seen: u64,
+    powershell_ctrl_c_precmd_count: u64,
+    /// #1890: a `StopProfiles` Ctrl-C was written during `ScriptRunning`, so a prompt that comes
+    /// before `Bootstrapped` means the setup died with it.
+    powershell_stop_profiles_sent: bool,
     /// Object id of the persistent "Phosphor setup is waiting..." toast while it is showing
     /// (#1014). The wait is a state, not an event: the toast stays until setup completes, is
     /// skipped or is abandoned.
@@ -5856,6 +5864,9 @@ impl TerminalView {
             powershell_setup_hold_generation: 0,
             powershell_setup_marker_token: None,
             powershell_abort_marker_count: 0,
+            precmd_events_seen: 0,
+            powershell_ctrl_c_precmd_count: 0,
+            powershell_stop_profiles_sent: false,
             subshell_setup_waiting_toast_id: None,
             subshell_relay_wait_note_id: None,
             subshell_relay_note_on: subshell_relay_note::enabled(),
@@ -14552,6 +14563,7 @@ impl TerminalView {
             self.powershell_setup_hold_generation += 1;
             let generation = self.powershell_setup_hold_generation;
             self.powershell_setup_hold = PowerShellSetupHold::AfterAbort { generation };
+            self.powershell_ctrl_c_precmd_count = self.precmd_events_seen;
             if let Some(token) = self.powershell_setup_marker_token {
                 // #1372: the console flushes its input while it processes the Ctrl-C, so the held
                 // keys wait for the shell to say PSReadLine is reading again (the marker its
@@ -20755,6 +20767,7 @@ impl TerminalView {
                 }
             }
             ModelEvent::Handler(AnsiHandlerEvent::Precmd) => {
+                self.precmd_events_seen += 1;
                 // #1566: a prompt on a session that has not bootstrapped yet is the session
                 // progressing; the bootstrap give-up timer must not fire on it.
                 if let Some(pending) = self.model_facts().pending_session_id {
@@ -20794,6 +20807,20 @@ impl TerminalView {
                 } else if self.powershell_setup_hold == PowerShellSetupHold::Setup {
                     // #1051: the bootstrap script's own first `Precmd`, before the profiles.
                     self.powershell_setup_hold = PowerShellSetupHold::ScriptRunning;
+                    self.powershell_stop_profiles_sent = false;
+                } else if self.powershell_ctrl_c_answered_by_precmd() {
+                    // #1890: the prompt the shell drew after the Ctrl-C that skipped (or killed)
+                    // the setup: the console has processed the ^C and PSReadLine reads again, so
+                    // the keys typed meanwhile go out now, in typed order, by the event instead
+                    // of coming back as text at a give-up net. No timer is involved.
+                    self.powershell_stop_profiles_sent = false;
+                    if let PowerShellSetupHold::AfterAbort { generation } =
+                        self.powershell_setup_hold
+                    {
+                        self.end_powershell_abort_wait(generation, ctx);
+                    } else {
+                        self.release_subshell_setup_held_bytes(ctx);
+                    }
                 } else if self.powershell_setup_hold == PowerShellSetupHold::Off {
                     self.release_held_setup_input_if_subshell_ready(ctx);
                 }
@@ -20825,6 +20852,7 @@ impl TerminalView {
                     PowerShellSetupHold::Setup | PowerShellSetupHold::ScriptRunning
                 ) {
                     self.powershell_setup_hold = PowerShellSetupHold::AwaitingPrompt;
+                    self.powershell_stop_profiles_sent = false;
                 }
             }
             ModelEvent::Handler(AnsiHandlerEvent::Preexec)
@@ -25482,12 +25510,33 @@ impl TerminalView {
             }
             PowerShellSetupCtrlC::StopProfiles => {
                 self.dismiss_subshell_setup_waiting_toast(ctx);
+                self.powershell_ctrl_c_precmd_count = self.precmd_events_seen;
+                self.powershell_stop_profiles_sent = true;
                 self.write_to_pty(vec![escape_sequences::C0::ETX], ctx);
             }
             PowerShellSetupCtrlC::SkipSetup => {
                 self.write_user_bytes_to_pty(vec![escape_sequences::C0::ETX], ctx);
             }
         }
+    }
+
+    /// #1890: whether the `Precmd` being handled is the shell's prompt after the Ctrl-C that
+    /// skipped a PowerShell setup (`AfterAbort`), or after the one that stopped its profiles and
+    /// killed the setup (`ScriptRunning` with a `StopProfiles` ^C sent, no `Bootstrapped` yet).
+    /// The prompt must have been handled after the ^C was written, and the active block must be the
+    /// shell's own (not a command still running).
+    fn powershell_ctrl_c_answered_by_precmd(&self) -> bool {
+        let waiting = match self.powershell_setup_hold {
+            PowerShellSetupHold::AfterAbort { .. } => true,
+            PowerShellSetupHold::ScriptRunning => self.powershell_stop_profiles_sent,
+            _ => false,
+        };
+        waiting
+            && powershell_prompt_follows_ctrl_c(
+                self.precmd_events_seen,
+                self.powershell_ctrl_c_precmd_count,
+            )
+            && !self.model_facts().active_block_executing
     }
 
     /// The shell's read marker says the Ctrl-C that skipped a PowerShell setup (#1048, #1372) has
@@ -42061,6 +42110,12 @@ fn powershell_abort_acknowledged(
                 token,
                 crate::terminal::bootstrap::POWERSHELL_READY_MARKER_INDEX,
             ))
+}
+
+/// #1890: a `Precmd` is the shell's answer to a Ctrl-C written when `at_ctrl_c` prompts had been
+/// handled only if it is a later one: a prompt handled before the ^C is stale.
+fn powershell_prompt_follows_ctrl_c(precmds_seen: u64, at_ctrl_c: u64) -> bool {
+    precmds_seen > at_ctrl_c
 }
 
 fn powershell_setup_ctrl_c_route(hold: PowerShellSetupHold, stalled: bool) -> PowerShellSetupCtrlC {

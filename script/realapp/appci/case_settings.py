@@ -400,7 +400,7 @@ decl("latency_key_views_ab", needs=INPUT)
 decl("ssh_connect_typing_wrapper ssh_nested_typeahead_wrapper", needs=_merge(INPUT, SSH),
      note="Windows Git Bash; the job sets APPCI_SSH_WRAPPER=1 so the two wrapper switches are written, not defaulted")
 decl("ssh_gitbash_managed ssh_gitbash_typeahead_managed ssh_gitbash_kill_switch ssh_gitbash_bootstrap_in_command", needs=_merge(INPUT, SSH))
-decl("ps_ctrl_break ps_ctrl_scrolllock_break ps_fast_command_young_enter gitbash_long_osc_reaches_app gitbash_typeahead_reps", needs=_merge(INPUT, PROMPT))
+decl("ps_ctrl_break ps_ctrl_scrolllock_break ps_fast_command_young_enter ctrl_c_behind_big_paste powershell_setup_ctrl_c_keys gitbash_long_osc_reaches_app gitbash_typeahead_reps", needs=_merge(INPUT, PROMPT))
 decl("ps_read_host_secure gitbash_precmd_secret", needs=_merge(INPUT, PROMPT))
 decl("precmd_secret_honor_ps1", needs=INPUT, sets=("honor_ps1", "startup_shell"), note="both arms written by the case: honor PS1 off (control) and on; macOS forces bash")
 decl("precmd_question_echo", needs=_merge(INPUT, PROMPT), sets=("startup_shell",), note="macOS: the startup shell is set to bash for the case and put back")
