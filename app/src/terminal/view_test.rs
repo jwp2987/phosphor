@@ -1870,6 +1870,48 @@ fn escape_does_not_exit_local_agent_view_with_long_running_command() {
     })
 }
 
+/// #1984 (owner 2026-11-14): with text in the input box Escape stays in the agent view (it goes
+/// to the editor); with the box empty it leaves.
+#[test]
+fn escape_stays_in_agent_view_with_text_and_leaves_when_empty() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _agent_view = FeatureFlag::AgentView.override_enabled(true);
+        AppEditorSettings::handle(&app).update(&mut app, |editor_settings, ctx| {
+            let _ = editor_settings.vim_mode.set_value(false, ctx);
+        });
+
+        let terminal = add_window_with_terminal(&mut app, None);
+
+        terminal.update(&mut app, |view, ctx| {
+            view.enter_agent_view_for_new_conversation(
+                None,
+                AgentViewEntryOrigin::Input {
+                    was_prompt_autodetected: false,
+                },
+                ctx,
+            );
+            view.input.update(ctx, |input, ctx| {
+                input.editor().update(ctx, |editor, ctx| {
+                    editor.set_buffer_text("some text", ctx);
+                });
+            });
+            assert!(view.vi_key_facts(ctx).input_has_text);
+
+            view.handle_input_event(&InputEvent::Escape, ctx);
+            assert!(view.agent_view_controller().as_ref(ctx).is_active());
+
+            view.input.update(ctx, |input, ctx| {
+                input.editor().update(ctx, |editor, ctx| {
+                    editor.set_buffer_text("", ctx);
+                });
+            });
+            view.handle_input_event(&InputEvent::Escape, ctx);
+            assert!(!view.agent_view_controller().as_ref(ctx).is_active());
+        });
+    })
+}
+
 /// What #1984 keeps (owner decision 2026-11-10): without vi keys, Escape leaves a new agent view
 /// for the terminal. The control for the two tests below.
 #[test]

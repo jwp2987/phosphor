@@ -6228,6 +6228,8 @@ Follow-up to #1932, owner decision 2026-11-11. No kill switch: the notice adds a
 
 ### #1982: no query prediction request from an ssh pane by default
 
+Owner decision 2026-11-14: no opt-in at all. `nld_predict::dispatch` always passes `NLD_PREDICT_ALLOWED_IN_SSH = false`; the `natural_language_autosuggestions_in_ssh_enabled` setting no longer changes anything. Unit: `mod_test.rs` `nld_predict_is_never_requested_in_an_ssh_session`.
+
 - Unit: `app/src/ai/agent_providers/active_ai/mod_test.rs` `a_query_prediction_is_not_requested_in_an_ssh_session_unless_allowed` (the decision `nld_predict::allowed_for_session`: local yes; ssh no; unknown session no; everything yes when the setting is on). `app/src/settings/ai_tests.rs` `natural_language_autosuggestions_in_ssh_default_off`.
 - App: `lab_agent_nld_predict_ssh` (`appci/cases_agent_remote.py`; one arm, `bash.lan.nohelper`, agent mode, fake model; in `cases.PROVING_LAB`, so the fix tier's lab job plays it). Each side first runs `echo` so the pane has a completed block (a prediction's context), then types a partial agent prompt with NO Enter. Local pane (control): an `nld_predict` request must reach the fake model within 10 s (`fake_model.by_purpose`, the model server's own count). ssh pane: none in 5 s (the debounce is 250 ms). `nld_verdict`: no control request makes the case UNVERIFIABLE (never a pass: predictions may be off, unconfigured, or the pane lookup of the new gate may be failing everywhere); any request from the ssh pane is a FAIL. Also checked: the unsent prompt never reached the remote shell (`rec.log`). The setting's ON side has no app case (it needs a settings write and a relaunch inside a lab arm); the unit test covers the decision. Self-test: `fake_model_plan_and_agent_remote_pure_parts` (verdict table, the arm's registration).
 - Run: `APPCI_FAKE_MODEL=1 python3 script/realapp/appci/run.py --cases 'lab_agent_nld_predict_ssh.*'`.
@@ -8563,3 +8565,8 @@ Design: `docs/typeahead-handoff-826-827.md`, section "A report-rewritten line is
 - **What a lab run must show.** `lab_path_detect.p_exec.lan.nohelper` PASS on Linux, macOS and Windows, terminal and agent mode: the `Bash -> Zsh` line, `hop=cwd_listing kind=L entries=2`, `hop=path_detect source=pushed entries=2 complete=true`, zero exec channels while typing, and no `pane_not_local_after_lab_path_detect.p_exec` row (the `exit` ends the ssh). `lab_path_detect.bash.*` and `.zsh.*` unchanged.
 - **Not covered.** A profile that execs fish, nu or another bash (the session stays unmanaged, as before); a local tab whose `~/.bash_profile` execs zsh (`docs/design/subshell-setup-review-r8.md` D6); a profile that runs `unalias -a`, `command exec` or `builtin exec` (the alias does not apply: as before). On the Git Bash one-connection path (`PHOSPHOR_MSYS_MANAGED_SSH=1`) the zsh bootstrap is typed through `ssh.exe`'s console (about 1.3 KB/s), since only the bash bootstrap rides in the remote command.
 - **State: worked, unproven on a build.**
+
+## 2026-11-14 owner decisions: #1982, #1984, #1989
+
+- #1984: Escape in the agent view leaves only when the input box is empty (`ViKeyFacts.input_has_text`). Unit: `terminal/view/agent_escape_tests.rs` `escape_stays_when_the_input_box_has_text`, `escape_leaves_with_an_empty_box_and_text_does_not_block_a_running_command`; view test `terminal/view_test.rs` `escape_stays_in_agent_view_with_text_and_leaves_when_empty`.
+- #1989: already on this branch (`alt-.` off macOS, `meta-.` kept, Option-. as Meta on macOS; repeat steps back through history); no change.
