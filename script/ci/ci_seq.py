@@ -24,6 +24,8 @@
 #                      Round 15 (#2056, #2063): sshlab-image and lab-helper right after check-linux; on the box after the Wayland and X11 app
 #                      jobs the lab job with every lab family (LAB_CANDIDATE_MATRIX) and app-test-replay-linux; on the Mac and on Windows the
 #                      lab job (quick matrix, the fixed slot on the box) after that platform's app tests. `--dry-run` prints the plan.
+#                      Owner 2026-11-14 (#2063, #2076, #1836): the replay (app-test-replay-macos / -windows) follows each machine's lab job as its last job; the box
+#                      plays agent-fuzz-catches-wave0 after its replay; the Linux app/lab/replay jobs get APPCI_SUDO_USER=appci-priv (SUDO_USER_VARS).
 #   release   (~16 h)  candidate + on the box input-timers-strict, test-shuttle-loom, fuzz-smoke, and on EACH of
 #                      macOS and Windows the same heavy set (-macos / -windows suffix), after that platform's unit suites. Every
 #                      suite runs on Linux, macOS and Windows ("the tests need to be the same on all boxes"); the one exception
@@ -126,6 +128,17 @@ def lab_fix_vars(globs=None):
 # (APPCI_LAB=fixed, the job's own variable; docs/design/r12-macssh.md 4). LAB_FIX_JOB above is LAB_APP[LINUX]: the fix tier plays it with the PROVING globs.
 LAB_APP = {LINUX: "app-test-lab-linux", MAC: "app-test-lab-macos", WIN: "app-test-lab-windows"}
 REPLAY_JOB = "app-test-replay-linux"
+# #2063, owner 2026-11-14: the replay joins the candidate and release tiers on macOS and Windows too (never the targeted tier). It extends that machine's lab
+# job and attaches to the SAME fixed lab slot, so it is played right AFTER the lab job on its machine (one app job at a time per machine; the slot is
+# shared) and it is the LAST app/lab job there: the longest job (15 minutes a mode) must not delay or hide the lab's result. The Windows one plays the Git Bash pane only.
+REPLAY_APP = {LINUX: REPLAY_JOB, MAC: "app-test-replay-macos", WIN: "app-test-replay-windows"}
+# #1836, owner 2026-11-14: the box job that proves the agent fuzzer's corpus catches the Wave 0 bugs (script/ci/agent_fuzz_catches_wave0.py, five incremental
+# builds of the warp lib tests, up to 150 minutes) is played by the candidate and release tiers, on the box AFTER its app / lab / replay jobs (it is a build,
+# not an app test; nothing waits for it) and, in the release tier, before the heavy suites.
+BOX_TAIL = ["agent-fuzz-catches-wave0"]
+# #2076: the sudo arm of sudo_su_real_shell / subshell_ready_relay_shape needs APPCI_SUDO_USER (appci/priv_boundary.py reads the ENVIRONMENT first, then the
+# machine-local ci.env, which the owner cannot edit). Passed as a play-time job variable to the Linux box's candidate and release app / lab / replay jobs.
+SUDO_USER_VARS = {"APPCI_SUDO_USER": "appci-priv"}
 # The lab's `phosphor-remote` (script/ci/lab_helper.py): a no-op of seconds when this checkout's key is cached. Played right after check-linux in the
 # candidate and release tiers, BEFORE the unit suites: the Mac and Windows lab jobs take its artifact and can be ready before the box's suites end.
 LAB_HELPER_JOB = "lab-helper"
@@ -171,13 +184,13 @@ def box_app_sequence(tier, reuse=False, lab_globs=None):
     (owner: one app test at a time on a machine; the resource group only stops an overlap, it does not order). Wayland first, then the lab
     (X11 is played by no tier, owner 2026-11-12): the PROVING lab cases in the fix tier, every family in candidate / release, and there the replay last (#2063)."""
     sfx = "-reuse" if reuse else ""
-    seq = [("app-test-linux-wayland" + sfx, {})]
+    seq = [("app-test-linux-wayland" + sfx, {} if tier == "fix" else dict(SUDO_USER_VARS))]
     if tier == "fix":
         globs = proving_lab_globs() if lab_globs is None else lab_globs
         if globs:
             seq.append((LAB_FIX_JOB + sfx, lab_fix_vars(globs)))
     else:
-        seq += [(LAB_APP[LINUX], lab_tier_vars(LINUX)), (REPLAY_JOB, {})]
+        seq += [(LAB_APP[LINUX], dict(lab_tier_vars(LINUX), **SUDO_USER_VARS)), (REPLAY_JOB, dict(SUDO_USER_VARS))]
     return seq
 
 
@@ -213,6 +226,7 @@ def tier_plan(tier, plats=(LINUX, MAC, WIN), reuse=(), lab_globs=None, units=("t
         seq += list(units) + (BOX_EXTRA if tier != "fix" else [])
         seq += [] if r else [BUILD[LINUX]]
         seq += [n for n, _ in box_app_sequence(tier, r, lab_globs)]
+        seq += BOX_TAIL if tier != "fix" else []
         if tier == "release":
             seq += HEAVY_SUFFIX
         out[LINUX] = seq
@@ -222,7 +236,7 @@ def tier_plan(tier, plats=(LINUX, MAC, WIN), reuse=(), lab_globs=None, units=("t
         if tier == "fix":
             out[p] = [n + "-reuse" for n in APP[p]] if p in reuse else [BUILD[p]] + APP[p]
             continue
-        out[p] = plat_suites(p, False) + [BUILD[p]] + APP[p] + [LAB_APP[p]] + [n for n in plat_suites(p, tier == "release") if n not in plat_suites(p, False)]
+        out[p] = plat_suites(p, False) + [BUILD[p]] + APP[p] + [LAB_APP[p], REPLAY_APP[p]] + [n for n in plat_suites(p, tier == "release") if n not in plat_suites(p, False)]
     return out
 
 
@@ -431,7 +445,7 @@ def targeted_plan(spec):
         if steps:
             machines[p] = machines.get(p, []) + steps
     planned = {n for steps in machines.values() for n, _, _ in steps}
-    known = list(BUILD.values()) + [j for _, j in TARGETED_APP.values()] + [REPLAY_JOB] + [n for p in (LINUX, MAC, WIN) for n in targeted_suites_allowed(p)]
+    known = list(BUILD.values()) + [j for _, j in TARGETED_APP.values()] + list(REPLAY_APP.values()) + BOX_TAIL + [n for p in (LINUX, MAC, WIN) for n in targeted_suites_allowed(p)]
     return {"machines": machines, "not_played": [n for n in known if n not in planned]}
 
 
@@ -970,15 +984,33 @@ def self_test_r15(yml, src):
         (tier_plan("fix", reuse=(LINUX, MAC), lab_globs=g)[MAC] == ["app-test-macos-reuse"] and BUILD[LINUX] not in tier_plan("fix", reuse=(LINUX,), lab_globs=g)[LINUX],
          "fix tier reuse: no build job for a reused platform"),
         # #2056 / #2063 / #2064: the candidate tier
-        (cand[LINUX][-3:] == ["app-test-linux-wayland", "app-test-lab-linux", "app-test-replay-linux"], "candidate, box: wayland, the lab, the replay, in that order"),
+        (cand[LINUX][-4:] == ["app-test-linux-wayland", "app-test-lab-linux", "app-test-replay-linux", "agent-fuzz-catches-wave0"],
+         "candidate, box: wayland, the lab, the replay, then the agent-fuzz Wave 0 proof (#1836, a build, nothing waits for it), in that order"),
+        (rel[LINUX].index("agent-fuzz-catches-wave0") == rel[LINUX].index(REPLAY_JOB) + 1 and before(rel[LINUX], "agent-fuzz-catches-wave0", "input-timers-strict")
+         and "agent-fuzz-catches-wave0" not in fix[LINUX] and "agent-fuzz-catches-wave0" not in sum(release_gate_jobs().values(), [])
+         and re.search(r"^agent-fuzz-catches-wave0:", yml, re.M), "release: the agent-fuzz proof after the replay and before the heavy suites; never in the fix tier"),
         (all(before(cand[LINUX], n, "app-test-linux-wayland") for n in BOX_EXTRA + ["test-linux", LAB_HELPER_JOB, LAB_IMAGE_JOB]),
          "candidate, box: unit, integration and usage suites, the lab image and the lab helper before the first app job"),
         (before(cand[LINUX], LAB_HELPER_JOB, "test-linux") and before(cand[LINUX], "check-linux", LAB_HELPER_JOB), "candidate: lab-helper right after check-linux (the Mac / Windows lab jobs take its artifact)"),
         (all(n in cand[LINUX] for n in ["integration-linux: [1]", "integration-linux: [2]", "integration-linux: [3]", "integration-linux-pwsh", "usage-test-linux"]) and "usage-test-macos" in cand[MAC],
          "candidate plays integration-linux (3 shards), -pwsh and usage-test-* (#2064)"),
-        (before(cand[MAC], "app-test-macos", LAB_APP[MAC]) and before(cand[MAC], "test-macos", "app-test-macos") and cand[MAC][-1] == LAB_APP[MAC],
-         "candidate, Mac: unit suites, app tests, then the lab"),
-        (before(cand[WIN], "app-test-windows", LAB_APP[WIN]) and cand[WIN][-1] == LAB_APP[WIN], "candidate, Windows: app tests, then the lab"),
+        (before(cand[MAC], "app-test-macos", LAB_APP[MAC]) and before(cand[MAC], "test-macos", "app-test-macos") and cand[MAC][-2:] == [LAB_APP[MAC], REPLAY_APP[MAC]],
+         "candidate, Mac: unit suites, app tests, then the lab, then the replay LAST (#2063: it shares the lab's fixed slot, so it follows the lab; the longest job goes last)"),
+        (before(cand[WIN], "app-test-windows", LAB_APP[WIN]) and cand[WIN][-2:] == [LAB_APP[WIN], REPLAY_APP[WIN]],
+         "candidate, Windows: app tests, then the lab, then the replay last (#2063; Git Bash pane only)"),
+        (all(REPLAY_APP[p] in rel[p] and before(rel[p], LAB_APP[p], REPLAY_APP[p]) for p in (MAC, WIN)) and before(rel[MAC], REPLAY_APP[MAC], "fuzz-smoke-macos") and before(rel[WIN], REPLAY_APP[WIN], "fuzz-smoke-windows")
+         and not any(n in sum(fix.values(), []) for n in (REPLAY_APP[MAC], REPLAY_APP[WIN])) and all(re.search(r"^%s:" % n, yml, re.M) for n in REPLAY_APP.values())
+         and 'APPCI_WIN_SHELLS: "gitbash"' in job_block(REPLAY_APP[WIN]) and all('APPCI_CASES: "lab_replay*"' in job_block(n) for n in REPLAY_APP.values()),
+         "release: the Mac / Windows replay after that machine's lab and before its heavy suites; never in the fix tier; the jobs exist and keep their own lab_replay* cases"),
+        (box_app_sequence("candidate")[0] == ("app-test-linux-wayland", SUDO_USER_VARS) and box_app_sequence("release")[1][1]["APPCI_SUDO_USER"] == "appci-priv"
+         and box_app_sequence("candidate")[2] == (REPLAY_JOB, SUDO_USER_VARS) and all("APPCI_SUDO_USER" not in v for _, v in box_app_sequence("fix", lab_globs=g))
+         and "APPCI_SUDO_USER" not in lab_tier_vars(MAC) and "APPCI_SUDO_USER" not in lab_tier_vars(WIN),
+         "#2076: the Linux candidate / release app, lab and replay jobs get APPCI_SUDO_USER=appci-priv as a job variable (the fix tier and the Mac / Windows jobs do not)"),
+        (app_tier_name("candidate") == "full" and all(re.search(r"^app-test-(linux-wayland|macos|windows):", yml, re.M) for _ in (0,))
+         and not any(re.search(r"^\s+APPCI_CASES:", job_block(n), re.M) for n in ("app-test-linux-wayland", "app-test-macos", "app-test-windows"))
+         and all(n in cand[p] for p, n in ((LINUX, "app-test-linux-wayland"), (MAC, "app-test-macos"), (WIN, "app-test-windows")))
+         and set(json.load(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "targeted", "wave5-never-played.json")))["platforms"]) == {"linux-wayland", "macos", "windows"},
+         "#2076: the never-played wave 5 cases (targeted/wave5-never-played.json) are in the candidate run: its app jobs pass no APPCI_CASES, so the full tier plays every registered non-lab case on all three machines"),
         (all(set(cand[p]) <= set(rel[p]) for p in cand) and before(rel[MAC], LAB_APP[MAC], "fuzz-smoke-macos") and before(rel[LINUX], REPLAY_JOB, "fuzz-smoke"),
          "release = candidate plus the heavy suites, which follow the lab"),
         (lab_tier_vars(LINUX) == {"APPCI_FAKE_MODEL": "1", "APPCI_LAB_MATRIX": LAB_CANDIDATE_MATRIX} and all('APPCI_CASES: "lab_*"' in job_block(j) for j in LAB_APP.values())
@@ -1748,7 +1780,7 @@ def main():
         if bs in GAVE_UP:
             gave_up[b] = bs
         if bs != "success":
-            mine = [n for n, _ in box_app_sequence(tier)] if p_of[b] == LINUX else APP[p_of[b]] + ([LAB_APP[p_of[b]]] if tier != "fix" else [])
+            mine = [n for n, _ in box_app_sequence(tier)] + (BOX_TAIL if tier != "fix" else []) if p_of[b] == LINUX else APP[p_of[b]] + ([LAB_APP[p_of[b]], REPLAY_APP[p_of[b]]] if tier != "fix" else [])
             for n in [t for t in mine if t not in SKIP and t in jobs()]:
                 timeline[n] = ("not run (%s %s)" % (b, bs), None)   # a build that failed leaves its app tests unrun: that is a failure, not a pass
             return
@@ -1757,6 +1789,9 @@ def main():
             # Round 15 (#2058, #2063): wayland, then the lab (fix: the PROVING lab cases, owner rule 2026-11-09; candidate /
             # release: every family, then the replay), each waited for before the next is played
             run_box_apps(box_app_sequence(tier), appvars)
+            for n in (BOX_TAIL if tier != "fix" else []):       # #1836: after the box's app / lab / replay jobs, before the release tier's heavy suites
+                if n not in SKIP and n in jobs():
+                    play_wait(n, None, "the agent fuzzer's Wave 0 proof (builds)")
             return
         for n in [t for t in APP[p_of[b]] if t not in SKIP and t in jobs()]:
             if play(n, appvars):
@@ -1777,7 +1812,7 @@ def main():
         red = run_suites(plat_suites(p, False))
         if red:
             print("%s: %s NOT played: unit suite %s (owner: unit tests first, no build and no app tests on a red suite)" % (time.strftime("%H:%M"), b, red), flush=True)
-            for n, row in red_unit_rows(red, b, [t for t in APP[p] + [LAB_APP[p]] if t not in SKIP and t in jobs()]).items():
+            for n, row in red_unit_rows(red, b, [t for t in APP[p] + [LAB_APP[p], REPLAY_APP[p]] if t not in SKIP and t in jobs()]).items():
                 timeline[n] = row
             return
         if play(b):
@@ -1815,8 +1850,12 @@ def main():
                 lvars = lab_tier_vars(p, tier)
                 play_wait(LAB_APP[p], dict(appvars, **lvars), "the lab from %s, %s, quick matrix, fake model" % (
                     p, "the PROVING_LAB globs only" if "APPCI_CASES" in lvars else "the job's own lab_*"))
+                # #2063: then the replay, on the same fixed slot; the job's own variables (APPCI_CASES lab_replay*, 15 minutes a mode) are NOT overridden by the lab's
+                if REPLAY_APP[p] not in SKIP:
+                    play_wait(REPLAY_APP[p], dict(appvars), "the real-use replay from %s, the job's own variables" % p)
             else:
                 timeline[LAB_APP[p]] = (LAB_IMAGE_FAIL, None)
+                timeline[REPLAY_APP[p]] = (LAB_IMAGE_FAIL, None)
         run_suites([n for n in plat_suites(p, tier == "release") if n not in units])
     suite_threads = []
     if tier != "fix":
@@ -1842,7 +1881,7 @@ def main():
     if BUILD[LINUX] in builds:
         if box_red:
             print("%s: %s NOT played: unit suite %s (owner: unit tests first, no build and no app tests on a red suite)" % (time.strftime("%H:%M"), BUILD[LINUX], box_red[0]), flush=True)
-            for n, row in red_unit_rows(box_red[0], BUILD[LINUX], [n for n, _ in box_app_sequence(tier) if n not in SKIP and n in jobs()]).items():
+            for n, row in red_unit_rows(box_red[0], BUILD[LINUX], [n for n in [n for n, _ in box_app_sequence(tier)] + (BOX_TAIL if tier != "fix" else []) if n not in SKIP and n in jobs()]).items():
                 timeline[n] = row
         else:
             if play(BUILD[LINUX]):
