@@ -4414,3 +4414,57 @@ fn a_finished_question_block_is_hidden_in_the_conversation_and_not_reported() {
         "the old question's block is finished and nothing is printed at the new prompt"
     );
 }
+
+/// #2110: Find must search the output of blocks restored from a saved session, both the ones
+/// restored eagerly and the ones restored as placeholders and filled in by the background parse.
+/// A restored block has to hold its output text in the grid Find scans, and its height has to be
+/// non-zero (Find only visits blocks with a height).
+#[test]
+fn test_find_matches_output_of_restored_blocks() {
+    use crate::terminal::model::find::RegexDFAs;
+
+    let token = "zqxjvkwpmbtrhn";
+    let restored_blocks: Vec<SerializedBlockListItem> = vec![
+        SerializedBlock::new_for_test(
+            b"printf '%s%s\\n' zqxjvk wpmbtrhn".to_vec(),
+            format!("{token}\r\n").into_bytes(),
+        )
+        .into(),
+        SerializedBlock::new_for_test(b"echo other".to_vec(), b"other\r\n".to_vec()).into(),
+    ];
+    let dfas = RegexDFAs::new(token).expect("the token is a valid pattern");
+
+    let assert_found = |list: &BlockList, label: &str| {
+        let scope = list.transcript_scope();
+        let block = &list.blocks()[0];
+        assert!(
+            block.height(scope).as_f64() > 0.0,
+            "{label}: the restored block has no height, so Find would skip it"
+        );
+        assert_eq!(
+            block.find_output_grid_matches(&dfas).len(),
+            1,
+            "{label}: Find must match the token in the restored block's output"
+        );
+        assert!(
+            list.blocks()[1].find_output_grid_matches(&dfas).is_empty(),
+            "{label}: the token is not in the other block"
+        );
+    };
+
+    let eager = TestBlockListBuilder::new()
+        .with_restored_blocks(&restored_blocks)
+        .build();
+    assert_found(&eager, "eager restore");
+
+    let mut deferred = TestBlockListBuilder::new()
+        .with_restored_blocks(&restored_blocks)
+        .with_lazy_restore_min_bytes(0)
+        .build();
+    assert!(
+        deferred.blocks()[0].find_output_grid_matches(&dfas).is_empty(),
+        "a placeholder holds no output until the background parse is installed"
+    );
+    assert!(deferred.install_ready_deferred_restores());
+    assert_found(&deferred, "deferred restore after install");
+}
