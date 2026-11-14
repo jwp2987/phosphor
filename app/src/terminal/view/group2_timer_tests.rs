@@ -959,6 +959,12 @@ fn powershell_abort_settle_without_a_marker_hands_the_held_keys_back() {
 /// #1438 (review): the same through the real path. Ctrl-C skips a stalled timed PowerShell setup
 /// with `ls` held and `x` typed after the ^C; the settle timer fires and both come back to the
 /// editor as `lsx`, in order. Only the ^C ever reaches the pty.
+///
+/// #1890 (the pane's own start-up `Precmd`): the pane emits a bootstrap `Precmd` a moment after it
+/// is created. Landing after the ^C it is, by the #1890 rule, "the shell's prompt after the ^C" and
+/// releases the held keys to the pty (`\x03lsx`; the editor stays empty), which the sibling test
+/// `a_prompt_after_the_ctrl_c_...` covers on purpose. This test is the NO-prompt arm (only the
+/// settle give-up decides), so the start-up events land first, as in the hand-off tests.
 #[test]
 fn ctrl_c_on_a_timed_powershell_setup_hands_the_held_and_later_keys_back_after_the_settle() {
     App::test((), move |mut app| async move {
@@ -966,6 +972,9 @@ fn ctrl_c_on_a_timed_powershell_setup_hands_the_held_and_later_keys_back_after_t
         app.add_singleton_model(|_| crate::workspace::ToastStack);
         let terminal = add_window_with_terminal(&mut app, None);
         let delivered = collect_delivered_input(&mut app, &terminal);
+        // The pane's start-up Precmd lands before the setup is staged, never after the ^C (#1890).
+        let_app_settle(&mut app).await;
+        delivered.borrow_mut().clear();
         terminal.update(&mut app, |view, ctx| {
             announce_powershell_setup(view);
             stall_powershell_setup(view);

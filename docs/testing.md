@@ -1722,7 +1722,7 @@ The Windows real-app cases `cases-r18bj/S2.ps1` and `LS2.ps1` no longer set `PHO
 | layer | test | asserts |
 |---|---|---|
 | view, Legacy and Table | `group2_timer_tests.rs`: `powershell_abort_settle_without_a_marker_hands_the_held_keys_back` | no token: the held `ls` is in the editor with the Enter guard armed, nothing written; a stale generation does nothing |
-| view, Legacy and Table | `group2_timer_tests.rs`: `ctrl_c_on_a_timed_powershell_setup_hands_the_held_and_later_keys_back_after_the_settle` | the real path: `ls`, Ctrl-C, `x`, the spawned 500 ms timer: the editor holds `lsx`, the pty got only `\x03` |
+| view, Legacy and Table | `group2_timer_tests.rs`: `ctrl_c_on_a_timed_powershell_setup_hands_the_held_and_later_keys_back_after_the_settle` | the real path: `ls`, Ctrl-C, `x`, the spawned 500 ms timer: the editor holds `lsx`, the pty got only `\x03` (the pane's start-up `Precmd` is let land BEFORE the setup is staged: after the ^C it is #1890's prompt and would release the keys to the pty, covered by `a_prompt_after_the_ctrl_c_...`) |
 | view | `view_test.rs`: `powershell_abort_settle_ends_on_the_read_marker_not_the_clock` (existing) | the marker after the Ctrl-C writes the held keys; time and line markers do not |
 
 **#1710 step 1 (the sh probe is marker-paced; an unsupported shell ends the setup by an event).** The shell-agnostic probe
@@ -6141,10 +6141,12 @@ the inner prompt on that machine (the setup then takes over 2 s there), and pass
   `a_finished_question_block_stays_shown_in_the_conversation_and_is_reported` (the next command finishes the block: the flag is dropped;
   #2145 changed it, old -> new: not visible -> visible in the conversation; `AfterBlockCompleted` of a background block 0 -> 1, as in the terminal
   scope).
-- **View, `terminal/view_test.rs`:** `a_precmd_question_is_shown_in_an_agent_conversation_while_its_reader_has_the_keys` (the #2050 fixture
+- **View, `terminal/view_test.rs`:** `a_precmd_question_is_shown_in_an_agent_conversation_with_or_without_its_reader` (renamed by #2145, was `..._while_its_reader_has_the_keys`; the #2050 fixture
   `sampled_prompt_the_editor_owns` with the block list in a conversation's scope: not shown while no reader is noted, shown at the look after
   the reader is noted, kept while the PIN is typed, hidden at the look after the line editor's signal; the control arm is the kill switch; the
-  pty writes are the PIN's keys in both arms, read after the update).
+  pty writes are the PIN's keys in both arms, read after the update). #2145 changed it, old -> new: not shown before the reader is noted -> shown;
+  shown only while the reader waits -> shown before, during and after (a background block with content, `shows_background_output`); the
+  `reader_question_shown` bookkeeping and the keys still follow the reader; the kill-switch arm shows the block too.
 - **appci, `precmd_secret_honor_ps1` (PROVING), expectation made stricter by the owner decision:** the agent arm judges the question. Before a
   key (`question_on_screen_<arm>`): judged in terminal mode everywhere, as before, and now in agent mode where the app samples the tty (Linux,
   macOS; `asked_look_is_judged`); recorded in agent mode on ConPTY, where the reader is noted from the screen at the first key or the hold's cap.
@@ -8551,6 +8553,11 @@ Design: `docs/typeahead-handoff-826-827.md`, section "A report-rewritten line is
   line is on screen once and above the next command's line. `scroll_keys_position`: the NO-REFERENCE branch for the agent view is removed; the
   job's output and the newest lines after one key are judged in both modes (`skp_stream_state` no longer returns `agent_hidden`).
 - **State: worked, unproven on a build.** Not compiled or run on the laptop (owner rule); the box gate is the first compile.
+
+## r31 gate fixes (#2145, #1890; nothing compiled or run on the laptop)
+
+- `a_precmd_question_is_shown_in_an_agent_conversation_with_or_without_its_reader` (view_test.rs): the #2145 owner decision missed this copy of the #2053 test; see the Round 13 section (old -> new). Test stale, code right (`Block::should_hide_block`, `shows_background_output`).
+- `ctrl_c_on_a_timed_powershell_setup_hands_the_held_and_later_keys_back_after_the_settle`: the pane's start-up `Precmd` landed during the 800 ms wait, after the ^C, and #1890 correctly released `lsx` to the pty (editor empty). Fixture only: the start-up events settle before the setup is staged; the post-^C Precmd arm stays covered by `a_prompt_after_the_ctrl_c_that_skipped_a_powershell_setup_releases_the_held_keys_in_order`.
 
 ## #2200: a bare curated command word runs in the shell in the plain terminal (owner 2026-11-14)
 
