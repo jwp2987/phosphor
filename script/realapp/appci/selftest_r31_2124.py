@@ -41,3 +41,13 @@ def r31_no_tcp_accept_verdict_carries_pane_state_2206():
     c.pane_state_at_case_start = "command_interactive=true enters_written=3 precmds_seen=0"
     n = cases._pane_state_note(c)
     assert "at case start: command_interactive=true enters_written=3 precmds_seen=0" in n and "now: unknown" in n, n
+
+
+@check
+def r31_soak_rss_drops_1780():
+    import cases_robust as CR
+    r18u23 = [300, 340, 350] + [359] * 5 + [364] * 5 + [365] * 5 + [157] * 5 + [133] * 5 + [141] * 5
+    d = CR.rss_drops(r18u23)
+    assert d and d[0][1:] == (365, 157), d
+    assert CR.rss_drops([300, 340, 350] + [369] * 5 + [378] * 5 + [383] * 5) == []
+    assert CR.rss_drops([1, 2]) == []
