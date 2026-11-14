@@ -1721,12 +1721,14 @@ fn discard_pending_command_writes_drops_only_non_in_band_commands() {
                 command: "touch ~/closed-tab-ran".to_owned(),
                 shell_type: ShellType::Zsh,
                 in_band_command_id: None,
+                park: CommandPark::None,
                 before_write_fn: None,
             });
             controller.pending_writes.push_back(PtyWrite::Command {
                 command: "in-band".to_owned(),
                 shell_type: ShellType::Zsh,
                 in_band_command_id: Some("in-band-1".to_owned()),
+                park: CommandPark::None,
                 before_write_fn: None,
             });
 
@@ -3319,6 +3321,382 @@ mod typeahead_handoff {
         });
     }
 
+    // ---- #2182 (b): a submitted command is never dropped behind the app's own side call --------
+    //
+    // The harness is a LOCAL zsh session: `write_command` has no remote branch, so the refusal
+    // the Windows lab found on a remote shell (where the side call's round trip makes the window
+    // wide) is the same code path at a local prompt, and these tests are the local-shell variant.
+
+    /// Counts the controller's hand-off events, as the terminal view would receive them.
+    #[derive(Default)]
+    struct HandoffEvents {
+        changed: usize,
+        not_engaged: usize,
+    }
+
+    impl Entity for HandoffEvents {
+        type Event = ();
+    }
+
+    fn record_handoff_events(app: &mut App, harness: &Harness) -> ModelHandle<HandoffEvents> {
+        let controller = harness.controller.clone();
+        app.add_model(|ctx: &mut ModelContext<HandoffEvents>| {
+            ctx.subscribe_to_model(&controller, |me, event, _| match event {
+                PtyControllerEvent::TypeaheadHandoffChanged => me.changed += 1,
+                PtyControllerEvent::TypeaheadHandoffNotEngaged => me.not_engaged += 1,
+                _ => {}
+            });
+            HandoffEvents::default()
+        })
+    }
+
+    fn command_bytes(command: &str) -> Vec<u8> {
+        bytes_to_execute_command(command, SHELL, false)
+    }
+
+    /// The texts of the commands in `pending_writes`, front first.
+    fn queued_commands(app: &App, harness: &Harness) -> Vec<String> {
+        harness.controller.read(app, |controller, _| {
+            controller
+                .pending_writes
+                .iter()
+                .filter_map(|write| match write {
+                    PtyWrite::Command { command, .. } => Some(command.clone()),
+                    _ => None,
+                })
+                .collect()
+        })
+    }
+
+    /// The app's side call `echo side-1` is written and occupies the active block: before its
+    /// Preexec (`Submitted`), or running (`executing`). A second one, `echo side-2`, is queued
+    /// behind it. Returns the cancel channels of both.
+    fn side_call_holds_the_block(
+        app: &mut App,
+        harness: &Harness,
+        executing: bool,
+    ) -> (
+        async_channel::Receiver<InBandCommandCancelledEvent>,
+        async_channel::Receiver<InBandCommandCancelledEvent>,
+    ) {
+        let first = queue_in_band(app, harness, "echo side-1", "side-1");
+        assert_eq!(written(harness), vec![command_bytes("echo side-1")]);
+        harness.line_editor_status.update(app, |status, _| {
+            status.set_line_editor_active_for_test(false)
+        });
+        let second = queue_in_band(app, harness, "echo side-2", "side-2");
+        if executing {
+            harness.model.lock().preexec(PreexecValue {
+                command: "echo side-1".to_owned(),
+                session_id: None,
+            });
+        }
+        assert!(
+            harness
+                .model
+                .lock()
+                .block_list()
+                .active_block()
+                .is_in_band_command_block(),
+            "the side call holds the active block"
+        );
+        assert_eq!(queued_commands(app, harness), vec!["echo side-2"]);
+        (first, second)
+    }
+
+    /// The side call that held the block ends and the shell is at its prompt again.
+    fn side_call_ends(app: &mut App, harness: &Harness, executing: bool) {
+        if executing {
+            harness.model.lock().finish_block();
+        } else {
+            shell_runs_a_command(&harness.model, "echo side-1");
+        }
+        line_editor_becomes_active(app, harness);
+    }
+
+    /// The r30f loss (`lab_connect_typeahead`, Windows lab): `exit` + Enter while the app's side
+    /// call held the active block was refused and never written. It is parked at the front,
+    /// written at the side call's prompt BEFORE the side call queued earlier, its block and the
+    /// hand-off's bookkeeping start at that write, the queued side call is not cancelled, and
+    /// the view is never told "not engaged".
+    fn a_command_submitted_behind_a_side_call_is_written_first_at_its_prompt(executing: bool) {
+        App::test((), move |mut app| async move {
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            let harness = harness(&mut app);
+            let events = record_handoff_events(&mut app, &harness);
+            let (_first, second) = side_call_holds_the_block(&mut app, &harness, executing);
+
+            // `submit` asserts the outcome is `Accepted`: the view restores nothing.
+            submit(&mut app, &harness, "exit");
+            assert_eq!(
+                written(&harness),
+                vec![command_bytes("echo side-1")],
+                "nothing is written over the side call"
+            );
+            assert_eq!(
+                queued_commands(&app, &harness),
+                vec!["exit", "echo side-2"],
+                "parked at the front, ahead of the queued side call"
+            );
+            harness.controller.read(&app, |controller, _| {
+                assert!(
+                    controller
+                        .pending_writes
+                        .front()
+                        .is_some_and(is_parked_user_command)
+                );
+                assert!(controller.is_user_command_executing);
+            });
+            {
+                let model = harness.model.lock();
+                assert!(
+                    !matches!(
+                        model.typeahead_handoff().state(),
+                        HandoffState::PtyOwned { .. }
+                    ),
+                    "the hand-off is told at the write, not at the submit"
+                );
+                assert!(
+                    model.block_list().active_block().is_in_band_command_block(),
+                    "no block is started for the command yet"
+                );
+            }
+            let changed_at_submit = events.read(&app, |events, _| events.changed);
+
+            side_call_ends(&mut app, &harness, executing);
+            assert_eq!(
+                written(&harness),
+                vec![command_bytes("echo side-1"), command_bytes("exit")],
+                "the user's command is written once, ahead of the queued side call"
+            );
+            {
+                let model = harness.model.lock();
+                assert!(
+                    matches!(
+                        model.typeahead_handoff().state(),
+                        HandoffState::PtyOwned { .. }
+                    ),
+                    "the hand-off engaged at the write: {:?}",
+                    model.typeahead_handoff().state()
+                );
+                let block = model.block_list().active_block();
+                assert!(block.started(), "its block started at the write");
+                assert!(!block.is_in_band_command_block());
+            }
+            assert_eq!(queued_commands(&app, &harness), vec!["echo side-2"]);
+            assert!(
+                second.try_recv().is_err(),
+                "the queued side call was not cancelled"
+            );
+            events.read(&app, |events, _| {
+                assert_eq!(events.not_engaged, 0, "something does take the command");
+                assert!(
+                    events.changed > changed_at_submit,
+                    "the view is told when the command is written"
+                );
+            });
+
+            // The user's command ends: the queued side call follows it, never ahead of it and
+            // never dropped (when exactly is the #2182 wait's business, not this change's).
+            shell_runs_a_command(&harness.model, "exit");
+            line_editor_becomes_active(&mut app, &harness);
+            let all = written(&harness);
+            let exit_at = all
+                .iter()
+                .position(|bytes| *bytes == command_bytes("exit"))
+                .expect("the user's command was written");
+            assert_eq!(
+                all.iter()
+                    .filter(|bytes| **bytes == command_bytes("exit"))
+                    .count(),
+                1,
+                "written once"
+            );
+            match all
+                .iter()
+                .position(|bytes| *bytes == command_bytes("echo side-2"))
+            {
+                Some(side_at) => assert!(side_at > exit_at, "{all:?}"),
+                None => assert_eq!(queued_commands(&app, &harness), vec!["echo side-2"]),
+            }
+            assert!(second.try_recv().is_err());
+        });
+    }
+
+    #[test]
+    fn a_command_submitted_before_a_side_calls_preexec_is_written_first_at_its_prompt() {
+        a_command_submitted_behind_a_side_call_is_written_first_at_its_prompt(false);
+    }
+
+    #[test]
+    fn a_command_submitted_while_a_side_call_runs_is_written_first_at_its_prompt() {
+        a_command_submitted_behind_a_side_call_is_written_first_at_its_prompt(true);
+    }
+
+    /// Two submits behind one side call run in the order they were submitted, both ahead of the
+    /// queued side call; the first prompt writes only the first.
+    #[test]
+    fn a_second_submit_parks_behind_the_first_and_ahead_of_the_side_calls() {
+        App::test((), |mut app| async move {
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            let harness = harness(&mut app);
+            let (_first, second) = side_call_holds_the_block(&mut app, &harness, false);
+            submit(&mut app, &harness, "one");
+            let outcome = harness.controller.update(&mut app, |controller, ctx| {
+                controller.write_command("two", SHELL, CommandExecutionSource::QueuedCommand, ctx)
+            });
+            assert_eq!(outcome, StartCommandOutcome::Accepted);
+            assert_eq!(
+                queued_commands(&app, &harness),
+                vec!["one", "two", "echo side-2"]
+            );
+
+            side_call_ends(&mut app, &harness, false);
+            assert_eq!(
+                written(&harness),
+                vec![command_bytes("echo side-1"), command_bytes("one")]
+            );
+            assert_eq!(queued_commands(&app, &harness), vec!["two", "echo side-2"]);
+            assert!(second.try_recv().is_err());
+        });
+    }
+
+    /// The block a parked command is annotated on (its cloud workflow) is its own, at the write:
+    /// never the side call's block that was active at the submit.
+    #[test]
+    fn a_parked_command_annotates_its_own_block_at_the_write() {
+        App::test((), |mut app| async move {
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            let harness = harness(&mut app);
+            let _side_calls = side_call_holds_the_block(&mut app, &harness, false);
+            let annotated_in_band_block = Arc::new(Mutex::new(None));
+            let slot = annotated_in_band_block.clone();
+            let outcome = harness.controller.update(&mut app, |controller, ctx| {
+                controller.write_command_annotating_block(
+                    "exit",
+                    SHELL,
+                    CommandExecutionSource::User,
+                    move |model| {
+                        *slot.lock() =
+                            Some(model.block_list().active_block().is_in_band_command_block());
+                    },
+                    ctx,
+                )
+            });
+            assert_eq!(outcome, StartCommandOutcome::Accepted);
+            assert_eq!(
+                *annotated_in_band_block.lock(),
+                None,
+                "not applied at the submit"
+            );
+
+            side_call_ends(&mut app, &harness, false);
+            assert_eq!(
+                *annotated_in_band_block.lock(),
+                Some(false),
+                "applied to the command's own block"
+            );
+        });
+    }
+
+    /// While a command is parked no new side call is accepted: its requester is told.
+    #[test]
+    fn a_side_call_requested_while_a_command_is_parked_is_refused() {
+        App::test((), |mut app| async move {
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            let harness = harness(&mut app);
+            let _side_calls = side_call_holds_the_block(&mut app, &harness, true);
+            submit(&mut app, &harness, "exit");
+
+            let (cancel_tx, cancel_rx) = async_channel::unbounded();
+            harness.controller.update(&mut app, |controller, ctx| {
+                controller.queue_in_band_command(
+                    "echo side-3",
+                    SHELL,
+                    "side-3".to_owned(),
+                    cancel_tx,
+                    ctx,
+                );
+            });
+            let event = cancel_rx.try_recv().expect("the requester is told");
+            assert_eq!(event.command_id, "side-3");
+            assert_eq!(queued_commands(&app, &harness), vec!["exit", "echo side-2"]);
+        });
+    }
+
+    /// The line editor opens while the side call's block is still the active one: the start at
+    /// the write is refused, the command goes back to the front (it is not dropped, and the
+    /// drain does not spin on it) and is written at the next prompt.
+    #[test]
+    fn a_parked_command_refused_at_its_write_goes_back_to_the_front() {
+        App::test((), |mut app| async move {
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            let harness = harness(&mut app);
+            let events = record_handoff_events(&mut app, &harness);
+            let _side_calls = side_call_holds_the_block(&mut app, &harness, false);
+            submit(&mut app, &harness, "exit");
+
+            line_editor_becomes_active(&mut app, &harness);
+            assert_eq!(written(&harness), vec![command_bytes("echo side-1")]);
+            assert_eq!(queued_commands(&app, &harness), vec!["exit", "echo side-2"]);
+            events.read(&app, |events, _| assert_eq!(events.not_engaged, 0));
+
+            side_call_ends(&mut app, &harness, false);
+            assert_eq!(
+                written(&harness),
+                vec![command_bytes("echo side-1"), command_bytes("exit")]
+            );
+        });
+    }
+
+    /// The shell exits with a command parked: it goes with the queue (the handler of
+    /// `ModelEvent::Exit` calls this), and side calls are possible again.
+    #[test]
+    fn a_shell_exit_drops_a_parked_command() {
+        App::test((), |mut app| async move {
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            let harness = harness(&mut app);
+            let _side_calls = side_call_holds_the_block(&mut app, &harness, false);
+            submit(&mut app, &harness, "exit");
+
+            harness.controller.update(&mut app, |controller, _| {
+                controller.drop_parked_user_commands("shell_exit");
+                assert!(!controller.has_parked_user_command());
+                assert!(!controller.is_user_command_executing);
+            });
+            assert_eq!(queued_commands(&app, &harness), vec!["echo side-2"]);
+            assert_eq!(written(&harness), vec![command_bytes("echo side-1")]);
+        });
+    }
+
+    /// A command of the USER's that is really running still refuses the next submit (the view
+    /// then gives the line back to the editor, #1125): nothing is parked behind it, and the
+    /// editor's keys are released by "not engaged" as before.
+    #[test]
+    fn a_submit_over_a_running_user_command_is_still_refused() {
+        App::test((), |mut app| async move {
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            let harness = harness(&mut app);
+            let events = record_handoff_events(&mut app, &harness);
+            submit(&mut app, &harness, "sleep 5");
+            harness.model.lock().preexec(PreexecValue {
+                command: "sleep 5".to_owned(),
+                session_id: None,
+            });
+
+            let outcome = harness.controller.update(&mut app, |controller, ctx| {
+                controller.write_command("ls", SHELL, CommandExecutionSource::User, ctx)
+            });
+            assert_eq!(outcome, StartCommandOutcome::RejectedExecuting);
+            harness.controller.read(&app, |controller, _| {
+                assert!(!controller.has_parked_user_command());
+                assert!(controller.pending_writes.is_empty());
+            });
+            assert_eq!(written(&harness), vec![command_bytes("sleep 5")]);
+            events.read(&app, |events, _| assert_eq!(events.not_engaged, 1));
+        });
+    }
+
     // ---- r29: #2182 follow-ups (A1, A2) and held keys are never discarded (#2198, A4) ----------
 
     use crate::terminal::input_queue::{
@@ -3948,6 +4326,7 @@ fn user_command_is_sent_as_command_input_but_in_band_is_not() {
                         command: "echo hi".to_owned(),
                         shell_type: ShellType::Zsh,
                         in_band_command_id,
+                        park: CommandPark::None,
                         before_write_fn: None,
                     },
                     ctx,

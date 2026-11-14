@@ -1012,3 +1012,196 @@ fn a_model_that_is_never_free_ends_in_the_holds_give_up_and_the_line_is_not_spli
         );
     })
 }
+
+// ---- #2182 (b): a submitted command is never dropped behind the app's own side call ------------
+
+/// The event loop of a real `PtyController` wired to a test view: records what would be written.
+#[derive(Clone, Default)]
+struct RecordingEventLoop {
+    messages: std::sync::Arc<parking_lot::Mutex<Vec<crate::terminal::writeable_pty::Message>>>,
+}
+
+impl crate::terminal::writeable_pty::pty_controller::EventLoopSender for RecordingEventLoop {
+    fn send(
+        &self,
+        message: crate::terminal::writeable_pty::Message,
+    ) -> Result<(), crate::terminal::writeable_pty::pty_controller::EventLoopSendError> {
+        self.messages.lock().push(message);
+        Ok(())
+    }
+}
+
+impl RecordingEventLoop {
+    /// Everything written to the pty so far, as text.
+    fn written(&self) -> String {
+        use crate::terminal::writeable_pty::Message;
+        let mut bytes = Vec::new();
+        for message in self.messages.lock().iter() {
+            if let Message::Input(input) | Message::CommandInput(input) = message {
+                bytes.extend_from_slice(input);
+            }
+        }
+        String::from_utf8_lossy(&bytes).into_owned()
+    }
+}
+
+/// #2182 (b), the r30f sequence end to end through the real controller (a LOCAL bash session:
+/// the refusal is the same path as on the remote shell the lab found it on). The app's side call
+/// is written; the user's command is submitted before the side call's Preexec. It used to be
+/// refused: never written, given back to the editor with a "command already running" toast, and
+/// the next line was typed onto it. Now it is written once at the side call's prompt, the
+/// editor stays empty, and what is typed next is not glued to it.
+#[test]
+fn a_command_submitted_behind_a_side_call_reaches_the_pty_and_leaves_the_editor() {
+    use crate::terminal::line_editor_status::{LineEditorStatus, LineEditorStatusEvent};
+    use crate::terminal::model::session::SessionInfo;
+    use crate::terminal::shell::{Shell, ShellType};
+    use crate::terminal::writeable_pty::PtyController;
+    use crate::terminal::writeable_pty::terminal_manager_util::wire_up_pty_controller_with_surface;
+
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let (model, sessions, model_events) = terminal.read(&app, |view, _| {
+            (
+                view.model.clone(),
+                view.sessions.clone(),
+                view.model_events_handle.clone(),
+            )
+        });
+        sessions.update(&mut app, |sessions, _| {
+            let mut session_info = SessionInfo::new_for_test().with_id(SessionId::from(9001));
+            session_info.shell = Shell::new(ShellType::Bash, None, None, Default::default(), None);
+            sessions.register_session_for_test(session_info);
+        });
+        let line_editor_status =
+            app.add_model(|ctx| LineEditorStatus::new(model_events.clone(), sessions.clone(), ctx));
+        let event_loop = RecordingEventLoop::default();
+        let (_executor_command_tx, executor_command_rx) = async_channel::unbounded();
+        let controller = app.add_model(|ctx| {
+            PtyController::new(
+                event_loop.clone(),
+                model_events.clone(),
+                line_editor_status.clone(),
+                sessions.clone(),
+                executor_command_rx,
+                model.clone(),
+                ctx,
+            )
+        });
+        app.update(|ctx| {
+            wire_up_pty_controller_with_surface(
+                &controller,
+                &terminal,
+                model.clone(),
+                sessions.clone(),
+                None,
+                ctx,
+            )
+        });
+
+        // The shell is at its prompt; the app's own side call is written and holds the block.
+        line_editor_status.update(&mut app, |status, _| {
+            status.set_line_editor_active_for_test(true)
+        });
+        controller.update(&mut app, |controller, ctx| {
+            controller.queue_in_band_command_for_test(
+                "echo side-call",
+                ShellType::Bash,
+                "side-1",
+                ctx,
+            );
+        });
+        assert_eq!(event_loop.written().matches("echo side-call").count(), 1);
+        assert!(
+            model
+                .lock()
+                .block_list()
+                .active_block()
+                .is_in_band_command_block()
+        );
+
+        // The user's command, before the side call's Preexec.
+        terminal.update(&mut app, |view, ctx| {
+            view.handle_input_event(
+                &InputEvent::ExecuteCommand(Box::new(ExecuteCommandEvent {
+                    command: "echo typed-by-user".to_owned(),
+                    session_id: SessionId::from(9001),
+                    workflow_id: None,
+                    workflow_command: None,
+                    should_add_command_to_history: false,
+                    source: CommandExecutionSource::User,
+                })),
+                ctx,
+            );
+        });
+        assert_eq!(
+            event_loop.written().matches("echo typed-by-user").count(),
+            0,
+            "not written over the side call"
+        );
+        terminal.read(&app, |view, ctx| {
+            assert_eq!(
+                view.input.as_ref(ctx).buffer_text(ctx),
+                "",
+                "the command is not given back to the editor: it will run"
+            );
+        });
+
+        // The side call's Preexec and Precmd; the shell's line editor is active again.
+        {
+            let mut model = model.lock();
+            crate::terminal::model::ansi::Handler::preexec(
+                &mut *model,
+                PreexecValue {
+                    command: "echo side-call".to_owned(),
+                    session_id: None,
+                },
+            );
+            model.finish_block();
+        }
+        line_editor_status.update(&mut app, |status, ctx| {
+            status.set_line_editor_active_for_test(true);
+            ctx.emit(LineEditorStatusEvent::Active);
+        });
+        let written = event_loop.written();
+        assert_eq!(
+            written.matches("echo typed-by-user").count(),
+            1,
+            "the user's command reaches the pty once: {written:?}"
+        );
+        assert!(
+            written.find("echo side-call") < written.find("echo typed-by-user"),
+            "{written:?}"
+        );
+
+        // Its block completes; what the user types next is its own line.
+        {
+            let mut model = model.lock();
+            crate::terminal::model::ansi::Handler::preexec(
+                &mut *model,
+                PreexecValue {
+                    command: "echo typed-by-user".to_owned(),
+                    session_id: None,
+                },
+            );
+            model.finish_block();
+        }
+        terminal.update(&mut app, |view, ctx| {
+            view.typed_characters_on_terminal("ls", ctx);
+        });
+        terminal.read(&app, |view, ctx| {
+            let buffer = view.input.as_ref(ctx).buffer_text(ctx);
+            assert!(
+                !buffer.contains("echo typed-by-user"),
+                "the next line is not typed onto the submitted command: {buffer:?}"
+            );
+        });
+        assert_eq!(
+            event_loop.written().matches("echo typed-by-user").count(),
+            1,
+            "written once"
+        );
+    })
+}
