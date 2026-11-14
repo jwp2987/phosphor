@@ -6240,3 +6240,23 @@ fn fish_bootstrap_treats_an_unset_honor_ps1_as_not_honoring() {
         .unwrap();
     assert!(first_if.contains("!= \"1\""), "{first_if}");
 }
+
+/// #2171: Windows PowerShell 5.1 draws the edit line back through the console's OEM output code
+/// page, so pasted CJK / emoji showed as '?' / '??' although the received text (and the file the
+/// command wrote) was right. The bootstrap must put the console on UTF-8 (no BOM) before PSReadLine
+/// is configured, only on the Desktop edition, and honour the opt-out.
+#[test]
+fn pwsh_bootstrap_sets_utf8_console_on_windows_powershell_before_psreadline() {
+    let pwsh = include_str!("../../assets/bundled/bootstrap/pwsh.ps1");
+    let func = pwsh.find("function Warp-Ensure-Utf8-Console").unwrap();
+    let body = &pwsh[func..pwsh[func..].find("function Warp-Finish-Bootstrap").unwrap() + func];
+    assert!(body.contains("PSEdition -ne 'Desktop'"), "{body}");
+    assert!(body.contains("PHOSPHOR_KEEP_CONSOLE_CODEPAGE"), "{body}");
+    assert!(body.contains("UTF8Encoding($false)"), "no BOM: {body}");
+    assert!(body.contains("[Console]::OutputEncoding = $utf8"), "{body}");
+    assert!(body.contains("[Console]::InputEncoding = $utf8"), "{body}");
+    let finish = &pwsh[pwsh.find("function Warp-Finish-Bootstrap").unwrap()..];
+    let ensure_call = finish.find("Warp-Ensure-Utf8-Console").unwrap();
+    let configure_call = finish.find("Warp-Configure-PSReadLine").unwrap();
+    assert!(ensure_call < configure_call);
+}

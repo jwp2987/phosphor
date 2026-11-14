@@ -1410,8 +1410,25 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
         Warp-Send-JsonMessage $inputBufferMsg
     }
 
+    # #2171: Windows PowerShell 5.1 starts with the console on the OEM code page (437, 850, ...).
+    # Text typed or pasted into the line reaches PSReadLine intact as UTF-16 (the command runs with
+    # the right characters), but the line is drawn back through the console's output code page, and
+    # every UTF-16 unit that page cannot hold comes out as '?' (a non-BMP character, being two
+    # units, as '??'). Setting the console to UTF-8 (no BOM) makes the echo match what was received.
+    # Only Windows PowerShell (Desktop edition; pwsh 7 is already UTF-8) and only when the console is
+    # not already UTF-8. PHOSPHOR_KEEP_CONSOLE_CODEPAGE=1 opts out.
+    function Warp-Ensure-Utf8-Console {
+        if ($PSVersionTable.PSEdition -ne 'Desktop' -or $env:PHOSPHOR_KEEP_CONSOLE_CODEPAGE -eq '1') { return }
+        try {
+            $utf8 = New-Object System.Text.UTF8Encoding($false)
+            if ([Console]::OutputEncoding.CodePage -ne 65001) { [Console]::OutputEncoding = $utf8 }
+            if ([Console]::InputEncoding.CodePage -ne 65001) { [Console]::InputEncoding = $utf8 }
+        } catch { }
+    }
+
     function Warp-Finish-Bootstrap {
         param([decimal]$rcStartTime, [decimal]$rcEndTime)
+        Warp-Ensure-Utf8-Console
         Warp-Configure-PSReadLine
 
         # This is the closest we can get in PowerShell to a proper preexec hook. We wrap the
