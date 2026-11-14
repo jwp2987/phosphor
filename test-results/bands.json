@@ -60,6 +60,70 @@
    -28.78
   ]
  },
+ "macos/agent/lab_tab_remote_dir.zsh.150.helper/tab_to_insert": {
+  "kind": "ms",
+  "lower": 242.2,
+  "mad": 0.0,
+  "median": 242.2,
+  "n": 1,
+  "provisional": true,
+  "runs": [
+   "2026-11-14_build_r30d_3067664947"
+  ],
+  "set_by": "data",
+  "upper": 242.5,
+  "values": [
+   242.2
+  ]
+ },
+ "macos/agent/lab_tab_remote_dir.zsh.150.nohelper/tab_to_insert": {
+  "kind": "ms",
+  "lower": 408.9,
+  "mad": 0.0,
+  "median": 408.9,
+  "n": 1,
+  "provisional": true,
+  "runs": [
+   "2026-11-14_build_r30d_3067664947"
+  ],
+  "set_by": "data",
+  "upper": 409.2,
+  "values": [
+   408.9
+  ]
+ },
+ "macos/agent/lab_tab_remote_dir.zsh.lan.helper/tab_to_insert": {
+  "kind": "ms",
+  "lower": 162.3,
+  "mad": 0.0,
+  "median": 162.3,
+  "n": 1,
+  "provisional": true,
+  "runs": [
+   "2026-11-14_build_r30d_3067664947"
+  ],
+  "set_by": "data",
+  "upper": 162.6,
+  "values": [
+   162.3
+  ]
+ },
+ "macos/agent/lab_tab_remote_dir.zsh.lan.nohelper/tab_to_insert": {
+  "kind": "ms",
+  "lower": 107.5,
+  "mad": 0.0,
+  "median": 107.5,
+  "n": 1,
+  "provisional": true,
+  "runs": [
+   "2026-11-14_build_r30d_3067664947"
+  ],
+  "set_by": "data",
+  "upper": 107.8,
+  "values": [
+   107.5
+  ]
+ },
  "macos/agent/latency_enter/enter_to_start": {
   "kind": "ms",
   "lower": 2.64,
@@ -806,6 +870,70 @@
    55.2,
    61.3,
    52.6
+  ]
+ },
+ "macos/terminal/lab_tab_remote_dir.zsh.150.helper/tab_to_insert": {
+  "kind": "ms",
+  "lower": 243.3,
+  "mad": 0.0,
+  "median": 243.3,
+  "n": 1,
+  "provisional": true,
+  "runs": [
+   "2026-11-14_build_r30d_3067664947"
+  ],
+  "set_by": "data",
+  "upper": 243.6,
+  "values": [
+   243.3
+  ]
+ },
+ "macos/terminal/lab_tab_remote_dir.zsh.150.nohelper/tab_to_insert": {
+  "kind": "ms",
+  "lower": 398.8,
+  "mad": 0.0,
+  "median": 398.8,
+  "n": 1,
+  "provisional": true,
+  "runs": [
+   "2026-11-14_build_r30d_3067664947"
+  ],
+  "set_by": "data",
+  "upper": 399.1,
+  "values": [
+   398.8
+  ]
+ },
+ "macos/terminal/lab_tab_remote_dir.zsh.lan.helper/tab_to_insert": {
+  "kind": "ms",
+  "lower": 161.3,
+  "mad": 0.0,
+  "median": 161.3,
+  "n": 1,
+  "provisional": true,
+  "runs": [
+   "2026-11-14_build_r30d_3067664947"
+  ],
+  "set_by": "data",
+  "upper": 161.6,
+  "values": [
+   161.3
+  ]
+ },
+ "macos/terminal/lab_tab_remote_dir.zsh.lan.nohelper/tab_to_insert": {
+  "kind": "ms",
+  "lower": 109.1,
+  "mad": 0.0,
+  "median": 109.1,
+  "n": 1,
+  "provisional": true,
+  "runs": [
+   "2026-11-14_build_r30d_3067664947"
+  ],
+  "set_by": "data",
+  "upper": 109.4,
+  "values": [
+   109.1
   ]
  },
  "macos/terminal/latency_enter/enter_to_start": {
@@ -2220,16 +2348,17 @@
  },
  "windows/agent/ctrl_c_d/ctrl_c": {
   "kind": "ms",
-  "lower": 0.57,
-  "mad": 0.37,
-  "median": 1.69,
-  "n": 4,
-  "provisional": true,
+  "lower": 0.9,
+  "mad": 0.14,
+  "median": 1.32,
+  "n": 5,
+  "provisional": false,
   "runs": [
    "2026-11-02_build_r18cj_3018419792",
    "2026-11-12_build_r24a_3057403889",
    "2026-11-12_build_r26w_3059595258",
-   "2026-11-13_build_r29a_3062372705"
+   "2026-11-13_build_r29a_3062372705",
+   "2026-11-14_build_r30d_3067664947"
   ],
   "set_by": "data",
   "upper": 15.67,
@@ -2237,67 +2366,74 @@
    15.67,
    1.32,
    2.05,
-   1.31
+   1.31,
+   1.18
   ]
  },
  "windows/agent/ctrl_c_d/ctrl_c#app": {
   "kind": "ms",
-  "lower": 0.69,
-  "mad": 0.0,
-  "median": 0.69,
-  "n": 3,
+  "lower": 0.67,
+  "mad": 0.01,
+  "median": 0.7,
+  "n": 4,
   "provisional": true,
   "runs": [
    "2026-11-12_build_r24a_3057403889",
    "2026-11-12_build_r26w_3059595258",
-   "2026-11-13_build_r29a_3062372705"
+   "2026-11-13_build_r29a_3062372705",
+   "2026-11-14_build_r30d_3067664947"
   ],
   "set_by": "data",
   "upper": 0.99,
   "values": [
    0.69,
    0.69,
-   0.71
+   0.71,
+   0.72
   ]
  },
  "windows/agent/latency_enter/enter_to_start": {
   "kind": "ms",
-  "lower": 32.9,
-  "mad": 0.95,
-  "median": 35.75,
-  "n": 3,
+  "lower": 32.35,
+  "mad": 0.98,
+  "median": 35.27,
+  "n": 4,
   "provisional": true,
   "runs": [
    "2026-11-12_build_r24a_3057403889",
    "2026-11-12_build_r26w_3059595258",
-   "2026-11-13_build_r29a_3062372705"
+   "2026-11-13_build_r29a_3062372705",
+   "2026-11-14_build_r30d_3067664947"
   ],
   "set_by": "data",
   "upper": 35.1,
   "values": [
    34.8,
    37.17,
-   35.75
+   35.75,
+   33.8
   ]
  },
  "windows/agent/latency_enter/enter_to_start#app": {
   "kind": "ms",
-  "lower": 3.73,
-  "mad": 0.17,
-  "median": 4.24,
-  "n": 3,
+  "lower": 4.0,
+  "mad": 0.09,
+  "median": 4.26,
+  "n": 4,
   "provisional": true,
   "runs": [
    "2026-11-12_build_r24a_3057403889",
    "2026-11-12_build_r26w_3059595258",
-   "2026-11-13_build_r29a_3062372705"
+   "2026-11-13_build_r29a_3062372705",
+   "2026-11-14_build_r30d_3067664947"
   ],
   "set_by": "data",
   "upper": 4.44,
   "values": [
    4.04,
    4.24,
-   4.41
+   4.41,
+   4.28
   ]
  },
  "windows/agent@gitbash+fake/agent_latency_enter/idle": {
@@ -2698,47 +2834,48 @@
  },
  "windows/terminal/ctrl_c_d/ctrl_c": {
   "kind": "ms",
-  "lower": 1.34,
-  "mad": 0.1,
-  "median": 1.73,
+  "lower": 1.11,
+  "mad": 0.12,
+  "median": 1.67,
   "n": 8,
   "provisional": false,
   "runs": [
-   "2026-11-10_build_r18w9_3047937983",
    "2026-11-10_build_r10a_3048440714",
    "2026-11-10_build_r11a_3049602519",
    "2026-11-10_build_r12a_3050758880",
    "2026-11-10_build_r13a_3051722998",
    "2026-11-12_build_r24a_3057403889",
    "2026-11-12_build_r26w_3059595258",
-   "2026-11-13_build_r29a_3062372705"
+   "2026-11-13_build_r29a_3062372705",
+   "2026-11-14_build_r30d_3067664947"
   ],
   "set_by": "data",
   "upper": 2.03,
   "values": [
-   1.72,
    1.78,
    1.8,
    1.86,
    1.56,
    1.74,
    1.6,
-   1.34
+   1.34,
+   1.11
   ]
  },
  "windows/terminal/ctrl_c_d/ctrl_c#app": {
   "kind": "ms",
-  "lower": 0.58,
+  "lower": 0.56,
   "mad": 0.03,
   "median": 0.67,
-  "n": 5,
+  "n": 6,
   "provisional": false,
   "runs": [
    "2026-11-10_build_r12a_3050758880",
    "2026-11-10_build_r13a_3051722998",
    "2026-11-12_build_r24a_3057403889",
    "2026-11-12_build_r26w_3059595258",
-   "2026-11-13_build_r29a_3062372705"
+   "2026-11-13_build_r29a_3062372705",
+   "2026-11-14_build_r30d_3067664947"
   ],
   "set_by": "data",
   "upper": 0.95,
@@ -2747,272 +2884,294 @@
    0.63,
    0.62,
    0.7,
-   0.67
+   0.67,
+   0.71
   ]
  },
  "windows/terminal/editor_memory_7mb/rs_held_after_close/private": {
   "kind": "mb",
-  "lower": -11.43,
-  "mad": 0.0,
-  "median": -11.43,
-  "n": 1,
+  "lower": -22.88,
+  "mad": 5.72,
+  "median": -5.71,
+  "n": 2,
   "provisional": true,
   "runs": [
-   "2026-11-13_build_r29a_3062372705"
+   "2026-11-13_build_r29a_3062372705",
+   "2026-11-14_build_r30d_3067664947"
   ],
   "set_by": "data",
   "upper": 3.57,
   "values": [
-   -11.43
+   -11.43,
+   0.02
   ]
  },
  "windows/terminal/editor_memory_7mb/rs_held_after_close/rss": {
   "kind": "mb",
-  "lower": -4.34,
-  "mad": 0.0,
-  "median": -4.34,
-  "n": 1,
+  "lower": -9.76,
+  "mad": 1.35,
+  "median": -5.7,
+  "n": 2,
   "provisional": true,
   "runs": [
-   "2026-11-13_build_r29a_3062372705"
+   "2026-11-13_build_r29a_3062372705",
+   "2026-11-14_build_r30d_3067664947"
   ],
   "set_by": "data",
-  "upper": 10.66,
+  "upper": 9.31,
   "values": [
-   -4.34
+   -4.34,
+   -7.05
   ]
  },
  "windows/terminal/editor_memory_7mb/rs_open_cost_worst/private": {
   "kind": "mb",
-  "lower": 26.3,
-  "mad": 0.0,
-  "median": 26.3,
-  "n": 1,
+  "lower": 20.7,
+  "mad": 2.8,
+  "median": 29.1,
+  "n": 2,
   "provisional": true,
   "runs": [
-   "2026-11-13_build_r29a_3062372705"
+   "2026-11-13_build_r29a_3062372705",
+   "2026-11-14_build_r30d_3067664947"
   ],
   "set_by": "data",
   "upper": 41.3,
   "values": [
-   26.3
+   26.3,
+   31.9
   ]
  },
  "windows/terminal/editor_memory_7mb/rs_open_cost_worst/rss": {
   "kind": "mb",
-  "lower": 48.9,
-  "mad": 0.0,
-  "median": 48.9,
-  "n": 1,
+  "lower": 44.9,
+  "mad": 2.0,
+  "median": 50.9,
+  "n": 2,
   "provisional": true,
   "runs": [
-   "2026-11-13_build_r29a_3062372705"
+   "2026-11-13_build_r29a_3062372705",
+   "2026-11-14_build_r30d_3067664947"
   ],
   "set_by": "data",
   "upper": 63.9,
   "values": [
-   48.9
+   48.9,
+   52.9
   ]
  },
  "windows/terminal/editor_memory_7mb/txt_cycle_growth/private": {
   "kind": "mb",
-  "lower": 13.79,
-  "mad": 0.0,
-  "median": 13.79,
-  "n": 1,
+  "lower": -6.49,
+  "mad": 5.07,
+  "median": 8.72,
+  "n": 2,
   "provisional": true,
   "runs": [
-   "2026-11-13_build_r29a_3062372705"
+   "2026-11-13_build_r29a_3062372705",
+   "2026-11-14_build_r30d_3067664947"
   ],
   "set_by": "data",
-  "upper": 28.79,
+  "upper": 23.93,
   "values": [
-   13.79
+   13.79,
+   3.65
   ]
  },
  "windows/terminal/editor_memory_7mb/txt_cycle_growth/rss": {
   "kind": "mb",
-  "lower": 12.28,
-  "mad": 0.0,
-  "median": 12.28,
-  "n": 1,
+  "lower": 5.1,
+  "mad": 1.79,
+  "median": 10.48,
+  "n": 2,
   "provisional": true,
   "runs": [
-   "2026-11-13_build_r29a_3062372705"
+   "2026-11-13_build_r29a_3062372705",
+   "2026-11-14_build_r30d_3067664947"
   ],
   "set_by": "data",
-  "upper": 27.28,
+  "upper": 25.49,
   "values": [
-   12.28
+   12.28,
+   8.69
   ]
  },
  "windows/terminal/editor_memory_7mb/txt_held_after_close/private": {
   "kind": "mb",
-  "lower": 14.96,
-  "mad": 0.0,
-  "median": 14.96,
-  "n": 1,
+  "lower": -14.38,
+  "mad": 7.34,
+  "median": 7.62,
+  "n": 2,
   "provisional": true,
   "runs": [
-   "2026-11-13_build_r29a_3062372705"
+   "2026-11-13_build_r29a_3062372705",
+   "2026-11-14_build_r30d_3067664947"
   ],
   "set_by": "data",
-  "upper": 29.96,
+  "upper": 29.63,
   "values": [
-   14.96
+   14.96,
+   0.29
   ]
  },
  "windows/terminal/editor_memory_7mb/txt_held_after_close/rss": {
   "kind": "mb",
-  "lower": 17.3,
-  "mad": 0.0,
-  "median": 17.3,
-  "n": 1,
+  "lower": -3.04,
+  "mad": 5.09,
+  "median": 12.21,
+  "n": 2,
   "provisional": true,
   "runs": [
-   "2026-11-13_build_r29a_3062372705"
+   "2026-11-13_build_r29a_3062372705",
+   "2026-11-14_build_r30d_3067664947"
   ],
   "set_by": "data",
-  "upper": 32.3,
+  "upper": 27.47,
   "values": [
-   17.3
+   17.3,
+   7.13
   ]
  },
  "windows/terminal/editor_memory_7mb/txt_open_cost_worst/private": {
   "kind": "mb",
-  "lower": 95.9,
-  "mad": 0.0,
-  "median": 95.9,
-  "n": 1,
+  "lower": 70.3,
+  "mad": 6.4,
+  "median": 89.5,
+  "n": 2,
   "provisional": true,
   "runs": [
-   "2026-11-13_build_r29a_3062372705"
+   "2026-11-13_build_r29a_3062372705",
+   "2026-11-14_build_r30d_3067664947"
   ],
   "set_by": "data",
-  "upper": 110.9,
+  "upper": 108.7,
   "values": [
-   95.9
+   95.9,
+   83.1
   ]
  },
  "windows/terminal/editor_memory_7mb/txt_open_cost_worst/rss": {
   "kind": "mb",
-  "lower": 94.9,
-  "mad": 0.0,
-  "median": 94.9,
-  "n": 1,
+  "lower": 87.3,
+  "mad": 1.9,
+  "median": 93.0,
+  "n": 2,
   "provisional": true,
   "runs": [
-   "2026-11-13_build_r29a_3062372705"
+   "2026-11-13_build_r29a_3062372705",
+   "2026-11-14_build_r30d_3067664947"
   ],
   "set_by": "data",
-  "upper": 109.9,
+  "upper": 108.0,
   "values": [
-   94.9
+   94.9,
+   91.1
   ]
  },
  "windows/terminal/latency_enter/enter_to_start": {
   "kind": "ms",
   "lower": 31.27,
-  "mad": 2.07,
+  "mad": 2.27,
   "median": 38.8,
   "n": 8,
   "provisional": false,
   "runs": [
-   "2026-11-09_build_r18w7_3046481170",
    "2026-11-10_build_r18w9_3047937983",
    "2026-11-10_build_r10a_3048440714",
    "2026-11-10_build_r11a_3049602519",
    "2026-11-10_build_r12a_3050758880",
    "2026-11-10_build_r13a_3051722998",
    "2026-11-12_build_r26w_3059595258",
-   "2026-11-13_build_r29a_3062372705"
+   "2026-11-13_build_r29a_3062372705",
+   "2026-11-14_build_r30d_3067664947"
   ],
   "set_by": "data",
   "upper": 42.64,
   "values": [
-   37.64,
    37.7,
    40.67,
    39.9,
    41.08,
    41.06,
    31.27,
-   32.1
+   32.1,
+   32.04
   ]
  },
  "windows/terminal/latency_enter/enter_to_start#app": {
   "kind": "ms",
-  "lower": 1.71,
-  "mad": 0.02,
-  "median": 1.77,
+  "lower": 1.74,
+  "mad": 0.01,
+  "median": 1.78,
   "n": 8,
   "provisional": false,
   "runs": [
-   "2026-11-10_build_r18w9_3047937983",
    "2026-11-10_build_r10a_3048440714",
    "2026-11-10_build_r11a_3049602519",
    "2026-11-10_build_r12a_3050758880",
    "2026-11-10_build_r13a_3051722998",
    "2026-11-12_build_r24a_3057403889",
    "2026-11-12_build_r26w_3059595258",
-   "2026-11-13_build_r29a_3062372705"
+   "2026-11-13_build_r29a_3062372705",
+   "2026-11-14_build_r30d_3067664947"
   ],
   "set_by": "data",
   "upper": 2.07,
   "values": [
-   1.75,
    1.74,
    1.79,
    1.77,
    1.79,
    1.77,
    1.77,
-   1.86
+   1.86,
+   1.87
   ]
  },
  "windows/terminal@gitbash/ctrl_c_d/ctrl_c": {
   "kind": "ms",
-  "lower": -19.98,
-  "mad": 6.67,
-  "median": 0.05,
+  "lower": -18.11,
+  "mad": 5.74,
+  "median": -0.89,
   "n": 8,
   "provisional": false,
   "runs": [
-   "2026-11-10_build_r18w9_3047937983",
    "2026-11-10_build_r10a_3048440714",
    "2026-11-10_build_r11a_3049602519",
    "2026-11-10_build_r12a_3050758880",
    "2026-11-10_build_r13a_3051722998",
    "2026-11-12_build_r24a_3057403889",
    "2026-11-12_build_r26w_3059595258",
-   "2026-11-13_build_r29a_3062372705"
+   "2026-11-13_build_r29a_3062372705",
+   "2026-11-14_build_r30d_3067664947"
   ],
   "set_by": "data",
-  "upper": 20.08,
+  "upper": 16.34,
   "values": [
-   4.77,
    14.48,
    -5.11,
    15.22,
    -5.59,
    9.81,
    -4.67,
-   -7.66
+   -7.66,
+   2.9
   ]
  },
  "windows/terminal@gitbash/ctrl_c_d/ctrl_c#app": {
   "kind": "ms",
-  "lower": 0.56,
+  "lower": 0.57,
   "mad": 0.03,
   "median": 0.65,
-  "n": 5,
+  "n": 6,
   "provisional": false,
   "runs": [
    "2026-11-10_build_r12a_3050758880",
    "2026-11-10_build_r13a_3051722998",
    "2026-11-12_build_r24a_3057403889",
    "2026-11-12_build_r26w_3059595258",
-   "2026-11-13_build_r29a_3062372705"
+   "2026-11-13_build_r29a_3062372705",
+   "2026-11-14_build_r30d_3067664947"
   ],
   "set_by": "data",
   "upper": 0.94,
@@ -3021,151 +3180,170 @@
    0.62,
    0.61,
    0.67,
-   0.68
+   0.68,
+   0.65
   ]
  },
  "windows/terminal@gitbash/editor_memory_7mb/rs_held_after_close/private": {
   "kind": "mb",
-  "lower": -11.46,
-  "mad": 0.0,
-  "median": -11.46,
-  "n": 1,
+  "lower": -32.97,
+  "mad": 10.76,
+  "median": -0.71,
+  "n": 2,
   "provisional": true,
   "runs": [
-   "2026-11-13_build_r29a_3062372705"
+   "2026-11-13_build_r29a_3062372705",
+   "2026-11-14_build_r30d_3067664947"
   ],
   "set_by": "data",
   "upper": 3.54,
   "values": [
-   -11.46
+   -11.46,
+   10.05
   ]
  },
  "windows/terminal@gitbash/editor_memory_7mb/rs_held_after_close/rss": {
   "kind": "mb",
-  "lower": -6.04,
-  "mad": 0.0,
-  "median": -6.04,
-  "n": 1,
+  "lower": -16.51,
+  "mad": 5.23,
+  "median": -0.81,
+  "n": 2,
   "provisional": true,
   "runs": [
-   "2026-11-13_build_r29a_3062372705"
+   "2026-11-13_build_r29a_3062372705",
+   "2026-11-14_build_r30d_3067664947"
   ],
   "set_by": "data",
   "upper": 8.96,
   "values": [
-   -6.04
+   -6.04,
+   4.43
   ]
  },
  "windows/terminal@gitbash/editor_memory_7mb/rs_open_cost_worst/private": {
   "kind": "mb",
-  "lower": 28.3,
-  "mad": 0.0,
-  "median": 28.3,
-  "n": 1,
+  "lower": 20.4,
+  "mad": 3.95,
+  "median": 32.25,
+  "n": 2,
   "provisional": true,
   "runs": [
-   "2026-11-13_build_r29a_3062372705"
+   "2026-11-13_build_r29a_3062372705",
+   "2026-11-14_build_r30d_3067664947"
   ],
   "set_by": "data",
   "upper": 43.3,
   "values": [
-   28.3
+   28.3,
+   36.2
   ]
  },
  "windows/terminal@gitbash/editor_memory_7mb/rs_open_cost_worst/rss": {
   "kind": "mb",
-  "lower": 50.6,
-  "mad": 0.0,
-  "median": 50.6,
-  "n": 1,
+  "lower": 46.5,
+  "mad": 2.05,
+  "median": 52.65,
+  "n": 2,
   "provisional": true,
   "runs": [
-   "2026-11-13_build_r29a_3062372705"
+   "2026-11-13_build_r29a_3062372705",
+   "2026-11-14_build_r30d_3067664947"
   ],
   "set_by": "data",
   "upper": 65.6,
   "values": [
-   50.6
+   50.6,
+   54.7
   ]
  },
  "windows/terminal@gitbash/editor_memory_7mb/txt_cycle_growth/private": {
   "kind": "mb",
-  "lower": 9.13,
-  "mad": 0.0,
-  "median": 9.13,
-  "n": 1,
+  "lower": -2.77,
+  "mad": 2.98,
+  "median": 6.16,
+  "n": 2,
   "provisional": true,
   "runs": [
-   "2026-11-13_build_r29a_3062372705"
+   "2026-11-13_build_r29a_3062372705",
+   "2026-11-14_build_r30d_3067664947"
   ],
   "set_by": "data",
-  "upper": 24.13,
+  "upper": 21.16,
   "values": [
-   9.13
+   9.13,
+   3.18
   ]
  },
  "windows/terminal@gitbash/editor_memory_7mb/txt_cycle_growth/rss": {
   "kind": "mb",
-  "lower": -20.41,
-  "mad": 0.0,
-  "median": -20.41,
-  "n": 1,
+  "lower": -69.49,
+  "mad": 12.27,
+  "median": -32.68,
+  "n": 2,
   "provisional": true,
   "runs": [
-   "2026-11-13_build_r29a_3062372705"
+   "2026-11-13_build_r29a_3062372705",
+   "2026-11-14_build_r30d_3067664947"
   ],
   "set_by": "data",
   "upper": -5.41,
   "values": [
-   -20.41
+   -20.41,
+   -44.95
   ]
  },
  "windows/terminal@gitbash/editor_memory_7mb/txt_held_after_close/private": {
   "kind": "mb",
-  "lower": 15.33,
-  "mad": 0.0,
-  "median": 15.33,
-  "n": 1,
+  "lower": -6.37,
+  "mad": 5.42,
+  "median": 9.91,
+  "n": 2,
   "provisional": true,
   "runs": [
-   "2026-11-13_build_r29a_3062372705"
+   "2026-11-13_build_r29a_3062372705",
+   "2026-11-14_build_r30d_3067664947"
   ],
   "set_by": "data",
-  "upper": 30.33,
+  "upper": 26.18,
   "values": [
-   15.33
+   15.33,
+   4.48
   ]
  },
  "windows/terminal@gitbash/editor_memory_7mb/txt_held_after_close/rss": {
   "kind": "mb",
-  "lower": -35.5,
-  "mad": 0.0,
-  "median": -35.5,
-  "n": 1,
+  "lower": -83.9,
+  "mad": 12.1,
+  "median": -47.6,
+  "n": 2,
   "provisional": true,
   "runs": [
-   "2026-11-13_build_r29a_3062372705"
+   "2026-11-13_build_r29a_3062372705",
+   "2026-11-14_build_r30d_3067664947"
   ],
   "set_by": "data",
   "upper": -20.5,
   "values": [
-   -35.5
+   -35.5,
+   -59.7
   ]
  },
  "windows/terminal@gitbash/editor_memory_7mb/txt_open_cost_worst/private": {
   "kind": "mb",
-  "lower": 75.9,
-  "mad": 0.0,
-  "median": 75.9,
-  "n": 1,
+  "lower": 63.3,
+  "mad": 3.15,
+  "median": 72.75,
+  "n": 2,
   "provisional": true,
   "runs": [
-   "2026-11-13_build_r29a_3062372705"
+   "2026-11-13_build_r29a_3062372705",
+   "2026-11-14_build_r30d_3067664947"
   ],
   "set_by": "data",
-  "upper": 90.9,
+  "upper": 87.75,
   "values": [
-   75.9
+   75.9,
+   69.6
   ]
  },
  "windows/terminal@gitbash/editor_memory_7mb/txt_open_cost_worst/rss": {
@@ -3173,45 +3351,47 @@
   "lower": 70.6,
   "mad": 0.0,
   "median": 70.6,
-  "n": 1,
+  "n": 2,
   "provisional": true,
   "runs": [
-   "2026-11-13_build_r29a_3062372705"
+   "2026-11-13_build_r29a_3062372705",
+   "2026-11-14_build_r30d_3067664947"
   ],
   "set_by": "data",
   "upper": 85.6,
   "values": [
+   70.6,
    70.6
   ]
  },
  "windows/terminal@gitbash/latency_enter/enter_to_start": {
   "kind": "ms",
-  "lower": 20.48,
-  "mad": 3.56,
+  "lower": 16.94,
+  "mad": 4.74,
   "median": 31.18,
   "n": 8,
   "provisional": false,
   "runs": [
-   "2026-11-10_build_r18w9_3047937983",
    "2026-11-10_build_r10a_3048440714",
    "2026-11-10_build_r11a_3049602519",
    "2026-11-10_build_r12a_3050758880",
    "2026-11-10_build_r13a_3051722998",
    "2026-11-12_build_r24a_3057403889",
    "2026-11-12_build_r26w_3059595258",
-   "2026-11-13_build_r29a_3062372705"
+   "2026-11-13_build_r29a_3062372705",
+   "2026-11-14_build_r30d_3067664947"
   ],
   "set_by": "data",
   "upper": 53.51,
   "values": [
-   34.39,
    31.37,
    30.98,
    27.26,
    28.3,
    53.51,
    25.6,
-   53.19
+   53.19,
+   53.14
   ]
  },
  "windows/terminal@gitbash/latency_enter/enter_to_start#app": {
@@ -3222,146 +3402,152 @@
   "n": 8,
   "provisional": false,
   "runs": [
-   "2026-11-10_build_r18w9_3047937983",
    "2026-11-10_build_r10a_3048440714",
    "2026-11-10_build_r11a_3049602519",
    "2026-11-10_build_r12a_3050758880",
    "2026-11-10_build_r13a_3051722998",
    "2026-11-12_build_r24a_3057403889",
    "2026-11-12_build_r26w_3059595258",
-   "2026-11-13_build_r29a_3062372705"
+   "2026-11-13_build_r29a_3062372705",
+   "2026-11-14_build_r30d_3067664947"
   ],
   "set_by": "data",
   "upper": 1.23,
   "values": [
-   0.96,
    0.99,
    0.93,
    0.92,
    0.93,
    0.9,
    1.0,
-   0.9
+   0.9,
+   1.0
   ]
  },
  "windows/terminal@gitbash/latency_first_key_after_idle/gap1s": {
   "kind": "ms",
   "lower": -0.19,
-  "mad": 0.02,
-  "median": -0.13,
-  "n": 3,
+  "mad": 0.03,
+  "median": -0.11,
+  "n": 4,
   "provisional": true,
   "runs": [
    "2026-11-12_build_r24a_3057403889",
    "2026-11-12_build_r26w_3059595258",
-   "2026-11-13_build_r29a_3062372705"
+   "2026-11-13_build_r29a_3062372705",
+   "2026-11-14_build_r30d_3067664947"
   ],
   "set_by": "data",
   "upper": 0.17,
   "values": [
    -0.13,
    -0.08,
-   -0.15
+   -0.15,
+   -0.09
   ]
  },
  "windows/terminal@gitbash/latency_first_key_after_idle/gap2s": {
   "kind": "ms",
-  "lower": -0.22,
-  "mad": 0.03,
-  "median": -0.13,
-  "n": 3,
+  "lower": -0.23,
+  "mad": 0.04,
+  "median": -0.11,
+  "n": 4,
   "provisional": true,
   "runs": [
    "2026-11-12_build_r24a_3057403889",
    "2026-11-12_build_r26w_3059595258",
-   "2026-11-13_build_r29a_3062372705"
+   "2026-11-13_build_r29a_3062372705",
+   "2026-11-14_build_r30d_3067664947"
   ],
   "set_by": "data",
   "upper": 0.17,
   "values": [
    -0.13,
    -0.08,
-   -0.16
+   -0.16,
+   -0.02
   ]
  },
  "windows/terminal@gitbash/latency_first_key_after_idle/gap5s": {
   "kind": "ms",
-  "lower": -0.21,
-  "mad": 0.07,
-  "median": -0.0,
-  "n": 3,
+  "lower": -0.22,
+  "mad": 0.06,
+  "median": -0.05,
+  "n": 4,
   "provisional": true,
   "runs": [
    "2026-11-12_build_r24a_3057403889",
    "2026-11-12_build_r26w_3059595258",
-   "2026-11-13_build_r29a_3062372705"
+   "2026-11-13_build_r29a_3062372705",
+   "2026-11-14_build_r30d_3067664947"
   ],
   "set_by": "data",
-  "upper": 0.29,
+  "upper": 0.25,
   "values": [
    -0.1,
    0.07,
-   -0.0
+   -0.0,
+   -0.11
   ]
  },
  "windows/terminal@gitbash/latency_key_log/key_to_frame": {
   "kind": "ms",
-  "lower": 3.11,
-  "mad": 0.24,
-  "median": 3.83,
+  "lower": 2.91,
+  "mad": 0.35,
+  "median": 3.96,
   "n": 8,
   "provisional": false,
   "runs": [
-   "2026-11-10_build_r18w9_3047937983",
    "2026-11-10_build_r10a_3048440714",
    "2026-11-10_build_r11a_3049602519",
    "2026-11-10_build_r12a_3050758880",
    "2026-11-10_build_r13a_3051722998",
    "2026-11-12_build_r24a_3057403889",
    "2026-11-12_build_r26w_3059595258",
-   "2026-11-13_build_r29a_3062372705"
+   "2026-11-13_build_r29a_3062372705",
+   "2026-11-14_build_r30d_3067664947"
   ],
   "set_by": "data",
   "upper": 4.55,
   "values": [
-   3.53,
    3.51,
    3.97,
    3.65,
    3.7,
    4.35,
    3.96,
-   4.37
+   4.37,
+   4.35
   ]
  },
  "windows/terminal@gitbash/latency_key_log/key_to_frame#app": {
   "kind": "ms",
-  "lower": 0.62,
-  "mad": 0.04,
-  "median": 0.74,
+  "lower": 0.67,
+  "mad": 0.02,
+  "median": 0.77,
   "n": 8,
   "provisional": false,
   "runs": [
-   "2026-11-10_build_r18w9_3047937983",
    "2026-11-10_build_r10a_3048440714",
    "2026-11-10_build_r11a_3049602519",
    "2026-11-10_build_r12a_3050758880",
    "2026-11-10_build_r13a_3051722998",
    "2026-11-12_build_r24a_3057403889",
    "2026-11-12_build_r26w_3059595258",
-   "2026-11-13_build_r29a_3062372705"
+   "2026-11-13_build_r29a_3062372705",
+   "2026-11-14_build_r30d_3067664947"
   ],
   "set_by": "data",
   "upper": 1.01,
   "values": [
-   0.67,
    0.67,
    0.77,
    0.69,
    0.72,
    0.78,
    0.76,
-   0.78
+   0.78,
+   0.79
   ]
  },
  "windows/terminal@gitbash/subshell_ready_rc_clear/clear_inner_line_after_enter_s": {
@@ -3372,20 +3558,20 @@
   "n": 8,
   "provisional": false,
   "runs": [
-   "2026-11-10_build_r18w9_3047937983",
    "2026-11-10_build_r10a_3048440714",
    "2026-11-10_build_r11a_3049602519",
    "2026-11-10_build_r12a_3050758880",
    "2026-11-10_build_r13a_3051722998",
    "2026-11-12_build_r24a_3057403889",
    "2026-11-12_build_r26w_3059595258",
-   "2026-11-13_build_r29a_3062372705"
+   "2026-11-13_build_r29a_3062372705",
+   "2026-11-14_build_r30d_3067664947"
   ],
   "set_by": "data",
   "upper": 0.35,
   "values": [
-   0.05,
    0.06,
+   0.05,
    0.05,
    0.05,
    0.05,
@@ -3398,66 +3584,70 @@
   "kind": "s",
   "lower": 0.05,
   "mad": 0.18,
-  "median": 4.0,
+  "median": 4.04,
   "n": 8,
   "provisional": false,
   "runs": [
-   "2026-11-09_build_r18w8_3047198675",
    "2026-11-10_build_r18w9_3047937983",
    "2026-11-10_build_r11a_3049602519",
    "2026-11-10_build_r12a_3050758880",
    "2026-11-10_build_r13a_3051722998",
    "2026-11-12_build_r24a_3057403889",
    "2026-11-12_build_r26w_3059595258",
-   "2026-11-13_build_r29a_3062372705"
+   "2026-11-13_build_r29a_3062372705",
+   "2026-11-14_build_r30d_3067664947"
   ],
   "set_by": "data",
   "upper": 4.55,
   "values": [
-   0.05,
    0.05,
    3.95,
    4.05,
    3.89,
    4.26,
    4.04,
-   4.3
+   4.3,
+   5.43
   ]
  },
  "windows/terminal@pwsh7/ctrl_c_d/ctrl_c": {
   "kind": "ms",
-  "lower": 1.31,
-  "mad": 0.02,
-  "median": 1.37,
-  "n": 2,
+  "lower": 1.27,
+  "mad": 0.04,
+  "median": 1.39,
+  "n": 3,
   "provisional": true,
   "runs": [
    "2026-11-12_build_r26w_3059595258",
-   "2026-11-13_build_r29a_3062372705"
+   "2026-11-13_build_r29a_3062372705",
+   "2026-11-14_build_r30d_3067664947"
   ],
   "set_by": "data",
   "upper": 1.65,
   "values": [
    1.35,
-   1.39
+   1.39,
+   1.54
   ]
  },
  "windows/terminal@pwsh7/ctrl_c_d/ctrl_c#app": {
   "kind": "ms",
-  "lower": 0.64,
-  "mad": 0.03,
-  "median": 0.71,
-  "n": 2,
+  "lower": 0.67,
+  "mad": 0.01,
+  "median": 0.7,
+  "n": 3,
   "provisional": true,
   "runs": [
    "2026-11-12_build_r26w_3059595258",
-   "2026-11-13_build_r29a_3062372705"
+   "2026-11-13_build_r29a_3062372705",
+   "2026-11-14_build_r30d_3067664947"
   ],
   "set_by": "data",
   "upper": 0.99,
   "values": [
    0.69,
-   0.74
+   0.74,
+   0.7
   ]
  }
 }

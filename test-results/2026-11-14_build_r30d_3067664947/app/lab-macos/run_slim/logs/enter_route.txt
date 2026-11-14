@@ -1,0 +1,30 @@
+Returns at the session tap: 932; Phosphor app_send_event lines: 1610; Phosphor pids: [969, 1346, 3942, 4606, 69465, 83617, 94338]
+targeted at Phosphor but never reached its NSApplication: 0 (of which UNCOVERED, no app_send_event within 3 s = app-log gap, cause not established: 0; LOST with neighbours logged: 0)
+  app log logs/agent/phosphor.1.log: 2026-11-14T07:43:21Z .. 2026-11-14T07:43:39Z (744095 bytes)
+  app log logs/agent/phosphor.1.old.0.in_session.0.log: 2026-11-14T07:37:41Z .. 2026-11-14T07:43:01Z (10485715 bytes)
+  app log logs/agent/phosphor.1.old.0.log: 2026-11-14T07:43:01Z .. 2026-11-14T07:43:20Z (673179 bytes)
+  app log logs/agent/phosphor.2.log: 2026-11-14T07:43:40Z .. 2026-11-14T07:47:45Z (8653156 bytes)
+  app log logs/agent/phosphor.2.old.0.log: 2026-11-14T07:43:21Z .. 2026-11-14T07:43:40Z (744856 bytes)
+  app log logs/agent/phosphor.2.old.1.in_session.0.log: 2026-11-14T07:37:41Z .. 2026-11-14T07:43:01Z (10485715 bytes)
+  app log logs/agent/phosphor.2.old.1.log: 2026-11-14T07:43:01Z .. 2026-11-14T07:43:20Z (673179 bytes)
+  app log logs/agent/phosphor.3.log: 2026-11-14T07:47:45Z .. 2026-11-14T07:48:45Z (1988328 bytes)
+  app log logs/agent/phosphor.3.old.0.log: 2026-11-14T07:43:40Z .. 2026-11-14T07:47:45Z (8653917 bytes)
+  app log logs/agent/phosphor.3.old.1.log: 2026-11-14T07:43:21Z .. 2026-11-14T07:43:40Z (744856 bytes)
+  app log logs/agent/phosphor.3.old.2.in_session.0.log: 2026-11-14T07:37:41Z .. 2026-11-14T07:43:01Z (10485715 bytes)
+  app log logs/agent/phosphor.3.old.2.log: 2026-11-14T07:43:01Z .. 2026-11-14T07:43:20Z (673179 bytes)
+  app log logs/agent/phosphor.before_ext_never_install.log: 2026-11-14T07:43:01Z .. 2026-11-14T07:43:20Z (672418 bytes)
+  app log logs/agent/phosphor.log: 2026-11-14T07:48:46Z .. 2026-11-14T07:50:24Z (3948104 bytes)
+  app log logs/agent/phosphor.old.0.log: 2026-11-14T07:47:45Z .. 2026-11-14T07:48:45Z (1989089 bytes)
+  app log logs/agent/phosphor.old.1.log: 2026-11-14T07:43:40Z .. 2026-11-14T07:47:45Z (8653917 bytes)
+  app log logs/agent/phosphor.old.2.log: 2026-11-14T07:43:21Z .. 2026-11-14T07:43:40Z (744856 bytes)
+  app log logs/agent/phosphor.old.3.in_session.0.log: 2026-11-14T07:37:41Z .. 2026-11-14T07:43:01Z (10485715 bytes)
+  app log logs/agent/phosphor.old.3.log: 2026-11-14T07:43:01Z .. 2026-11-14T07:43:20Z (673179 bytes)
+  app log logs/terminal/phosphor.before_ext_never_install.log: 2026-11-14T07:18:12Z .. 2026-11-14T07:22:52Z (7732365 bytes)
+  app log logs/terminal/phosphor.log: 2026-11-14T07:22:54Z .. 2026-11-14T07:37:39Z (31569332 bytes)
+  app log logs/terminal/phosphor.old.0.in_session.0.log: 2026-11-14T07:14:01Z .. 2026-11-14T07:18:12Z (10485672 bytes)
+  app log logs/terminal/phosphor.old.0.in_session.1.log: 2026-11-14T07:09:47Z .. 2026-11-14T07:14:01Z (10485739 bytes)
+  app log logs/terminal/phosphor.old.0.log: 2026-11-14T07:18:12Z .. 2026-11-14T07:22:53Z (7733126 bytes)
+targeted at another process: 0
+seen by Phosphor but not by the tap (join check, expect 0): 0
+injector posted 837 Returns; never seen by macOS (no tap event within 200 ms): 0
+ALL KEYS: injector sent 31059; macOS delivered 31600 to Phosphor, 0 to other processes; never in macOS (sent - delivered) 0
