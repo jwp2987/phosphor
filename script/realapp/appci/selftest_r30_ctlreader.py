@@ -97,6 +97,19 @@ def r30_zsh_hook_logs_no_empty_c_line_2213():
 
 
 @check
+def r30_profile_commands_remote_filters_via_lab_remote_2213():
+    import lab as L
+    import profile as P
+    boot = "read -r -d '' WARP_BOOTSTRAP_VAR << 'EOM'\\n" + "x" * 64000
+    raw = ("C\t1.0\techo a\nC\t2.0\t" + boot + "\nC\t3.0\techo b\n").encode()
+    pr = P.Profile.__new__(P.Profile)
+    pr.remote = L.LabRemote(ChunkLab(raw), "u_zsh", "zsh")
+    assert [c for _, c in pr.commands(remote=True)] == ["echo a", "echo b"]
+    pr.remote = L.LabRemote(ChunkLab(raw), "u_bash", "bash")
+    assert [c for _, c in pr.commands(remote=True)] == ["echo a", boot, "echo b"]
+
+
+@check
 def selftest_main_guard_is_last_2214():
     # #2214: every line after `if __name__ == "__main__":` in selftest.py is dead under `python3 selftest.py` (the CI form); r26-r30 registered there and never ran
     import ast
