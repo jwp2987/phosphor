@@ -10,7 +10,40 @@ fn inputs() -> NativeCompletionsInputs {
         remote_without_helper: true,
         flag_or_forced: false,
         remote_native_enabled: true,
+        remote_compsys_missing: false,
     }
+}
+
+/// #2225: a remote zsh that reported no compsys is not asked in-band (its answer is always
+/// empty); the completer answers at once, with or without the upstream flag.
+#[test]
+fn a_remote_zsh_without_compsys_is_not_asked() {
+    for flag_or_forced in [false, true] {
+        assert_eq!(
+            native_completions_use(NativeCompletionsInputs {
+                remote_compsys_missing: true,
+                flag_or_forced,
+                ..inputs()
+            }),
+            NativeCompletionsUse::None
+        );
+    }
+}
+
+/// #2225: the report is per session, and a later `true` (a `compinit` after login) puts the
+/// session back on the in-band path; no report keeps the last one.
+#[test]
+fn compsys_report_is_per_session_and_follows_a_later_compinit() {
+    let a = SessionId::from(9_225_001u64);
+    let b = SessionId::from(9_225_002u64);
+    assert!(!compsys_missing(a));
+    note_compsys_loaded(a, Some(false));
+    assert!(compsys_missing(a));
+    assert!(!compsys_missing(b));
+    note_compsys_loaded(a, None);
+    assert!(compsys_missing(a));
+    note_compsys_loaded(a, Some(true));
+    assert!(!compsys_missing(a));
 }
 
 /// #1801: an explicit Tab in a remote session without the helper asks the remote shell first.

@@ -695,6 +695,7 @@ impl RawPrecmdValue {
             "session_id" => self.prompt_metadata.session_id = value.parse::<u64>().ok(),
             "seq" => self.prompt_metadata.seq = value.parse::<u64>().ok(),
             "cwd_listing" => self.prompt_metadata.cwd_listing = map_empty_to_none(value),
+            "compsys_loaded" => self.prompt_metadata.compsys_loaded = value.parse::<bool>().ok(),
             "exit_code" => {
                 self.exit_code = RawPrecmdField::Present(value.parse::<i32>().ok().map(Into::into));
             }
@@ -923,6 +924,12 @@ pub struct PromptMetadata {
     /// `completer::pushed_listing`. `None` from a local shell or one with nothing new to say.
     #[serde(default)]
     pub cwd_listing: Option<String>,
+
+    /// A remote zsh's report of whether compsys is loaded (#2225), sent when the answer changes
+    /// (the first Precmd, and again after a later `compinit`). `None` keeps the last report, and
+    /// is all a bootstrap that predates it or another shell sends.
+    #[serde(default)]
+    pub compsys_loaded: Option<bool>,
 }
 
 impl PromptMetadata {
@@ -956,6 +963,7 @@ impl Default for PromptMetadata {
             is_after_in_band_command: Default::default(),
             seq: Default::default(),
             cwd_listing: Default::default(),
+            compsys_loaded: Default::default(),
         }
     }
 }

@@ -579,6 +579,27 @@ fn test_bootstrap_scripts_repair_a_replaced_prompt_hook() {
     }
 }
 
+/// #2225: the zsh Precmd reports whether compsys is loaded (on change only) so the app skips the
+/// in-band Tab request of a session that would answer it empty; the in-band answer for a
+/// compsys-less zsh (#2174) stays. Behaviour is checked by `script/test_native_completions`.
+#[test]
+fn zsh_precmd_reports_compsys_loaded_on_change_2225() {
+    let zsh = bundled_script("bundled/bootstrap/zsh_body.sh");
+    for needle in [
+        "warp_compsys_loaded && __phosphor_cs_now=true",
+        "if [[ $__phosphor_cs_now != ${__phosphor_cs_sig-} ]]; then",
+        "\\\"compsys_loaded\\\": $__phosphor_cs_now",
+        "${__phosphor_cl_json-}${__phosphor_cs_json-}}}",
+        // #2174: the empty well-formed answer stays for the first Tab before a report.
+        "if ! warp_compsys_loaded; then",
+    ] {
+        assert!(
+            zsh.contains(needle),
+            "zsh_body.sh lost the #2225 compsys report: missing `{needle}`"
+        );
+    }
+}
+
 /// zsh's lifecycle hooks must run with the user's `err_return`/`err_exit`/`nounset` neutralised
 /// (#836), and a Preexec whose precmd was abandoned by a failing user precmd function must still
 /// be finished from the zle-line-init repair (#844). Behaviour was checked by driving the script

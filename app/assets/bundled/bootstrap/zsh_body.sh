@@ -696,7 +696,18 @@ builtin read "$@"'
       fi
 
       __phosphor_cwd_listing
-      local escaped_json="{\"hook\": \"Precmd\", \"value\": {\"exit_code\": $exit_code,\"next_block_id\": \"$next_block_id\",\"pwd\": \"$escaped_pwd\",\"ps1\": \"\",\"honor_ps1\": $honor_ps1,\"rprompt\": \"\",\"git_head\": \"$escaped_git_head\",\"git_branch\": \"$escaped_git_branch\",\"virtual_env\": \"$escaped_virtual_env\",\"conda_env\": \"$escaped_conda_env\",\"node_version\": \"$escaped_node_version\",\"kube_config\": \"$escaped_kube_config\",\"session_id\": $WARP_SESSION_ID,\"seq\": $__warp_seq${__phosphor_cl_json-}}}"
+      # Phosphor (#2225): report whether compsys is loaded, on the first Precmd and whenever the
+      # answer changes (a compinit run after login), so the app skips the in-band Tab request of
+      # a session that would only answer it empty. Sent as a bare boolean after cwd_listing.
+      local __phosphor_cs_now=false
+      warp_compsys_loaded && __phosphor_cs_now=true
+      if [[ $__phosphor_cs_now != ${__phosphor_cs_sig-} ]]; then
+        typeset -g __phosphor_cs_sig=$__phosphor_cs_now
+        typeset -g __phosphor_cs_json=",\"compsys_loaded\": $__phosphor_cs_now"
+      else
+        typeset -g __phosphor_cs_json=
+      fi
+      local escaped_json="{\"hook\": \"Precmd\", \"value\": {\"exit_code\": $exit_code,\"next_block_id\": \"$next_block_id\",\"pwd\": \"$escaped_pwd\",\"ps1\": \"\",\"honor_ps1\": $honor_ps1,\"rprompt\": \"\",\"git_head\": \"$escaped_git_head\",\"git_branch\": \"$escaped_git_branch\",\"virtual_env\": \"$escaped_virtual_env\",\"conda_env\": \"$escaped_conda_env\",\"node_version\": \"$escaped_node_version\",\"kube_config\": \"$escaped_kube_config\",\"session_id\": $WARP_SESSION_ID,\"seq\": $__warp_seq${__phosphor_cl_json-}${__phosphor_cs_json-}}}"
       warp_send_json_message "$escaped_json"
       # Phosphor (#2052): the Precmd is out; the user stage of the precmd starts. (Not after an
       # in-band generator: that path returned above and runs no user function.)

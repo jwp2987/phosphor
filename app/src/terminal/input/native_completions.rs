@@ -15,6 +15,7 @@
 
 use crate::terminal::input::CompletionsTrigger;
 use crate::terminal::model::completions::ShellCompletion;
+use crate::terminal::model::session::SessionId;
 use std::sync::OnceLock;
 use warp_completer::completer::{MatchStrategy, SuggestionResults};
 
@@ -47,10 +48,13 @@ pub(crate) struct NativeCompletionsInputs {
     pub flag_or_forced: bool,
     /// The #1801 kill switch (`PHOSPHOR_REMOTE_NATIVE_COMPLETIONS=0` turns it off).
     pub remote_native_enabled: bool,
+    /// The session's zsh reported that compsys is not loaded (#2225): it answers every in-band
+    /// request with an empty answer, so asking is a wasted round trip before the completer.
+    pub remote_compsys_missing: bool,
 }
 
 pub(crate) fn native_completions_use(inputs: NativeCompletionsInputs) -> NativeCompletionsUse {
-    if !inputs.shell_supports_native || inputs.multi_line {
+    if !inputs.shell_supports_native || inputs.multi_line || inputs.remote_compsys_missing {
         return NativeCompletionsUse::None;
     }
     if inputs.remote_without_helper
@@ -81,6 +85,35 @@ pub(crate) fn remote_native_completions_enabled() -> bool {
                 .as_deref(),
         )
     })
+}
+
+lazy_static::lazy_static! {
+    /// Sessions whose zsh last reported that compsys is not loaded (#2225). Only `false` reports
+    /// are kept; a `true` (a later `compinit`) removes the session, so the in-band path is used
+    /// again from the next Tab.
+    static ref SESSIONS_WITHOUT_COMPSYS: std::sync::Mutex<std::collections::HashSet<SessionId>> =
+        Default::default();
+}
+
+/// Called with a Precmd's `compsys_loaded` (#2225). `None` (no report) keeps the last one.
+pub(crate) fn note_compsys_loaded(session_id: SessionId, loaded: Option<bool>) {
+    let Some(loaded) = loaded else { return };
+    let mut sessions = SESSIONS_WITHOUT_COMPSYS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if loaded {
+        sessions.remove(&session_id);
+    } else {
+        sessions.insert(session_id);
+    }
+}
+
+/// Whether this session's zsh last reported that compsys is not loaded (#2225).
+pub(crate) fn compsys_missing(session_id: SessionId) -> bool {
+    SESSIONS_WITHOUT_COMPSYS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .contains(&session_id)
 }
 
 /// The shell's completions as the menu's results. Every shell's hook writes each candidate as

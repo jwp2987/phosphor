@@ -4550,6 +4550,7 @@ impl BlockList {
             is_after_in_band_command: false,
             seq: None,
             cwd_listing: None,
+            compsys_loaded: None,
         };
 
         self.create_new_block(

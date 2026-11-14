@@ -910,6 +910,7 @@ fn parse_dcs_precmd_classifies_payload_with_completion_metadata() {
                     is_after_in_band_command: false,
                     seq: None,
                     cwd_listing: None,
+                    compsys_loaded: None,
                 },
             })
         ),
