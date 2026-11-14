@@ -343,20 +343,18 @@ SKP_LINES = 500
 SKP_STREAM_LINES = 900                 # ten a second: longer than the case; the case stops the job itself
 SKP_KEPT_MIN = 0.5                     # share of the numbered lines on screen before the wait that must still be there after it
 SKP_TOP_KEY_AGENT = "shift+Home"       # terminal:scrollback_top (app/src/terminal/view/scrollback_keys.rs; at a prompt since round 16, #2080)
-ISSUE_AGENT_BG_OUTPUT = 2145           # the agent view does not draw what a background job prints after the prompt is back (owner question)
+ISSUE_AGENT_BG_OUTPUT = 2145           # owner decision 2026-11-13: the agent view draws what a background job prints after the prompt is back, as the terminal does
 
 
 def skp_stream_state(mode, printed, read_on_screen):
-    """pure (round 21, #2146): is the background job's output drawn where the case looks for it? printed = lines the job has written, read_on_screen =
-    how many of them OCR read at the bottom of the pane -> 'drawn' | 'agent_hidden' | 'missing' | 'too_early'.
-    'agent_hidden': the agent view draws only blocks its conversation produced, and output printed between a prompt and the next command is a
-    background block of no conversation (Block::should_hide_block), so the job's lines are on no screen there (#2145). 'missing': a terminal
-    session that does not show them is a failure of the case's control. 'too_early': fewer than 5 lines printed, nothing can be said."""
-    if read_on_screen and read_on_screen >= max(3, printed // 3):      # r27: one stale line of 28 (r25a macOS agent, #2145) is not 'drawn'
+    """pure (round 21, #2146; #2145 decided 2026-11-13): is the background job's output drawn where the case looks for it? printed = lines the job has
+    written, read_on_screen = how many of them OCR read at the bottom of the pane -> 'drawn' | 'missing' | 'too_early'. Both modes draw it (the agent
+    view shows background-job output since #2145), so 'missing' is a failure of the control in either. 'too_early': fewer than 5 lines printed."""
+    if read_on_screen and read_on_screen >= max(3, printed // 3):      # r27: one stale line of 28 is not 'drawn'
         return "drawn"
     if printed < 5:
         return "too_early"
-    return "agent_hidden" if mode == "agent" else "missing"
+    return "missing"
 
 
 def skp_top_keys(mode, block_up):
@@ -370,21 +368,12 @@ def skp_top_keys(mode, block_up):
 
 
 def skp_after_key_verdict(state, tail_on_screen, numbered, total):
-    """pure (round 21): did one typed key bring the newest output back? state = skp_stream_state(); tail_on_screen = how many of the job's last lines
-    are on screen; numbered = the numbered lines read on screen; total = how many numbered lines exist -> ('pass' | 'fail' | 'noref', text).
-    Drawn output: one of the job's last lines must be on screen, as before round 21. Agent view that does not draw it (#2145): the end of what
-    that view shows is the end of the numbered lines, so those must be back; that the job's newest lines show is not judged, and says so."""
-    if state != "agent_hidden":
-        if tail_on_screen:
-            return "pass", ""
-        return "fail", "after one typed key none of the job's last lines is on screen: the key did not bring the view back to the bottom"
-    if not numbered or numbered[-1] < total - 15:
-        return "fail", ("after one typed key the end of the numbered lines is not on screen (read %s of %d): the key did not bring the view back to the "
-                        "end of what the agent view shows" % (("%d..%d" % (numbered[0], numbered[-1])) if numbered else "none", total))
-    return "noref", ("the agent view does not draw the output of a background job (#%d, owner question): 'the view holds while new output is DRAWN' and "
-                     "'the newest output is on screen after a key' are NOT judged in this mode. Judged here, each with its own line when it failed: "
-                     "PageUp moves the view, the view stays for 3 s, %s reaches the top, the view stays for 3 s; one key brought the end of the "
-                     "numbered lines back" % (ISSUE_AGENT_BG_OUTPUT, SKP_TOP_KEY_AGENT))
+    """pure (round 21; #2145 decided 2026-11-13: judged in the agent view too): did one typed key bring the newest output back? state =
+    skp_stream_state(); tail_on_screen = how many of the job's last lines are on screen; numbered / total are kept for the callers' metric ->
+    ('pass' | 'fail', text). One of the job's last lines must be on screen, in both modes."""
+    if tail_on_screen:
+        return "pass", ""
+    return "fail", "after one typed key none of the job's last lines is on screen: the key did not bring the view back to the bottom"
 
 
 def skp_word(tag, i):
@@ -458,8 +447,8 @@ def c_scroll_keys_position(ctx, r):
     the job's last line is on screen, and the command that key starts reaches the shell exactly. Screen facts are OCR (every line carries a word
     in glyphs OCR does not confuse); a pane with no OCR engine skips.
     Round 21 (#2146): a control reads whether the job's lines are drawn at all (skp_stream_state). The agent pass scrolls to the top with
-    Shift+Home (skp_top_keys). Where the agent view does not draw the job's output (#2145) the two facts that need drawn output are not judged
-    and the row is NO-REFERENCE with that reason; everything else is judged (skp_after_key_verdict)."""
+    Shift+Home (skp_top_keys). Since #2145 (owner decision 2026-11-13) the agent view draws the job's output like the terminal, so every fact is
+    judged in both modes (skp_after_key_verdict); the old NO-REFERENCE branch is gone."""
     if ctx.ocr("skp_probe") is None:
         raise C.Skip("no OCR engine (tesseract-ocr; Apple Vision on macOS; Windows.Media.Ocr on Windows, an OCR language pack is needed): the scroll position can only be read from the screenshot")
     tag, stag = skp_tags(ctx.rng)
@@ -495,12 +484,9 @@ def c_scroll_keys_position(ctx, r):
         drawn_now = skp_visible(ctx.ocr("skp_0_stream"), stag, SKP_STREAM_LINES)
         stream_state = skp_stream_state(ctx.mode, stream_no(), len(drawn_now))
         r.metric("skp_stream_drawn", dict(state=stream_state, printed=stream_no(), read_on_screen=len(drawn_now)))
-        if stream_state == "agent_hidden":
-            r.note("control: the job printed %d lines and none is on screen at the bottom of the agent view (shots/*skp_0_stream.png): the agent view "
-                   "does not draw a background job's output (#%d)" % (stream_no(), ISSUE_AGENT_BG_OUTPUT))
-        elif not r.check(stream_state == "drawn", "control: the background job printed %d line(s) and none is on screen at the bottom of a terminal "
-                         "session (shots/*skp_0_stream.png): the output is not drawn (or OCR read none of its words), so nothing below could be judged"
-                         % stream_no()):
+        if not r.check(stream_state == "drawn", "control: the background job printed %d line(s) and too few are on screen at the bottom of the %s "
+                       "view (shots/*skp_0_stream.png): the output is not drawn (#%d) or OCR read none of its words, so nothing below could be judged"
+                       % (stream_no(), ctx.mode, ISSUE_AGENT_BG_OUTPUT)):
             return
         # --- PageUp x3 at the prompt, then 3 s of new output
         ctx.be.keys([key_name(ctx, "pageup")] * 3, delay_ms=60)
@@ -560,10 +546,7 @@ def c_scroll_keys_position(ctx, r):
         on_screen = [w for w in tail if w and w in (t5 or "").lower()]
         r.metric("skp_tail_lines_on_screen_after_key", len(on_screen))
         verdict, why = skp_after_key_verdict(stream_state, len(on_screen), skp_visible(t5, tag, SKP_LINES), SKP_LINES)
-        if verdict == "noref":
-            r.no_reference(why)                       # a failed check above keeps the row a FAIL; this line then says what was not judged
-        else:
-            r.check(verdict == "pass", "%s (the job's last %d lines were looked for; shots/*skp_5_after_key.png)" % (why, len(tail)))
+        r.check(verdict == "pass", "%s (the job's last %d lines were looked for; shots/*skp_5_after_key.png)" % (why, len(tail)))
         typed(ctx, last[1:])
         ctx.until(lambda: ctx.lines(eff), 8)
         got = rec.wait(3, 5)
@@ -572,6 +555,65 @@ def c_scroll_keys_position(ctx, r):
             r.check(got == [cat, job, last], "the shell received %r, expected exactly the three typed lines (the command whose first key ended the scroll: %r)" % (got, last))
     finally:
         R.touch(ctx, stop)
+        WV.back_to_input(ctx, r)
+        ctx.reset()
+
+
+# ---------------------------------------------------------------- agent_bg_job_output (#2145)
+def abj_verdict(text, tok, next_tok):
+    """pure (#2145): failure text or None for the OCR text of the agent view after a background job printed `BGDONE_<tok>` and a next command printed
+    `<next_tok>`. The job's line is on screen exactly once, and it is ABOVE the next command's own lines (the next command has its own block; the
+    job's text is in the block of no command). Text is lower-cased; tokens are OCR-safe words."""
+    low = (text or "").lower()
+    lines = low.splitlines()
+    hits = [i for i, l in enumerate(lines) if tok in l]
+    nxt = [i for i, l in enumerate(lines) if next_tok in l]
+    if not hits:
+        return "the background job's line BGDONE_%s is not on screen in the agent view (#%d)" % (tok, ISSUE_AGENT_BG_OUTPUT)
+    if not nxt:
+        return "the next command's token %s is not on screen: nothing to place the job's line against" % next_tok
+    if len(hits) > 1:
+        return "the job's line is on screen %d times: it was repeated into another block" % len(hits)
+    if hits[0] > nxt[0]:
+        return "the job's line (screen line %d) is below the next command's first line (%d): it is in the next command's block" % (hits[0], nxt[0])
+    if next_tok in lines[hits[0]]:
+        return "the job's line and the next command's token are on the same screen line"
+    return None
+
+
+@case("agent_bg_job_output", modes=("agent",), order=69, gui=True)
+def c_agent_bg_job_output(ctx, r):
+    """#2145 (owner decision 2026-11-13): the agent view SHOWS background-job output, as the terminal does. `(sleep 2; echo BGDONE_<tok>) &` is typed (the token split by "" in the typed line, so the echoed command is not read as the output),
+    the prompt comes back, 3 s later the line is on screen (OCR), the NEXT command runs and its block does not hold it (the line is on screen once
+    and above the next command's lines). Display only: the case does not look at what the model is sent (unit test
+    background_output_after_a_precmd_is_drawn_in_the_agent_view_and_is_no_context)."""
+    if ctx.ocr("abj_probe") is None:
+        raise C.Skip("no OCR engine (tesseract-ocr; Apple Vision on macOS; Windows.Media.Ocr on Windows): the agent view's screen can only be read from the screenshot")
+    tag, ntag = skp_tags(ctx.rng)
+    tok = (tag + "".join(ctx.rng.choice(SKP_CODE) for _ in range(3)))
+    next_tok = ntag + "".join(ctx.rng.choice(SKP_CODE) for _ in range(3))
+    eff = "abj_eff.txt"
+    ctx.rm(eff)
+    ctx.reset()
+    rec = Received(ctx)
+    job = "(sleep 2; echo BGDONE_%s\"\"%s) &" % (tok[:3], tok[3:])      # the typed line holds the token split by "", so only the job's OUTPUT holds it whole
+    nxt = "echo %s >> %s" % (next_tok, eff)
+    try:
+        typed(ctx, job)
+        rec.wait(1, 10)
+        time.sleep(3.5)                              # the job prints 2 s after the prompt is back
+        t1 = ctx.ocr("abj_1_job")
+        r.check(tok in (t1 or "").lower(), "BGDONE_%s is not on screen 3.5 s after the job was started (shots/*abj_1_job.png): the agent view does not draw "
+                "a background job's output (#%d)" % (tok, ISSUE_AGENT_BG_OUTPUT))
+        typed(ctx, nxt)
+        ctx.until(lambda: ctx.lines(eff), 8)
+        rec.wait(2, 5)
+        time.sleep(0.8)
+        r.check(ctx.lines(eff) == [next_tok], "the next command wrote %r, expected [%r]" % (ctx.lines(eff), next_tok))
+        t2 = ctx.ocr("abj_2_next")
+        why = abj_verdict(t2, tok, next_tok)
+        r.check(why is None, "%s (shots/*abj_2_next.png)" % why)
+    finally:
         WV.back_to_input(ctx, r)
         ctx.reset()
 

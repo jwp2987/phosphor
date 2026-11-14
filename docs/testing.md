@@ -3228,6 +3228,7 @@ one row per lab family, for every arm of it; the lab harness's own two settings 
 | `find_basic` | fix | keybindings_file = absent | - | - | positions come from the app's own geometry lines; where OCR is used the theme and text size are the seed's and are not read |
 | `tab_lifecycle_keys` | fix | keybindings_file = absent | - | quit_warning | with quit_warning false the close key does not ask: the cancel half is not run (noted) |
 | `routing_table_powershell` | fix | autodetect = true, autosuggestions = true, completions_while_typing = true | - | nld_in_terminal, providers |  |
+| `agent_bg_job_output` | fix | keybindings_file = absent | - | - | bash/zsh subshell job; OCR of the agent view; no setting is read |
 | `agent_basics_powershell` | fix | autodetect = true, autosuggestions = true, completions_while_typing = true | - | nld_in_terminal, providers |  |
 | `job_control` | fix | autosuggestions = true, completions_while_typing = true, honor_ps1 = false, keybindings_file = absent | - | - |  |
 | `hostile_output_recovers` | fix | autosuggestions = true, completions_while_typing = true, honor_ps1 = false, keybindings_file = absent | - | - |  |
@@ -6104,11 +6105,13 @@ the inner prompt on that machine (the setup then takes over 2 s there), and pass
   background block that belongs to no conversation, and a conversation's scope hides such a block. Owner decision 2026-11-10: the conversation
   shows it ONLY WHILE something reads the tty. The fact is the hand-off's noted reader (`prompt_reader_asks`: #2050 on Unix, #2038 on ConPTY).
 - **Unit, `model/blocks_test.rs`** (fixture `block_list_with_a_precmd_question`: a command, its Precmd, `vault pin: ` printed, the list in a
-  conversation's scope): `a_tty_readers_question_is_shown_in_a_conversation_only_while_the_reader_waits` (hidden before; shown and in the cached
-  heights while waiting; asking twice changes nothing; hidden and the old height when the reader is over),
+  conversation's scope): `a_tty_readers_question_is_shown_in_a_conversation_with_or_without_the_reader` (#2145 changed it, old -> new: hidden before the
+  reader -> shown; height grows while waiting -> unchanged by the reader; hidden and the old height when the reader is over -> stays shown; asking
+  twice still changes nothing),
   `a_tty_readers_question_changes_nothing_in_the_terminal_scope`,
-  `a_finished_question_block_is_hidden_in_the_conversation_and_not_reported` (the next command finishes the block: the flag is dropped before the
-  emptiness test, so no `AfterBlockCompleted` of a background block is sent for it, as before).
+  `a_finished_question_block_stays_shown_in_the_conversation_and_is_reported` (the next command finishes the block: the flag is dropped;
+  #2145 changed it, old -> new: not visible -> visible in the conversation; `AfterBlockCompleted` of a background block 0 -> 1, as in the terminal
+  scope).
 - **View, `terminal/view_test.rs`:** `a_precmd_question_is_shown_in_an_agent_conversation_while_its_reader_has_the_keys` (the #2050 fixture
   `sampled_prompt_the_editor_owns` with the block list in a conversation's scope: not shown while no reader is noted, shown at the look after
   the reader is noted, kept while the PIN is typed, hidden at the look after the line editor's signal; the control arm is the kill switch; the
@@ -8494,3 +8497,18 @@ Design: `docs/typeahead-handoff-826-827.md`, section "A report-rewritten line is
 - **Review round of 034e01bdb (one follow-up commit; nothing compiled or run when written).** Code: `table_enum_tests.rs` has the 15th `gate_dim!`; with the pty gone the WHOLE held segment is replayed in the input editor key by key (an arrow acts in place; nothing goes through `text_for_editor`); `^P` / `^N` are Up / Down; a `^C` among replayed keys is counted and never replayed (the editor's `^C` is a real interrupt); a paste in a replayed tail is one text; replayed keys go through the editor's ordered key path (`apply_held_paste_key`) and wait behind the `ReportEdit` gate while a report is on its way; the hand-back guard is armed by the next Enter (`arm_handed_back_enter_guard_at_next_enter`); the exit arm releases an open `ReportEdit` gate and disables the editor only once the replayed keys have landed (`disable_exited_input_editor`, a bounded count of event-loop turns, no timer); the Q6 discard reads only the secret signals (the `TtyRead` marker's secret flag and the last live sample of the tty, never the prompt reader of #2038, never the termios at exit); a lone EOF never flushes the hold it takes; `defer_enter` refuses only where the Enter has a gate to queue behind; #2223 tracks the typed-since text by position (`SubmittedPrefix`: intact / emptied / edited, tied to the running block) and never runs for an Enter the hand-off deferred.
 - **Tests added in that round.** `typeahead_handoff_tests.rs`: `a_lone_eof_never_flushes_the_hold_it_takes`, `an_enter_behind_an_uncovered_report_is_deferred_although_a_stale_hold_is_queued`; `bytes_replayed_in_the_editor_keep_every_key` gains `^P` / `^N` / `^C`. `input_test.rs`: `test_an_arrow_in_the_segment_acts_in_place_when_the_shell_exits`, `test_the_same_command_typed_again_while_it_runs_is_sent_as_a_line`, `test_an_enter_declined_over_an_edited_running_command_writes_nothing`, `test_a_stale_submission_is_not_taken_for_the_running_commands_text`, `test_a_deferred_enter_declined_while_a_command_runs_is_left_to_the_handoff`; `test_a_stale_young_hold_reaches_the_pty_once_in_typed_order` asserts the exact `writes_in_flight` (unchanged) instead of `>=`. `table_enum_tests.rs`: 14 -> 15.
 - **Still not tested.** The Q6 secret latch at the model level, the exit arm's `ReportEdit` release and delayed disable (both need a real `ModelEvent::Exit`), a replayed tail behind a pending report, a paste in a replayed tail.
+
+## #2145: the agent view shows background-job output (owner decision 2026-11-13; design `docs/design/2145-agent-view-background-output.md`; nothing compiled or run when written)
+
+- **App.** `Block::should_hide_block` (Conversation arm) no longer hides a background block that holds output (`shows_background_output`); empty
+  and typeahead-only ones stay hidden. Display only: the block carries no conversation id, so it is no agent context. Terminal and Unfiltered
+  scopes and the #2209 hand-off code are unchanged.
+- **Unit, `model/blocks_test.rs`:** `a_background_block_with_content_is_shown_in_a_conversation_and_an_empty_one_is_not`,
+  `a_terminal_block_with_no_tie_to_the_conversation_is_still_hidden`,
+  `background_output_after_a_precmd_is_drawn_in_the_agent_view_and_is_no_context` (nonzero height on first content, the next command is a separate
+  block without the text, the block has no pending/attached conversation id, Conversation -> Terminal -> Conversation keeps the heights). Changed
+  #2053 tests: see the Round 13 section above (old -> new).
+- **appci.** `agent_bg_job_output` (agent mode, PROVING, Git Bash pane on Windows, OCR): `(sleep 2; echo BGDONE_<tok>) &`, the prompt returns, the
+  line is on screen once and above the next command's line. `scroll_keys_position`: the NO-REFERENCE branch for the agent view is removed; the
+  job's output and the newest lines after one key are judged in both modes (`skp_stream_state` no longer returns `agent_hidden`).
+- **State: worked, unproven on a build.** Not compiled or run on the laptop (owner rule); the box gate is the first compile.

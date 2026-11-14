@@ -13,10 +13,10 @@ def check(f):
 
 @check
 def r27_skp_stale_line_is_not_drawn():
-    """r25a macOS agent: 1 of 28 printed lines read is hidden output (#2145), not drawn; terminal 12 of 28 stays drawn"""
+    """one stale line of 28 is not drawn output in either mode (#2145, owner decision 2026-11-13: the agent view draws it, so missing output FAILS)"""
     import cases_r14_w1a as W
-    assert W.skp_stream_state("agent", 28, 1) == "agent_hidden"
-    assert W.skp_stream_state("agent", 28, 0) == "agent_hidden"
+    assert W.skp_stream_state("agent", 28, 1) == "missing"          # was "agent_hidden" (noref)
+    assert W.skp_stream_state("agent", 28, 0) == "missing"          # was "agent_hidden"
     assert W.skp_stream_state("terminal", 28, 12) == "drawn"
     assert W.skp_stream_state("agent", 28, 12) == "drawn"
     assert W.skp_stream_state("terminal", 28, 1) == "missing"
@@ -24,12 +24,27 @@ def r27_skp_stale_line_is_not_drawn():
 
 
 @check
-def r27_skp_hidden_uses_numbered_lines_and_names_2145():
+def r27_skp_verdict_is_judged_in_agent_mode():
+    """#2145: the NO-REFERENCE branch is gone; the tail of the job's lines must be on screen after one key in both modes"""
     import cases_r14_w1a as W
-    v, t = W.skp_after_key_verdict("agent_hidden", 0, [480, 499], 500)
-    assert v == "noref" and "#2145" in t
-    assert W.skp_after_key_verdict("agent_hidden", 0, [10, 20], 500)[0] == "fail"      # the numbered-lines check is not loosened
-    assert W.skp_after_key_verdict("agent_hidden", 0, [], 500)[0] == "fail"
+    assert W.skp_after_key_verdict("drawn", 3, [480, 499], 500) == ("pass", "")
+    assert W.skp_after_key_verdict("missing", 0, [480, 499], 500)[0] == "fail"      # was noref for agent_hidden
+    assert W.skp_after_key_verdict("drawn", 0, [], 500)[0] == "fail"
+
+
+@check
+def agent_bg_job_output_verdict_and_registration():
+    """#2145: the case is registered (agent mode, PROVING, Git Bash on Windows) and its pure verdict fails each wrong screen"""
+    import cases, cases_r14_w1a as W, winmap
+    reg = {c["name"]: c for c in cases.CASES}
+    assert reg["agent_bg_job_output"]["modes"] == ("agent",) and reg["agent_bg_job_output"]["gui"]
+    assert "agent_bg_job_output" in cases.PROVING and "agent_bg_job_output" in winmap.GITBASH_ONLY
+    V = W.abj_verdict
+    assert V("$ x\nbgdone_acdefh\nmore\n$ echo uwxyka\n", "acdefh", "uwxyka") is None
+    assert "not on screen in the agent view" in V("$ echo uwxyka\n", "acdefh", "uwxyka")
+    assert "not on screen" in V("bgdone_acdefh\n", "acdefh", "uwxyka")
+    assert "2 times" in V("bgdone_acdefh\nbgdone_acdefh\necho uwxyka\n", "acdefh", "uwxyka")
+    assert "below" in V("$ echo uwxyka\nbgdone_acdefh\n", "acdefh", "uwxyka")
 
 
 @check
