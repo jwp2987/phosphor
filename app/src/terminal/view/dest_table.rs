@@ -247,6 +247,10 @@ impl TerminalView {
             let _ = self.prepare_subshell_gates(text.as_bytes(), ctx);
         }
         let mut facts = self.build_route_facts(QueueFacts::default(), ctx);
+        // #2227: a delivery decides on the hand-off as it IS. `build_route_facts` never waits
+        // (a busy hand-off gives the copy this view cached at its last read, which can be the
+        // state from before a prompt's commit); a delivered entry reads it exactly instead.
+        let handoff_read_blocking = self.make_handoff_facts_exact(&mut facts);
         if table::delivery_reads_setup_as_announced(&mut facts) {
             // Counts only, never the text.
             warpui::input_order::log_key_hop("kh_table_delivery_past_setup", || {
@@ -271,7 +275,59 @@ impl TerminalView {
                 plan.effects
             )
         });
+        // #2227: a delivery decided on anything but fresh facts names what was not fresh (the
+        // r30f log could not say which read was stale). Flags and counts only.
+        if !facts.agent_in_control_exact || !facts.model_consistent || handoff_read_blocking {
+            warpui::input_order::log_hop("delivery_facts", || {
+                format!(
+                    "origin={origin:?} class={:?} row={} model_exact={} model_consistent={} \
+                     facts_gen={} handoff_read={} active_block_started={} handoff_routes={}",
+                    intent.class,
+                    plan.row.name(),
+                    u8::from(facts.agent_in_control_exact),
+                    u8::from(facts.model_consistent),
+                    facts.facts_gen,
+                    if handoff_read_blocking {
+                        "blocking"
+                    } else {
+                        "try"
+                    },
+                    u8::from(facts.active_block_started),
+                    u8::from(facts.handoff_routes)
+                )
+            });
+        }
         (plan, facts)
+    }
+
+    /// #2227: makes the hand-off part of `facts` exact for a DELIVERY. When
+    /// `build_route_facts` found the hand-off busy (`handoff_known` false: the model thread held
+    /// its lock for the one call it makes per hook) the facts carry this view's cached copy;
+    /// here the hand-off is read with a blocking `read()` instead. Its lock is a leaf held for
+    /// one method call and never across a parse (the write path takes it blocking for every
+    /// key); it is not the pty reader's model lock. Returns whether the blocking read was
+    /// needed.
+    pub(super) fn make_handoff_facts_exact(&self, facts: &mut RouteFacts) -> bool {
+        if facts.handoff_known || !FeatureFlag::TypeaheadHandoff.is_enabled() {
+            return false;
+        }
+        let (routes, takeover_open, follow_editor) = {
+            let handoff = self.handoff.read();
+            (
+                handoff.routes_keys_to_pty(),
+                handoff.editor_takeover_would_be_open(),
+                handoff.keys_follow_editor_active(),
+            )
+        };
+        self.paste_queue
+            .queue
+            .route_state()
+            .set_handoff_routes(routes);
+        facts.handoff_routes = routes;
+        facts.handoff_known = true;
+        facts.editor_takeover_open = takeover_open;
+        facts.keys_follow_editor = follow_editor;
+        true
     }
 
     /// Executes `plan` for `input` with the leaf writers.

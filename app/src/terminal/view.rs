@@ -3782,6 +3782,13 @@ pub struct TerminalView {
     /// are held: the next key or turn hands them over before judging anything else. Cleared by
     /// any hand-over run (`deliver_ssh_typeahead_if_ready`).
     ssh_handover_after_release: bool,
+    /// #2227: how many events in a row found the model busy (no exact read) when the ssh
+    /// hand-over was due, and put it off (`deliver_ssh_typeahead_if_ready`). For the log.
+    ssh_handover_exact_model_waits: u32,
+    /// Test seam (#2227): the model reads as busy (the pty reader holds its lock) for the ssh
+    /// hand-over's exactness check.
+    #[cfg(test)]
+    ssh_handover_model_busy_for_test: bool,
     /// #1575: a next-turn hand-over for a shell prompt that appeared mid-drain is scheduled.
     /// #1579: the origin of the last command submitted from this pane (`Some(true)`: the user's
     /// own submit), until the block it started is seen starting.
@@ -5780,6 +5787,9 @@ impl TerminalView {
             ssh_connect_gate_released_at: None,
             ssh_owned_block_without_window: None,
             ssh_handover_after_release: false,
+            ssh_handover_exact_model_waits: 0,
+            #[cfg(test)]
+            ssh_handover_model_busy_for_test: false,
             ssh_submit_user_origin: None,
             enter_command_block: None,
             running_block_user_submitted: false,
@@ -12632,6 +12642,37 @@ impl TerminalView {
             self.schedule_ssh_typeahead_give_up(ctx);
             return false;
         }
+        // #2227 (owner decision 2026-11-14): the hand-over starts only on an EXACT read of the
+        // model. Where each held key goes is decided on facts that never wait for the pty
+        // reader; while the reader holds the model (it is parsing the remote's output) those
+        // facts are the last PUBLISHED ones, and a decision made on them can send the keys raw
+        // to the pty at a prompt the editor owns (r30f: the line was split and its first part
+        // lost). So with the model busy the keys stay held and this event does nothing; the
+        // next one tries again: the reader's wakeup after the burst it is parsing
+        // (`source="output"`), a Precmd, a block's end, the session's registration, a key. No
+        // timer is added: the hold's own give-up (armed here if it is not) still ends it, and
+        // then writes the keys to the pty in typed order. The exact read is also stored as the
+        // published copy (`model_facts_nonblocking`), so a read that finds the model busy during
+        // the delivery itself is never older than this one.
+        if !self.ssh_give_up_in_progress
+            && !self.ssh_held_is_empty()
+            && !self.ssh_handover_model_read_is_exact()
+        {
+            self.ssh_handover_exact_model_waits =
+                self.ssh_handover_exact_model_waits.saturating_add(1);
+            warpui::input_order::log_hop("ssh_handover_awaits_exact_model", || {
+                format!(
+                    "source={source} waits={} held_bytes={}",
+                    self.ssh_handover_exact_model_waits,
+                    self.ssh_held_bytes()
+                )
+            });
+            // The next key or turn hands over before it judges anything else.
+            self.ssh_handover_after_release = true;
+            self.schedule_ssh_typeahead_give_up(ctx);
+            return false;
+        }
+        self.ssh_handover_exact_model_waits = 0;
         warpui::input_order::log_hop("ssh_held_delivery", || {
             format!("source={source} held_bytes={}", self.ssh_held_bytes())
         });
@@ -12645,6 +12686,16 @@ impl TerminalView {
         });
         self.finish_ssh_typeahead(ctx);
         true
+    }
+
+    /// #2227: whether the model can be read exactly right now (it is free), for the ssh
+    /// hand-over. Never waits for the pty reader.
+    fn ssh_handover_model_read_is_exact(&self) -> bool {
+        #[cfg(test)]
+        if self.ssh_handover_model_busy_for_test {
+            return false;
+        }
+        self.model_facts_nonblocking().exact
     }
 
     /// Safety net only (#1348): arms ONE timer for the moment the held keys must be given up on

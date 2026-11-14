@@ -1,4 +1,4 @@
-# #2227: held input is delivered on fresh facts (design, UNREVIEWED, no code)
+# #2227: held input is delivered on fresh facts (design; APPROVED by the owner 2026-11-14, built)
 
 Written by reading the code at `a811316f4`; nothing was compiled or run. Paths are relative to
 `app/src/terminal`.
@@ -103,3 +103,29 @@ While a remote shell is still printing at connect, the keys you typed ahead woul
 moment longer (until the app has finished reading that burst of output) before they show up,
 so that they always land in one place. Is that wait acceptable? Recommended: yes; it is an
 event, not a timer, and the existing give-up still bounds it.
+
+## Owner answer and what was built
+
+**Answer (2026-11-14): yes.** Typed-ahead keys may wait until the app has read the burst of
+remote output it is in, so that they always land in one place.
+
+Built as designed: `TerminalView::make_handoff_facts_exact` (called by `decide_delivery`), the
+exact-model check in `deliver_ssh_typeahead_if_ready` (`ssh_handover_model_read_is_exact`), and
+the hops `delivery_facts` and `ssh_handover_awaits_exact_model`. a811316f4 stays as the net and
+now also covers the hold's give-up write (`ssh_connect_give_up`), which it did not before: that
+write did not go through the table delivery that sets `delivering_ssh_held`.
+
+**The open point, checked.** Can the publisher overwrite the exact read that
+`model_facts_nonblocking` stores (`view/route_facts.rs:52-53`) with an OLDER one? No.
+`TerminalModel::publish_key_facts` (`model/terminal_model.rs`) takes `&self` of the model, so
+it runs under the model's lock and publishes the model as it is at that moment; the view's
+exact read and its two stores also happen under that lock (the guard is alive in the `Some`
+arm). The two cannot interleave, and whichever runs later describes a later state. Nothing to
+fix.
+
+**Test that differs from the plan.** "The hand-off write-locked by a second thread" is tested
+by setting the stale cached copy directly (what a failed `try_read` leaves) and calling the
+exact read: racing a thread for a lock that is held for one method call cannot be made
+deterministic. "The model lock held by a second thread" uses a test seam that makes the
+exactness check read busy: the hand-over function itself takes the model lock for its
+readiness predicate before that check, so a really held lock would block the test.

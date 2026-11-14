@@ -694,7 +694,13 @@ impl TerminalView {
                         | HeldInput::Seq(text) => text.into_bytes(),
                     })
                     .collect();
+                // a811316f4 / #2227: these are the ssh hold's keys too. Written at a prompt the
+                // editor owns (the hold gave up while the model was never free for the
+                // hand-over), they take the line for the pty, so the rest of the line follows
+                // them and the line is not split.
+                self.paste_queue.delivering_ssh_held = true;
                 self.write_given_up_chunks_to_pty(chunks, keys, "ssh_connect_give_up", ctx);
+                self.paste_queue.delivering_ssh_held = false;
             }
             SshDropThen::HandBackText => {
                 // Adjacent printable runs are one input.
