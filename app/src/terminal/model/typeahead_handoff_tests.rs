@@ -8607,6 +8607,63 @@ fn a_flush_is_restored_only_for_the_hold_a_signal_took() {
     assert!(handoff.take_young_hold_ends().is_empty(), "once");
 }
 
+/// #2209 (review M6): a lone EOF is not a discard signal: the tty keeps typeahead across it. The
+/// hold it takes is handed to the view to write in front of the EOF, and NO flush may be
+/// recorded for it (the view's busy-queue path records `ToReader` instead).
+#[test]
+fn a_lone_eof_never_flushes_the_hold_it_takes() {
+    let (mut handoff, id) = queued_young_hold();
+    assert_eq!(
+        handoff.take_queued_young_hold_for_signal(&[0x04]),
+        Some((id, true))
+    );
+    handoff.restore_flushed_young_hold(id);
+    assert!(
+        handoff.take_young_hold_ends().is_empty(),
+        "an EOF's hold cannot be recorded as flushed"
+    );
+    handoff.restore_young_hold_end(id, YoungHoldEnd::ToReader);
+    assert_eq!(
+        handoff.take_young_hold_ends(),
+        vec![(id, YoungHoldEnd::ToReader)]
+    );
+    // An EOF together with an interrupt is the interrupt's flush.
+    let (mut handoff, id) = queued_young_hold();
+    assert_eq!(
+        handoff.take_queued_young_hold_for_signal(&[0x04, 0x03]),
+        Some((id, false))
+    );
+    handoff.restore_flushed_young_hold(id);
+    assert_eq!(handoff.take_young_hold_ends(), vec![(id, flushed())]);
+}
+
+/// #2209 (review N1): `defer_enter` refuses only where the Enter has a gate to queue behind (a
+/// young hold waiting behind its request). A hold still queued while the editor owns input with
+/// an uncovered report outstanding is stale: refusing there would let the editor submit the
+/// fragment it holds. The stale hold is ended (its keys delivered) and the Enter is deferred.
+#[test]
+fn an_enter_behind_an_uncovered_report_is_deferred_although_a_stale_hold_is_queued() {
+    let (mut handoff, id) = queued_young_hold();
+    handoff.state = HandoffState::EditorOwned;
+    handoff.untracked_line_bytes = true;
+    handoff.requests_outstanding = 1;
+    assert_eq!(handoff.enter_queues_behind(Instant::now()), None);
+    assert!(
+        handoff.defer_enter(),
+        "the Enter waits for the covering report, it does not submit a fragment"
+    );
+    assert_eq!(
+        handoff.state(),
+        &HandoffState::HoldAfterEnter { released: false }
+    );
+    assert_eq!(
+        handoff.take_young_hold_ends(),
+        vec![(id, YoungHoldEnd::ToReader)],
+        "the stale hold's keys are delivered, not left behind the deferral"
+    );
+    assert!(!handoff.has_young_hold());
+}
+
 /// #2209 (H5, the #1016 editor-first race): an Enter that reaches the editor while a young Enter
 /// waits behind the request is NOT deferred. It used to be: the state became `HoldAfterEnter`
 /// with the hold still queued, the report's arm for that state never took the hold, and every
@@ -8770,6 +8827,12 @@ fn bytes_replayed_in_the_editor_keep_every_key() {
             K::NoEditorKey(1),
             K::Text("b".to_owned()),
         ]
+    );
+    // Emacs mode's previous / next line are Up and Down (review M2); `^C` is named so the
+    // caller can count it, and is never replayed (review M5).
+    assert_eq!(
+        editor_keys_of_bytes(b"a\x10\x0e\x03"),
+        vec![K::Text("a".to_owned()), K::Up, K::Down, K::Interrupt]
     );
     // The cursor keys are NOT clamped here (that is #2115: four Lefts stay four Lefts, for the
     // editor to apply against the joined line), where `line_for_editor` on a one-character line

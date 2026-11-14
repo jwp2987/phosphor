@@ -1101,6 +1101,25 @@ fn newer_than_submission<'a>(submission: Option<&str>, current: &'a str) -> Opti
     (!rest.trim().is_empty()).then_some(rest)
 }
 
+/// #2223: what the editor's buffer still holds of the command it submitted, while that command's
+/// block runs (the buffer is cleared when the block completes, not at the submit). It says where
+/// the text typed SINCE the submit begins, by position, and is kept up to date by every edit
+/// ([`Input::note_edit_for_submitted_prefix`]): comparing texts at the Enter alone cannot tell
+/// the submitted command from the same command typed again.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+enum SubmittedPrefix {
+    /// Nothing this editor submitted is running.
+    #[default]
+    None,
+    /// The buffer still begins with the submitted text, untouched: it is `bytes` long and what
+    /// follows it was typed since. `block` is the block the command runs in.
+    Intact { bytes: usize, block: BlockId },
+    /// The buffer was emptied since the submit: everything in it now was typed since.
+    Gone { block: BlockId },
+    /// The submitted text was edited in place: where the typed-since text begins is not known.
+    Edited { block: BlockId },
+}
+
 /// Where a command execution request originates from.
 #[derive(Clone)]
 pub enum CommandExecutionSource {
@@ -2604,6 +2623,9 @@ pub struct Input {
     /// The text handed back to the editor when the ssh connect ended; `Some` while armed (#1395).
     /// Other hand-backs arm it too, each with its own kind and toast (#1666).
     ssh_handover_enter_guard: Option<EnterGuard>,
+    /// #2209: arm the hand-back guard at the next Enter
+    /// ([`Self::arm_handed_back_enter_guard_at_next_enter`]).
+    handed_back_guard_at_next_enter: bool,
     /// Whether the last Enter submitted a shell command; read by `input_enter_as_shell_command`.
     last_enter_submitted_shell_command: bool,
     /// What the editor held when it last submitted a command. The editor is cleared when that
@@ -2620,6 +2642,9 @@ pub struct Input {
     /// typed into its text (#1451): the typed text is handed back whether or not the typeahead
     /// hand-off is enabled, because it is not typeahead but text the command would have eaten.
     editor_submission_from_pending: bool,
+    /// #2223: what the buffer still holds of the command this editor submitted, while its block
+    /// runs ([`SubmittedPrefix`]).
+    submitted_prefix: SubmittedPrefix,
     /// Whether the last Enter submitted an agent query (sent it, or asked to enter the agent view
     /// with it); read by the misroute recovery to tell a real submit from a refused one (#835).
     last_enter_submitted_ai_query: bool,
@@ -4524,10 +4549,12 @@ impl Input {
             tab_waits_for_report: false,
             announce_report_tab_settled: false,
             ssh_handover_enter_guard: None,
+            handed_back_guard_at_next_enter: false,
             last_enter_submitted_shell_command: false,
             editor_submission: None,
             editor_submission_session: None,
             editor_submission_from_pending: false,
+            submitted_prefix: SubmittedPrefix::None,
             last_enter_submitted_ai_query: false,
             submitting_misroute_recovery: false,
             weak_view_handle: ctx.handle(),
@@ -7577,7 +7604,14 @@ impl Input {
         });
         if !hold {
             // #2223: a running program refused the submit. The Enter is still a typed key.
-            if !shared {
+            // Not an Enter the typeahead hand-off deferred and is running now
+            // (`running_deferred_enter`): its line and the keys behind it are the hand-off's
+            // (`submit_deferred_enter` reports "not submitted" and the view releases or keeps
+            // them); written here as well they would run twice. And only a shell line.
+            if !shared
+                && !self.running_deferred_enter
+                && matches!(self.input_type(ctx), InputType::Shell)
+            {
                 self.send_declined_enter_line_to_pty(ctx);
             }
             return;
@@ -7603,13 +7637,21 @@ impl Input {
     ///
     /// "The line" is what was typed SINCE the running command was submitted. The editor still
     /// holds that command's own text (it is cleared when the command's block completes, not
-    /// when it is submitted: `editor_submission`), and that text already ran: it stays in the
-    /// editor, untouched, and is never written again. Without a submission from this editor
-    /// (the shell started the command itself), or when the text in front was edited, the whole
-    /// buffer is the line. A bare Enter is written too: it is a key.
+    /// when it is submitted), and that text already ran: it stays in the editor, untouched, and
+    /// is never written again. Where the typed-since text begins is known by position
+    /// ([`SubmittedPrefix`], kept by every edit), not by comparing texts at the Enter:
     ///
-    /// Only for the refusal "a command is running"; every other refusal keeps its own handling.
-    /// Returns whether the line was handed over.
+    /// * the submitted text is still in front, untouched: the line is what follows it;
+    /// * nothing this editor submitted is running (the shell started the command itself, or the
+    ///   submission's block is over), or the buffer was emptied since the submit: the whole
+    ///   buffer is the line, the same command typed again included;
+    /// * the submitted text was edited in place: which part was typed since is not known.
+    ///   Nothing is written (the running command's own text is never sent to it as input); the
+    ///   Enter is kept as a line break, so the lines stay separate and none is dropped.
+    ///
+    /// A bare Enter is written too: it is a key. Only for the refusal "a command is running",
+    /// for a shell line, and never for an Enter the hand-off deferred; every other refusal keeps
+    /// its own handling. Returns whether the line was handed over.
     fn send_declined_enter_line_to_pty(&mut self, ctx: &mut ViewContext<Self>) -> bool {
         if !matches!(
             self.can_execute_command(ctx),
@@ -7617,12 +7659,43 @@ impl Input {
         ) {
             return false;
         }
+        // An edit whose event has not been handled yet counts.
+        self.note_edit_for_submitted_prefix(ctx);
         let buffer = self.editor.as_ref(ctx).buffer_text(ctx);
-        let (ran, line) = match self.editor_submission.as_deref() {
-            Some(submitted) if !submitted.is_empty() && buffer.starts_with(submitted) => {
-                (submitted.to_owned(), buffer[submitted.len()..].to_owned())
+        let running_block = self.model.lock().active_block_id().clone();
+        // The prefix of a submission that is not the running block's is stale (that block is
+        // over): nothing of it is in the buffer.
+        let prefix = match &self.submitted_prefix {
+            SubmittedPrefix::Intact { block, .. }
+            | SubmittedPrefix::Gone { block }
+            | SubmittedPrefix::Edited { block }
+                if *block != running_block =>
+            {
+                SubmittedPrefix::None
             }
-            _ => (String::new(), buffer.clone()),
+            prefix => prefix.clone(),
+        };
+        let (ran, line) = match prefix {
+            SubmittedPrefix::Intact { bytes, .. }
+                if bytes <= buffer.len() && buffer.is_char_boundary(bytes) =>
+            {
+                (buffer[..bytes].to_owned(), buffer[bytes..].to_owned())
+            }
+            SubmittedPrefix::Edited { .. } | SubmittedPrefix::Intact { .. } => {
+                // The running command's text was edited in place: which part of the buffer was
+                // typed since is not known, so nothing is written (the command's own text must
+                // never be sent to it as input). The Enter is kept as a line break at the end
+                // of the buffer: the lines stay separate, none is dropped.
+                warpui::input_order::log_hop("enter_declined_kept_as_line_break", || {
+                    format!("buffer_chars={}", buffer.chars().count())
+                });
+                self.editor.update(ctx, |editor, ctx| {
+                    editor.move_to_buffer_end(ctx);
+                    editor.system_insert("\n", PlainTextEditorViewAction::SystemInsert, ctx);
+                });
+                return false;
+            }
+            SubmittedPrefix::None | SubmittedPrefix::Gone { .. } => (String::new(), buffer.clone()),
         };
         warpui::input_order::log_hop("enter_declined_line_to_pty", || {
             format!(
@@ -7637,8 +7710,8 @@ impl Input {
             }
         } else if !line.is_empty() {
             // The editor goes back to exactly the running command's text, which its block's
-            // completion clears as for any submit.
-            // The cursor ends behind it, where the next line is typed.
+            // completion clears as for any submit. The cursor ends behind it, where the next
+            // line is typed.
             self.editor.update(ctx, |editor, ctx| {
                 editor.set_buffer_text(&ran, ctx);
                 editor.move_to_buffer_end(ctx);
@@ -7646,6 +7719,54 @@ impl Input {
         }
         ctx.emit(Event::DeclinedEnterLineToPty(line));
         true
+    }
+
+    /// #2223: this editor submitted its buffer as a command: the text is remembered (it is
+    /// cleared when the command's block completes, #934) and so is where it ends in the buffer
+    /// and which block runs it ([`SubmittedPrefix::Intact`]).
+    fn note_editor_submission(&mut self, ctx: &mut ViewContext<Self>) {
+        let buffer = self.editor.as_ref(ctx).buffer_text(ctx);
+        let block = self.model.lock().active_block_id().clone();
+        self.submitted_prefix = SubmittedPrefix::Intact {
+            bytes: buffer.len(),
+            block,
+        };
+        self.editor_submission = Some(buffer);
+    }
+
+    /// Test seam (#2223): the editor's buffer was just submitted and its command runs.
+    #[cfg(test)]
+    pub(crate) fn note_editor_submission_for_test(&mut self, ctx: &mut ViewContext<Self>) {
+        self.note_editor_submission(ctx);
+    }
+
+    /// #2223: the buffer changed. While a command this editor submitted runs, keeps
+    /// [`SubmittedPrefix`] true: the submitted text is still in front, untouched (what follows
+    /// it was typed since); or the buffer was emptied (everything in it from now on was typed
+    /// since, even the same command typed again); or the submitted text was edited in place
+    /// (where the typed-since text begins is not known). One prefix comparison per edit, and
+    /// only while such a command runs.
+    fn note_edit_for_submitted_prefix(&mut self, ctx: &mut ViewContext<Self>) {
+        let (bytes, block, was_edited) = match &self.submitted_prefix {
+            SubmittedPrefix::None | SubmittedPrefix::Gone { .. } => return,
+            SubmittedPrefix::Intact { bytes, block } => (*bytes, block.clone(), false),
+            SubmittedPrefix::Edited { block } => (0, block.clone(), true),
+        };
+        let buffer = self.editor.as_ref(ctx).buffer_text(ctx);
+        if buffer.is_empty() {
+            self.submitted_prefix = SubmittedPrefix::Gone { block };
+            return;
+        }
+        if was_edited {
+            return;
+        }
+        let intact = self
+            .editor_submission
+            .as_deref()
+            .is_some_and(|submitted| submitted.len() == bytes && buffer.starts_with(submitted));
+        if !intact {
+            self.submitted_prefix = SubmittedPrefix::Edited { block };
+        }
     }
 
     /// #1558: an Enter is held as the pending command because the shell was not ready for it.
@@ -8116,7 +8237,7 @@ impl Input {
 
             if matches!(source, CommandExecutionSource::User) {
                 self.editor_submission_from_pending = false;
-                self.editor_submission = Some(self.editor.as_ref(ctx).buffer_text(ctx));
+                self.note_editor_submission(ctx);
                 self.editor_submission_session = self.active_block_session_id();
             }
             self.start_block_and_write_command_to_pty(command, source, ctx);
@@ -9408,6 +9529,8 @@ impl Input {
         self.editor.update(ctx, |view, ctx| {
             view.clear_buffer_and_reset_undo_stack(ctx);
         });
+        // #2223: the running command's text is gone from the buffer.
+        self.note_edit_for_submitted_prefix(ctx);
     }
 
     pub fn replace_buffer_content(&mut self, content: &str, ctx: &mut ViewContext<Self>) {
@@ -11169,6 +11292,8 @@ impl Input {
 
         match event {
             EditorEvent::Edited(edit_origin) => {
+                // #2223: whether the buffer still begins with the running command's text.
+                self.note_edit_for_submitted_prefix(ctx);
                 let held_release = std::mem::take(&mut self.held_release_edit);
                 // #1638: `~X` at the start of an empty line of a managed ssh session is ssh's
                 // escape, not editor text. Decided by the second key, never by a timer: until it
@@ -17150,6 +17275,14 @@ impl Input {
         );
     }
 
+    /// #2209: keys of a hold are being replayed into the editor and leave several lines in it,
+    /// but they may still be on their way (the display map, the shell's report). The held-back
+    /// Enter guard is armed by the NEXT Enter, over the buffer as that Enter finds it, if it
+    /// then holds several lines: that Enter is held with the "check the line" notice.
+    pub(crate) fn arm_handed_back_enter_guard_at_next_enter(&mut self) {
+        self.handed_back_guard_at_next_enter = true;
+    }
+
     /// Arms the held-back Enter guard (#1666): `kind` says which Enter it holds, `toast` what the
     /// held Enter tells the user.
     pub(crate) fn arm_enter_guard(
@@ -17232,6 +17365,13 @@ impl Input {
     /// locally because the connect ended mid-line. Decided by the hand-back event, not by timing.
     /// An empty buffer has nothing to run, so the guard is simply dropped.
     fn hold_back_enter_after_ssh_handover(&mut self, ctx: &mut ViewContext<Self>) -> bool {
+        // #2209: the guard asked for while a hold's keys were replayed into the editor.
+        if std::mem::take(&mut self.handed_back_guard_at_next_enter) {
+            let buffer = self.editor.as_ref(ctx).buffer_text(ctx);
+            if buffer.contains('\n') {
+                self.arm_handed_back_enter_guard(buffer);
+            }
+        }
         // #1666: a glue guard is neither taken nor applied by an Enter that only accepts a menu
         // item; accepting it inserts into the line, which drops the guard. The menu is judged as
         // the rest of this Enter will see it: a stale menu dropped and a pending refilter flushed
@@ -18742,6 +18882,8 @@ impl Input {
     ) -> Option<String> {
         // Text typed into a pending command is kept with it whether or not the typeahead hand-off
         // is enabled (#1451); other newer text is the hand-off's.
+        // #2223: the submission ends here (its block completed, or its shell exited).
+        self.submitted_prefix = SubmittedPrefix::None;
         let from_pending = std::mem::take(&mut self.editor_submission_from_pending);
         if !(FeatureFlag::TypeaheadHandoff.is_enabled() || from_pending)
             || self

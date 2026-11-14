@@ -22091,14 +22091,15 @@ fn test_a_stale_young_hold_reaches_the_pty_once_in_typed_order() {
             );
         });
         assert!(pane_queue_is_idle(&app, &editor), "nothing is left held");
-        // The test pane has no pty controller to retire a counted write, so a counted write
-        // stays in flight; an uncounted one must not have been retired by anything.
+        // The hold was written while the editor owns input at a prompt: the hand-off routes
+        // those bytes as an uncounted write (and notes them as bytes in the shell's line, so
+        // the next report covers them). Nothing is counted in flight, and nothing is retired.
         let in_flight_after = input.read(&app, |input, _| {
             input.model.lock().typeahead_handoff().writes_in_flight()
         });
-        assert!(
-            in_flight_after >= in_flight_before,
-            "no write was retired that was never counted: {in_flight_before} -> {in_flight_after}"
+        assert_eq!(
+            in_flight_after, in_flight_before,
+            "the write count is exactly what it was: no write counted, none retired"
         );
     });
 }
@@ -22491,7 +22492,7 @@ fn test_enters_declined_while_a_command_runs_send_each_line_to_the_pty() {
         input.update(&mut app, |input, ctx| {
             input.clear_buffer_and_reset_undo_stack(ctx);
             input.user_insert(RUNNING, ctx);
-            input.editor_submission = Some(RUNNING.to_owned());
+            input.note_editor_submission_for_test(ctx);
         });
         let lines = [
             "echo t293 >> r_after_selection.txt",
@@ -22572,5 +22573,203 @@ fn test_a_bare_enter_declined_while_a_command_runs_reaches_the_pty() {
         input.read(&app, |input, ctx| {
             assert_eq!(input.buffer_text(ctx), "", "the line left the editor");
         });
+    });
+}
+
+/// #2223 fixture: `RUNNING_FOR_2223` was submitted from the editor and is running; the editor
+/// holds its text, as a submit leaves it until the block completes.
+const RUNNING_FOR_2223: &str = "sh sm_stream.sh";
+
+async fn pane_with_a_submitted_command_running(
+    app: &mut App,
+) -> (
+    ViewHandle<TerminalView>,
+    ViewHandle<Input>,
+    Rc<RefCell<Vec<Vec<u8>>>>,
+) {
+    let (terminal, input, _editor, writes) =
+        pane_and_terminal_for_ssh_escape_test(app, false, SHELL_INPUT_FOR_SSH_ESCAPE_TEST).await;
+    terminal.update(app, |view, _| {
+        view.model
+            .lock()
+            .simulate_long_running_block(RUNNING_FOR_2223, "tick 1\r\n");
+    });
+    input.update(app, |input, ctx| {
+        input.clear_buffer_and_reset_undo_stack(ctx);
+        input.user_insert(RUNNING_FOR_2223, ctx);
+        input.note_editor_submission_for_test(ctx);
+    });
+    (terminal, input, writes)
+}
+
+/// The Enter of #2223: the editor's submit is refused because a command runs.
+fn decline_enter_while_a_command_runs(app: &mut App, input: &ViewHandle<Input>) {
+    input.update(app, |input, ctx| {
+        let buffer = input.buffer_text(ctx);
+        assert!(!input.try_execute_command(&buffer, ctx));
+        input.hold_refused_unready_enter(ctx);
+    });
+}
+
+/// #2223 (review M8): the running command's text was emptied out of the editor and the SAME
+/// command was typed again. Compared as text the buffer equals the submission and the typed line
+/// would be empty; tracked by position, the buffer was emptied since the submit, so all of it
+/// was typed since: the whole line goes to the pty.
+#[test]
+fn test_the_same_command_typed_again_while_it_runs_is_sent_as_a_line() {
+    App::test((), move |mut app| async move {
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        initialize_app(&mut app);
+        let (_terminal, input, writes) = pane_with_a_submitted_command_running(&mut app).await;
+        input.update(&mut app, |input, ctx| {
+            input.clear_buffer_and_reset_undo_stack(ctx);
+        });
+        input.update(&mut app, |input, ctx| {
+            input.user_insert(RUNNING_FOR_2223, ctx);
+        });
+        decline_enter_while_a_command_runs(&mut app, &input);
+        assert_eq!(
+            writes.borrow().concat(),
+            format!("{RUNNING_FOR_2223}\r").into_bytes(),
+            "the retyped command is a typed line: it goes to the pty with its Enter"
+        );
+        input.read(&app, |input, ctx| {
+            assert_eq!(input.buffer_text(ctx), "", "the line left the editor");
+        });
+    });
+}
+
+/// #2223 (review M8): the running command's text was EDITED in place, then more was typed.
+/// Which part of the buffer was typed since is not known, so nothing is written: the running
+/// command's own text must never be sent to it as input (the text comparison used to fall back
+/// to "the whole buffer is the line"). The Enter is kept as a line break; nothing is dropped.
+#[test]
+fn test_an_enter_declined_over_an_edited_running_command_writes_nothing() {
+    App::test((), move |mut app| async move {
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        initialize_app(&mut app);
+        let (_terminal, input, writes) = pane_with_a_submitted_command_running(&mut app).await;
+        input.update(&mut app, |input, ctx| {
+            input.editor().update(ctx, |editor, ctx| {
+                editor.set_buffer_text("xh sm_stream.shecho hi", ctx);
+            });
+        });
+        decline_enter_while_a_command_runs(&mut app, &input);
+        assert!(
+            writes.borrow().is_empty(),
+            "nothing reaches the pty: {:?}",
+            writes.borrow()
+        );
+        input.read(&app, |input, ctx| {
+            assert_eq!(
+                input.buffer_text(ctx),
+                "xh sm_stream.shecho hi\n",
+                "the text stays and the Enter is a line break: the next line is not merged"
+            );
+        });
+    });
+}
+
+/// #2223 (review M8): the submission the editor remembers belongs to a block that is no longer
+/// the running one (stale). Nothing of it is in front of the buffer: the whole buffer is the
+/// typed line, even when it happens to begin with the old command's text.
+#[test]
+fn test_a_stale_submission_is_not_taken_for_the_running_commands_text() {
+    use super::SubmittedPrefix;
+    App::test((), move |mut app| async move {
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        initialize_app(&mut app);
+        let (_terminal, input, writes) = pane_with_a_submitted_command_running(&mut app).await;
+        input.update(&mut app, |input, ctx| {
+            // The submission was another block's.
+            input.submitted_prefix = SubmittedPrefix::Intact {
+                bytes: RUNNING_FOR_2223.len(),
+                block: BlockId::new(),
+            };
+            input.user_insert(" --again", ctx);
+        });
+        decline_enter_while_a_command_runs(&mut app, &input);
+        assert_eq!(
+            writes.borrow().concat(),
+            format!("{RUNNING_FOR_2223} --again\r").into_bytes(),
+            "the whole buffer was typed for the command that runs now"
+        );
+        input.read(&app, |input, ctx| {
+            assert_eq!(input.buffer_text(ctx), "");
+        });
+    });
+}
+
+/// #2223 (review M7): an Enter the typeahead hand-off deferred, run while a command is running,
+/// is NOT written to the pty by the declined-Enter path: its line and the keys behind it belong
+/// to the hand-off (which releases or keeps them); written here too they would run twice.
+#[test]
+fn test_a_deferred_enter_declined_while_a_command_runs_is_left_to_the_handoff() {
+    App::test((), move |mut app| async move {
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        initialize_app(&mut app);
+        let (_terminal, input, writes) = pane_with_a_submitted_command_running(&mut app).await;
+        input.update(&mut app, |input, ctx| {
+            input.user_insert("echo hi", ctx);
+            input.running_deferred_enter = true;
+        });
+        decline_enter_while_a_command_runs(&mut app, &input);
+        input.update(&mut app, |input, _| {
+            input.running_deferred_enter = false;
+        });
+        assert!(
+            writes.borrow().is_empty(),
+            "the deferred Enter's line is not written here: {:?}",
+            writes.borrow()
+        );
+        input.read(&app, |input, ctx| {
+            assert_eq!(
+                input.buffer_text(ctx),
+                format!("{RUNNING_FOR_2223}echo hi"),
+                "the buffer is left as it is for the hand-off"
+            );
+        });
+    });
+}
+
+/// #2209 (review M1): the pane's pty died with an arrow in the held segment: `ab`, Left, `c`
+/// typed in the input box behind the young hold. Nothing is written; the whole segment is
+/// replayed in the input editor key by key, in typed order, so the Left acts where it was typed
+/// (`acb`). Put in as one text with the arrow applied first, it came out `abc`.
+#[test]
+fn test_an_arrow_in_the_segment_acts_in_place_when_the_shell_exits() {
+    App::test((), move |mut app| async move {
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        initialize_app(&mut app);
+        let (terminal, input, editor, writes) =
+            young_enter_held_with_keys_behind_it(&mut app).await;
+        type_keys_for_ssh_escape_test(&mut app, &editor, &["a", "b"]);
+        editor.update(&mut app, |editor, ctx| {
+            editor.handle_action(&EditorAction::Left, ctx);
+        });
+        type_keys_for_ssh_escape_test(&mut app, &editor, &["c"]);
+        input.read(&app, |input, _| {
+            input.model.lock().typeahead_handoff_mut().reset_on_exit();
+        });
+        terminal.update(&mut app, |view, ctx| {
+            view.handle_typeahead_report_for_test(ctx)
+        });
+        wait_until(&app, |app| {
+            input.read(app, |input, ctx| input.buffer_text(ctx) == "\npwd\nacb")
+        })
+        .await;
+        input.read(&app, |input, ctx| {
+            assert_eq!(
+                input.buffer_text(ctx),
+                "\npwd\nacb",
+                "the held Enter, `pwd`, Enter, then `ab`, Left, `c` applied in typed order"
+            );
+        });
+        assert_eq!(
+            *writes.borrow(),
+            vec![b"ls".to_vec()],
+            "nothing is written to a pty nobody reads"
+        );
+        assert!(pane_queue_is_idle(&app, &editor), "nothing is left held");
     });
 }

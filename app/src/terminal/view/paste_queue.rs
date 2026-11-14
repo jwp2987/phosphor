@@ -1478,9 +1478,18 @@ impl TerminalView {
         let entries = {
             let Some(mut guard) = queue.try_lock() else {
                 // Mid-drain: nothing else can end the hold, so record it for the next attempt.
-                // #2209: a signal's flush, recorded by the hand-off (the view cannot name the
-                // flushed end itself).
-                self.handoff.write().restore_flushed_young_hold(hold_id);
+                // #2209: an interrupt's flush is recorded by the hand-off (the view cannot name
+                // the flushed end itself). A lone EOF is not a flush: the tty keeps typeahead
+                // across it, so its keys go to the reader once the queue is free (behind the
+                // EOF, which is written now: order is lost in this busy-queue corner, the keys
+                // are not).
+                if before_eof {
+                    self.handoff
+                        .write()
+                        .restore_young_hold_end(hold_id, YoungHoldEnd::ToReader);
+                } else {
+                    self.handoff.write().restore_flushed_young_hold(hold_id);
+                }
                 queue.defer(Deferred::ApplyYoungHoldEnds);
                 return bytes;
             };

@@ -4981,8 +4981,10 @@ impl TypeaheadHandoff {
             && !bytes.iter().any(|b| matches!(b, 0x03 | 0x1a | 0x1c))
             && matches!(self.state, HandoffState::PtyOwned { .. });
         self.young_hold_queued = false;
-        // #2209: what `restore_flushed_young_hold` may record a flush for.
-        self.signal_took_young_hold = Some(self.young_hold_id);
+        // #2209: what `restore_flushed_young_hold` may record a flush for. Not for a lone EOF:
+        // the tty keeps typeahead across it, so its keys are never flushed (the view writes
+        // them in front of the EOF, or records `ToReader` when its queue is busy).
+        self.signal_took_young_hold = (!before_eof).then_some(self.young_hold_id);
         Some((self.young_hold_id, before_eof))
     }
 
@@ -5306,12 +5308,17 @@ impl TypeaheadHandoff {
         // Enter and the keys behind it, so it is not deferred here (that stranded the hold in
         // `HoldAfterEnter`, where every later path dropped its keys): the input queues it behind
         // the hold's gate, in arrival order (`Input::queue_enter_behind_handoff_gate`).
-        if self.young_hold_queued {
+        // Only where that gate is named (`enter_queues_behind`: the hold waits behind the
+        // request). A hold still queued in any other state is stale: it is ended here, its keys
+        // delivered, and the Enter is deferred as usual; refusing there would let the editor
+        // submit the fragment it holds.
+        if self.state == HandoffState::AwaitingReport && self.young_hold_queued {
             warpui::input_order::log_hop("defer_enter_refused", || {
                 format!("why=young_hold_queued hold_id={}", self.young_hold_id)
             });
             return false;
         }
+        self.drop_stale_hold();
         if behind_uncovered_report {
             self.arm_uncovered_deferral();
             self.report_deferral_id = None;
@@ -5854,9 +5861,9 @@ pub enum EditorReplayKey {
     Left,
     /// `ESC [ C`, `ESC O C`, `^F`.
     Right,
-    /// `ESC [ A`, `ESC O A`.
+    /// `ESC [ A`, `ESC O A`, `^P`.
     Up,
-    /// `ESC [ B`, `ESC O B`.
+    /// `ESC [ B`, `ESC O B`, `^N`.
     Down,
     /// `ESC [ H`, `ESC O H`, `ESC [ 1 ~`, `ESC [ 7 ~`, `^A`.
     Home,
@@ -5874,7 +5881,8 @@ pub enum EditorReplayKey {
     Tab,
     /// A lone ESC.
     Escape,
-    /// `^C`.
+    /// `^C`. Named, never replayed: a replayed key must not become a new signal (the editor's
+    /// own `^C` writes an interrupt to the pty and flushes the hand-off); the caller counts it.
     Interrupt,
     /// A well-formed sequence or control character the input editor has no key for (a function
     /// key, a cursor key with a modifier, an OSC, `^Z` ...), with its length in bytes. Never
@@ -5928,6 +5936,9 @@ pub fn editor_keys_of_bytes(bytes: &[u8]) -> Vec<EditorReplayKey> {
             '\u{15}' => EditorReplayKey::KillToStart,
             '\u{b}' => EditorReplayKey::KillToEnd,
             '\u{17}' => EditorReplayKey::KillWord,
+            // Emacs mode's previous / next line, what readline, zle, fish and PSReadLine bind.
+            '\u{10}' => EditorReplayKey::Up,
+            '\u{e}' => EditorReplayKey::Down,
             '\u{3}' => EditorReplayKey::Interrupt,
             '\r' | '\n' => EditorReplayKey::LineBreak,
             '\t' => EditorReplayKey::Tab,

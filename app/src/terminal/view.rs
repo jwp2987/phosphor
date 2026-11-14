@@ -15800,6 +15800,36 @@ impl TerminalView {
         inserted
     }
 
+    /// #2209: the pane's shell exited: the input editor is disabled, so user interactions with
+    /// it are ignored. Keys of a hold that are being replayed into it (text in the input, since
+    /// nothing reads the pty) may still wait for the display map: a disabled editor would
+    /// refuse them. While some wait, the disable is put off to the next turn of the event
+    /// loop, at most `turns_left` times (no timer: each turn follows the replay step before
+    /// it); then the editor is disabled whatever waits, with a warning.
+    fn disable_exited_input_editor(&mut self, turns_left: u32, ctx: &mut ViewContext<Self>) {
+        let replay_pending = {
+            let input = self.input.as_ref(ctx);
+            let hold = input.editor().as_ref(ctx).paste_hold();
+            hold.replay_pending() || hold.queue_is_busy()
+        };
+        if replay_pending && turns_left > 0 {
+            ctx.spawn(async {}, move |me, _, ctx| {
+                me.disable_exited_input_editor(turns_left - 1, ctx)
+            });
+            return;
+        }
+        if replay_pending {
+            log::warn!(
+                "input: the exited pane's editor is disabled with replayed keys still waiting"
+            );
+        }
+        self.input.update(ctx, |input, ctx| {
+            input.editor().update(ctx, |editor, ctx| {
+                editor.set_interaction_state(crate::editor::InteractionState::Disabled, ctx);
+            });
+        });
+    }
+
     /// #2223: writes `line` and its Enter to the pty, in typed order (`line` may be empty: a
     /// bare Enter). Several lines (a paste, Shift-Enter) go as the paste they would be.
     fn write_declined_enter_line_to_pty(&mut self, line: String, ctx: &mut ViewContext<Self>) {
@@ -19354,15 +19384,15 @@ impl TerminalView {
                 if FeatureFlag::TypeaheadHandoff.is_enabled() {
                     self.flush_deferred_queue_ops(ctx);
                     self.drain_young_hold_ends(ctx);
+                    // #2115: no report is coming any more: the cursor and deletion keys held
+                    // for it (and the keys typed after them) are applied now, in order, while
+                    // the editor still takes them.
+                    self.release_report_edit_gate_if_settled("exit", ctx);
                 }
                 // Mark the editor as disabled to ensure user interactions with
-                // it are ignored.
-                self.input.update(ctx, |input, ctx| {
-                    input.editor().update(ctx, |editor, ctx| {
-                        editor
-                            .set_interaction_state(crate::editor::InteractionState::Disabled, ctx);
-                    });
-                });
+                // it are ignored. #2209: not before the keys replayed into it have landed (a
+                // cursor key waits for the display map, and the keys behind it with it).
+                self.disable_exited_input_editor(EXITED_EDITOR_REPLAY_TURNS, ctx);
 
                 // If we failed to bootstrap by the time we exited, show the
                 // bootstrap block so the user might be able to see what went wrong.
@@ -42897,6 +42927,11 @@ mod dest_table;
 /// Owner decision 2026-11-09 (reversing #1661): a hold that gives up writes its keys to the pty.
 mod give_up_to_pty;
 mod paste_queue;
+
+/// #2209: how many turns of the event loop an exited pane's input editor stays editable for the
+/// keys replayed into it (`TerminalView::disable_exited_input_editor`). A count of turns, not a
+/// time: each replay step is one turn.
+const EXITED_EDITOR_REPLAY_TURNS: u32 = 64;
 
 /// #2209: the spec of the `HandoffReport` gate that holds the keys typed behind deferred Enter
 /// `gate` (the view's own, with its leak net), for the input, which opens that gate itself when

@@ -777,7 +777,8 @@ fn all_dims() -> Vec<Dim> {
     gate_dim!(11);
     gate_dim!(12);
     gate_dim!(13);
-    assert_eq!(GateKind::ALL.len(), 14, "add a gate_dim! for the new kind");
+    gate_dim!(14);
+    assert_eq!(GateKind::ALL.len(), 15, "add a gate_dim! for the new kind");
     dims
 }
 

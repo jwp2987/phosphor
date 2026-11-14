@@ -77,10 +77,11 @@ use warpui::ViewContext;
 
 use super::paste_queue::PtyQueueHost;
 use super::{Event, TerminalView};
-use crate::editor::{EditorAction, HeldPasteKey, PlainTextEditorViewAction};
+use crate::editor::{EditorAction, HeldPasteKey};
 use crate::terminal::input::{KeysAfterEnter, count_discarded_keys};
 use crate::terminal::input_queue::{
-    Deferred, DiscardReason, EntryKind, GateKind, GaveUpKeys, HELD_PASTE, Host as _, InputEntry,
+    Deferred, DiscardReason, EditorKeyPayload, EntryKind, GateKind, GateSpec, GaveUpKeys,
+    HELD_PASTE, Host as _, InputEntry, Origin,
 };
 use crate::terminal::model::typeahead_handoff::{
     EditorReplayKey, editor_keys_of_bytes, text_for_editor,
@@ -587,8 +588,9 @@ impl TerminalView {
     /// ownership with the hold still queued. `entries` are the hold's, taken under one lock of
     /// the queue, in typed order, the held Enter first. None is dropped:
     ///
-    /// * the pty is gone: the whole segment becomes text in the input
-    ///   (`write_given_up_entries_to_pty`, whose writer sees the pty gone);
+    /// * the pty is gone: nothing is written; the whole segment is replayed in the input editor,
+    ///   key by key, in typed order ([`Self::replay_hold_tail_in_editor`]): an Enter is a line
+    ///   break, an arrow acts where it was typed;
     /// * else the segment is split at the first editor key that has no byte form (an arrow, a
     ///   selection, Tab). The part before it is written to the pty in typed order through the
     ///   guarded give-up writer (the stages every typed key takes; a refused write becomes input
@@ -617,8 +619,13 @@ impl TerminalView {
                 None => return,
             }
         }
+        // With the pty gone nothing is written: the WHOLE segment is replayed in the input
+        // editor, key by key, in typed order. (Put in as one text, an arrow in the segment
+        // acted on the empty editor before the text landed, so `ab`, Left, `c` came out `abc`
+        // instead of `acb`, and a terminal-typed Up / Down / Esc was dropped by
+        // `text_for_editor`.)
         let split = if pty_gone {
-            None
+            Some(0)
         } else {
             head.iter().position(|entry| {
                 matches!(&entry.kind, EntryKind::EditorKey(payload) if !payload.has_pty_byte_form())
@@ -636,14 +643,16 @@ impl TerminalView {
                 u8::from(pty_gone)
             )
         });
-        let keys = self.write_given_up_entries_to_pty(head, why, ctx);
-        if keys == 0 {
-            warpui::input_order::log_hop("give_up_keys_to_pty", || {
-                format!(
-                    "why={why} keys=0 bytes=0 written=0 to_editor=0 pty_gone={}",
-                    u8::from(pty_gone)
-                )
-            });
+        if !head.is_empty() {
+            let keys = self.write_given_up_entries_to_pty(head, why, ctx);
+            if keys == 0 {
+                warpui::input_order::log_hop("give_up_keys_to_pty", || {
+                    format!(
+                        "why={why} keys=0 bytes=0 written=0 to_editor=0 pty_gone={}",
+                        u8::from(pty_gone)
+                    )
+                });
+            }
         }
         if !tail.is_empty() {
             self.replay_hold_tail_in_editor(tail, why, ctx);
@@ -711,20 +720,22 @@ impl TerminalView {
     /// * an Enter is a line break, never a submit: the first Enter on the buffer is then held
     ///   by the hand-back guard with its "check the line" notice;
     /// * bytes typed on the terminal are named key by key (`editor_keys_of_bytes`): Backspace,
-    ///   the cursor keys, Up / Down, Home / End, Delete, `^K` `^U` `^W`, Tab, a lone ESC and `^C`
-    ///   run the editor's own key; a sequence the editor has no key for (a function key's bytes,
-    ///   a cursor key with a modifier) cannot be replayed and is counted in a warning, never
-    ///   dropped silently.
+    ///   the cursor keys, Up / Down (`^P` / `^N` too), Home / End, Delete, `^K` `^U` `^W`, Tab
+    ///   and a lone ESC run the editor's own key; a sequence the editor has no key for (a
+    ///   function key's bytes, a cursor key with a modifier) cannot be replayed and is counted
+    ///   in a warning, never dropped silently; a `^C` is counted too and never replayed (a
+    ///   replayed key must not become a new interrupt);
+    /// * a paste is one text, as pasted, not keystrokes.
     ///
     /// Nothing is offered back to the pane queue as pty input and nothing is written to the
     /// pty, so the routing table cannot turn a key into a submit, a new hold or a drop.
     ///
-    /// How the keys are applied: without an Enter among them, through the editor's own key
-    /// path (`EditorView::apply_held_paste_key`), which keeps the order of keys that read the
-    /// display map (a cursor key right after an insert waits for the map, and every key behind
-    /// it with it, #1389) and queues behind anything the pane queue still holds. With an Enter
-    /// among them the keys are applied at once, as `keep_given_up_keys_with_line` applies them,
-    /// so the hand-back guard can be armed over the buffer they leave.
+    /// How the keys are applied: through the editor's own key path
+    /// (`EditorView::apply_held_paste_key`), which keeps the order of keys that read the display
+    /// map (a cursor key right after an insert waits for the map, and every key behind it with
+    /// it, #1389) and queues behind anything the pane queue still holds. While the shell's
+    /// report of the line is on its way they wait for it behind the `ReportEdit` gate instead
+    /// (#2115). The exit arm keeps the editor editable until the keys have landed.
     pub(super) fn replay_hold_tail_in_editor(
         &mut self,
         tail: Vec<InputEntry>,
@@ -735,6 +746,10 @@ impl TerminalView {
         let mut replay: Vec<TailKey> = Vec::with_capacity(entries);
         let mut no_editor_key = 0usize;
         let mut no_editor_key_bytes = 0usize;
+        // A `^C` among the keys: named and counted, never replayed. The editor's own `^C`
+        // writes an interrupt to the pty, flushes the hand-off and clears the buffer; a
+        // replayed key must not become a new signal.
+        let mut interrupts_not_replayed = 0usize;
         // Plain text for the editor: a paste is never wrapped in the bracketed-paste markers.
         let mut bracketed = Some(false);
         for entry in tail {
@@ -742,8 +757,21 @@ impl TerminalView {
                 // A signal entry has already acted through its own path.
                 continue;
             }
+            // A paste is CONTENT, not keystrokes: one text, as pasted (a Tab in it completes
+            // nothing, an ESC is no key, a CRLF is one line break of the text).
+            let is_paste = matches!(&entry.kind, EntryKind::Paste { .. })
+                || matches!(&entry.kind, EntryKind::Held { class, .. } if *class == HELD_PASTE);
             match self.given_up_entry(entry, &mut bracketed, ctx) {
+                GivenUpEntry::EditorKey(HeldPasteKey::Action(EditorAction::CtrlC)) => {
+                    interrupts_not_replayed += 1;
+                }
                 GivenUpEntry::EditorKey(key) => replay.push(TailKey::Key(key)),
+                GivenUpEntry::Bytes(bytes) if is_paste => {
+                    let text = String::from_utf8_lossy(&bytes).replace("\r\n", "\n");
+                    if !text.is_empty() {
+                        replay.push(TailKey::Key(HeldPasteKey::Text(text)));
+                    }
+                }
                 GivenUpEntry::Bytes(bytes) => {
                     for key in editor_keys_of_bytes(&bytes) {
                         let action = match key {
@@ -760,6 +788,10 @@ impl TerminalView {
                                 no_editor_key_bytes += len;
                                 continue;
                             }
+                            EditorReplayKey::Interrupt => {
+                                interrupts_not_replayed += 1;
+                                continue;
+                            }
                             EditorReplayKey::Backspace => EditorAction::Backspace,
                             EditorReplayKey::Left => EditorAction::Left,
                             EditorReplayKey::Right => EditorAction::Right,
@@ -773,7 +805,6 @@ impl TerminalView {
                             EditorReplayKey::KillWord => EditorAction::DeleteWordLeft,
                             EditorReplayKey::Tab => EditorAction::Tab,
                             EditorReplayKey::Escape => EditorAction::Escape,
-                            EditorReplayKey::Interrupt => EditorAction::CtrlC,
                         };
                         replay.push(TailKey::Key(HeldPasteKey::Action(action)));
                     }
@@ -782,36 +813,55 @@ impl TerminalView {
             }
         }
         let keys = replay.len();
+        // An Enter among the keys, or a pasted text of several lines: several lines in one
+        // buffer, so the hand-back guard is armed over what they leave.
         let line_breaks = replay
             .iter()
-            .filter(|key| matches!(key, TailKey::LineBreak))
+            .filter(|key| match key {
+                TailKey::LineBreak => true,
+                TailKey::Key(HeldPasteKey::Text(text)) => text.contains('\n'),
+                TailKey::Key(_) => false,
+            })
             .count();
-        for key in replay {
-            match key {
-                TailKey::Key(key) if line_breaks == 0 => {
-                    self.input.update(ctx, |input, ctx| {
-                        input
-                            .editor()
-                            .update(ctx, |editor, ctx| editor.apply_held_paste_key(key, ctx))
-                    });
-                }
-                TailKey::Key(key) => self.apply_given_up_editor_key(key, ctx),
-                TailKey::LineBreak => {
-                    self.input.update(ctx, |input, ctx| {
-                        input.editor().update(ctx, |editor, ctx| {
-                            editor.system_insert("\n", PlainTextEditorViewAction::SystemInsert, ctx)
-                        })
-                    });
-                }
+        // #2115 (review N3): the shell's report of the line is on its way, so the editor holds
+        // only part of the line. Replayed now, a cursor or deletion key would act on that part
+        // and be clamped at its start. The keys wait for the report behind the `ReportEdit`
+        // gate instead, in order, as a live cursor key does, and are applied to the joined line.
+        let behind_report = self.handoff.read().report_pending_before_editor_text()
+            && crate::terminal::input_queue::switches::hold_edit_keys_behind_report();
+        if behind_report {
+            self.queue_tail_keys_behind_the_report(replay, ctx);
+        } else {
+            // Through the editor's own key path, one key at a time: it keeps the order of keys
+            // that read the display map (a cursor key right after an insert waits for the map,
+            // and every key behind it with it, #1389) and queues behind anything the pane queue
+            // still holds. An Enter is the editor's Newline: a line break, never a submit.
+            for key in replay {
+                let key = match key {
+                    TailKey::Key(key) => key,
+                    TailKey::LineBreak => HeldPasteKey::Action(EditorAction::Newline),
+                };
+                self.input.update(ctx, |input, ctx| {
+                    input
+                        .editor()
+                        .update(ctx, |editor, ctx| editor.apply_held_paste_key(key, ctx))
+                });
             }
         }
         if line_breaks > 0 {
             // Several lines in one buffer: the first Enter on it is held with the "check the
-            // line" notice, never run unseen.
-            self.input.update(ctx, |input, ctx| {
-                let buffer = input.editor().as_ref(ctx).buffer_text(ctx);
-                input.arm_handed_back_enter_guard(buffer);
+            // line" notice, never run unseen. The keys may still be on their way into the
+            // buffer (the display map, the report), so the guard is armed over the buffer as
+            // that Enter finds it.
+            self.input.update(ctx, |input, _| {
+                input.arm_handed_back_enter_guard_at_next_enter();
             });
+        }
+        if interrupts_not_replayed > 0 {
+            log::warn!(
+                "input: {interrupts_not_replayed} Ctrl-C typed behind a hold was not replayed in \
+                 the input editor: a replayed key never becomes a new interrupt ({why})"
+            );
         }
         if no_editor_key > 0 {
             log::warn!(
@@ -823,7 +873,9 @@ impl TerminalView {
         warpui::input_order::log_hop("hold_tail_replayed_in_editor", || {
             format!(
                 "why={why} entries={entries} keys={keys} line_breaks={line_breaks} \
-                 no_editor_key={no_editor_key} no_editor_key_bytes={no_editor_key_bytes}"
+                 no_editor_key={no_editor_key} no_editor_key_bytes={no_editor_key_bytes} \
+                 interrupts_not_replayed={interrupts_not_replayed} behind_report={}",
+                u8::from(behind_report)
             )
         });
         if !self.input.as_ref(ctx).buffer_text(ctx).is_empty() {
@@ -831,6 +883,66 @@ impl TerminalView {
         }
         self.note_editor_took_over();
         self.redetermine_terminal_focus(ctx);
+    }
+
+    /// #2115 (review N3): `keys`, a hold's tail, wait for the shell's report of the line behind
+    /// the `ReportEdit` gate, in order, as editor-bound entries of the pane queue (an editor key
+    /// is never routed anywhere else). A gate already open (a live cursor key asked for it)
+    /// takes them behind what it holds; else the gate is asked for here, through the queue's
+    /// mailbox, exactly as `EditorView::hold_edit_key_behind_pending_report` asks for it. An
+    /// Enter is the editor's Newline: a line break, never a submit.
+    fn queue_tail_keys_behind_the_report(
+        &mut self,
+        keys: Vec<TailKey>,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let queue = self.paste_queue.queue.clone();
+        let gate_open = queue
+            .try_peek()
+            .is_some_and(|held| held.has_gate_kind(GateKind::ReportEdit));
+        if !gate_open {
+            let gate = self
+                .input
+                .as_ref(ctx)
+                .editor()
+                .as_ref(ctx)
+                .paste_hold()
+                .next_report_edit_gate();
+            queue.defer(Deferred::OpenGate(GateSpec::new(
+                GateKind::ReportEdit,
+                gate,
+            )));
+            warpui::input_order::log_hop("report_edit_gate", || {
+                format!("open key={gate} by=hold_tail")
+            });
+        }
+        for key in keys {
+            let key = match key {
+                TailKey::Key(key) => key,
+                TailKey::LineBreak => HeldPasteKey::Action(EditorAction::Newline),
+            };
+            // A key whose effects are events (Up, Down, Tab, Escape): the drain yields after it.
+            let yields = matches!(
+                &key,
+                HeldPasteKey::Action(
+                    EditorAction::Up
+                        | EditorAction::Down
+                        | EditorAction::Tab
+                        | EditorAction::ShiftTab
+                        | EditorAction::Escape
+                )
+            );
+            let payload = if yields {
+                EditorKeyPayload::new_with_deferred_effects(key)
+            } else {
+                EditorKeyPayload::new(key)
+            };
+            queue.defer(Deferred::Offer {
+                kind: EntryKind::EditorKey(payload),
+                origin: Origin::Keyboard,
+                stamp: queue.stamp_now(),
+            });
+        }
     }
 
     /// A timer gave up on gate `kind`/`key` of the pane queue (a paced CLI-agent submit's cap, a
