@@ -4508,6 +4508,19 @@ impl ansi::Handler for TerminalModel {
                 None
             };
 
+            // #2155: the pending ssh session's shell replaced itself before it bootstrapped
+            // (`exec zsh -l` in the remote profile) and the new shell announces itself under
+            // the same session id. The SSH hook was consumed by the first InitShell, so the
+            // new pending session takes over what it said (below).
+            let replaced_pending_shell = SessionInfo::is_replaced_by_init_shell(
+                self.pending_session_info.as_ref(),
+                data.session_id,
+                data.is_subshell,
+                self.pending_legacy_ssh_session.is_some(),
+            )
+            .then(|| self.pending_session_info.clone())
+            .flatten();
+
             let mut pending_session_info = SessionInfo::create_pending(
                 shell_type,
                 data,
@@ -4522,11 +4535,27 @@ impl ansi::Handler for TerminalModel {
             );
             pending_session_info.legacy_ssh_spawning_command = legacy_ssh_spawning_command;
             pending_session_info.ssh_spawning_local_pwd = ssh_spawning_local_pwd;
+            let replaces_pending_shell = replaced_pending_shell.is_some();
+            if let Some(replaced) = replaced_pending_shell {
+                log::info!(
+                    "InitShell from the shell that replaced the pending ssh session's \
+                     ({:?} -> {:?}, exec in the remote profile): it keeps the session's ssh \
+                     identity and is bootstrapped in its place (#2155)",
+                    replaced.shell.shell_type(),
+                    shell_type
+                );
+                pending_session_info.inherit_ssh_identity_of_replaced_shell(&replaced);
+            }
             self.pending_session_info = Some(pending_session_info.clone());
             // A newer shell supersedes whatever was abandoned earlier.
             self.abandoned_subshell_session = None;
 
-            if self.block_list().is_bootstrapped() {
+            // #2155: the replaced shell's bootstrap had reached its rcfiles (its script-execution
+            // block is the active one and holds what they printed). The new shell's bootstrap is
+            // written next and its echo belongs in a hidden bootstrap block, as on any InitShell.
+            if self.block_list().is_bootstrapped()
+                || (replaces_pending_shell && self.block_list().is_script_execution())
+            {
                 self.block_list_mut().reinit_shell();
             }
 

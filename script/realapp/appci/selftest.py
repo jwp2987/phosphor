@@ -9519,6 +9519,8 @@ import selftest_r31_2220  # noqa: E402  (#2220: every ambiguous_want( call passe
 CHECKS.extend(selftest_r31_2220.CHECKS)
 import selftest_r31_1887  # noqa: E402  (#1887/#1890: the Windows ^C cases' pure helpers and their registration; own file)
 CHECKS.extend(selftest_r31_1887.CHECKS)
+import selftest_r32_2155  # noqa: E402  (#2155: a remote bash profile that execs zsh; the lab evidence line, its verdict, where lab_path_detect asks for it; own file)
+CHECKS.extend(selftest_r32_2155.CHECKS)
 
 
 # #2214: the guard stays LAST. A registration after it never runs under `python3 selftest.py` (the CI form), as r26-r30's did not.

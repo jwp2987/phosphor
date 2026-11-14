@@ -2058,7 +2058,9 @@ esac
   # login(1) or pam_motd(8) would do this. However, Warp does not use login(1)
   # for local sessions and for remote sessions, SSHD thinks it is starting a
   # non-interactive session, so it does not print PAM messages.
-  if [[ -o login && ! -e "$HOME/.hushlogin" ]]; then
+  # #2155: not when this zsh replaced a bash that was already bootstrapping this ssh session
+  # (`exec zsh -l` in its profile; the .zshenv bash_body.sh writes says so): that bash printed it.
+  if [[ -o login && -z ${__warp_exec_replaced_shell-} && ! -e "$HOME/.hushlogin" ]]; then
     for motd_file in /etc/motd /run/motd /run/motd.dynamic /usr/lib/motd /usr/lib/motd.dynamic; do
       if [[ -r "$motd_file" ]]; then
         command -p cat "$motd_file"
@@ -2066,6 +2068,8 @@ esac
       fi
     done
   fi
+
+  unset __warp_exec_replaced_shell
 
   # We need to restore the stty before any user bootstrap files are evaluated
   # in case they ask for user input

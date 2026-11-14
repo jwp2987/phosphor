@@ -1012,6 +1012,22 @@ def c_tab_remote_dir(ctx, r, arm):
     finish_remote(ctx, r)
 
 
+# ---- #2155: p_exec's ~/.bash_profile runs `exec zsh -l` while the bash the ssh wrapper started sources it. The zsh that replaced it announces itself under the
+# same session id and is bootstrapped in bash's place (bash_body.sh, the __warp_exec_zsh block; terminal_model.rs init_shell). The app says so once, by name:
+EXEC_REPLACED_SHELL_RE = re.compile(r"InitShell from the shell that replaced the pending ssh session's \((\w+) -> (\w+),")
+
+
+def exec_replaced_shell_evidence(user, log_text):
+    """pure: None for every user but p_exec (nothing to prove); else (ok, message): ok = the connect's app log says a zsh replaced the pending bash and was
+    bootstrapped as the same ssh session. Without that line the session is the unmanaged zsh of #2155 (no hooks, `exit` not seen)."""
+    if user != "p_exec":
+        return None
+    m = EXEC_REPLACED_SHELL_RE.search(log_text or "")
+    got = "%s -> %s" % (m.group(1), m.group(2)) if m else "no such line"
+    return (bool(m) and (m.group(1), m.group(2)) == ("Bash", "Zsh"),
+            "p_exec's profile execs zsh: the app log must say the zsh replaced the pending bash and took over its ssh session (#2155); it says: %s" % got)
+
+
 # ------------------------------------------------------------------ 2. path detection while typing
 @lab_case("path_detect", shells=("bash", "zsh", "fish", "nu"), lat=("lan", "150", "300"), helper=("nohelper", "helper"), scenarios=("p_exec", "p_tinypath"))
 def c_path_detect(ctx, r, arm):
@@ -1025,6 +1041,9 @@ def c_path_detect(ctx, r, arm):
     if connect_or_fail(ctx, r, arm) is None:
         ctx.reset()
         return
+    proof = exec_replaced_shell_evidence(arm["user"], ctx.log_since(off0))      # #2155: p_exec only
+    if proof is not None:
+        r.check(proof[0], proof[1])
     time.sleep(2.0 + 3 * rt)                         # the connection's own start-up channels settle first
     wait_helper_takeover(ctx, r, arm, off0)          # #2164: the helper takeover and the index sync settle before the window opens
     off = ctx.log_size()
@@ -1032,6 +1051,9 @@ def c_path_detect(ctx, r, arm):
     got = ctx.until(lambda: [m for m in HOOK_CWD_LISTING.finditer(ctx.log_since(off)) if m.group(3) == "2"], 10 + 6 * rt, step=0.1)
     if got:
         r.check(got[-1].group(2) == "L", "the pushed listing of the fixture directory is kind %s, expected L (complete)" % got[-1].group(2))
+    elif proof is not None:
+        # #2155: the zsh that replaced p_exec's bash is a bootstrapped zsh like u_zsh's, and that one pushes its listing: its absence is the bug, not a gap in the evidence
+        r.check(False, "p_exec: no hop=cwd_listing line with entries=2 after the cd: the zsh that replaced the profile's bash is not sending its hooks (#2155)")
     else:
         r.unverifiable("[hook] no hop=cwd_listing line with entries=2 after the cd (the remote shell's bootstrap sent no listing, or the shell is not one that does): detection from the pushed listing is not proven")
     time.sleep(0.5 + 2 * rt)
