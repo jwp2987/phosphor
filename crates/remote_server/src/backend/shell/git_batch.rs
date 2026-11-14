@@ -30,6 +30,12 @@
 //!   sections like the others, each capped well below the standalone call's cap. A list that
 //!   reaches its cap is dropped from the answer and the tree runs that one section as its own
 //!   exec, exactly as before; a section that is missing costs only itself.
+//! * The prompt chips' own commands ride in it too (#2216): the branch dropdown's list, the diff
+//!   chip's `--shortstat` and the Kubernetes context ([`BatchedChip`]). The app ran each of them
+//!   per prompt through the legacy generator executor, one more ssh exec channel each; it now
+//!   reads the section's output, which is the same command's output. A chip whose section is
+//!   missing from a batch that ran is NOT run as a second exec: the chip has no answer for that
+//!   prompt.
 //! * `PHOSPHOR_SHELL_BATCH_GIT=0` turns all of it off (read once per process).
 //!
 //! The sections that depend on another answer (the unpushed commits and the fork point chain)
@@ -41,7 +47,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -58,7 +64,9 @@ use crate::shellcmd::git::{
 use crate::shellcmd::tree::{
     canonical_dir_command, git_root_command, repo_files_command_capped, repo_ignored_command_capped,
 };
-use crate::shellcmd::{Frame, FrameError, Script, ShellKind, StderrMode, sh_quote, sh_quote_path};
+use crate::shellcmd::{
+    Frame, FrameError, ParsedSection, Script, ShellKind, StderrMode, sh_quote, sh_quote_path,
+};
 
 /// A request for a repo whose generation started less than this ago joins it. Short enough that
 /// a second prompt (a new command that may have changed the repo) never lands inside it, long
@@ -116,6 +124,73 @@ pub(super) fn batching_enabled() -> bool {
     *ON.get_or_init(|| std::env::var("PHOSPHOR_SHELL_BATCH_GIT").map_or(true, |v| v.trim() != "0"))
 }
 
+/// A prompt chip whose shell command the batched script runs as a section (#2216). The command
+/// text is the chip generator's own (`app/src/context_chips/builtins.rs` takes it from here), so
+/// the section's output is what the generator's exec would have printed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum BatchedChip {
+    /// The branch chip's dropdown: the branches, a record separator line, the worktrees.
+    BranchDropdown,
+    /// The diff chip's shell fallback.
+    DiffShortstat,
+    /// The Kubernetes context chip. Its section is only in the script once the chip has asked
+    /// (see [`GitBatchStore::want_kube`]): `kubectl` is not run for a prompt that has no such chip.
+    KubeContext,
+}
+
+impl BatchedChip {
+    pub const ALL: [Self; 3] = [Self::BranchDropdown, Self::DiffShortstat, Self::KubeContext];
+
+    /// The chip generator's command for POSIX shells and fish (the same text in both).
+    pub const fn sh_command(self) -> &'static str {
+        match self {
+            Self::BranchDropdown => {
+                "git --no-optional-locks branch --no-color --sort=-committerdate; \
+                 printf '\\036\\n'; \
+                 git --no-optional-locks worktree list --porcelain"
+            }
+            Self::DiffShortstat => {
+                "GIT_OPTIONAL_LOCKS=0 git -c diff.autoRefreshIndex=false diff --shortstat HEAD"
+            }
+            Self::KubeContext => "kubectl config current-context",
+        }
+    }
+
+    /// The chip whose generator command is exactly `command` (a PowerShell session's command is
+    /// other text and is no batched chip: the batch does not run on PowerShell hosts).
+    pub fn for_sh_command(command: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|chip| chip.sh_command() == command)
+    }
+
+    /// The section's name in the batched script.
+    const fn section(self) -> &'static str {
+        match self {
+            Self::BranchDropdown => "chipbranches",
+            Self::DiffShortstat => "chipshortstat",
+            Self::KubeContext => "chipkube",
+        }
+    }
+
+    /// The producer name in the batch's debug lines.
+    pub(super) const fn producer(self) -> &'static str {
+        match self {
+            Self::BranchDropdown => "chip_branch_dropdown",
+            Self::DiffShortstat => "chip_diff_shortstat",
+            Self::KubeContext => "chip_kube_context",
+        }
+    }
+}
+
+/// What a chip's command printed in the batch, in the terms of the generator's own exec.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ChipCommandOutput {
+    pub stdout: Vec<u8>,
+    /// The command's exit status was 0 (for a `a; b` command, the last one's, as in a shell).
+    pub success: bool,
+}
+
 /// How much of each tree list the batched script takes. A list that reaches its cap is left out
 /// of the batch's answer and read by the tree's own (larger-capped) call.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -140,12 +215,25 @@ pub(in crate::backend) struct Prefetched {
     /// The tree sections (`canon`, `git`, `files`, `ignoredpaths`) the script returned, minus any
     /// list that reached its cap.
     tree: Option<Frame>,
+    /// The chip sections ([`BatchedChip::section`]) the script returned.
+    chips: Vec<ParsedSection>,
 }
 
 impl Prefetched {
     /// The tree sections of the batch, for `shell/tree.rs`.
     pub(in crate::backend) fn tree(&self) -> Option<&Frame> {
         self.tree.as_ref()
+    }
+
+    /// What `chip`'s command printed in this batch; `None`: the batch did not run it.
+    pub(in crate::backend) fn chip(&self, chip: BatchedChip) -> Option<ChipCommandOutput> {
+        self.chips
+            .iter()
+            .find(|section| section.name == chip.section())
+            .map(|section| ChipCommandOutput {
+                stdout: section.output.clone(),
+                success: section.success(),
+            })
     }
 }
 
@@ -176,6 +264,8 @@ pub struct GitBatchStore {
     nav_bump: Mutex<Option<Instant>>,
     next_id: AtomicU64,
     tree_caps: TreeCaps,
+    /// The Kubernetes chip has asked on this host: later scripts carry its section.
+    kube_wanted: AtomicBool,
 }
 
 impl Default for GitBatchStore {
@@ -195,7 +285,15 @@ impl GitBatchStore {
             nav_bump: Mutex::new(None),
             next_id: AtomicU64::new(1),
             tree_caps: TreeCaps::DEFAULT,
+            kube_wanted: AtomicBool::new(false),
         }
+    }
+
+    /// The Kubernetes chip asks for its answer. `false` the first time on this host: no script
+    /// built so far ran `kubectl`, so the caller runs the chip's own command this once (it is the
+    /// session's first prompt); every script from now on carries the section.
+    pub(super) fn want_kube(&self) -> bool {
+        self.kube_wanted.swap(true, Ordering::SeqCst)
     }
 
     /// The same store with other caps on the tree lists (tests).
@@ -295,6 +393,7 @@ impl GitBatchStore {
                         runner.clone(),
                         repo_path.to_owned(),
                         self.tree_caps,
+                        self.kube_wanted.load(Ordering::SeqCst),
                         id,
                         Arc::clone(&producers),
                     )
@@ -338,11 +437,13 @@ async fn fetch(
     runner: ShellGitRunner,
     repo: String,
     caps: TreeCaps,
+    kube: bool,
     id: u64,
     producers: Arc<Mutex<Vec<&'static str>>>,
 ) -> Option<Arc<Prefetched>> {
     let script = match build_script(&runner, &repo)
         .and_then(|script| add_tree_sections(script, backend.shell_kind(), &repo, caps))
+        .and_then(|script| add_chip_sections(script, &repo, kube))
     {
         Ok(script) => script,
         Err(e) => {
@@ -360,6 +461,7 @@ async fn fetch(
         Ok(frame) => {
             let mut prefetched = assemble(&frame);
             prefetched.tree = tree_frame(&frame, caps);
+            prefetched.chips = chip_sections(&frame);
             Some(Arc::new(prefetched))
         }
         Err(e) => {
@@ -615,6 +717,31 @@ fn add_tree_sections(
         )
 }
 
+/// The prompt chips' commands (#2216), each in the directory and with the text of the chip
+/// generator's own exec, so the section's output and status are that exec's. `kube`: whether the
+/// Kubernetes chip has asked on this host.
+fn add_chip_sections(mut script: Script, dir: &str, kube: bool) -> Result<Script, FrameError> {
+    for chip in BatchedChip::ALL {
+        if chip == BatchedChip::KubeContext && !kube {
+            continue;
+        }
+        script = script.section(
+            chip.section(),
+            format!("cd {} || exit 1\n{}", sh_quote_path(dir), chip.sh_command()),
+            StderrMode::Discard,
+        )?;
+    }
+    Ok(script)
+}
+
+/// The chip sections of `frame`.
+fn chip_sections(frame: &Frame) -> Vec<ParsedSection> {
+    BatchedChip::ALL
+        .into_iter()
+        .filter_map(|chip| frame.section(chip.section()).cloned())
+        .collect()
+}
+
 /// The tree sections of `frame`. A list that reached its cap (`head -c` cut it, or it is one
 /// byte short of the cap once the framing newline is gone) is left out so the tree reads it with
 /// its own call; the others stay.
@@ -703,6 +830,7 @@ fn assemble(frame: &Frame) -> Prefetched {
         entries,
         gh_available: frame.section("ghpath").map(|s| s.exit == 0),
         tree: None,
+        chips: Vec::new(),
     }
 }
 

@@ -23,7 +23,7 @@ use std::sync::{Arc, Mutex};
 
 pub use agent_context::AgentContextCache;
 pub use buffer::ShellBuffers;
-pub use git_batch::GitBatchStore;
+pub use git_batch::{BatchedChip, ChipCommandOutput, GitBatchStore};
 pub use index::ShellIndex;
 pub use status::PrLookup;
 pub use tree::{ShellPush, TreeCache};

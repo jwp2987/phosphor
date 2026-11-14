@@ -248,3 +248,40 @@ per-call path.
   files, reads of 32 files per exec, halved on the output cap); it is background work, but it is
   NOT one exec. If the owner wants the scan itself capped to one exec a prompt this is not that.
 * **The settle window of C** (waiting before the first script) is still not used.
+
+## #2216: the prompt chips' own commands ride in the batch
+
+**What the r30d lab showed.** After #2156 the shell backend ran exactly one exec per prompt, and
+sshd still counted 2 (bash, zsh) or 3 (fish). The `shell exec: producer=legacy_generator` line
+names the rest: prompt chips whose command runs through the session's generator executor
+(`RemoteCommandExecutor`, a fresh ssh exec on the same master), which #2156 never looked at.
+
+| command | who runs it (`app/src/context_chips`) | when | verdict |
+|---|---|---|---|
+| `git branch --sort=-committerdate; printf '\036\n'; git worktree list --porcelain` | on-click generator of the branch chips (`refresh_on_click_values`) | the branch value changed (every cd into a repository) or the list is stale | per prompt: batched |
+| `git diff --shortstat HEAD` | `GitDiffStats` shell fallback | every prompt until the repo status model is attached (session start, the prompt of a cd) | per prompt: batched |
+| `kubectl config current-context` | `KubernetesContext` chip (`OnDemandOnly`, no fingerprint) | every prompt unless the session's executables are known and lack `kubectl`; fish never loads them here, so every prompt | per prompt: batched |
+| history `tail`, `compgen -c` / `print -l ${(ok)commands}` | session bootstrap | once per session | not per prompt, outside the lab window: unchanged |
+
+**Change.** The batched script gets one section per chip command (`chipbranches`,
+`chipshortstat`, `chipkube`), each `cd <dir>` plus the generator's exact text
+(`BatchedChip::sh_command`, which `builtins.rs` now takes its text from, so the two cannot
+drift). `CurrentPrompt` recognises a chip command by that text; on a remote session with no helper
+it asks `RoutedBackend::batched_chip` instead of the session's executor and gets the section's
+output in the shape of the command's own output. Everything after that (parsing, the dropdown
+filter, failure suppression) is unchanged.
+
+* The request joins the prompt's generation like any producer. Its key is the repository root the
+  navigation of the working directory resolved (`TreeCache::navigated_root`), else the directory
+  itself, so in a subdirectory the chips share the root's exec with the status chip and the tree.
+* `kubectl` is only in the script once the Kubernetes chip has asked on that host. The first ask
+  (the session's first prompt) answers "not batched" and the chip runs its own command that once.
+* A batch that ran and has no answer (its exec failed) is an error to the chip: no value for that
+  prompt, no exec of its own, asked again at the next prompt.
+* Batching off (`PHOSPHOR_SHELL_BATCH_GIT=0`), PowerShell hosts, helper sessions and local
+  sessions: "not batched", the chip's own command as before.
+
+**Not covered.** Any other shell-command chip a prompt holds (svn, custom chips) still runs
+through the generator executor, one exec per prompt each. A cd into a directory outside git still
+lists it with an exec of its own after the batch (`run_script sections=[list]`; the held
+tree-in-batch change, `docs/design/2216-tree-in-batch.md` on its branch, is about that).

@@ -20,6 +20,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Mutex;
 
 use super::ShellBackend;
+use super::git_batch::join_key;
 use crate::client::ClientError;
 use crate::proto::{
     DirEntry, ErrorCode, FileOperationError, FileSystemEntryKind, ListDirectoryResponse,
@@ -59,6 +60,9 @@ struct CachedRepo {
 #[derive(Default)]
 pub struct TreeCache {
     repos: Mutex<HashMap<String, CachedRepo>>,
+    /// The repository root each navigated directory resolved to (git's own answer at that
+    /// navigation), by the directory's [`join_key`]. Only directories inside a repository.
+    navigated: Mutex<HashMap<String, String>>,
 }
 
 impl TreeCache {
@@ -74,6 +78,28 @@ impl TreeCache {
     /// Forgets every tree, e.g. when the host disconnects.
     pub fn clear(&self) {
         self.lock().clear();
+        self.navigated
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
+    }
+
+    /// The repository root the navigation of `dir` resolved (`None`: never navigated, or it was
+    /// outside git). The side calls of a prompt in `dir` are batched under that root (#2216).
+    pub(super) fn navigated_root(&self, dir: &str) -> Option<String> {
+        self.navigated
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&join_key(dir))
+            .cloned()
+    }
+
+    fn remember_navigation(&self, dir: &str, git_root: Option<&str>) {
+        let mut navigated = self.navigated.lock().unwrap_or_else(|e| e.into_inner());
+        match git_root {
+            Some(root) => navigated.insert(join_key(dir), root.to_owned()),
+            None => navigated.remove(&join_key(dir)),
+        };
     }
 }
 
@@ -251,6 +277,12 @@ pub(super) async fn navigate_to_directory(
     } else {
         lazy_root(shell, &root, false).await?
     };
+    // Both spellings of the directory (as asked and canonical) lead to its repository's batch.
+    for dir in [path.as_str(), target.dir.as_str()] {
+        shell
+            .tree_cache
+            .remember_navigation(dir, is_git.then_some(root.as_str()));
+    }
     let skill_files = agent_context::project_skill_files(&dirs);
     shell.push(ShellPush::RepoMetadataSnapshot(RepoMetadataSnapshot {
         repo_path: root.clone(),

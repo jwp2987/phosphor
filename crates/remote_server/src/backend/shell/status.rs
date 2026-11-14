@@ -15,6 +15,7 @@
 use std::path::Path;
 
 use super::super::{BackendError, Family, ShellBackend};
+use super::git_batch::{BatchedChip, ChipCommandOutput};
 use crate::proto::{GitHubPrInfoPush, GitHubRepositoryInfoPush, GitStatusPush};
 use crate::shellcmd::git::status::{
     compute_git_status_metadata, git_status_push, pr_info_push, repository_info_push,
@@ -35,6 +36,47 @@ pub enum PrLookup {
 }
 
 impl ShellBackend {
+    /// What a prompt chip's own command prints in `dir` (the session's working directory), read
+    /// from the prompt's batched exec instead of run as one more exec channel (#2216).
+    ///
+    /// * `Ok(Some(..))`: the command's output and status, from the batch.
+    /// * `Ok(None)`: the batch does not answer here (the kill switch, a PowerShell host, or the
+    ///   Kubernetes chip's first ask on this host): the caller runs the chip's command itself.
+    /// * `Err`: this session batches and the prompt's batch has no answer (its exec failed). No
+    ///   second exec is run for it; the chip has no value for this prompt.
+    ///
+    /// The batch is the one of the repository `dir` is in when a navigation has resolved it
+    /// (the chips, the tree refresh and this then share ONE exec in a subdirectory too), else
+    /// the one of `dir` itself.
+    pub async fn batched_chip_shell(
+        &self,
+        dir: &str,
+        chip: BatchedChip,
+    ) -> Result<Option<ChipCommandOutput>, BackendError> {
+        if self.batch_git_off || self.shell_kind().is_powershell() {
+            return Ok(None);
+        }
+        let inner = self.git_runner("prompt chip")?;
+        if chip == BatchedChip::KubeContext && !self.git_batch.want_kube() {
+            return Ok(None);
+        }
+        let key = self
+            .tree_cache
+            .navigated_root(dir)
+            .unwrap_or_else(|| dir.to_owned());
+        let answer = self
+            .git_batch
+            .get(self, &inner, &key, chip.producer())
+            .await
+            .and_then(|batch| batch.chip(chip));
+        answer.map(Some).ok_or_else(|| {
+            BackendError::Unavailable(format!(
+                "{}: the prompt's batched read has no answer",
+                chip.producer()
+            ))
+        })
+    }
+
     /// The chip's status of `repo_path`. `Ok(None)`: nothing to report (not a repository, or git
     /// failed), exactly when the helper stays silent. `cached_main_branch` skips the main-branch
     /// detection (several git calls) when the caller still trusts an earlier answer.

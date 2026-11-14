@@ -1714,3 +1714,23 @@ fn clock_chips_wake_on_the_minute_boundary() {
         );
     }
 }
+
+/// #2216: a batched chip section reads like the chip command's own exec.
+#[test]
+fn a_batched_chip_answer_has_the_shape_of_the_commands_own_output() {
+    use remote_server::backend::ChipCommandOutput;
+    use warp_completer::completer::CommandExitStatus;
+
+    let ok = super::chip_command_output(ChipCommandOutput {
+        stdout: b"main\n".to_vec(),
+        success: true,
+    });
+    assert_eq!(ok.status, CommandExitStatus::Success);
+    assert_eq!(ok.stdout, b"main\n");
+    assert!(ok.stderr.is_empty());
+    let failed = super::chip_command_output(ChipCommandOutput {
+        stdout: Vec::new(),
+        success: false,
+    });
+    assert_eq!(failed.status, CommandExitStatus::Failure);
+}
