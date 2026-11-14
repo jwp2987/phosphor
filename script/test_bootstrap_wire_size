@@ -1,0 +1,84 @@
+#!/usr/bin/env python3
+"""The bytes the app writes to a new shell as its bootstrap must not grow unnoticed (#2190).
+
+WHY THIS EXISTS
+---------------
+`script_for_shell` (app/src/terminal/bootstrap.rs) strips comments, blank lines and indentation
+and the result is what goes down the pty. A nested shell the counted read does not apply to
+(fish, a docker or nix subshell, an ssh one) gets it typed in 2 KB writes 25 ms apart
+(RELAY_BOOTSTRAP_PACING), so the nested-shell startup time is about 12.5 ms per KB of wire size:
+r13a..r24a grew the bash wire from 84 KB to 95 KB and `subshell_ready_rc_clear` went from 1.0 s to
+1.25 s (Mac), 0.65 s to 0.8 s (Wayland). A plain `bash` / `zsh` or a sudo / su subshell takes the
+body in one write now, but a remote bash and the typed forms still pay per byte.
+
+This script mirrors `script_for_shell`'s assembly (the same algorithm as the one in
+script/test_local_counted_bootstrap), measures the wire size per shell and fails when it is above
+the budget. Raising a budget is a decision: say in the commit what the bytes buy and what they
+cost in startup time (about 12.5 ms per KB typed).
+
+It also checks that a plain nested bash/zsh is in the counted-read list (the real fix of #2190).
+
+USAGE
+    script/test_bootstrap_wire_size [--root REPO]
+Needs only python3. Exit 0 when every check passes, 1 otherwise.
+"""
+
+import os
+import re
+import sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.abspath(os.path.join(HERE, ".."))
+if len(sys.argv) == 3 and sys.argv[1] == "--root":
+    ROOT = os.path.abspath(sys.argv[2])
+BOOT = os.path.join(ROOT, "app/assets/bundled/bootstrap")
+
+# Bytes on the wire (comments stripped) per shell. Measured at #2190: bash 99,652, zsh 63,767.
+# Headroom is about 2 KB (25 ms of typed startup): a larger change must raise the number on purpose.
+BUDGET = {"bash.sh": 101_500, "zsh.sh": 65_500}
+
+
+def trim(line):
+    """`trim_and_borrow_line`: keep one leading space if there was any whitespace, drop the tail."""
+    stripped = line.lstrip()
+    if len(stripped) < len(line):
+        line = " " + stripped
+    return line.rstrip()
+
+
+def wire(name):
+    text = open(os.path.join(BOOT, name), encoding="utf-8").read().lstrip("﻿")
+    out = []
+    for raw in text.split("\n"):
+        line = trim(raw)
+        parts = [line]
+        m = re.match(r"#include bundled/bootstrap/(\S+)$", line)
+        if m:
+            inc = open(os.path.join(BOOT, m.group(1)), encoding="utf-8").read()
+            parts = [trim(l) for l in inc.replace("@@USING_CON_PTY_BOOLEAN@@", "false").split("\n")]
+        for p in parts:
+            s = p.lstrip()
+            if s == "" or s.startswith("#"):
+                continue
+            out.append(p)
+    return len("\n".join(out).encode()) + 1
+
+
+failed = 0
+for name, budget in BUDGET.items():
+    size = wire(name)
+    print(f"{name}: {size} bytes on the wire, budget {budget}")
+    if size > budget:
+        print(f"FAIL {name}: {size} > {budget}; typed startup costs ~12.5 ms per KB (#2190)")
+        failed = 1
+
+rs = open(os.path.join(ROOT, "app/src/terminal/bootstrap.rs"), encoding="utf-8").read()
+m = re.search(r"const LOCAL_COUNTED_SUBSHELL_COMMANDS: &\[&str\] = &\[([^\]]*)\]", rs)
+cmds = re.findall(r'"([^"]+)"', m.group(1)) if m else []
+for want in ("bash", "zsh"):
+    if want not in cmds:
+        print(f"FAIL {want} is not in LOCAL_COUNTED_SUBSHELL_COMMANDS: a plain nested {want} would be typed in 25 ms writes (#2190)")
+        failed = 1
+
+print("FAIL" if failed else "ok")
+sys.exit(failed)

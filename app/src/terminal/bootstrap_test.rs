@@ -4597,6 +4597,11 @@ fn local_counted_bootstrap_applies_to_local_bash_zsh_and_host_subshells_only() {
         "doas -s",
         "FOO=1 sudo -i",
         "/usr/bin/sudo -s",
+        // #2190: a plain nested shell of the same host shares the pane's tty.
+        "bash",
+        "bash --rcfile .rc",
+        "zsh -f",
+        "FOO=1 /bin/bash",
     ] {
         assert!(
             local_counted_bootstrap_applies(ShellType::Bash, &subshell_of(command)),
