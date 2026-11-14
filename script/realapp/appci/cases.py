@@ -2481,7 +2481,22 @@ def await_effect_file(ctx, r, tag, fname, shell, toks, timeout):
             tag, shell, timeout))
 
 
-def effect_run(ctx, r, tag, n, gap, rollover=False, shell=None, attribute=None):
+def drop_running(have, running):
+    """#2228: `have` (the commands the shell logged) without the commands that were ALREADY RUNNING when the typed lines began (`running`: exact command
+    texts, each excluded at most once, wherever it landed: a program that ignores Ctrl-C logs its rec.log line only when it ends, inside the window).
+    Returns (typed_part, excluded). Only an exactly equal entry is excluded, so a typed line that is missing, reordered, merged or duplicated still
+    differs from the expectation afterwards."""
+    left, out, gone = list(running or ()), [], []
+    for h in have:
+        if h in left:
+            left.remove(h)
+            gone.append(h)
+        else:
+            out.append(h)
+    return out, gone
+
+
+def effect_run(ctx, r, tag, n, gap, rollover=False, shell=None, attribute=None, running=()):
     """attribute: optional callable(gap) -> enter-control dict (run_enter_control). When given and the run fails with merged lines (a lost
     Enter), the failure is an APP bug only if the reference terminal kept every Enter in the same session (#1482)."""
     fname = "r_%s.txt" % tag
@@ -2515,7 +2530,7 @@ def effect_run(ctx, r, tag, n, gap, rollover=False, shell=None, attribute=None):
     merged = False
     if ctx.prof.commands():
         want0 = [ctx.append_cmd(shell, t, fname) for t in exp]
-        have0 = ctx.await_commands(mark, n)        # the n-th C line arrives with its prompt, after the effect file (audit #7)
+        have0 = drop_running(ctx.await_commands(mark, n), running)[0]        # the n-th C line arrives with its prompt, after the effect file (audit #7)
         merged = any(sum(1 for w in want0 if w in h) >= 2 for h in have0)
     elif not ok:
         merged = len(got) != n
@@ -2541,7 +2556,9 @@ def effect_run(ctx, r, tag, n, gap, rollover=False, shell=None, attribute=None):
                 "" if ok else " first diff: exp=%r got=%r" % next(((a, b) for a, b in zip(exp + [None], got + [None]) if a != b), (None, None)), ev, verdict or ""))
     if ctx.prof.commands():
         want = [ctx.append_cmd(shell, t, fname) for t in exp]
-        have = ctx.cmds_since(mark)
+        have, gone = drop_running(ctx.cmds_since(mark), running)
+        if gone:
+            r.note("%s: %r was already running when the typed lines began; its rec.log entry (written when it ended) is excluded from the comparison (#2228)" % (tag, gone))
         if have and verdict == "skip":
             pass
         elif have:
