@@ -1152,6 +1152,10 @@ def c_routing_table_powershell(ctx, r):
         if kind == "ambiguous" and line.split()[0] not in heads:
             heads[line.split()[0]] = ps_head_installed(ctx, line.split()[0])
     r.metric("ps_heads_installed", heads)
+    # A probe with no answer must not leave its rows silently unjudged: it is a harness fault, reported as one
+    unanswered = sorted(h for h, v in heads.items() if v is None)
+    r.check(not unanswered, "#2220 TEST: the PowerShell pane gave no Get-Command answer for %s within 8 s; those ambiguous rows are judged as "
+            "'not installed', which is unproven" % unanswered)
     for line, kind, want in table:
         ctx.reset()
         off, row = ctx.log_size(), Received(ctx)
