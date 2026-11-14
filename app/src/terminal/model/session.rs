@@ -1171,13 +1171,13 @@ impl SessionInfo {
                 )),
             )?);
         }
-        PathBuf::try_from(path.to_path_buf()).or_else(|path| {
-            // #2222: a Git Bash pane whose launch data is not MSYS2 still reports a unix-typed
-            // working directory; a Windows drive spelling of it (`C:/x`, `/C:/x`) is native.
-            path.to_str()
-                .and_then(warp_util::path::windows_drive_form_to_native_path)
-                .ok_or_else(|| anyhow::anyhow!("Unable to convert path: {path:?}"))
-        })
+        // #2222 follow-up (r31a): no drive-form fallback here. A non-MSYS2 bash session that
+        // reports `/E:/x` (an OSC 7 spelling) must stay unresolvable, so the OSC 7 guard in
+        // view.rs keeps the shell's own cwd (test can_resolve_cwd_to_native_path_rejects_unix_
+        // encoded_path_on_windows). The drive forms are accepted for MSYS2 sessions only, in
+        // convert_msys2_to_windows_native_path.
+        PathBuf::try_from(path.to_path_buf())
+            .map_err(|path| anyhow::anyhow!("Unable to convert path: {path:?}"))
     }
 }
 
