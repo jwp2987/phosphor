@@ -2619,7 +2619,7 @@ esac
   }
 
   function warp_mark_start_of_completions_for_compadd_override () {
-    warp_mark_start_of_completions 'incrementally_typed'
+    warp_mark_start_of_completions "incrementally_typed;${__warp_nc_nonce-}"
   }
 
   # Marks the end of completions generation using a custom OSC.
@@ -2781,12 +2781,13 @@ esac
       __ok=
       case $__phase:$__c in
         (start:-) __phase=dash __ok=1 ;;
+        (start:n|nonce:[0-9A-Za-z]) __phase=nonce __ok=1 ;;
         (start:[0-9]|d1:[0-9]) __phase=d1 __ok=1 ;;
         (d1:x) __phase=x1 __ok=1 ;;
         (x1:[0-9]|d2:[0-9]) __phase=d2 __ok=1 ;;
         (d2:x) __phase=x2 __ok=1 ;;
         (x2:[0-9]|d3:[0-9]) __phase=d3 __ok=1 ;;
-        (d3::|dash::) __phase=hex __ok=1 ;;
+        (d3::|dash::|nonce::) __phase=hex __ok=1 ;;
         (hex:%) __phase=h1 __ok=1 ;;
         (h1:[0-9A-Fa-f]) __phase=h2 __ok=1 ;;
         (h2:[0-9A-Fa-f]) __phase=hex __ok=1 ;;
@@ -2826,6 +2827,11 @@ esac
     # warp_native_discard (same rules, dropped), so a frame is never run.
     local __c __hex __left __tok __start=${PHOSPHOR_NC_DEADLINE:-20}
     [[ $__start == <-> ]] || __start=20
+    # #2211 (v2, pipelined): a v2 app writes its frame in the same write as the ^Y, so it is
+    # already in the tty; silence the tty first, then name the exchange (informational for a v2
+    # app, which does not wait for it) and read. A v1 app answers the token as before.
+    typeset -g __warp_nc_nonce=
+    command stty -echo </dev/tty 2>/dev/null
     __warp_nc_seq=$(( ${__warp_nc_seq:-0} + 1 ))
     __tok="${RANDOM}x${__warp_nc_seq}x${RANDOM}"
     builtin printf '\e]9280;P;%s\a' "$__tok"
@@ -2846,7 +2852,10 @@ esac
     fi
     __warp_nc_read_frame_body || return 1
     # Another exchange's frame, or the cancel frame: nothing to complete.
-    [[ $__warp_nc_body == ${__tok}:* ]] || return 1
+    # A v2 app's own nonce (`n` + letters and digits) is accepted too: tty order is the guard.
+    # It is echoed in the answer's start mark so the app can drop a stale answer.
+    [[ $__warp_nc_body == ${__tok}:* || $__warp_nc_body == n[0-9A-Za-z]##:* ]] || return 1
+    __warp_nc_nonce=${__warp_nc_body%%:*}
     __hex=${__warp_nc_body#*:}
     [[ $__hex == (%[0-9A-Fa-f][0-9A-Fa-f])# ]] || return 1
     BUFFER=${(g::)${__hex//\%/\\x}}
@@ -2932,7 +2941,7 @@ esac
     # The list of options enabled for the current shell, and (Phosphor #1801) the pseudo option
     # that advertises the framed in-band native-completions protocol: the app sends ^Y and
     # frames only to a shell that reported it.
-    local shell_options="$(warp_escape_json "$(setopt)"$'\n!phosphor_nc_frames_v1')"
+    local shell_options="$(warp_escape_json "$(setopt)"$'\n!phosphor_nc_frames_v1\n!phosphor_nc_frames_v2')"
 
     local escaped_editor="$(warp_escape_json "${EDITOR-}")"
     local escaped_shell_path="$(warp_escape_json "${commands[zsh]}")"

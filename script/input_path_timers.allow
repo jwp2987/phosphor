@@ -93,6 +93,7 @@ app/assets/bundled/bootstrap/zsh_body.sh	warp_read_completion_buffer	first-byte 
 app/src/terminal/writeable_pty/pty_controller.rs	NATIVE_COMPLETIONS_PROMPT_TIMEOUT	2 s prompt timeout only gives up: closes the requester's channel, marks the cancel frame owed and writes nothing (43f2c9a91)
 app/src/terminal/writeable_pty/pty_controller.rs	NATIVE_COMPLETIONS_RESULTS_TIMEOUT	15 s lost-event net: drops the exchange and closes the requesters' channels; writes and releases nothing (the normal ends are events)
 app/src/terminal/writeable_pty/pty_controller.rs	arm_native_completions_watchdog	call site of the prompt and results give-up nets; neither writes or releases a key
+app/src/terminal/writeable_pty/pty_controller.rs	arm_native_ack_watchdog_after	2 s ack net of a pipelined native Tab (#2211): only gives up, closes the requester's channel; writes nothing, owes nothing, releases no key
 app/src/terminal/model/typeahead_handoff.rs	EVENT_HOLD_GIVE_UP	the no-barrier young hold writes its keys to the pty in typed order at this cap (#1996)
 app/src/terminal/view.rs	arm_young_timer	young-detection timers (compute cap, wall ceiling, backstop): on expiry the Enter does not run and its line stays in the editor with the keys held behind it, in typed order; a bare Enter and its keys go to the pty; the clock never chooses shell or agent (#1577, #1996)
 app/src/search/ai_context_menu/view.rs	SELECT_WAIT_GIVE_UP	10 s net of an @-menu Enter waiting for results: the Enter is not applied, the typed query stays, a toast says so (#1728)

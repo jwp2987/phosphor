@@ -30,7 +30,10 @@ case that matters to the app (candidates, descriptions, the cancel and the stale
 behind the frame, the give-up, a late frame, no hooks sent) runs on fish too.
 
 WHAT IT CHECKS, per shell (PHOSPHOR_NC_DEADLINE=5 keeps the hook's own deadline short)
-  * the Bootstrapped hook advertises the protocol;
+  * the Bootstrapped hook advertises the protocol (v1) and the pipelined frame (v2, #2211);
+  * v2 (#2211): `^Y` + frame in ONE write, named by the app's own nonce `n...`: answered with the
+    nonce echoed in OSC 9280;A, no echo of the frame on the terminal, the tty echo not left off, a
+    command behind the frame runs, and a pipelined frame at the prompt is dropped;
   * candidates: `cd pro` offers `projects/` and `proto/`; `cat dir/fi` the WHOLE token
     `dir/file1`; `echo a;ec` keeps the `a;` lead (bash: its own `complete -F`/`-W` specs, with
     COMP_WORDS/COMP_CWORD as bash sets them and the `--opt=` part of a token kept);
@@ -99,6 +102,7 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 ASSETS = os.path.join(ROOT, "app", "assets")
 BOOTSTRAP = os.path.join(ASSETS, "bundled", "bootstrap")
 HOOK_RE = re.compile(rb"\x1bP\$d([0-9a-f]*)\x9c")
+START_RE = re.compile(rb"\x1b\]9280;A;incrementally_typed(;[0-9A-Za-z]+)?\x07")  # the hook echoes the exchange's token (#2211)
 CANDIDATE_RE = re.compile(rb"\x1b\]9280;C;([^\x07]*)\x07")
 PROMPT_RE = re.compile(rb"\x1b\]9280;P;([0-9A-Za-z]+)\x07")  # the token is <digits>x<digits>x<digits>
 RS, US = b"\x1e", b"\x1f"
@@ -230,10 +234,63 @@ def complete(sh, shell, line, after=b"", gap=None):
             time.sleep(gap)
             sh.write(after)
     got = sh.read_until(rb"\x1b\]9280;B\x07")
-    if b"\x1b]9280;B\x07" not in got or b"\x1b]9280;A;incrementally_typed\x07" not in got:
+    if b"\x1b]9280;B\x07" not in got or not START_RE.search(got):
         check(shell, f"ends the reply for {line!r}", False, f"(got {got[-200:]!r})")
         return None
     return [c.decode("utf-8", "replace") for c in CANDIDATE_RE.findall(got)]
+
+
+V2_ADVERTISED = "!phosphor_nc_frames_v2"
+nonce_counter = [0]
+
+
+def complete_v2(sh, shell, line, after=b""):
+    """The PIPELINED request (#2211): `^Y` and the answer frame in ONE write, named by the app's
+    own nonce, with nothing waited for in between. Returns the candidates (None on failure)."""
+    nonce_counter[0] += 1
+    nonce = b"nabc%d" % nonce_counter[0]
+    # The app asks only at an idle prompt: let the shell finish drawing it (a tty that is still
+    # cooked between a command and its prompt would echo what arrives, which is not the app's case).
+    sh.drain(0.5)
+    start = len(sh.buf)
+    sh.write(b"\x19" + frame(nonce, line) + after)
+    got = sh.read_until(rb"\x1b\]9280;B\x07")
+    if b"\x1b]9280;B\x07" not in got:
+        check(shell, f"v2: ends the reply for {line!r}", False, f"(got {got[-200:]!r})")
+        return None
+    check(shell, f"v2: the start mark echoes the app's nonce ({line!r})",
+          b"\x1b]9280;A;incrementally_typed;" + nonce + b"\x07" in got, f"(got {got[-200:]!r})")
+    seen = sh.buf[start:]
+    check(shell, f"v2: the frame is not echoed to the terminal ({line!r})",
+          RS not in seen and b"%63" not in seen and b"%70" not in seen, f"(got {seen[:200]!r})")
+    return [c.decode("utf-8", "replace") for c in CANDIDATE_RE.findall(got)]
+
+
+def v2_checks(sh, shell, run_command, echo_probe):
+    """The pipelined frame: answered with no echo, followed by typed bytes that stay in the line,
+    the tty left as it was found, and a pipelined frame at the prompt dropped."""
+    got = complete_v2(sh, shell, "cd pro")
+    if got is not None:
+        check(shell, "v2: cd pro offers projects/ and proto/ from one pipelined write", {"projects/", "proto/"} <= set(got), f"(got {got})")
+    # Echo is left as the shell found it: a later command still sees a tty that echoes.
+    sh.write(run_command(echo_probe[0]))
+    out = sh.read_until(echo_probe[1])
+    check(shell, "v2: the tty echo is not left off after the exchange", echo_probe[1] in out, f"(got {out[-200:]!r})")
+    text, want = run_command_text(shell)
+    got = complete_v2(sh, shell, "cd pro", after=app_command(text))
+    check(shell, "v2: answers with a command behind the frame", got is not None and "projects/" in got, f"(got {got})")
+    expect_runs(sh, shell, "v2: a command behind the pipelined frame runs", want)
+    # A pipelined frame that finds the shell at its prompt (no ^Y) is dropped, never run.
+    text, want = run_command_text(shell)
+    sh.write(frame(b"nlate1", "cd pro") + app_command(text))
+    out = sh.read_until(re.escape(want))
+    check(shell, "v2: a pipelined frame at the prompt is dropped; the command behind it runs",
+          want in out and CANDIDATE_RE.search(out) is None, f"(got {out[-200:]!r})")
+    sh.drain(0.5)
+
+
+def run_command_text(shell):
+    return fish_command() if shell == "fish" else command()
 
 
 def command():
@@ -279,6 +336,9 @@ def protocol_checks(sh, shell, full=True):
             got = complete(sh, shell, "cd pro", after=app_command(text), gap=gap)
             check(shell, f"answers with a command behind the frame ({label})", got is not None and "projects/" in got, f"(got {got})")
             expect_runs(sh, shell, f"a command behind the frame ({label}) runs", want)
+
+        v2_checks(sh, shell, lambda t: app_command(t),
+                  ("echo e$(stty -a | grep -c -e ' -echo ')x", b"e0x"))
 
         text, want = command()
         sh.write(b"\x19" + app_command(text))
@@ -507,6 +567,7 @@ def wait_bootstrapped(sh, shell):
     sh.drain(1.0)
     opts = boot[0].get("shell_options", "")
     check(shell, "the Bootstrapped hook advertises the framed protocol", ADVERTISED in opts.split(), f"(shell_options tail {opts[-120:]!r})")
+    check(shell, "the Bootstrapped hook also advertises the pipelined frame (#2211)", V2_ADVERTISED in opts.split(), f"(shell_options tail {opts[-120:]!r})")
     return True
 
 
@@ -783,6 +844,9 @@ def run_fish(base, lab):
             got = complete(sh, shell, "cd pro", after=app_command(text), gap=gap)
             check(shell, f"answers with a command behind the frame ({label})", got is not None and "projects/" in got, f"(got {got})")
             expect_runs(sh, shell, f"a command behind the frame ({label}) runs", want)
+
+        v2_checks(sh, shell, lambda t: app_command(t),
+                  ("echo e(stty -a | grep -c -e ' -echo ')x", b"e0x"))
 
         # ^Y, the cancel frame and a command in ONE batch, before the hook has even started.
         text, want = fish_command()

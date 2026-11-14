@@ -216,6 +216,11 @@ pub enum Event {
     SendCompletionsPrompt {
         token: Option<String>,
     },
+    /// The shell's completions answer began (OSC 9280;A). `nonce` is the exchange name the hook
+    /// echoed (#2211), `None` from a hook that does not echo one.
+    CompletionsStarted {
+        nonce: Option<String>,
+    },
     ImageReceived {
         image_id: u32,
         image_data: std::sync::Arc<Vec<u8>>,
@@ -735,6 +740,7 @@ impl Debug for Event {
             Event::TextSelectionChanged => write!(f, "TextSelectionChanged"),
             Event::ShellSpawned(shell_type) => write!(f, "ShellSpawned({shell_type:?})"),
             Event::SendCompletionsPrompt { .. } => write!(f, "SendCompletionsPrompt"),
+            Event::CompletionsStarted { .. } => write!(f, "CompletionsStarted"),
             Event::ImageReceived { image_id, .. } => {
                 write!(f, "ImageReceived(image_id: {image_id})")
             }

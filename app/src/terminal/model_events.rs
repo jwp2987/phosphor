@@ -431,6 +431,7 @@ impl ModelEventDispatcher {
             Event::TextSelectionChanged => ModelEvent::SelectedTextChanged,
             Event::ShellSpawned(shell_type) => ModelEvent::ShellSpawned(shell_type),
             Event::SendCompletionsPrompt { token } => ModelEvent::SendCompletionsPrompt { token },
+            Event::CompletionsStarted { nonce } => ModelEvent::CompletionsStarted { nonce },
             Event::ImageReceived {
                 image_id,
                 image_data,
@@ -656,6 +657,10 @@ pub enum ModelEvent {
     /// See `Event::SendCompletionsPrompt`.
     SendCompletionsPrompt {
         token: Option<String>,
+    },
+    /// See `Event::CompletionsStarted`.
+    CompletionsStarted {
+        nonce: Option<String>,
     },
     ImageReceived {
         image_id: u32,

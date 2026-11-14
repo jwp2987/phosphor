@@ -20951,6 +20951,7 @@ impl TerminalView {
             }
             ModelEvent::CompletionsFinished(_data) => {}
             ModelEvent::SendCompletionsPrompt { .. } => {}
+            ModelEvent::CompletionsStarted { .. } => {}
             ModelEvent::ImageReceived {
                 image_id,
                 image_data,

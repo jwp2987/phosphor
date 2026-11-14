@@ -824,7 +824,7 @@ function warp_bootstrapped
   # Phosphor (#2196): the pseudo option that advertises the framed in-band native-completions protocol (the app sends ^Y only to a shell that did).
   set -l nc_option ""
   if test "$__warp_nc_ok" = 1
-    set nc_option "!phosphor_nc_frames_v1"
+    set nc_option "!phosphor_nc_frames_v1\n!phosphor_nc_frames_v2"
   end
   set -l escaped_json "{\"hook\": \"Bootstrapped\", \"value\": {\"histfile\": \"$escaped_histfile\", \"shell_options\": \"$nc_option\", \"session_id\": $WARP_SESSION_ID, \"shell\": \"fish\", \"home_dir\": \"$escaped_home\", \"path\": \"$escaped_path\", \"editor\": \"$escaped_editor\", \"abbreviations\": \"$escaped_abbr\", \"aliases\": \"$escaped_aliases\", \"function_names\": \"$function_names\", \"env_var_names\": \"$env_var_names\", \"builtins\": \"$escaped_builtins\", \"keywords\": \"\", \"shell_version\": \"$escaped_fish_version\", \"vi_mode_enabled\": \"$vi_mode_enabled\", \"os_category\": \"$os_category\", \"linux_distribution\": \"$escaped_linux_distribution\", \"wsl_name\": \"$escaped_wsl_name\", \"shell_path\": \"$escaped_shell_path\"}}"
   warp_send_json_message $escaped_json
@@ -945,7 +945,7 @@ function __warp_nc_answer
     if string match -q -r -- '^[\'"]' $tok_fish
         set quoted (string sub -l 1 -- $tok_fish)
     end
-    builtin printf '\e]9280;A;incrementally_typed\a'
+    builtin printf '\e]9280;A;incrementally_typed;%s\a' $argv[2]
     set -l n 0
     for c in (complete -C "$line" 2>/dev/null)
         set -l parts (string split -m 1 \t -- $c)
@@ -978,16 +978,17 @@ function __warp_native_complete
     set -g __warp_nc_seq (math "$__warp_nc_seq + 1")
     set -l tok (random)"x$__warp_nc_seq"x(random)
     set -l raw (__warp_nc_sh $tok | string collect -a)
-    set -l m (string match -r -g '\x1e(\d+x\d+x\d+|-):((?:%[0-9A-Fa-f]{2})*)\x1f' -- $raw)
+    set -l m (string match -r -g '\x1e(\d+x\d+x\d+|n[0-9A-Za-z]+|-):((?:%[0-9A-Fa-f]{2})*)\x1f' -- $raw)
     if test (count $m) -ne 2
         test -n "$raw"; and __warp_nc_give_back $raw
         return 0
     end
     set -l before (string replace -r '(?s)\x1e.*$' '' -- $raw)
     test -n "$before"; and __warp_nc_give_back $before
-    test "$m[1]" = "$tok"; or return 0
+    # A v2 app's own nonce (`n` + letters and digits) is accepted too (#2211): tty order is the guard, and the nonce is echoed in the start mark.
+    test "$m[1]" = "$tok"; or string match -q -r '^n[0-9A-Za-z]+$' -- "$m[1]"; or return 0
     set -l line (string unescape --style=url -- "$m[2]" | string collect -a)
-    __warp_nc_answer "$line" >/dev/tty
+    __warp_nc_answer "$line" "$m[1]" >/dev/tty
 end
 # Whether this host can answer the exchange: fish 3.4 or later (`string collect -a`), no MSYS2, and
 # the tools the read needs (bash, stty) with a controlling tty to talk to. When not, the
@@ -1009,7 +1010,7 @@ end
 # interrupted): read it the same way and drop it. The same give-back rules apply to anything else.
 function __warp_native_discard
     set -l raw (__warp_nc_sh '' | string collect -a)
-    if not string match -q -r '\x1e(\d+x\d+x\d+|-):((?:%[0-9A-Fa-f]{2})*)\x1f' -- $raw
+    if not string match -q -r '\x1e(\d+x\d+x\d+|n[0-9A-Za-z]+|-):((?:%[0-9A-Fa-f]{2})*)\x1f' -- $raw
         test -n "$raw"; and __warp_nc_give_back $raw
     end
 end
