@@ -9515,6 +9515,8 @@ import selftest_r31_2124  # noqa: E402  (r31, #2124/#2206: the drop case's where
 CHECKS.extend(selftest_r31_2124.CHECKS)
 import selftest_r30_ctlreader  # noqa: E402  (#2213: the lab ctl reader pages the whole file, the zsh bootstrap line is internal, no empty zsh C line; own file)
 CHECKS.extend(selftest_r30_ctlreader.CHECKS)
+import selftest_r31_2220  # noqa: E402  (#2220: every ambiguous_want( call passes installed=; the PowerShell routing case asks the pane; own file)
+CHECKS.extend(selftest_r31_2220.CHECKS)
 
 
 # #2214: the guard stays LAST. A registration after it never runs under `python3 selftest.py` (the CI form), as r26-r30's did not.

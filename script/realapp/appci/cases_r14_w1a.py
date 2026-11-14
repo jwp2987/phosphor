@@ -1098,6 +1098,21 @@ def routing_ps_skip_reason(pane):
     return "runs in the PowerShell pane (routing_table judges the Git Bash pane from rec.log)"
 
 
+def ps_head_installed(ctx, head):
+    """#2220: True/False = the PowerShell pane's own Get-Command found (or did not find) `head`; None = the probe left no answer. Asked in the pane
+    because the app's PATH there is not the harness Python's. None is treated as 'not installed' by the caller, which gives no verdict (never a
+    false shell expectation)."""
+    tok = ctx.tok(8).lower()
+    fname = "rt_head_%s.txt" % tok
+    ctx.rm(fname)
+    typed(ctx, '$h = [bool](Get-Command %s -ErrorAction SilentlyContinue); Add-Content %s "%s$h"' % (head, fname, tok))
+    ctx.until(lambda: any(l.lower().startswith(tok) for l in ctx.local_lines(fname)), 8)
+    for l in ctx.local_lines(fname):
+        if l.lower().startswith(tok):
+            return l.lower()[len(tok):].strip() == "true"
+    return None
+
+
 @case("routing_table_powershell", order=48, gui=True, enters_agent=True)
 def c_routing_table_powershell(ctx, r):
     """T5: the autodetect routing table in the Windows PowerShell pane (routing_table needs rec.log, so it runs in the Git Bash pane only). Each line
@@ -1130,7 +1145,14 @@ def c_routing_table_powershell(ctx, r):
     nld = CA.setting_bool(ctx, "nld_in_terminal_enabled")
     r.metric("settings_nld_in_terminal", nld)
     results, judged = [], 0
-    for line, kind, want in ps_routing_table(ctx.mode, nld):
+    table = ps_routing_table(ctx.mode, nld)
+    # #2220: whether an ambiguous line's head is a program is the PowerShell pane's answer (its own Get-Command), not the harness Python's PATH
+    heads = {}
+    for line, kind, _w in table:
+        if kind == "ambiguous" and line.split()[0] not in heads:
+            heads[line.split()[0]] = ps_head_installed(ctx, line.split()[0])
+    r.metric("ps_heads_installed", heads)
+    for line, kind, want in table:
         ctx.reset()
         off, row = ctx.log_size(), Received(ctx)
         typed(ctx, line)
@@ -1149,7 +1171,7 @@ def c_routing_table_powershell(ctx, r):
         last = (any_rows[-1] if any_rows else None) if any_rows is not None else enter
         surface, rule = (last["surface"] if last else None), (last["rule"] if last else None)
         if kind == "ambiguous":
-            want = CA.ambiguous_want(line, surface, rule)
+            want = CA.ambiguous_want(line, surface, rule, installed=bool(heads.get(line.split()[0])))
         gave_up = CA.verdict_give_ups(excerpt) > 0
         ok, note = ps_row_verdict(kind, want, dest, surface, rule)
         results.append(dict(line=line, kind=kind, want=want, got=dest, surface=surface, rule=rule, verdict_give_up=gave_up))
