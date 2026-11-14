@@ -495,6 +495,84 @@ def c_installer_smoke(ctx, r):
             r.check(False, "could not leave the build under test running: %r" % (e,))
 
 
+# ---------------------------------------------------------------- #1546: the phosphor:// handler, end to end
+INVALID_URI_RE = re.compile(r"Custom URI is invalid|unexpected action|unexpected scheme")
+
+
+def scheme_url(scheme, action, path=None):
+    """pure: the URL a desktop environment hands to the registered handler (`Exec=phosphor %U`, CFBundleURLSchemes, the Windows `phosphor` protocol key):
+    <scheme>://action/<action>[?path=<percent-encoded path>]"""
+    import urllib.parse
+    u = "%s://action/%s" % (scheme, action)
+    return u + ("?path=" + urllib.parse.quote(path, safe="/:") if path else "")
+
+
+def tab_dir_line(shell, tok, abs_file):
+    """pure: the line that appends `<tok>:<the shell's current directory>` to abs_file, for append_cmd's shells"""
+    if shell == "pwsh":
+        return 'Add-Content %s "%s:$((Get-Location).Path)"' % (abs_file, tok)
+    return 'echo "%s:$PWD" >> %s' % (tok, abs_file)
+
+
+@case("phosphor_scheme_handler", modes=("terminal",), order=94, gui=True)
+def c_phosphor_scheme_handler(ctx, r):
+    """#1546, the handler half of 'phosphor:// end to end': what the operating system runs for a clicked `phosphor://` link is the app's own executable
+    with the URL as its argument (Linux `.desktop` Exec=... %U, macOS CFBundleURLSchemes through the single-instance manager, the Windows protocol key).
+    That line is run here against the RUNNING build, as the system would. (1) `phosphor://action/new_tab?path=<dir>`: the second launch exits 0, the
+    running instance logs the URL (scheme, host, path only) and opens a tab whose shell is in <dir>. (2) The same URL with an unknown action and (3) with
+    another scheme (`warp://`) open nothing and the app logs why; the app stays alive and keeps taking keys. The registration itself (that the OS
+    knows to run it) is installer_smoke's concern on the installed copy: Linux `.desktop` MimeType, the Windows key (wininstall.py), the macOS plist."""
+    if ctx.app is None or not hasattr(ctx.app, "bin"):
+        r.skip("needs the real app (not the sim backend)")
+    ctx.reset()
+    tok = ctx.tok(6).lower()
+    dname = "scheme_dir_%s" % tok
+    ddir = os.path.join(ctx.W, dname)
+    os.makedirs(ddir, exist_ok=True)
+    out = "scheme_cwd_%s.txt" % tok
+    abs_out = R.fwd(os.path.join(ctx.W, out))
+    # (1) a valid new_tab URL
+    off, p0 = ctx.log_size(), ctx.prompts()
+    res = launch_again(ctx, [scheme_url("phosphor", "new_tab", ddir)])
+    bad = second_launch_verdict(res, "`phosphor phosphor://action/new_tab?path=...`")
+    r.check(bad is None, bad or "")
+    if bad is None:
+        got = ctx.until(lambda: [u for u in received_urls(ctx.log_since(off)) if u[0] == "phosphor" and u[1] == "action" and u[2] == "/new_tab"], 15, step=0.3)
+        r.check(bool(got), "the second launch exited 0 but the running instance logged no `received url scheme=phosphor host=action path=/new_tab`: the URL was "
+                           "not handed over. URLs it received: %r" % (received_urls(ctx.log_since(off))[:3],))
+        if got and ctx.prof.local_prompts:
+            r.check(bool(ctx.until(lambda: ctx.prompts() > p0, 25, step=0.5)), "the URL was received but no new tab's shell showed a prompt within 25 s")
+        if got:
+            time.sleep(1.0)
+            ctx.be.guard()
+            ctx.be.type(tab_dir_line(ctx.pane_shell(), tok, abs_out), 12, enter=True)
+            lines = ctx.until(lambda: [l for l in ctx.lines(out) if l.startswith(tok + ":")], 12)
+            if r.check(bool(lines), "the new tab took the typed line but it never reached %s: the tab the URL opened did not get the keys (or its shell never started)" % out):
+                where = lines[0].split(":", 1)[1].strip().replace("\\", "/").rstrip("/")
+                r.check(where.endswith("/" + dname), "the tab the URL opened is in %r, expected the directory named by the URL (…/%s)" % (where, dname))
+            ctx.shot("phosphor_scheme_new_tab")
+    # (2) an unknown action, (3) another scheme: nothing opens, the app says why and stays up
+    for label, url in (("an unknown action", scheme_url("phosphor", "no_such_action_%s" % tok)), ("another scheme", scheme_url("warp", "new_tab", ddir))):
+        off, p0 = ctx.log_size(), ctx.prompts()
+        res = launch_again(ctx, [url])
+        time.sleep(2.0)
+        if res.get("error") or res["timed_out"]:
+            r.check(False, "%s: the second launch %s" % (label, res.get("error") or "did not exit within %d s" % res["timeout"]))
+            continue
+        log = ctx.log_since(off)
+        # the exit code is not judged: a launcher may refuse a foreign scheme itself (non-zero, nothing handed over) or hand it over and let the app refuse it
+        handed = bool(received_urls(log)) or bool(INVALID_URI_RE.search(log))
+        r.note("%s: exit %s, handed over: %s, refused with a log line: %s" % (label, res["rc"], bool(received_urls(log)), bool(INVALID_URI_RE.search(log))))
+        if ctx.prof.local_prompts:
+            r.check(ctx.prompts() == p0, "%s opened a tab (%d new prompt(s)): an invalid URL must open nothing" % (label, ctx.prompts() - p0))
+        if label == "an unknown action" and handed:
+            r.check(bool(INVALID_URI_RE.search(log)), "%s was handed to the app but it logged no 'Custom URI is invalid' line" % label)
+        r.check(ctx.app.alive(), "the app died after %s" % label)
+    ctx.be.guard()
+    UI.exact_burst(ctx, r, "scheme_end", 2)
+    R.keep_log(ctx, "phosphor_scheme_handler")
+
+
 # ---------------------------------------------------------------- T44 upgrade_from_previous_release
 PREV_ENV = ("APPCI_PREV_BIN", "APPCI_PREV_BUNDLE", "APPCI_PREV_RELEASE_BIN", "APPCI_PREV_FIXTURE")
 TABLE_NEEDS = ("NOT RUN here: the settings table of upgrade_table.py (upgrade_from_v0_1_17: every seeded key, the keyring items, launch 2 idempotent). %s")

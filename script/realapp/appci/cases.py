@@ -138,6 +138,8 @@ PROVING = (
     # launched, joined by a second launch, `phosphor <path>`, uninstalled with the user's data kept; the upgrade from the previous release fetched from
     # the project's package registry; and the pane-shell case of the Windows pwsh7 / cmd / wsl passes, which no tier had ever played
     "installer_smoke", "upgrade_from_previous_release", "startup_shell_pane",
+    # #1546: the phosphor:// handler end to end, run against the running build as the operating system would (cases_install.py)
+    "phosphor_scheme_handler",
     # round 15 wave 4, macOS harness (#2061, r14-test-gaps T32; cases_macptr.py): the Mac pointer tool and the app-only chords proven on the machine
     "mac_pointer_chord_proof",
     # round 15 wave 5 part A (docs/design/r14-test-gaps.md T42, T45, T50; design docs/design/r15-w5a.md; #2076): the macOS keychain at start

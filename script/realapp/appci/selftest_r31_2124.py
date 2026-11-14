@@ -55,7 +55,7 @@ def r31_soak_rss_drops_1780():
 
 @check
 def r31_display_matrix_2078():
-    import baseline, run, os
+    import baseline, run
     # the meta of a run carries the display it used; a scaled or two-output run is not a baseline
     old = {k: os.environ.get(k) for k in ("APPCI_DISPLAY_SCALE", "APPCI_OUTPUTS")}
     try:
@@ -99,3 +99,15 @@ def r31_replay_jobs_on_mac_and_windows_2063():
     import ci_seq
     assert ci_seq.APP_RESULT_DIR["app-test-replay-macos"] == "macos" and ci_seq.APP_RESULT_DIR["app-test-replay-windows"] == "windows"
     assert ci_seq.is_lab_job("app-test-replay-macos") and ci_seq.is_lab_job("app-test-replay-windows")
+
+
+@check
+def r31_phosphor_scheme_handler_1546():
+    import cases, cases_install as CI
+    assert CI.scheme_url("phosphor", "new_tab", "/a b/c") == "phosphor://action/new_tab?path=/a%20b/c"
+    assert CI.scheme_url("warp", "x") == "warp://action/x"
+    assert CI.tab_dir_line("bash", "t1", "/f") == 'echo "t1:$PWD" >> /f' and CI.tab_dir_line("pwsh", "t1", "C:/f").startswith("Add-Content C:/f ")
+    assert CI.INVALID_URI_RE.search("WARN Custom URI is invalid: Received url with unexpected scheme: warp")
+    assert CI.received_urls("received url scheme=phosphor host=action path=/new_tab") == [("phosphor", "action", "/new_tab")]
+    names = [c["name"] for c in cases.CASES]
+    assert names.count("phosphor_scheme_handler") == 1 and "phosphor_scheme_handler" in cases.PROVING
