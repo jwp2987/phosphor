@@ -163,3 +163,15 @@ def r30_fish_bootstrap_answers_the_in_band_exchange_2196():
     assert "matches!(self, ShellType::Zsh | ShellType::Bash | ShellType::Fish)" in mod
     doc = _src("docs", "design", "r10-remote.md")
     assert "#2196" in doc and "nu stays on the app's completer" in doc and "--ide-complete" in doc
+
+
+@check
+def r1918_ext_relaunch_settle_waits_for_the_new_instances_view_mode_hop():
+    """#1918: set_ext_mode's relaunch no longer sleeps a fixed 4 s: it waits for a `hop=view_mode` line logged AFTER the relaunch (not the dead instance's),
+    keeps the 4 s as the give-up net, and the app is launched after t_launch is taken"""
+    src = _src("script", "realapp", "appci", "cases_caseremote.py")
+    assert "time.sleep(4)" not in src, "the fixed first-run settle must stay gone"
+    i = src.index("t_launch = time.time()")
+    body = src[i:i + 1200]
+    assert body.index("ctx.app.start()") > 0 and "ctx.app_log_window(t_launch)" in body and '"hop=view_mode"' in body
+    assert "4.0, step=0.2" in body, "the give-up net stays 4 s"
