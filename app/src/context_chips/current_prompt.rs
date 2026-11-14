@@ -346,7 +346,6 @@ impl ActiveChipSurfaces {
     }
 }
 
-#[derive(Clone)]
 /// A batched chip section's output in the shape a chip command's own exec returns.
 fn chip_command_output(output: ChipCommandOutput) -> warp_completer::completer::CommandOutput {
     warp_completer::completer::CommandOutput {
@@ -361,6 +360,7 @@ fn chip_command_output(output: ChipCommandOutput) -> warp_completer::completer::
     }
 }
 
+#[derive(Clone)]
 struct ShellCommandExecutionContext {
     session: Arc<Session>,
     command: String,
