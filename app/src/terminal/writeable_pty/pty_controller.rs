@@ -555,8 +555,18 @@ impl<T: EventLoopSender> PtyController<T> {
             }) => {
                 me.initialize_shell(pending_session_info.as_ref(), ctx);
             }
-            ModelEvent::Handler(AnsiHandlerEvent::Bootstrapped { is_subshell, .. }) => {
-                me.shell_bootstrapped(*is_subshell);
+            ModelEvent::Handler(AnsiHandlerEvent::Bootstrapped {
+                session_id,
+                is_subshell,
+            }) => {
+                // #2218: the session is registered before this event is emitted
+                // (`ModelEventDispatcher::complete_bootstrapped_session`).
+                let is_ssh_or_remote = me
+                    .sessions
+                    .as_ref(ctx)
+                    .get(*session_id)
+                    .is_some_and(|session| session.is_subshell_or_ssh());
+                me.shell_bootstrapped(*is_subshell, is_ssh_or_remote);
             }
             ModelEvent::Handler(AnsiHandlerEvent::SetBracketedPaste) => {
                 me.set_bracketed_paste_enabled(true);
@@ -2585,8 +2595,30 @@ impl<T: EventLoopSender> PtyController<T> {
     }
 
     /// Handles the shell having finished bootstrapping.
-    fn shell_bootstrapped(&mut self, is_subshell: bool) {
+    ///
+    /// #2218: `is_user_command_executing` was set by the command that launched this shell. For a
+    /// subshell it is cleared here; for an ssh / remote shell it used to stay set until the FIRST
+    /// remote command finished (the remote's InitShell ends the launching `ssh host` block
+    /// through `reinit_shell`, with no CommandFinished hook, and the remote's first Precmd
+    /// finishes a bootstrap block, not a user one). Until then every
+    /// in-band request was refused: the first Tab after a connect never asked the remote shell
+    /// (`native_exchange_may_start`: "a command is executing") and went to the completer, whose
+    /// side commands each pay the remote user's rc files. The remote shell that has bootstrapped
+    /// is the one reading the pty, exactly as a subshell is, so the flag is cleared for it too.
+    ///
+    /// It is left set when a shell command is queued to be written (typed or held while the
+    /// connection came up): that command set the flag for itself after the `ssh`, and it is
+    /// still owed its run.
+    fn shell_bootstrapped(&mut self, is_subshell: bool, is_ssh_or_remote: bool) {
         if is_subshell {
+            self.is_user_command_executing = false;
+        } else if is_ssh_or_remote && !self.has_queued_shell_command() {
+            if self.is_user_command_executing {
+                log::info!(
+                    "The remote shell bootstrapped: the command that launched it no longer \
+                     blocks in-band requests (#2218)"
+                );
+            }
             self.is_user_command_executing = false;
         }
 
@@ -2594,6 +2626,19 @@ impl<T: EventLoopSender> PtyController<T> {
         // file is no longer needed.
         #[cfg(not(target_family = "wasm"))]
         self.bootstrap_file.take();
+    }
+
+    /// Whether a shell command (not an in-band one) is queued to be written at the next prompt.
+    fn has_queued_shell_command(&self) -> bool {
+        self.pending_writes.iter().any(|write| {
+            matches!(
+                write,
+                PtyWrite::Command {
+                    in_band_command_id: None,
+                    ..
+                }
+            )
+        })
     }
 
     /// Converts the given `command` into a byte array and writes its corresponding bytes to the PTY.

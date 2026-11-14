@@ -4251,10 +4251,29 @@ fn native_completions_controller(
     TestEventLoopSender,
     impl Sized + use<>,
 ) {
+    native_completions_controller_with_sessions(app, Vec::new())
+}
+
+/// [`native_completions_controller`] with `session_infos` registered as bootstrapped sessions.
+fn native_completions_controller_with_sessions(
+    app: &mut App,
+    session_infos: Vec<SessionInfo>,
+) -> (
+    ModelHandle<PtyController<TestEventLoopSender>>,
+    ModelHandle<ModelEventDispatcher>,
+    ModelHandle<LineEditorStatus>,
+    TestEventLoopSender,
+    impl Sized + use<>,
+) {
     let model = terminal_model();
     let (model_events_tx, model_events_rx) = async_channel::unbounded();
     let (_executor_command_tx, executor_command_rx) = async_channel::unbounded();
     let sessions = app.add_model(|_| Sessions::new_for_test());
+    sessions.update(app, |sessions, _| {
+        for session_info in session_infos {
+            sessions.register_session_for_test(session_info);
+        }
+    });
     let model_events =
         app.add_model(|ctx| ModelEventDispatcher::new(model_events_rx, sessions.clone(), ctx));
     let line_editor_status =
@@ -4963,4 +4982,184 @@ fn a_setup_write_during_an_exchange_is_preceded_by_the_cancel_frame() {
             "{messages:?}"
         );
     });
+}
+
+/// #2218: the id of the remote session the tests below bootstrap.
+const REMOTE_SESSION: u64 = 1;
+
+/// #2218: the local login shell (session 0) and one ssh session (session 1) per ssh kind: with a
+/// ControlMaster socket, and on one connection (#1933).
+fn local_and_ssh_session_infos() -> Vec<Vec<SessionInfo>> {
+    let remote = || {
+        SessionInfo::new_for_test()
+            .with_id(REMOTE_SESSION)
+            .with_spawning_session_id(SessionId::from(0))
+    };
+    vec![
+        vec![
+            SessionInfo::new_for_test(),
+            remote().with_ssh_socket_path(std::path::PathBuf::from("/nonexistent/cm.sock")),
+        ],
+        vec![
+            SessionInfo::new_for_test(),
+            remote().with_single_connection_ssh(),
+        ],
+    ]
+}
+
+/// #2218: the user runs `command` from the editor at a prompt (the real write path).
+fn editor_runs(
+    app: &mut App,
+    controller: &ModelHandle<PtyController<TestEventLoopSender>>,
+    command: &str,
+) {
+    controller.update(app, |controller, ctx| {
+        let outcome =
+            controller.write_command(command, ShellType::Bash, CommandExecutionSource::User, ctx);
+        assert_eq!(outcome, StartCommandOutcome::Accepted);
+    });
+}
+
+/// #2218: the shell of `session_id` reports it has bootstrapped (the event the dispatcher emits
+/// once the session is registered).
+fn shell_bootstraps(
+    app: &mut App,
+    model_events: &ModelHandle<ModelEventDispatcher>,
+    session_id: u64,
+    is_subshell: bool,
+) {
+    model_events.update(app, |_dispatcher, ctx| {
+        ctx.emit(ModelEvent::Handler(AnsiHandlerEvent::Bootstrapped {
+            session_id: SessionId::from(session_id),
+            is_subshell,
+        }));
+    });
+}
+
+/// #2218 (`lab_tab_remote_dir.p_slowrc`): `ssh host` from the editor sets
+/// `is_user_command_executing`, and nothing cleared it until the first REMOTE command finished,
+/// so the first Tab after the connect was refused ("a command is executing") and went to the
+/// completer, whose side commands each source the remote user's slow rc. Once the remote shell
+/// has bootstrapped, the first Tab asks it in-band: the `^Y` is written and the requester waits
+/// for the answer. Both ssh kinds (ControlMaster socket, one connection).
+#[test]
+fn the_first_tab_after_an_ssh_connect_asks_the_remote_shell_in_band() {
+    for session_infos in local_and_ssh_session_infos() {
+        App::test((), |mut app| async move {
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(false);
+            let (controller, model_events, line_editor_status, sender, _tx) =
+                native_completions_controller_with_sessions(&mut app, session_infos);
+
+            editor_runs(&mut app, &controller, "ssh host");
+            controller.read(&app, |c, _| {
+                assert!(c.is_user_command_executing);
+                assert!(c.pending_writes.is_empty());
+            });
+            // While ssh connects (no remote shell yet) a Tab is still refused.
+            let refused = controller.update(&mut app, |c, ctx| start_exchange(c, "cd zzq", ctx));
+            assert!(
+                refused.is_closed(),
+                "no in-band exchange while ssh connects"
+            );
+            assert!(!written(&sender).iter().any(|bytes| bytes == &[0x19]));
+
+            // The remote shell bootstraps and reaches its first prompt.
+            shell_bootstraps(&mut app, &model_events, REMOTE_SESSION, false);
+            line_editor_status.update(&mut app, |status, _| {
+                status.set_line_editor_active_for_test(true)
+            });
+            controller.read(&app, |c, _| {
+                assert!(
+                    !c.is_user_command_executing,
+                    "the remote shell reads the pty now; `ssh host` no longer blocks requests"
+                );
+            });
+
+            // The first Tab at the remote prompt, before any remote command has run.
+            let first_tab = controller.update(&mut app, |c, ctx| start_exchange(c, "cd zzq", ctx));
+            assert!(
+                !first_tab.is_closed(),
+                "the first Tab is not handed to the completer"
+            );
+            controller.read(&app, |c, _| {
+                assert!(matches!(
+                    c.in_flight_native_completions_state,
+                    Some(NativeShellCompletionsState::AwaitingPrompt { .. })
+                ));
+            });
+            assert_eq!(
+                written(&sender)
+                    .iter()
+                    .filter(|bytes| bytes.as_slice() == [0x19])
+                    .count(),
+                1,
+                "exactly one ^Y: the remote shell was asked"
+            );
+        });
+    }
+}
+
+/// #2218: a shell command queued while the connection came up (written from the editor while no
+/// line editor was reading) set the flag for itself; the remote bootstrap leaves the flag, and
+/// the queued command, alone.
+#[test]
+fn the_ssh_bootstrap_leaves_the_flag_to_a_shell_command_still_queued() {
+    for session_infos in local_and_ssh_session_infos() {
+        App::test((), |mut app| async move {
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(false);
+            let (controller, model_events, line_editor_status, _sender, _tx) =
+                native_completions_controller_with_sessions(&mut app, session_infos);
+            // No line editor is reading (the connection is coming up): the command is queued.
+            line_editor_status.update(&mut app, |status, _| {
+                status.set_line_editor_active_for_test(false)
+            });
+            editor_runs(&mut app, &controller, "echo queued");
+            controller.read(&app, |c, _| {
+                assert!(c.is_user_command_executing);
+                assert!(
+                    c.has_queued_shell_command(),
+                    "the command waits for a prompt"
+                );
+            });
+
+            shell_bootstraps(&mut app, &model_events, REMOTE_SESSION, false);
+            controller.read(&app, |c, _| {
+                assert!(
+                    c.is_user_command_executing,
+                    "the queued command still owns the flag"
+                );
+                assert!(c.has_queued_shell_command(), "and it is still queued");
+            });
+        });
+    }
+}
+
+/// #2218: only an ssh / remote shell's bootstrap is treated like a subshell's. The local login
+/// shell's own Bootstrapped, and one for a session nothing registered, leave the flag as it is;
+/// a subshell's clears it as before.
+#[test]
+fn only_a_nested_shells_bootstrap_clears_the_executing_flag() {
+    for session_infos in local_and_ssh_session_infos() {
+        App::test((), |mut app| async move {
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(false);
+            let (controller, model_events, _status, sender, _tx) =
+                native_completions_controller_with_sessions(&mut app, session_infos);
+            editor_runs(&mut app, &controller, "sleep 5");
+
+            // The local login shell (session 0), and a session id nothing knows.
+            for session_id in [0, 99] {
+                shell_bootstraps(&mut app, &model_events, session_id, false);
+                controller.read(&app, |c, _| {
+                    assert!(c.is_user_command_executing, "session {session_id}");
+                });
+            }
+            let refused = controller.update(&mut app, |c, ctx| start_exchange(c, "cd zzq", ctx));
+            assert!(refused.is_closed(), "the local command is still running");
+            assert!(!written(&sender).iter().any(|bytes| bytes == &[0x19]));
+
+            // A subshell: cleared, as before #2218.
+            shell_bootstraps(&mut app, &model_events, 99, true);
+            controller.read(&app, |c, _| assert!(!c.is_user_command_executing));
+        });
+    }
 }

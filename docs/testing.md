@@ -4816,6 +4816,31 @@ with a rebuild forced (steady state is the same glob with a string compare), 10 
 
 
 
+### #2218: the first Tab after an ssh connect is asked in-band
+
+- **Symptom (r30b).** `lab_tab_remote_dir.p_slowrc` (bash user whose `.bashrc` sleeps 4 s), no-helper arms, both
+  modes: unique prefix + Tab never completed the remote `cd`; no `tab_insert`, and `remote_tab_wait` gave up
+  (`why=net waited_ms=5000`). The same refused first Tab is why every no-helper `lab_tab_remote_dir` row read
+  UNVERIFIABLE (the in-band hop was never logged).
+- **Cause.** `PtyController::is_user_command_executing` is set by the editor's `ssh host`. The remote's InitShell ends
+  that block through `reinit_shell` (no CommandFinished hook) and the remote's first Precmd finishes a bootstrap
+  block, so nothing cleared the flag until the first REMOTE command finished; `Bootstrapped` cleared it for a
+  subshell only (upstream behaviour, identical at the pin). `native_exchange_may_start` therefore refused the first
+  Tab ("a command is executing") and it went to the completer, whose ControlMaster side commands each source the
+  remote user's rc files: past the 5 s cap on `p_slowrc`, so the held Enter ran the line as typed. Queued in-band
+  commands were cancelled for the same reason (`queue_in_band_command`).
+- **Fix.** `PtyController::shell_bootstrapped` clears the flag for an ssh / remote session too
+  (`Session::is_subshell_or_ssh`, looked up by the event's session id), unless a shell command is still queued to be
+  written (that command set the flag for itself). No change to the hold / hand-off paths (#2209).
+- **Rust tests (written, NOT compiled or run here, no cargo on the laptop).** `pty_controller_tests.rs`, each for a
+  ControlMaster ssh session and a one-connection one: `the_first_tab_after_an_ssh_connect_asks_the_remote_shell_in_band`
+  (the real `write_command("ssh host")`; refused while ssh connects; after the remote `Bootstrapped` the flag is
+  clear and the Tab writes exactly one `^Y` and waits), `the_ssh_bootstrap_leaves_the_flag_to_a_shell_command_still_queued`,
+  `only_a_nested_shells_bootstrap_clears_the_executing_flag` (the local login shell's and an unregistered session's
+  `Bootstrapped` leave it; a subshell's clears it as before).
+- **App proof.** `lab_tab_remote_dir.p_slowrc.{lan,150}.nohelper` in both modes, and the no-helper rows of the family
+  no longer UNVERIFIABLE (they also carry #2188 and #2177).
+
 ## Remote helper client switch (Wave H step 5, #1804)
 
 What changed for tests and CI when the GitLab download of the full app binary was removed and the bundled `phosphor-remote` helper became the ssh remote server. Nothing the app installs is fetched: the helper is gzip-compressed inside the app bundle (`<bundled_resources>/remote/phosphor-remote-<os>-<arch>.gz`), uploaded IN-BAND over the existing ControlMaster (`ssh::run_ssh_script_with_payload`: `bash -s` reads the install script, which ends in one call to `main`, so `gunzip -c` inside it receives the gzip bytes that follow the script on the same stdin; scp is the fallback), verified against a SHA-256 compiled into the client, started once (`--version`) before anything older is removed, and linked as `current`.
