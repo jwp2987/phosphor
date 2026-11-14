@@ -507,8 +507,8 @@ route, but no Enter and no line is lost and no lines merge.
   landed, for a bounded number of event-loop turns.
 - Keys that still cannot be replayed (counted and warned, never silent): a `^C` (a replayed key
   must not become a new interrupt); every escape sequence other than the unmodified arrows,
-  Home, End and Delete (function keys, Page Up / Page Down, Insert, Shift-Tab's `ESC [ Z`,
-  cursor keys with a modifier, OSC and other reports); and the control characters NUL, `^G`,
+  Home, End, Delete, Page Up, Page Down and Shift-Tab (function keys, Insert, cursor keys and
+  Page Up / Page Down with a modifier, OSC and other reports); and the control characters NUL, `^G`,
   `^L`, `^O`, `^Q`, `^R`, `^S`, `^T`, `^V`, `^X`, `^Y`, `^Z`, `^\`, `^]`, `^^`, `^_` and the C1
   controls. Only for bytes typed ON THE TERMINAL inside a replayed tail; the same key typed in
   the input box is an editor key and is replayed as itself (except `^C`).
@@ -522,3 +522,6 @@ route, but no Enter and no line is lost and no lines merge.
 - Open: a key typed on the terminal (raw to the pty) between the characters of a line typed in
   the input box and that line's Enter still reaches the pty before the line (#2223, typed
   order across the two routes while a command runs).
+- Owner decision 2026-11-14 on that residual: the keys in the list above stay counted and
+  warned (skipped), and Page Up (`ESC [ 5 ~`), Page Down (`ESC [ 6 ~`) and Shift-Tab
+  (`ESC [ Z`) replay as their editor actions.

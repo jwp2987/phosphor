@@ -5911,13 +5911,19 @@ pub enum EditorReplayKey {
     KillWord,
     /// Tab.
     Tab,
+    /// Shift-Tab (`ESC [ Z`).
+    ShiftTab,
+    /// Page Up (`ESC [ 5 ~`).
+    PageUp,
+    /// Page Down (`ESC [ 6 ~`).
+    PageDown,
     /// A lone ESC.
     Escape,
     /// `^C`. Named, never replayed: a replayed key must not become a new signal (the editor's
     /// own `^C` writes an interrupt to the pty and flushes the hand-off); the caller counts it.
     Interrupt,
-    /// A well-formed sequence or control character the input editor has no key for (a function
-    /// key, a cursor key with a modifier, an OSC, `^Z` ...), with its length in bytes. Never
+    /// A well-formed sequence or control character that is not replayed (a function key, Insert,
+    /// a cursor key with a modifier, an OSC, `^Z` ...), with its length in bytes. Never
     /// dropped silently: the caller counts and logs it.
     NoEditorKey(usize),
 }
@@ -5945,6 +5951,11 @@ pub fn editor_keys_of_bytes(bytes: &[u8]) -> Vec<EditorReplayKey> {
                     [] => EditorReplayKey::Escape,
                     ['[', 'A'] | ['O', 'A'] => EditorReplayKey::Up,
                     ['[', 'B'] | ['O', 'B'] => EditorReplayKey::Down,
+                    // Owner decision 2026-11-14: these three have editor actions and replay
+                    // as themselves; every other sequence stays counted and warned.
+                    ['[', 'Z'] => EditorReplayKey::ShiftTab,
+                    ['[', '5', '~'] => EditorReplayKey::PageUp,
+                    ['[', '6', '~'] => EditorReplayKey::PageDown,
                     _ => match line_key_of_escape(sequence) {
                         Some(LineKey::Left) => EditorReplayKey::Left,
                         Some(LineKey::Right) => EditorReplayKey::Right,
