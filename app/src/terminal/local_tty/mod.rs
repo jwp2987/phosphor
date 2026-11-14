@@ -106,6 +106,14 @@ pub trait EventedPty: EventedReadWrite {
         false
     }
 
+    /// The most bytes one write to this pty is offered (#1887), or `None` for no bound. A
+    /// ConPTY pipe write of a big paste is one overlapped write that holds the writer until it
+    /// drains, so a ^C queued behind it waited for all of it; offered in pieces, the event loop
+    /// looks at its queue between two of them. A short write is still handled as before.
+    fn max_write_chunk(&self) -> Option<usize> {
+        None
+    }
+
     /// Terminate the PTY process
     fn kill(self) -> Result<()>;
 }

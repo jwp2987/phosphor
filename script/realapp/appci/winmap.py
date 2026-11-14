@@ -39,6 +39,8 @@ BOTH = {
     # r14 T29: the reference console takes the focus and gives it back; effect files, rec.log (Git Bash) or PSReadLine history (PowerShell) and the app's
     # key trace. Its focus-reporting half does not exist under ConPTY (FOCUS_EVENT records, not ESC[I / ESC[O bytes) and is noted as not run.
     "focus_cycle",
+    # #1887: a stdin reader (PowerShell ReadToEnd, Git Bash cat) behind a 64 KiB paste, ^C at once; the wait is read from the app's own hops
+    "ctrl_c_behind_big_paste",
 }
 # POSIX syntax / rec.log / readline-style editing in the case: Git Bash pane only. Reason shown for the PowerShell pane.
 GITBASH_ONLY = {
@@ -135,6 +137,7 @@ PS_ONLY = {
     "ps_read_host_secure": "#1882/#1891: Read-Host -AsSecureString is PowerShell; the Git Bash twin is gitbash_precmd_secret",
 }
 # r15 wave 5 part B (#2076, #1546): neither depends on the pane's shell and each installs or runs another build on the VM, so once per run is enough
+PS_ONLY["powershell_setup_ctrl_c_keys"] = "#1890: a PowerShell-in-PowerShell Phosphorize setup and the PowerShell hold's post-abort prompt; the Git Bash pane has the bash subshell lab (cases_subshell_ready)"
 PS_ONLY["installer_smoke"] = "T43: the installer does not depend on the pane's shell: runs once, in the PowerShell pane (the app's default shell)"
 PS_ONLY["upgrade_from_previous_release"] = "T44: the upgrade does not depend on the pane's shell: runs once, in the PowerShell pane (the app's default shell)"
 # not on Windows at all, with the reason
@@ -265,6 +268,7 @@ VARIANT_CASES = {
 # SKIP row with the machine change it needs (owner).
 VARIANT_FAMILY["wsl"] = "wsl"
 VARIANT_CASES["pwsh7"] += ("history_up_recall", "routing_table_powershell")
+VARIANT_CASES["pwsh7"] += ("ctrl_c_behind_big_paste", "powershell_setup_ctrl_c_keys")      # #1887, #1890: the PowerShell family's ConPTY write path and setup hold
 VARIANT_CASES["cmd"] += ("history_up_recall", "routing_table_powershell")
 VARIANT_CASES["wsl"] = ("mode_proof", "startup_shell_pane", "history_up_recall", "routing_table_powershell")
 # What a pass needs on the machine when its shell is missing (run.py puts it in the pass's SKIP row).

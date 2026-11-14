@@ -460,6 +460,11 @@ pub fn conpty_output_has_unread(handle: isize) -> Option<bool> {
     peeked.ok().map(|()| available > 0)
 }
 
+/// #1887: the most one ConPTY pipe write is offered. 4096 is a starting value, not a measured
+/// one: the Windows `ctrl_c_behind_big_paste` appci case measures how long a ^C waits behind a
+/// 64 KiB paste, and its result decides whether this stays, shrinks, or #1887 closes.
+const CONPTY_MAX_WRITE_CHUNK: usize = 4096;
+
 impl EventedReadWrite for Pty {
     type Reader = mio::windows::NamedPipe;
     type Writer = mio::windows::NamedPipe;
@@ -519,6 +524,10 @@ impl EventedPty for Pty {
     /// the completion event, so queued keys are merged into one write.
     fn coalesces_key_writes(&self) -> bool {
         true
+    }
+
+    fn max_write_chunk(&self) -> Option<usize> {
+        Some(CONPTY_MAX_WRITE_CHUNK)
     }
 
     fn on_resize(&mut self, size: &crate::terminal::SizeInfo) {

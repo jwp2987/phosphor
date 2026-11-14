@@ -18,7 +18,11 @@
 #   ps_ctrl_break / ps_ctrl_scrolllock_break                    PowerShell pane: the Break key and ScrollLock, each with Ctrl held (both VK_CANCEL), reach
 #                                                               a program as CTRL_BREAK_EVENT; a failed trial names the app hop it stopped at (#1888, #1906)
 #   ps_fast_command_young_enter                                 PowerShell pane: a fast command's Enter and the next line typed at once run once each, in order (#1889)
-import os, sys, time
+#   ctrl_c_behind_big_paste                                     both Windows panes (+ pwsh7): a 64 KiB paste to a stdin reader, then ^C at once; the metric is ms from hop=ctrl_c_keydown to the pty
+#                                                               write carrying the ETX, judged against a band (#1887; docs/design/1887-1890-win-ctrlc.md)
+#   powershell_setup_ctrl_c_keys                                PowerShell pane (+ pwsh7): a PowerShell-in-PowerShell Phosphorize setup, ^C, a line typed at once: it runs once, released by the
+#                                                               post-abort prompt, not by a give-up net (#1890)
+import os, re, sys, time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import cases  # noqa: E402
@@ -185,6 +189,146 @@ def c_ps_fast_command_young_enter(ctx, r):
     got = ctx.lines(f)
     r.check(got == exp, "%d/%d lines exact and in order (got %d lines); first difference: %r" % (
         sum(1 for x, y in zip(exp, got) if x == y), len(exp), len(got), next(((x, y) for x, y in zip(exp, got) if x != y), None)))
+    ctx.reset()
+
+
+# ------------------------------------------------------------------ #1887, #1890: Ctrl-C behind a big paste, and Ctrl-C during a PowerShell setup
+_HOP_T_RE = re.compile(r" t=(\d+(?:\.\d+)?)")
+
+
+def _hop_t(line):
+    m = _HOP_T_RE.search(line)
+    return float(m.group(1)) if m else None
+
+
+def ctrl_c_wait_ms(log):
+    """pure (#1887): -> (ms, which, n_keydowns) for the log text of one `paste, then ^C at once` trial. ms = from the first `hop=ctrl_c_keydown` to the first
+    pty write after it that carries the ETX: a `hop=pty_write_bytes` of class UserKey with wrote=1 of_job=1 (a one-byte typed job; the ^C is the only key the
+    case sends after the paste, and a text-logging run shows `\\x03`), else the `hop=ctrl_c_pty_write` line the loop logs for a finished write whose job holds
+    a 0x03. `which` names the hop used; (None, None, n) when the keydown or the write is missing."""
+    lines = log.splitlines()
+    down = [i for i, ln in enumerate(lines) if "hop=ctrl_c_keydown" in ln]
+    if not down:
+        return None, None, 0
+    t0 = _hop_t(lines[down[0]])
+    for ln in lines[down[0]:]:
+        t = _hop_t(ln)
+        if t0 is None or t is None:
+            continue
+        if "hop=pty_write_bytes" in ln and "class=UserKey" in ln and "wrote=1 of_job=1" in ln:
+            return round(t - t0, 2), "pty_write_bytes", len(down)
+        if "hop=ctrl_c_pty_write" in ln:
+            return round(t - t0, 2), "ctrl_c_pty_write", len(down)
+    return None, None, len(down)
+
+
+def ctrl_c_band_key(ctx):
+    """band key of the ^C wait: <platform>/<mode incl. pane>/ctrl_c_behind_big_paste/ctrl_c_to_pty_write_ms (owner 2026-11-12: every perf figure is a band)"""
+    import bands
+    return bands.key(os.environ.get("APPCI_PLATFORM", "windows"), "%s/ctrl_c_behind_big_paste/ctrl_c_to_pty_write_ms" % ctx.label)
+
+
+def big_paste_payload(n_bytes=64 * 1024):
+    """pure: ~n_bytes of short plain lines (under the 4095-byte canonical line limit, nothing a shell would run or complete)"""
+    out, tot, i = [], 0, 0
+    while tot < n_bytes:
+        ln = "pad %05d %s" % (i, "x" * 60)
+        out.append(ln)
+        tot += len(ln) + 1
+        i += 1
+    return "\n".join(out)
+
+
+@case("ctrl_c_behind_big_paste", order=19)
+def c_ctrl_c_behind_big_paste(ctx, r):
+    """#1887 (owner answer Q-A1, 2026-11-14: measure first): a program is reading stdin (PowerShell `[Console]::In.ReadToEnd()`, Git Bash `cat`), a 64 KiB
+    paste goes to the pane, and a Ctrl-C follows at once. The metric is the milliseconds from the app's `hop=ctrl_c_keydown` to the pty write that carries
+    the ETX, judged against the case's band (the first runs have no band: NOREF, the value is recorded); the program must also stop (a line typed after it
+    runs). The event loop offers a ConPTY write in 4096-byte pieces (local_tty/windows `CONPTY_MAX_WRITE_CHUNK`) and a ^C goes out between two of them; this
+    measurement decides whether that bound stays, shrinks, or #1887 closes."""
+    if not ctx.win:
+        r.skip("Windows only (ConPTY)")
+    import bands
+    f, rdy = "ccbp.txt", "ccbp_ready.txt"
+    ctx.rm(f, rdy)
+    tok = ctx.tok(6)
+    if ctx.pane == "powershell":
+        reader = "%s; $null = [Console]::In.ReadToEnd()" % ctx.append_cmd("pwsh", "READY", rdy)
+    else:
+        reader = "%s; cat > /dev/null" % ctx.append_cmd("bash", "READY", rdy)
+    ctx.be.type(reader, 10, enter=True)
+    if not ctx.until(lambda: "READY" in ctx.lines(rdy), 15):
+        r.check(False, "the stdin reader never started (file %r)" % ctx.lines(rdy))
+        ctx.reset()
+        return
+    time.sleep(0.5)
+    ctx.be.clip_set(big_paste_payload())
+    off = ctx.log_size()
+    ctx.be.paste()
+    ctx.be.key("ctrl+c")                     # at once: while the app is still writing the paste
+    ctx.until(lambda: ctrl_c_wait_ms(ctx.log_since(off))[0] is not None, 40)
+    ms, which, downs = ctrl_c_wait_ms(ctx.log_since(off))
+    r.metric("ctrl_c_to_pty_write_ms", ms)
+    r.metric("ctrl_c_hop_used", which)
+    r.check(ms is not None, "the ^C reached the pty (hop ctrl_c_keydown, then the write carrying the ETX); keydown hops seen: %d" % downs)
+    if ms is not None:
+        bands.check(r, ctrl_c_band_key(ctx), ms, "^C behind a 64 KiB paste: %.1f ms from ctrl_c_keydown to its pty write (%s)" % (ms, which))
+    # the program stopped: a line typed after the ^C runs
+    ctx.be.type(ctx.append_cmd(ctx.pane_shell(), tok, f), 10, enter=True)
+    r.check(ctx.until(lambda: tok in ctx.lines(f), 15), "the reader was stopped by the ^C: the next line ran (file %r)" % ctx.lines(f))
+    ctx.reset()
+
+
+def handed_back_by_net(log):
+    """pure (#1890): the `hop=prompt_hold_handed_back` lines of a PowerShell setup gate (kind=PowershellSetup) in `log`: the give-up nets (the 5 s marker net,
+    the 0.5 s settle, the stall nets) hand keys back as text and log this hop; the post-abort prompt releases them without it."""
+    return [ln.split("hop=prompt_hold_handed_back", 1)[-1].strip()[:140] for ln in log.splitlines()
+            if "hop=prompt_hold_handed_back" in ln and "kind=PowershellSetup" in ln]
+
+
+@case("powershell_setup_ctrl_c_keys", order=22)
+def c_powershell_setup_ctrl_c_keys(ctx, r):
+    """#1890 (owner answers Q-B1, Q-B2, 2026-11-14): a PowerShell-in-PowerShell Phosphorize setup, a Ctrl-C and, at once, a line typed with its Enter. The line
+    must run exactly once in the inner shell, and it must reach the shell by the prompt after the abort (the app's `Precmd` handling releases the held keys in
+    typed order), never by a give-up net: no `hop=prompt_hold_handed_back kind=PowershellSetup` (the 5 s marker give-up, the 0.5 s settle, the 30 s quiet net)
+    after the ^C. When the ^C did not skip the setup (it was not stalled, so it only cancelled the held line; `hop=subshell_setup_aborted_by_user` is absent)
+    the run is noted, and only the exactly-once and no-give-up checks apply."""
+    _need_windows_pane(ctx, r, "powershell")
+    import cases_subshell_ready as SR
+    exe = "pwsh" if getattr(ctx, "variant", None) == "pwsh7" else "powershell"
+    f = "pscck.txt"
+    ctx.rm(f)
+
+    @SR.guarded
+    def body(ctx, r):
+        off = ctx.log_size()
+        ctx.be.type("%s -NoProfile -NoLogo" % exe, 10, enter=True)
+        time.sleep(SR.BANNER_S)
+        ctx.shot("psck_banner")
+        ctx.be.key("ctrl+i")                 # Phosphorize the inner PowerShell: the setup starts
+        time.sleep(0.4)
+        tok = ctx.tok(6)
+        t_cc = time.time()
+        ctx.be.key("ctrl+c")
+        ctx.be.type(ctx.append_cmd("pwsh", tok, f), 8, enter=True)
+        ran = ctx.until(lambda: tok in ctx.lines(f), 45)
+        took = time.time() - t_cc
+        time.sleep(1.0)
+        log = ctx.log_since(off)
+        aborted = "hop=subshell_setup_aborted_by_user" in log
+        nets = handed_back_by_net(log)
+        r.metric("setup_ctrl_c_line_after_ctrl_c_s", round(took, 2) if ran else None)
+        r.metric("setup_ctrl_c_aborted_by_user", aborted)
+        r.check(ran, "the line typed right after the ^C ran in the inner shell (file %r)" % ctx.lines(f))
+        r.check(ctx.lines(f).count(tok) == 1, "it ran exactly once: %r" % ctx.lines(f))
+        r.check(not nets, "the keys were not handed back by a give-up net (hop prompt_hold_handed_back kind=PowershellSetup): %r" % nets[:2])
+        if aborted and ran:
+            r.check(took < 4.5, "the ^C skipped the setup and the line reached the shell after %.1f s, by the post-abort prompt, not at the 5 s net" % took)
+        elif not aborted:
+            r.note("the ^C did not skip the setup (hop subshell_setup_aborted_by_user absent: not stalled, so it cancelled the held line); the 4.5 s bound was not judged")
+        SR.leave_inner(ctx, r, "powershell_setup_ctrl_c_keys")
+
+    body(ctx, r)
     ctx.reset()
 
 

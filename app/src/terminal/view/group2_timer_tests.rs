@@ -998,6 +998,119 @@ fn ctrl_c_on_a_timed_powershell_setup_hands_the_held_and_later_keys_back_after_t
     });
 }
 
+/// #1890: Ctrl-C skips a stalled PowerShell setup with `ls` held and `x` typed after the ^C; the
+/// shell's next prompt (a `Precmd` handled after the ^C was written) releases both through the
+/// PowerShell gate, in typed order, with no timer: the hold is off, the gate closed, nothing but
+/// the ^C reached the pty before the prompt.
+#[test]
+fn a_prompt_after_the_ctrl_c_that_skipped_a_powershell_setup_releases_the_held_keys_in_order() {
+    App::test((), move |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let delivered = collect_delivered_input(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            announce_powershell_setup(view);
+            stall_powershell_setup(view);
+            view.typed_characters_on_terminal("ls", ctx);
+            view.ctrl_c(ctx);
+            view.typed_characters_on_terminal("x", ctx);
+            assert!(matches!(
+                view.powershell_setup_hold,
+                PowerShellSetupHold::AfterAbort { .. }
+            ));
+        });
+        assert_eq!(*delivered.borrow(), b"\x03".to_vec(), "only the ^C so far");
+        terminal.update(&mut app, |view, ctx| {
+            view.handle_terminal_event(&ModelEvent::Handler(AnsiHandlerEvent::Precmd), ctx);
+            assert_eq!(view.powershell_setup_hold, PowerShellSetupHold::Off);
+            assert!(!view.powershell_gate_open(), "the gate is closed");
+        });
+        assert_eq!(
+            String::from_utf8_lossy(&delivered.borrow()),
+            "\u{3}lsx",
+            "the held keys follow the ^C in typed order, by the event"
+        );
+    });
+}
+
+/// #1890: only a prompt handled after the ^C was written is its answer; one handled before it
+/// (the count at abort time already includes it) is stale.
+#[test]
+fn a_prompt_handled_before_the_ctrl_c_is_not_its_answer() {
+    assert!(!powershell_prompt_follows_ctrl_c(3, 3));
+    assert!(!powershell_prompt_follows_ctrl_c(2, 3));
+    assert!(powershell_prompt_follows_ctrl_c(4, 3));
+}
+
+/// #1890: with no prompt after the ^C the hold stays; the abort records the prompts already
+/// handled, so a later prompt, and only it, answers.
+#[test]
+fn the_abort_records_the_prompts_already_handled() {
+    App::test((), move |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let delivered = collect_delivered_input(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            announce_powershell_setup(view);
+            stall_powershell_setup(view);
+            view.precmd_events_seen = 7;
+            view.typed_characters_on_terminal("ls", ctx);
+            view.ctrl_c(ctx);
+            assert_eq!(view.powershell_ctrl_c_precmd_count, 7);
+            assert!(
+                !view.powershell_ctrl_c_answered_by_precmd(),
+                "no new prompt"
+            );
+        });
+        assert_eq!(*delivered.borrow(), b"\x03".to_vec());
+        terminal.update(&mut app, |view, ctx| {
+            view.handle_terminal_event(&ModelEvent::Handler(AnsiHandlerEvent::Precmd), ctx);
+            assert_eq!(view.powershell_setup_hold, PowerShellSetupHold::Off);
+        });
+        assert_eq!(String::from_utf8_lossy(&delivered.borrow()), "\u{3}ls");
+    });
+}
+
+/// #1890: a stalled setup whose profiles a ^C stopped (`StopProfiles`, the hold stays
+/// `ScriptRunning`) and whose script then died: the prompt that follows, with no `Bootstrapped`,
+/// releases the held keys in order. Without a `StopProfiles` ^C a prompt leaves the hold alone.
+#[test]
+fn a_prompt_after_a_stop_profiles_ctrl_c_ends_a_dead_setup_and_releases_the_keys() {
+    App::test((), move |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let delivered = collect_delivered_input(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            announce_powershell_setup(view);
+            stall_powershell_setup(view);
+            view.powershell_setup_hold = PowerShellSetupHold::ScriptRunning;
+            view.typed_characters_on_terminal("ls", ctx);
+            // A prompt with no ^C sent leaves the hold alone.
+            view.handle_terminal_event(&ModelEvent::Handler(AnsiHandlerEvent::Precmd), ctx);
+            assert_eq!(
+                view.powershell_setup_hold,
+                PowerShellSetupHold::ScriptRunning
+            );
+            view.ctrl_c(ctx);
+            view.typed_characters_on_terminal("x", ctx);
+            assert_eq!(
+                view.powershell_setup_hold,
+                PowerShellSetupHold::ScriptRunning
+            );
+        });
+        assert_eq!(*delivered.borrow(), b"\x03".to_vec(), "only the ^C so far");
+        terminal.update(&mut app, |view, ctx| {
+            view.handle_terminal_event(&ModelEvent::Handler(AnsiHandlerEvent::Precmd), ctx);
+            assert_eq!(view.powershell_setup_hold, PowerShellSetupHold::Off);
+            assert!(!view.powershell_gate_open());
+        });
+        assert_eq!(String::from_utf8_lossy(&delivered.borrow()), "\u{3}lsx");
+    });
+}
+
 /// A10 (#1577): the stall ceiling (a subshell setup that never finishes) hands the keys held
 /// through it back to the editor as text, resets the setup state and the waiting notice, and
 /// writes nothing into the abandoned shell. (The Precmd event of a setup that does finish still

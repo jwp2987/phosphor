@@ -66,6 +66,8 @@ PROVING = (
     "agent_question_ctrl_c", "agent_question_steer", "agent_question_after_command", "agent_question_steer_at_end",
     # Windows input parity (docs/design/windows-input-parity-audit.md): each skips itself off its Windows pane
     "ssh_connect_typing_wrapper", "ssh_nested_typeahead_wrapper", "ps_ctrl_break", "ps_ctrl_scrolllock_break", "ps_fast_command_young_enter",
+    # #1887 / #1890 (docs/design/1887-1890-win-ctrlc.md): ^C behind a 64 KiB paste (measured against a band) and keys typed after a ^C during a PowerShell setup
+    "ctrl_c_behind_big_paste", "powershell_setup_ctrl_c_keys",
     # managed ssh from Windows Git Bash on one connection (#1933): each skips itself off the Git Bash pane
     "ssh_gitbash_managed", "ssh_gitbash_typeahead_managed", "ssh_gitbash_kill_switch",
     # #2051: the managed session of the Git Bash pane gets its bootstrap in the remote command, nothing bootstrap-sized is typed; skips itself elsewhere
