@@ -571,7 +571,11 @@ mod tests {
                 state.syntax_tree.lock().insert(BufferVersion::new(), tree);
                 assert_eq!(state.tree_count(), 1);
                 // The thread's parser keeps its last parse's buffers; release replaces it (#2224).
-                PARSER.with(|p| p.borrow_mut().set_language(&language.grammar).expect("grammar"));
+                PARSER.with(|p| {
+                    p.borrow_mut()
+                        .set_language(&language.grammar)
+                        .expect("grammar")
+                });
                 state.release();
                 assert!(PARSER.with(|p| p.borrow().language().is_none()));
                 assert_eq!(state.tree_count(), 0);
