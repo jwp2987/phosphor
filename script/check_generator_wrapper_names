@@ -152,8 +152,10 @@ require "$PWSH" "function $PWSH_NAME {" "the PowerShell generator wrapper defini
 require "$PWSH" "Export-ModuleMember -Function " "the module export list"
 grep -F "Export-ModuleMember -Function " "$PWSH" | grep -qF -- "$PWSH_NAME" ||
   fail "$PWSH does not export \`$PWSH_NAME\` -- the Rust app calls it from outside Warp-Module, so an unexported function is invisible to it"
-require_count "$PWSH" "'^$PWSH_NAME'" 2 \
-  "the Warp-Preexec skip and the AddToHistoryHandler guard; without them the call leaks into the user's history"
+# #2169: the Warp-Preexec "skip" was a dead check (-not bound before -match) and was removed with it
+# (owner 2026-11-13, option 1; DECLINED.md), so only the AddToHistoryHandler guard remains.
+require_count "$PWSH" "'^$PWSH_NAME'" 1 \
+  "the AddToHistoryHandler guard; without it the call leaks into the user's history"
 require "$PWSH" "Clear-History -CommandLine '$PWSH_NAME*'" \
   "the history scrub for an already-recorded call"
 

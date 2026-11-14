@@ -399,7 +399,7 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
         } catch { }
 
         # #2169: generators are deliberately NOT stopped on Enter (no Enter cost). The check that used to
-        # call Warp-Stop-ActiveThread here was dead (-not bound before -match) and is gone; see DECLINED.md.
+        # stop the active generator thread here was dead (-not bound before -match) and is gone; see DECLINED.md.
 
         # The housekeeping that used to follow here (cleaning up completed warp jobs, scrubbing our
         # own commands from the history) runs in Warp-Idle-Maintenance, once the next prompt is on
