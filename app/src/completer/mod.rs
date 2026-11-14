@@ -434,7 +434,19 @@ impl SessionContext {
             let dir = match self.session.maybe_convert_to_native_path(directory) {
                 Ok(dir) => dir,
                 Err(err) => {
-                    log::warn!("Failed to convert path: {err:#}");
+                    // #2222: which directory failed, and for which kind of session, so a Git Bash
+                    // pane whose completions are empty says whether the cwd could not be mapped.
+                    safe_warn!(
+                        safe: (
+                            "Failed to convert a completion directory to a native path (msys2: {}): {err:#}",
+                            self.session.is_msys2()
+                        ),
+                        full: (
+                            "Failed to convert `{:?}` to a native path for completions (msys2: {}): {err:#}",
+                            directory,
+                            self.session.is_msys2()
+                        )
+                    );
                     return (Vec::new(), true);
                 }
             };

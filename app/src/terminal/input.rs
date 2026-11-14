@@ -13670,6 +13670,23 @@ impl Input {
             return;
         }
 
+        // #2222: an as-you-type request for an ARGUMENT (a space already typed after the command
+        // word) says what it asked and how many candidates came back, so a run where the menu
+        // never reopens names the stage that came back empty (session kind, completer count,
+        // final count). Counts and booleans only; never the candidates (the user's file names).
+        let as_you_type_argument = (completions_trigger == CompletionsTrigger::AsYouType)
+            .then(|| {
+                before_cursor_text
+                    .trim_start()
+                    .contains(char::is_whitespace)
+            })
+            .unwrap_or(false);
+        let as_you_type_session = (
+            completion_session.is_local(),
+            completion_session.is_msys2(),
+            completion_session.shell().shell_type().name().to_owned(),
+        );
+
         // The single flight is taken only here, where the completer job really starts.
         let listing_job =
             remote_as_you_type.then(|| self.remote_listing.start(self.input_generation));
@@ -13710,6 +13727,14 @@ impl Input {
                             )
                         }),
                     };
+
+                    if as_you_type_argument {
+                        let (local, msys2, shell) = &as_you_type_session;
+                        log::debug!(
+                            "as-you-type completion for an argument: {} candidates (completer: {completer_count:?}, local: {local}, msys2: {msys2}, shell: {shell})",
+                            suggestions.as_ref().map_or(0, |s| s.suggestions.len()),
+                        );
+                    }
 
                     if let Some(session_id) = remote_tab_session {
                         let final_count = suggestions.as_ref().map_or(0, |s| s.suggestions.len());

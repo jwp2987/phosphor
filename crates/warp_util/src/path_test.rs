@@ -896,6 +896,38 @@ fn test_convert_git_bash_to_windows_native_path() {
     );
 }
 
+/// #2222: the as-you-type path completion joins the pane's msys cwd with the relative directory
+/// part of the typed word (`tc/` of `ls tc/cayt`) and lists the result natively. The join of an
+/// msys cwd and a relative prefix, with or without the trailing separator the completer leaves on
+/// a directory, must resolve to the matching Windows directory.
+/// These tests all fail when running on UNIX.
+#[test]
+#[cfg(windows)]
+fn test_msys_cwd_joined_with_relative_prefix_resolves_to_windows_dir() {
+    use std::sync::LazyLock;
+    static GIT_BASH_ROOT: LazyLock<WindowsPathBuf> =
+        LazyLock::new(|| WindowsPathBuf::from(r"C:\Program Files\Git"));
+
+    let cwd = TypedPathBuf::from_unix("/c/work/proj");
+    for relative in ["tc/", "tc"] {
+        let joined = cwd.to_path().join(relative);
+        let native = convert_msys2_to_windows_native_path(&joined.to_path(), &GIT_BASH_ROOT)
+            .unwrap_or_else(|err| panic!("{relative:?} should resolve, got {err:?}"));
+        let native = native.to_string_lossy();
+        assert!(
+            native
+                .trim_end_matches('\\')
+                .eq_ignore_ascii_case(r"c:\work\proj\tc"),
+            "{relative:?} resolved to {native:?}"
+        );
+    }
+    // The directory listed for `ls t` (no separator typed yet) is the cwd itself.
+    assert_eq!(
+        convert_msys2_to_windows_native_path(&cwd.to_path(), &GIT_BASH_ROOT).unwrap(),
+        PathBuf::from(r"c:\work\proj")
+    );
+}
+
 /// These tests all fail when running on UNIX.
 #[test]
 #[cfg(windows)]
