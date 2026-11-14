@@ -538,6 +538,9 @@ pub struct TerminalModel {
     /// platform that has none (ConPTY); cleared by `TtyReadEnd` and by the next Precmd/Preexec.
     /// Shared so a lock-free reader of [`Self::secret_read_probe`] sees it.
     tty_read_secret_marker: Arc<AtomicBool>,
+    /// #2209: what the last sample of [`Self::tty_reading_secret`] (or of the probe handed out
+    /// by [`Self::secret_read_probe`]) said, while the pty was alive. Read when the pty dies.
+    last_secret_read_sample: Arc<AtomicBool>,
     /// #2040: this pane's answers to "may the keys typed now be a secret?" for the input-order
     /// log (`input_order::register_secret_input_probe`): the marker above with the hand-off's
     /// noted reader, and the termios probe once it is installed. Removed when the model drops.
@@ -1345,6 +1348,7 @@ impl TerminalModel {
             interactive_probe: None,
             secret_read_probe: None,
             tty_read_secret_marker,
+            last_secret_read_sample: Arc::new(AtomicBool::new(false)),
             secret_log_probes,
             tty_read_probe: None,
             subshell_tty_probe: None,
@@ -1674,7 +1678,21 @@ impl TerminalModel {
         self.handled_exit = true;
         if FeatureFlag::TypeaheadHandoff.is_enabled() {
             // Nothing can answer an outstanding typeahead request or run held keys any more.
-            self.typeahead_handoff.write().reset_on_exit();
+            // #2209 (owner decision 2026-11-14): keys held when the pty died while something was
+            // reading a SECRET are discarded (counted), never shown as text in the input. Only
+            // the secret signals count: the shell's own `TtyRead` marker with its secret flag,
+            // and the last sample of the tty taken while the pty was alive (canonical, echo
+            // off). The termios is NOT read here (the fd may be dead), and a reader that merely
+            // asks a question (`[y/N]`, `Username:`, the hand-off's prompt reader of #2038) is
+            // not a secret: its keys are shown like any others.
+            let reading_secret = self.tty_read_secret_marker.load(Ordering::Relaxed)
+                || self.last_secret_read_sample.load(Ordering::Relaxed);
+            let mut handoff = self.typeahead_handoff.write();
+            if reading_secret {
+                handoff.note_session_ended_reading_secret();
+            }
+            handoff.reset_on_exit();
+            drop(handoff);
         }
         // Forcibly exit the alt screen so that we can show the user the
         // banner informing them that the shell process exited.
@@ -2086,8 +2104,12 @@ impl TerminalModel {
     /// without a probe. Read at the ssh typeahead's ownership release (#1611, #1612, #1621), never
     /// on a timer.
     pub fn tty_reading_secret(&self) -> bool {
-        self.tty_read_secret_marker.load(Ordering::Relaxed)
-            || self.secret_read_probe.as_ref().is_some_and(|probe| probe())
+        let reading = self.tty_read_secret_marker.load(Ordering::Relaxed)
+            || self.secret_read_probe.as_ref().is_some_and(|probe| probe());
+        // #2209: the last LIVE sample, for the pty's death (the termios cannot be read then).
+        self.last_secret_read_sample
+            .store(reading, Ordering::Relaxed);
+        reading
     }
 
     /// #1641: installs the probe behind [`Self::tty_read_probe`] (unix local ptys,
@@ -2109,8 +2131,13 @@ impl TerminalModel {
         // so ConPTY (no termios) has the same guard.
         let marker = self.tty_read_secret_marker.clone();
         let inner = self.secret_read_probe.clone();
+        let last_sample = self.last_secret_read_sample.clone();
         Some(Arc::new(move || {
-            marker.load(Ordering::Relaxed) || inner.as_ref().is_some_and(|probe| probe())
+            let reading =
+                marker.load(Ordering::Relaxed) || inner.as_ref().is_some_and(|probe| probe());
+            // #2209: as in `tty_reading_secret`.
+            last_sample.store(reading, Ordering::Relaxed);
+            reading
         }))
     }
 

@@ -126,6 +126,67 @@ impl Input {
         self.flush_deferred_programmatic_edits(ctx);
     }
 
+    /// #2115: the shell's report of the line settled (`why`: it was inserted, or the hand-off
+    /// left the wait without one). Closes the `ReportEdit` gate, if the editor asked for one,
+    /// and the drain applies the cursor and deletion keys held behind it, and every key typed
+    /// after them, in order, to the joined line. A no-op when no such gate was asked for (the
+    /// common case: one `Cell` read).
+    pub(crate) fn release_report_edit_gate(
+        &mut self,
+        why: &'static str,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let Some(key) = self.editor.as_ref(ctx).paste_hold().take_report_edit_gate() else {
+            return;
+        };
+        warpui::input_order::log_hop("report_edit_gate", || {
+            format!("release key={key} why={why}")
+        });
+        let queue = self.editor.as_ref(ctx).paste_hold().queue();
+        let Some(mut guard) = queue.try_lock_ordered() else {
+            // Behind the gate's own open (it may still be in the mailbox), in order.
+            queue.defer(Deferred::GateEvent {
+                kind: GateKind::ReportEdit,
+                key,
+            });
+            queue.defer(Deferred::FlushProgrammaticEdits);
+            return;
+        };
+        let mut host = InputQueueHost::new(self, ctx);
+        guard.on_gate_event(&mut host, GateKind::ReportEdit, key);
+        drop(guard);
+        self.flush_deferred_programmatic_edits(ctx);
+    }
+
+    /// #2115: the net of the `ReportEdit` gate fired (`token`): the report the held keys waited
+    /// for did not come (a program ate the request). The queue replays the held keys in order
+    /// on the buffer as it is, which is what happened before the gate existed; none is dropped
+    /// or reordered. No second gate is opened for the same report.
+    pub(crate) fn give_up_report_edit_gate(
+        &mut self,
+        token: GateToken,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        log::warn!(
+            "input queue: the report-edit gate never closed (the shell's report of the line did \
+             not come); replaying the held keys in order on the buffer as it is"
+        );
+        warpui::input_order::log_hop("report_edit_gate", || "give_up".to_owned());
+        self.editor
+            .as_ref(ctx)
+            .paste_hold()
+            .note_report_edit_gave_up();
+        let queue = self.editor.as_ref(ctx).paste_hold().queue();
+        let Some(mut guard) = queue.try_lock() else {
+            queue.defer(Deferred::GiveUpCap(token));
+            return;
+        };
+        let mut host = InputQueueHost::new(self, ctx);
+        guard.give_up(&mut host, token);
+        drop(guard);
+        self.flush_deferred_programmatic_edits(ctx);
+    }
+
     /// Whether `token` names an open history-recall gate on this input's queue.
     pub(crate) fn is_history_recall_token(&self, token: GateToken, ctx: &AppContext) -> bool {
         self.editor

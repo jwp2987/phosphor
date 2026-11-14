@@ -253,6 +253,20 @@ impl EditorKeyPayload {
         }
     }
 
+    /// #2209: whether a hold written to the pty can write this key as bytes: typed text, an
+    /// Enter and a Backspace (what `TerminalView::given_up_entry` converts). Any other editor
+    /// action (a cursor move, a selection, Tab) has no byte form there and is replayed in the
+    /// editor. The key stays in place; `true` once it was delivered (nothing left to place).
+    pub fn has_pty_byte_form(&self) -> bool {
+        match self.0.borrow().as_ref() {
+            Some(HeldPasteKey::Text(_)) | None => true,
+            Some(HeldPasteKey::Action(action)) => matches!(
+                action,
+                crate::editor::EditorAction::Enter | crate::editor::EditorAction::Backspace
+            ),
+        }
+    }
+
     /// #1998: the key as the text it stands for, left in place: typed text as it is, an Enter as
     /// `\r`. `None` for any other editor action (a cursor move, a deletion by display position:
     /// no text form outside the editor) and once the key was delivered.

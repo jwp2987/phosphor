@@ -3706,10 +3706,7 @@ fn a_signal_ends_a_queued_young_hold_as_it_ends_the_buffered_one() {
             UserBytesRoute::WriteCounted
         );
         assert!(!handoff.has_young_hold());
-        assert_eq!(
-            handoff.take_young_hold_ends(),
-            vec![(id, YoungHoldEnd::Dropped)]
-        );
+        assert_eq!(handoff.take_young_hold_ends(), vec![(id, flushed())]);
         // Nothing is left to expire.
         assert_eq!(handoff.expire_queued_young_hold(id), YoungHoldExpiry::Gone);
     }
@@ -3774,10 +3771,7 @@ fn an_expired_timer_cannot_release_a_later_queued_hold() {
     handoff.on_user_bytes(&[0x03]);
     handoff.on_user_write_flushed();
     assert_eq!(handoff.on_interrupt(), InterruptOutcome::CommandRunning);
-    assert_eq!(
-        handoff.take_young_hold_ends(),
-        vec![(first, YoungHoldEnd::Dropped)]
-    );
+    assert_eq!(handoff.take_young_hold_ends(), vec![(first, flushed())]);
     type_and_flush(&mut handoff, b"def");
     assert_eq!(handoff.on_user_bytes(b"\r"), UserBytesRoute::Held);
     let second = handoff.take_young_hold_started().unwrap();
@@ -3806,27 +3800,33 @@ fn a_queued_young_hold_does_not_outlive_the_state_it_was_made_in() {
         vec![(id, YoungHoldEnd::FollowCommand)]
     );
 
-    // A state that cannot own a hold ends it before the next key is queued behind it.
+    // A state that cannot own a hold ends it before the next key is queued behind it. #2209:
+    // its keys are NOT void (this asserted `Dropped`, and the view discarded them): they go to
+    // whatever reads the pty, in typed order.
     let (mut handoff, id) = queued_young_hold();
     handoff.state = HandoffState::EditorOwned;
     assert!(!handoff.young_hold_end_pending());
     assert!(handoff.check_queued_young_hold());
     assert_eq!(
         handoff.take_young_hold_ends(),
-        vec![(id, YoungHoldEnd::Dropped)]
+        vec![(id, YoungHoldEnd::ToReader)]
     );
     // ... and while the hold is fine, the check leaves it alone.
     let (mut handoff, _) = queued_young_hold();
     assert!(!handoff.check_queued_young_hold());
     assert!(handoff.young_hold_queued());
 
-    // The session ending drops it, and the next hold never reuses its gate's key.
+    // The pane's pty dying ends it, and the next hold never reuses its gate's key. #2209: its
+    // keys are NOT void (this asserted `Dropped`): the view is told to deliver them, and that
+    // nothing reads the pty any more, so they become text in the input.
     let (mut handoff, id) = queued_young_hold();
+    assert!(!handoff.session_gone());
     handoff.reset_on_exit();
     assert_eq!(
         handoff.take_young_hold_ends(),
-        vec![(id, YoungHoldEnd::Dropped)]
+        vec![(id, YoungHoldEnd::ToReader)]
     );
+    assert!(handoff.session_gone());
     assert!(!handoff.has_young_hold());
     assert_eq!(handoff.young_hold_id, id);
 }
@@ -3840,10 +3840,7 @@ fn ctrl_c_cancels_a_queued_young_hold_behind_the_request() {
         ActiveDecision::SendRequest
     );
     assert!(handoff.cancel_deferred_enter());
-    assert_eq!(
-        handoff.take_young_hold_ends(),
-        vec![(id, YoungHoldEnd::Dropped)]
-    );
+    assert_eq!(handoff.take_young_hold_ends(), vec![(id, flushed())]);
     assert!(!handoff.cancel_deferred_enter());
 }
 
@@ -3880,17 +3877,23 @@ fn a_command_written_behind_a_queued_young_hold_takes_its_keys_with_it() {
     assert_eq!(handoff.writes_in_flight(), 0);
 }
 
+/// #2209 (path 2; this asserted `Dropped`): a command written while the hold waits behind its
+/// request (a submit that was not a queued key) cannot take the hold with it: the head of the
+/// held Enter's line is in the shell's line, where the command's kill prefix wipes it. The Enter
+/// and the keys behind it are kept WITH their line as text in the input, never dropped and
+/// never written behind the command.
 #[test]
-fn a_command_written_in_a_state_that_cannot_own_the_hold_drops_it() {
+fn a_command_written_in_a_state_that_cannot_own_the_hold_keeps_its_keys_with_the_line() {
     let (mut handoff, id) = queued_young_hold();
     handoff.state = HandoffState::AwaitingReport;
     handoff.on_command_written();
     assert_eq!(
         handoff.take_young_hold_ends(),
-        vec![(id, YoungHoldEnd::Dropped)]
+        vec![(id, YoungHoldEnd::WithLine)]
     );
     // Nothing follows the command, so nothing waits for the view to write it.
     assert!(handoff.young_hold_follow_pending.is_none());
+    assert!(!handoff.has_young_hold());
 }
 
 // ---- the keys behind a deferred Enter are entries behind a `HandoffReport` gate ------------------
@@ -3906,20 +3909,20 @@ fn a_deferred_enter_names_its_gate_and_every_end_is_recorded_for_the_view() {
     let gate = handoff.deferred_gate().expect("a gate");
     assert!(handoff.cancel_deferred_enter());
     assert_eq!(handoff.deferred_gate(), None);
-    assert_eq!(
-        handoff.take_young_hold_ends(),
-        vec![(gate, YoungHoldEnd::Dropped)]
-    );
+    assert_eq!(handoff.take_young_hold_ends(), vec![(gate, flushed())]);
 
-    // So does the session ending, and the next gate never reuses an id.
+    // The pane's pty dying ends the deferral too, and the next gate never reuses an id.
+    // #2209: the keys behind the deferred Enter are NOT void (this asserted `Dropped`): they
+    // stay with the Enter's line, which is in the editor, unrun.
     let mut handoff = awaiting_report();
     assert!(handoff.defer_enter());
     let first = handoff.deferred_gate().unwrap();
     handoff.reset_on_exit();
     assert_eq!(
         handoff.take_young_hold_ends(),
-        vec![(first, YoungHoldEnd::Dropped)]
+        vec![(first, YoungHoldEnd::WithLine)]
     );
+    assert!(handoff.session_gone());
     let mut handoff2 = awaiting_report();
     assert!(handoff2.defer_enter());
     assert!(handoff2.deferred_gate().is_some());
@@ -7075,10 +7078,7 @@ fn a_signal_behind_a_deferred_enter_waits_in_order_r18u23_fuzz() {
     // which drops the gate's keys, and the ^C then goes out at once.
     let (mut h, gate) = replay_r18u23_fuzz_to_deferred_gate();
     assert!(h.cancel_deferred_enter());
-    assert_eq!(
-        h.take_young_hold_ends(),
-        vec![(gate, YoungHoldEnd::Dropped)]
-    );
+    assert_eq!(h.take_young_hold_ends(), vec![(gate, flushed())]);
     assert_eq!(h.on_user_bytes(&[0x03]), UserBytesRoute::Write);
     assert_eq!(h.take_deferred_key_started(), None);
 }
@@ -7979,7 +7979,7 @@ fn a_young_enter_and_the_keys_behind_it_survive_an_uncounted_command_in_order() 
             "{cause}: the keys follow the command"
         );
         assert!(
-            !ends.iter().any(|(_, end)| *end == YoungHoldEnd::Dropped),
+            !ends.iter().any(|(_, end)| *end == flushed()),
             "{cause}: nothing is discarded"
         );
         // Until the view has written them nothing is decided over a line that looks shorter
@@ -8341,18 +8341,21 @@ fn the_hold_behind_a_reported_ssh_escape_is_written_not_dropped_when_its_session
     );
 }
 
-/// #2207 guard: every other young hold ends as before on those paths (its keys are void: the
-/// session is gone, or the state has run, flushed or dropped the hold), and a Ctrl-C still drops
-/// the escape's hold, as the tty flushes typeahead on an interrupt.
+/// #2209 (this was the #2207 guard `other_young_holds_are_still_dropped_when_their_session_goes`
+/// and asserted `Dropped` twice): no young hold is dropped on those paths any more. One whose
+/// pty died, or whose state left the pty's ownership, goes to the reader (`ToReader`: the pty in
+/// typed order, or text in the input when the pty is gone); the escape's hold keeps its own end
+/// (`Typeahead`, the tests above). A Ctrl-C still flushes the escape's hold, as the tty flushes
+/// typeahead on an interrupt: that is the only discard left.
 #[test]
-fn other_young_holds_are_still_dropped_when_their_session_goes() {
+fn other_young_holds_go_to_the_reader_when_their_session_goes() {
     let mut handoff = young_after_submit();
     type_and_flush(&mut handoff, b"abc");
     let (id, _) = hold_young_enter(&mut handoff, b"\r");
     handoff.reset_on_exit();
     assert_eq!(
         handoff.take_young_hold_ends(),
-        vec![(id, YoungHoldEnd::Dropped)]
+        vec![(id, YoungHoldEnd::ToReader)]
     );
 
     let mut handoff = young_after_submit();
@@ -8362,18 +8365,18 @@ fn other_young_holds_are_still_dropped_when_their_session_goes() {
     assert!(handoff.check_queued_young_hold());
     assert_eq!(
         handoff.take_young_hold_ends(),
-        vec![(id, YoungHoldEnd::Dropped)]
+        vec![(id, YoungHoldEnd::ToReader)]
     );
 
     // A signal: the user's interrupt voids what was typed ahead, the escape's hold included.
+    // (Until #2209 this arm sat under an `if let Some` and passed without asserting anything
+    // when the hold was not made.)
     let (mut handoff, _pty, _gate) = deferred_enter_behind_a_reported_tilde();
-    if let Some((_, hold_id)) = handoff.hold_deferred_enter_for_next_prompt(*b"~.") {
-        let _ = handoff.on_user_bytes(b"\x03");
-        assert_eq!(
-            handoff.take_young_hold_ends(),
-            vec![(hold_id, YoungHoldEnd::Dropped)]
-        );
-    }
+    let (_, hold_id) = handoff
+        .hold_deferred_enter_for_next_prompt(*b"~.")
+        .expect("the deferred Enter waits for the next prompt");
+    let _ = handoff.on_user_bytes(b"\x03");
+    assert_eq!(handoff.take_young_hold_ends(), vec![(hold_id, flushed())]);
 }
 
 /// #2207 (review F4): the hold made for a reported ssh escape ends at the EDGE where the editor
@@ -8425,4 +8428,425 @@ fn the_escape_hold_is_still_known_after_its_session_ended() {
     handoff.reset_on_exit();
     assert!(handoff.is_escape_hold(hold_id));
     assert!(!handoff.is_escape_hold(hold_id.wrapping_add(1)));
+}
+
+// ---- #2209: no typed key is dropped when a hold ends ------------------------------------------
+//
+// A key the hand-off holds leaves its gate in one of three ways: to the reader
+// (`YoungHoldEnd::ToReader` / `Typeahead` / `FollowCommand` / `SubmitOnReport`), kept with its line
+// (`WithLine`), or flushed by a signal (`FlushedBySignal`). These tests pin the labels; what the
+// view does with each label is pinned by the view tests (`input_test.rs`, "#2209").
+
+/// The one end that discards held keys. Only a signal path of the hand-off can build it
+/// ([`SignalFlush`] is private to the module; this test module is a child of it).
+fn flushed() -> YoungHoldEnd {
+    YoungHoldEnd::FlushedBySignal(SignalFlush(()))
+}
+
+/// A young hold whose request has been written: the hold waits behind it (`AwaitingReport`).
+fn young_hold_behind_its_request() -> (TypeaheadHandoff, u64) {
+    let (mut handoff, id) = queued_young_hold();
+    handoff.on_precmd();
+    assert_eq!(
+        handoff.on_line_editor_active(true, true),
+        ActiveDecision::SendRequest
+    );
+    assert_eq!(handoff.state(), &HandoffState::AwaitingReport);
+    assert!(handoff.young_hold_queued());
+    (handoff, id)
+}
+
+/// #2209, the structural rule: from every state a hold can be in, NO event that is not a signal
+/// records the flushed end. (The signal paths are `on_user_bytes` with a signal byte,
+/// `on_interrupt` and `cancel_deferred_enter`; they are the only callers of the two functions
+/// that build `SignalFlush`.)
+#[test]
+fn no_event_but_a_signal_voids_held_keys() {
+    type Fixture = fn() -> TypeaheadHandoff;
+    let fixtures: [(&str, Fixture); 6] = [
+        ("young hold, pty owned", || queued_young_hold().0),
+        ("young hold behind its request", || {
+            young_hold_behind_its_request().0
+        }),
+        ("young hold, editor owned (stale)", || {
+            let (mut handoff, _) = queued_young_hold();
+            handoff.state = HandoffState::EditorOwned;
+            handoff
+        }),
+        ("young hold stranded behind a deferred Enter", || {
+            let (mut handoff, _) = young_hold_behind_its_request();
+            handoff.report_deferral_id = Some(7);
+            handoff.deferred_gate = Some(DEFERRED_GATE_ID_BIT | 1);
+            handoff.state = HandoffState::HoldAfterEnter { released: false };
+            handoff
+        }),
+        ("Enter deferred behind the report", || {
+            let mut handoff = awaiting_report();
+            assert!(handoff.defer_enter());
+            handoff
+        }),
+        ("deferred Enter whose submit ran", || {
+            let mut handoff = awaiting_report();
+            assert!(handoff.defer_enter());
+            let _ = handoff.on_report();
+            handoff
+        }),
+    ];
+    type Event = fn(&mut TypeaheadHandoff);
+    let events: [(&str, Event); 19] = [
+        ("reset_on_exit", |h| h.reset_on_exit()),
+        ("on_command_written", |h| h.on_command_written()),
+        ("on_unengaged_user_command_written", |h| {
+            h.on_unengaged_user_command_written()
+        }),
+        ("on_uncounted_command_written", |h| {
+            h.on_uncounted_command_written()
+        }),
+        ("check_queued_young_hold", |h| {
+            let _ = h.check_queued_young_hold();
+        }),
+        ("expire_queued_young_hold", |h| {
+            let id = h.young_hold_id;
+            let _ = h.expire_queued_young_hold(id);
+        }),
+        ("on_precmd", |h| h.on_precmd()),
+        ("on_preexec(shell)", |h| {
+            let _ = h.on_preexec(true);
+        }),
+        ("on_preexec(app)", |h| {
+            let _ = h.on_preexec(false);
+        }),
+        ("on_report", |h| {
+            let _ = h.on_report();
+        }),
+        ("give_up_report_deferral", |h| {
+            let _ = h.give_up_report_deferral(7);
+            if let Some(id) = h.report_deferral_id {
+                let _ = h.give_up_report_deferral(id);
+            }
+        }),
+        ("give_up_deferred_gate", |h| {
+            if let Some(gate) = h.deferred_gate() {
+                let _ = h.give_up_deferred_gate(gate);
+            }
+        }),
+        ("release_after_unsubmitted_enter", |h| {
+            let _ = h.release_after_unsubmitted_enter();
+        }),
+        ("on_stream_applied", |h| {
+            let _ = h.on_stream_applied();
+        }),
+        ("note_command_interactive", |h| h.note_command_interactive()),
+        ("try_commit_at_prompt", |h| {
+            let _ = h.try_commit_at_prompt();
+        }),
+        ("on_line_editor_active", |h| {
+            let _ = h.on_line_editor_active(true, true);
+        }),
+        ("a typed key", |h| {
+            let _ = h.on_user_bytes(b"x");
+        }),
+        ("a typed Enter", |h| {
+            let _ = h.on_user_bytes(b"\r");
+        }),
+    ];
+    for (state, fixture) in fixtures {
+        for (name, event) in events {
+            let mut handoff = fixture();
+            let _ = handoff.take_young_hold_ends();
+            event(&mut handoff);
+            let ends = handoff.take_young_hold_ends();
+            assert!(
+                !ends
+                    .iter()
+                    .any(|(_, end)| matches!(end, YoungHoldEnd::FlushedBySignal(_))),
+                "{state}: {name} recorded a flush although it is not a signal: {ends:?}"
+            );
+        }
+    }
+    // The signals do record it, from the same states that hold a young Enter.
+    for signal in [0x03u8, 0x1a, 0x1c] {
+        let (mut handoff, id) = queued_young_hold();
+        let _ = handoff.on_user_bytes(&[signal]);
+        assert_eq!(handoff.take_young_hold_ends(), vec![(id, flushed())]);
+    }
+    let (mut handoff, id) = young_hold_behind_its_request();
+    assert!(handoff.cancel_deferred_enter());
+    assert_eq!(handoff.take_young_hold_ends(), vec![(id, flushed())]);
+}
+
+/// #2209: the view's busy-queue path may record a flush only for the hold a signal just took
+/// (`take_queued_young_hold_for_signal`); asked for any other hold, nothing is recorded.
+#[test]
+fn a_flush_is_restored_only_for_the_hold_a_signal_took() {
+    let (mut handoff, id) = queued_young_hold();
+    handoff.restore_flushed_young_hold(id);
+    assert!(
+        handoff.take_young_hold_ends().is_empty(),
+        "no signal took the hold: nothing is flushed"
+    );
+    assert!(handoff.young_hold_queued());
+    assert_eq!(
+        handoff.take_queued_young_hold_for_signal(&[0x03]),
+        Some((id, false))
+    );
+    handoff.restore_flushed_young_hold(id.wrapping_add(1));
+    assert!(
+        handoff.take_young_hold_ends().is_empty(),
+        "another hold's id"
+    );
+    // (The wrong id consumed the permission: one signal, one flush.)
+    let (mut handoff, id) = queued_young_hold();
+    assert_eq!(
+        handoff.take_queued_young_hold_for_signal(&[0x03]),
+        Some((id, false))
+    );
+    handoff.restore_flushed_young_hold(id);
+    assert_eq!(handoff.take_young_hold_ends(), vec![(id, flushed())]);
+    handoff.restore_flushed_young_hold(id);
+    assert!(handoff.take_young_hold_ends().is_empty(), "once");
+}
+
+/// #2209 (review M6): a lone EOF is not a discard signal: the tty keeps typeahead across it. The
+/// hold it takes is handed to the view to write in front of the EOF, and NO flush may be
+/// recorded for it (the view's busy-queue path records `ToReader` instead).
+#[test]
+fn a_lone_eof_never_flushes_the_hold_it_takes() {
+    let (mut handoff, id) = queued_young_hold();
+    assert_eq!(
+        handoff.take_queued_young_hold_for_signal(&[0x04]),
+        Some((id, true))
+    );
+    handoff.restore_flushed_young_hold(id);
+    assert!(
+        handoff.take_young_hold_ends().is_empty(),
+        "an EOF's hold cannot be recorded as flushed"
+    );
+    handoff.restore_young_hold_end(id, YoungHoldEnd::ToReader);
+    assert_eq!(
+        handoff.take_young_hold_ends(),
+        vec![(id, YoungHoldEnd::ToReader)]
+    );
+    // An EOF together with an interrupt is the interrupt's flush.
+    let (mut handoff, id) = queued_young_hold();
+    assert_eq!(
+        handoff.take_queued_young_hold_for_signal(&[0x04, 0x03]),
+        Some((id, false))
+    );
+    handoff.restore_flushed_young_hold(id);
+    assert_eq!(handoff.take_young_hold_ends(), vec![(id, flushed())]);
+}
+
+/// #2209 (review N1): `defer_enter` refuses only where the Enter has a gate to queue behind (a
+/// young hold waiting behind its request). A hold still queued while the editor owns input with
+/// an uncovered report outstanding is stale: refusing there would let the editor submit the
+/// fragment it holds. The stale hold is ended (its keys delivered) and the Enter is deferred.
+#[test]
+fn an_enter_behind_an_uncovered_report_is_deferred_although_a_stale_hold_is_queued() {
+    let (mut handoff, id) = queued_young_hold();
+    handoff.state = HandoffState::EditorOwned;
+    handoff.untracked_line_bytes = true;
+    handoff.requests_outstanding = 1;
+    assert_eq!(handoff.enter_queues_behind(Instant::now()), None);
+    assert!(
+        handoff.defer_enter(),
+        "the Enter waits for the covering report, it does not submit a fragment"
+    );
+    assert_eq!(
+        handoff.state(),
+        &HandoffState::HoldAfterEnter { released: false }
+    );
+    assert_eq!(
+        handoff.take_young_hold_ends(),
+        vec![(id, YoungHoldEnd::ToReader)],
+        "the stale hold's keys are delivered, not left behind the deferral"
+    );
+    assert!(!handoff.has_young_hold());
+}
+
+/// #2209 (H5, the #1016 editor-first race): an Enter that reaches the editor while a young Enter
+/// waits behind the request is NOT deferred. It used to be: the state became `HoldAfterEnter`
+/// with the hold still queued, the report's arm for that state never took the hold, and every
+/// later path dropped its keys. The hand-off names the gate the Enter queues behind instead, and
+/// the report still runs the held Enter with the keys behind it.
+#[test]
+fn an_enter_that_reaches_the_editor_behind_a_young_hold_is_not_deferred() {
+    let now = Instant::now();
+    let (mut handoff, id) = young_hold_behind_its_request();
+    assert!(
+        !handoff.defer_enter(),
+        "the Enter is queued behind the hold, never deferred over it"
+    );
+    assert_eq!(handoff.state(), &HandoffState::AwaitingReport);
+    assert!(handoff.young_hold_queued());
+    assert_eq!(handoff.deferred_gate(), None);
+    assert!(
+        matches!(
+            handoff.enter_queues_behind(now),
+            Some(EnterQueuesBehind::YoungHold { hold_id, .. }) if hold_id == id
+        ),
+        "the Enter queues behind the hold's `PromptSeen` gate"
+    );
+    // The report runs the held Enter; the hold's gate becomes the deferred Enter's in place, so
+    // the Enter queued behind it is then an entry behind a deferred Enter (the #1016 shape).
+    assert_eq!(
+        handoff.on_report(),
+        ReportDisposition::InsertThenSubmitYoung
+    );
+    let ends = handoff.take_young_hold_ends();
+    assert!(
+        matches!(
+            ends.as_slice(),
+            [(hold, YoungHoldEnd::SubmitOnReport { .. })] if *hold == id
+        ),
+        "{ends:?}"
+    );
+
+    // An Enter deferred behind the report (no young hold): later Enters queue behind its gate.
+    let mut handoff = awaiting_report();
+    assert_eq!(handoff.enter_queues_behind(now), None);
+    assert!(handoff.defer_enter());
+    let gate = handoff.deferred_gate().expect("a gate");
+    assert_eq!(
+        handoff.enter_queues_behind(now),
+        Some(EnterQueuesBehind::DeferredEnter { gate })
+    );
+    // Once its submit ran, an Enter reaching the editor is that submit itself: not queued.
+    let _ = handoff.on_report();
+    assert_eq!(handoff.enter_queues_behind(now), None);
+    // Nothing held at all.
+    assert_eq!(TypeaheadHandoff::default().enter_queues_behind(now), None);
+}
+
+/// #2209 (H4, the net behind H5): a young hold stranded behind a deferred Enter (a state only a
+/// queue / hand-off disagreement can still produce) is never void when that deferral is given
+/// up, by the report patience or by the gate's leak net: its Enter and keys go to the reader,
+/// once.
+#[test]
+fn a_young_hold_stranded_behind_a_deferred_enter_survives_the_deferrals_give_up() {
+    let stranded = || {
+        let (mut handoff, id) = young_hold_behind_its_request();
+        let gate = DEFERRED_GATE_ID_BIT | 1;
+        handoff.report_deferral_id = Some(7);
+        handoff.deferred_gate = Some(gate);
+        handoff.state = HandoffState::HoldAfterEnter { released: false };
+        (handoff, id, gate)
+    };
+    let (mut handoff, id, gate) = stranded();
+    assert_eq!(handoff.give_up_report_deferral(7), Some(gate));
+    assert_eq!(
+        handoff.take_young_hold_ends(),
+        vec![(id, YoungHoldEnd::ToReader)]
+    );
+    assert!(!handoff.has_young_hold());
+    assert_eq!(handoff.give_up_report_deferral(7), None, "once");
+    assert!(handoff.take_young_hold_ends().is_empty());
+
+    let (mut handoff, id, gate) = stranded();
+    assert!(handoff.give_up_deferred_gate(gate));
+    assert_eq!(
+        handoff.take_young_hold_ends(),
+        vec![(id, YoungHoldEnd::ToReader)]
+    );
+    assert!(!handoff.give_up_deferred_gate(gate), "once");
+}
+
+/// #2209 (owner decision 2026-11-14): the pane's pty died while something was reading a secret.
+/// The fact is kept across the reset, for the view to discard (and count) the keys held then
+/// instead of showing them.
+#[test]
+fn a_secret_read_at_the_ptys_death_is_remembered_across_the_reset() {
+    let (mut handoff, id) = queued_young_hold();
+    assert!(!handoff.session_gone_reading_secret());
+    handoff.note_session_ended_reading_secret();
+    handoff.reset_on_exit();
+    assert!(handoff.session_gone());
+    assert!(handoff.session_gone_reading_secret());
+    // The end is still recorded: the VIEW decides (it discards with a counted log line).
+    assert_eq!(
+        handoff.take_young_hold_ends(),
+        vec![(id, YoungHoldEnd::ToReader)]
+    );
+    // Without a secret reader nothing is marked.
+    let (mut handoff, _) = queued_young_hold();
+    handoff.reset_on_exit();
+    assert!(!handoff.session_gone_reading_secret());
+}
+
+/// #2209 (owner decision 2026-11-14, "keep every key"): bytes typed for the pty and replayed in
+/// the input editor are NAMED key by key, none dropped: `line_for_editor` drops Up / Down, a lone
+/// ESC and `^C`, and applies the cursor keys to a line of its own (clamping them at its start).
+#[test]
+fn bytes_replayed_in_the_editor_keep_every_key() {
+    use EditorReplayKey as K;
+    assert_eq!(
+        editor_keys_of_bytes(b"ab\x1b[Dc\x1b[A\x1b[B\x1bOC\x1b[H\x1b[F\x1b[3~"),
+        vec![
+            K::Text("ab".to_owned()),
+            K::Left,
+            K::Text("c".to_owned()),
+            K::Up,
+            K::Down,
+            K::Right,
+            K::Home,
+            K::End,
+            K::Delete,
+        ]
+    );
+    assert_eq!(
+        editor_keys_of_bytes(b"x\x7f\x15\x0b\x17\t\x03\x1b"),
+        vec![
+            K::Text("x".to_owned()),
+            K::Backspace,
+            K::KillToStart,
+            K::KillToEnd,
+            K::KillWord,
+            K::Tab,
+            K::Interrupt,
+            K::Escape,
+        ]
+    );
+    // An Enter is a line break, in place; the text after it is its own run.
+    assert_eq!(
+        editor_keys_of_bytes(b"ls\rpwd\n"),
+        vec![
+            K::Text("ls".to_owned()),
+            K::LineBreak,
+            K::Text("pwd".to_owned()),
+            K::LineBreak,
+        ]
+    );
+    // A sequence the editor has no key for is named with its length, never skipped: F5
+    // (`ESC [ 1 5 ~`, 5 bytes), Ctrl-Left (`ESC [ 1 ; 5 D`, 6 bytes), `^Z`.
+    assert_eq!(
+        editor_keys_of_bytes(b"a\x1b[15~\x1b[1;5D\x1ab"),
+        vec![
+            K::Text("a".to_owned()),
+            K::NoEditorKey(5),
+            K::NoEditorKey(6),
+            K::NoEditorKey(1),
+            K::Text("b".to_owned()),
+        ]
+    );
+    // Emacs mode's previous / next line are Up and Down (review M2); `^C` is named so the
+    // caller can count it, and is never replayed (review M5).
+    assert_eq!(
+        editor_keys_of_bytes(b"a\x10\x0e\x03"),
+        vec![K::Text("a".to_owned()), K::Up, K::Down, K::Interrupt]
+    );
+    // The cursor keys are NOT clamped here (that is #2115: four Lefts stay four Lefts, for the
+    // editor to apply against the joined line), where `line_for_editor` on a one-character line
+    // loses three of them.
+    assert_eq!(
+        editor_keys_of_bytes(b"t\x1b[D\x1b[D\x1b[D\x1b[Dy"),
+        vec![
+            K::Text("t".to_owned()),
+            K::Left,
+            K::Left,
+            K::Left,
+            K::Left,
+            K::Text("y".to_owned()),
+        ]
+    );
+    assert!(editor_keys_of_bytes(b"").is_empty());
 }

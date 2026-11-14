@@ -463,14 +463,23 @@ event instead, in typed order, the Enter first:
   local shell after `~.`); a command written; no request possible. Net: that
   gate's cap (the 10 s give-up, which writes in typed order). No new state,
   gate kind or timer.
-- Never dropped (owner decision 2026-11-13). Where any other young hold's keys
-  are void (`YoungHoldEnd::Dropped`: the session ended, or the state left
-  `PtyOwned` / `AwaitingReport` with the hold queued, or a command was written
-  from another state), THIS hold's Enter and keys are written in typed order to
-  whatever owns input now (`YoungHoldEnd::Typeahead`,
-  `end_unowned_young_hold`), as a plain terminal delivers what was typed after
-  ssh exits. A Ctrl-C still drops it, as the tty flushes typeahead on an
-  interrupt. Other young holds are unchanged.
+- Never dropped (owner decision 2026-11-13). When the state left `PtyOwned` /
+  `AwaitingReport` with the hold queued, or a command was written from another
+  state, THIS hold's Enter and keys are written in typed order to whatever owns
+  input now (`YoungHoldEnd::Typeahead`, `end_unowned_young_hold`), as a plain
+  terminal delivers what was typed after ssh exits. A Ctrl-C still flushes it,
+  as the tty flushes typeahead on an interrupt.
+- #2209 (2026-11-14): no OTHER young hold is dropped on those paths either, and
+  `YoungHoldEnd::Dropped` no longer exists. A hold nothing owns goes to the
+  reader (`ToReader`: the pty in typed order through the guarded give-up
+  writer, text in the input when the pty is gone), or stays with its line as
+  input text (`WithLine`: a command written from a state that cannot own the
+  hold, the keys behind a deferred Enter whose pty died). Only a signal
+  discards (`FlushedBySignal`). When the PANE's pty dies this hold's keys
+  become input text too (nothing reads a dead pty). An Enter that reaches the
+  editor while a young Enter waits behind its request queues behind that
+  hold's gate instead of being deferred over it. Design and owner answers:
+  `docs/design/2209-no-dropped-keys.md`.
 - Only when the deferral is the one thing in the way
   (`deferred_enter_could_wait_for_next_prompt`, and in the view: the deferred
   gate is the only gate in the pane queue and no signal is held). Otherwise,

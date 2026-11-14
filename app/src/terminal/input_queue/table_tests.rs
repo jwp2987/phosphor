@@ -1245,8 +1245,9 @@ const SIGNALS: [SignalKind; 4] = [
 #[test]
 fn the_gate_by_signal_plan_matrix() {
     use GateSignalPlan::*;
-    // [Interrupt, Eof, Suspend, Quit] per gate kind: the 14 x 4 plan of design revision 3.
-    let expected: [(GateKind, [GateSignalPlan; 4]); 14] = [
+    // [Interrupt, Eof, Suspend, Quit] per gate kind: the 15 x 4 plan (design revision 3, plus
+    // the report-edit gate of #2115).
+    let expected: [(GateKind, [GateSignalPlan; 4]); 15] = [
         (GateKind::PasteReading, [CancelPasteThenFlush; 4]),
         (GateKind::CliSubmit, [CancelPasteThenFlush; 4]),
         (GateKind::EnterVerdict, [DiscardThenSignal; 4]),
@@ -1294,6 +1295,17 @@ fn the_gate_by_signal_plan_matrix() {
         // #2188: as the local Tab hold: every signal voids the completion and the keys typed
         // behind the Tab.
         (GateKind::RemoteTabCompletion, [DiscardThenSignal; 4]),
+        // #2115: as the history-recall gate: ^C (and ^Z, ^\) discards the line and the edits
+        // typed behind the pending report with it; ^D waits in order like a key.
+        (
+            GateKind::ReportEdit,
+            [
+                DiscardThenSignal,
+                WaitInOrder,
+                DiscardThenSignal,
+                DiscardThenSignal,
+            ],
+        ),
         (GateKind::SubshellSetup, [SignalThenRelease; 4]),
         (
             GateKind::SubshellBootstrapWrite,

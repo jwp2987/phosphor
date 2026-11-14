@@ -192,7 +192,8 @@ impl Host for InputQueueHost<'_, '_> {
                 GateKind::EnterVerdict
                 | GateKind::TabCompletion
                 | GateKind::HistoryRecall
-                | GateKind::RemoteTabCompletion,
+                | GateKind::RemoteTabCompletion
+                | GateKind::ReportEdit,
             ) => {}
             other => log::warn!("input queue: editor paste entry discarded: {other:?}"),
         }
@@ -240,6 +241,13 @@ impl Input {
             // the edits before the key have flushed (a stream item is delivered after them).
             let (tx, rx) = async_channel::bounded::<()>(1);
             self.editor.as_ref(ctx).paste_hold().enable_display_gate(tx);
+            // #2115: a cursor or deletion key typed while the shell's report of the line is
+            // still on its way waits for it; the editor asks this pane's hand-off.
+            let handoff = self.model.lock().pane_handoff();
+            self.editor
+                .as_ref(ctx)
+                .paste_hold()
+                .watch_report_for_edit_keys(handoff);
             let _ = ctx.spawn_stream_local(
                 rx,
                 |me, _, ctx| me.on_display_map_step(ctx),
@@ -323,6 +331,18 @@ impl Input {
         // held keys in order on the line as typed.
         if self.is_remote_tab_token(token, ctx) {
             self.give_up_remote_tab_gate(token, ctx);
+            return;
+        }
+        // #2115: the report-edit gate's net replays the held keys in order on the buffer as it
+        // is, and opens no second gate for the same report.
+        let report_edit = queue.try_peek().is_some_and(|queue| {
+            queue
+                .gates()
+                .iter()
+                .any(|open| open.token == token && open.kind == GateKind::ReportEdit)
+        });
+        if report_edit {
+            self.give_up_report_edit_gate(token, ctx);
             return;
         }
         // #1571: the net of a verdict gate that now holds an Enter refused by an unready shell

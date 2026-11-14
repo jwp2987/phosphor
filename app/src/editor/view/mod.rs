@@ -3376,6 +3376,45 @@ impl EditorView {
         true
     }
 
+    /// #2115: `action` is a cursor or deletion key and the shell's report of the line is still
+    /// on its way, so the editor holds only what was typed after the request for it: applied
+    /// now, the key acts on that partial buffer and a move or deletion past its start is clamped
+    /// and lost (`echo fz1wjn` in the shell, `t` in the editor, four Lefts: the cursor ended two
+    /// places short and the next character landed in the wrong place).
+    ///
+    /// The key opens the `ReportEdit` gate and waits behind it; from then on the queue holds
+    /// every key of the pane behind that gate, in order. The report's insertion closes the gate
+    /// (`Input::release_report_edit_gate`) and the keys are applied to the joined line. Both
+    /// steps go through the queue's mailbox, applied in order by the next queue operation of
+    /// the terminal view, whose host arms the gate's net (the queue's own cap; this editor's
+    /// host arms none). Only on an idle queue (the caller checked), never for a key that is
+    /// itself being delivered by the queue, and only for the terminal input's editor (no other
+    /// editor has a hand-off). Returns whether the key was taken.
+    fn hold_edit_key_behind_pending_report(&mut self, action: &EditorAction) -> bool {
+        use crate::terminal::input_queue::{Deferred, GateKind, GateSpec, Origin};
+        if self.paste_hold.is_replaying()
+            || !edits_at_a_position_in_the_line(action)
+            || !self.paste_hold.report_edit_gate_due()
+        {
+            return false;
+        }
+        let key =
+            paste_hold::held_form(action).unwrap_or_else(|| HeldPasteKey::Action(action.clone()));
+        let gate = self.paste_hold.next_report_edit_gate();
+        let queue = self.paste_hold.queue();
+        queue.defer(Deferred::OpenGate(GateSpec::new(
+            GateKind::ReportEdit,
+            gate,
+        )));
+        queue.defer(Deferred::Offer {
+            kind: recall_held_entry(key),
+            origin: Origin::Keyboard,
+            stamp: queue.stamp_now(),
+        });
+        warpui::input_order::log_hop("report_edit_gate", || format!("open key={gate}"));
+        true
+    }
+
     /// The input-queue form of [`Self::hold_key_for_paste`] (#1353 phase 1). Idle (the common
     /// case) this is one borrow-flag read: no lock, no allocation. While the queue holds input
     /// the key is offered to it, which is the single entry point for keys behind a paste: it
@@ -3387,6 +3426,11 @@ impl EditorView {
     ) -> bool {
         use crate::terminal::input_queue::{EditorKeyPayload, EntryKind, SignalKind};
         if !self.paste_hold.queue_is_busy() {
+            // #2115: a cursor or deletion key while the shell's report of the line is still on
+            // its way waits for the report, and every key after it behind it.
+            if self.hold_edit_key_behind_pending_report(action) {
+                return true;
+            }
             return self.offer_layout_key_behind_stale_layout(action, ctx);
         }
         let queue = self.paste_hold.queue();
@@ -3581,9 +3625,13 @@ impl EditorView {
         // #2188: the same hold behind the remote Tab completion gate: the completion a Tab asked
         // the remote side for is not in the buffer yet, and every key typed meanwhile (the fast
         // Enter first of all) waits in the queue, in order, and acts on the completed line.
+        // #2115: the same hold behind the report-edit gate: the head of the line is not in the
+        // buffer until the shell's report is inserted, and every key typed from the first cursor
+        // or deletion key on waits in the queue, in order, and acts on the joined line.
         if queue.try_peek().is_some_and(|held| {
             held.has_gate_kind(crate::terminal::input_queue::GateKind::HistoryRecall)
                 || held.has_gate_kind(crate::terminal::input_queue::GateKind::RemoteTabCompletion)
+                || held.has_gate_kind(crate::terminal::input_queue::GateKind::ReportEdit)
         }) {
             let kind = match paste_hold::held_form(action) {
                 Some(key) => Some(recall_held_entry(key)),
@@ -10008,6 +10056,8 @@ fn editor_interrupt_meets_gate(queue: &crate::terminal::input_queue::PaneQueue) 
             // #2188: ^C voids the remote Tab completion and the keys typed behind the Tab, as it
             // voids an Enter held for a local Tab completion.
             GateKind::RemoteTabCompletion => true,
+            // #2115: ^C discards the line and the edits typed behind the pending report with it.
+            GateKind::ReportEdit => true,
             // Not `HandoffReport`: an interrupt meeting an Enter deferred for the shell's report
             // cancels that Enter and voids the keys behind its gate (`TerminalView::ctrl_c`,
             // through the editor's own event), which a signal offered to the queue would flush
@@ -10015,6 +10065,37 @@ fn editor_interrupt_meets_gate(queue: &crate::terminal::input_queue::PaneQueue) 
             _ => false,
         })
     })
+}
+
+/// #2115: whether `action` moves the cursor or deletes relative to a position in the line, so its
+/// result depends on text the editor does not hold yet while the shell's report of the line is
+/// still on its way. Typed text is not one (it is inserted where the cursor is and the report
+/// goes in front of it); Enter and Tab have their own waits for the report (#1016, #1659); Up and
+/// Down recall history and do not act on the line.
+fn edits_at_a_position_in_the_line(action: &EditorAction) -> bool {
+    matches!(
+        action,
+        EditorAction::Left
+            | EditorAction::Right
+            | EditorAction::Backspace
+            | EditorAction::Delete
+            | EditorAction::DeleteWordLeft
+            | EditorAction::DeleteWordRight
+            | EditorAction::DeleteAllLeft
+            | EditorAction::DeleteAllRight
+            | EditorAction::CutWordLeft
+            | EditorAction::CutWordRight
+            | EditorAction::CutAllLeft
+            | EditorAction::CutAllRight
+            | EditorAction::MoveToLineStart
+            | EditorAction::MoveToLineEnd
+            | EditorAction::MoveToVisualLineStart
+            | EditorAction::MoveToVisualLineEnd
+            | EditorAction::MoveToParagraphStart
+            | EditorAction::MoveToParagraphEnd
+            | EditorAction::MoveToBufferStart
+            | EditorAction::MoveToBufferEnd
+    )
 }
 
 /// #2107: a ^C typed behind the history-recall gate waits in order when an Enter is already held

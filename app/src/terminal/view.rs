@@ -15172,6 +15172,9 @@ impl TerminalView {
         if has_stashed_report {
             self.insert_typeahead_from_handoff(ctx);
         }
+        // #2115: the hand-off left the wait for a report without one (a command was written,
+        // an interrupt, the session ended): the keys held for the joined line replay now.
+        self.release_report_edit_gate_if_settled("handoff_changed", ctx);
         // #2012: the editor owns input again and no report is on its way: nothing is left to
         // place behind the text the editor held when the shell started a command by itself.
         let no_report_coming = {
@@ -15313,6 +15316,8 @@ impl TerminalView {
         match disposition {
             ReportDisposition::InsertLegacy => {
                 self.handle_typeahead_event(ctx);
+                // #2115: as after a hand-off report's insertion.
+                self.release_report_edit_gate_if_settled("report_legacy", ctx);
                 self.resume_tab_after_report(ctx);
                 // #1104: bytes written behind the request this report answers are still in the
                 // shell's line; ask for them with one more request.
@@ -15637,6 +15642,10 @@ impl TerminalView {
                  press Enter to run it"
             }
             "uncovered_report" => "The shell did not report its line; the text stays in the input",
+            // #2209: the pane's pty died with this Enter deferred.
+            "session_gone" => {
+                "The shell exited before this line ran. What you typed is in the input"
+            }
             _ => crate::terminal::input::VERDICT_GIVE_UP_TOAST,
         };
         // The input's part: the line's own notice (never a count) and one log hop.
@@ -15764,11 +15773,16 @@ impl TerminalView {
         // Taken whether or not the report holds text (see `take_report_line_facts`).
         let facts = self.take_report_line_facts(ctx);
         let Some((typeahead, num_typeahead_chars_inserted)) = typeahead else {
+            self.release_report_edit_gate_if_settled("report_empty", ctx);
             return HandoffInsert::Inserted;
         };
         let inserted = self.input.update(ctx, |input, ctx| {
             input.insert_reported_line(num_typeahead_chars_inserted, &typeahead, facts, ctx)
         });
+        // #2115: the line is joined (the report is in front of what the editor held): the
+        // cursor and deletion keys typed while it was on its way, and every key after them, are
+        // applied now, in order, before anything else acts on the line.
+        self.release_report_edit_gate_if_settled("report_inserted", ctx);
         ctx.notify();
         if let HandoffInsert::SshEscape(bytes) = inserted {
             // #2207: with an Enter deferred behind this report, `\r~X` goes out alone and the
@@ -15784,6 +15798,67 @@ impl TerminalView {
             self.write_ssh_escape(bytes, ctx);
         }
         inserted
+    }
+
+    /// #2209: the pane's shell exited: the input editor is disabled, so user interactions with
+    /// it are ignored. Keys of a hold that are being replayed into it (text in the input, since
+    /// nothing reads the pty) may still wait for the display map: a disabled editor would
+    /// refuse them. While some wait, the disable is put off to the next turn of the event
+    /// loop, at most `turns_left` times (no timer: each turn follows the replay step before
+    /// it); then the editor is disabled whatever waits, with a warning.
+    fn disable_exited_input_editor(&mut self, turns_left: u32, ctx: &mut ViewContext<Self>) {
+        let replay_pending = {
+            let input = self.input.as_ref(ctx);
+            let hold = input.editor().as_ref(ctx).paste_hold();
+            hold.replay_pending() || hold.queue_is_busy()
+        };
+        if replay_pending && turns_left > 0 {
+            ctx.spawn(async {}, move |me, _, ctx| {
+                me.disable_exited_input_editor(turns_left - 1, ctx)
+            });
+            return;
+        }
+        if replay_pending {
+            log::warn!(
+                "input: the exited pane's editor is disabled with replayed keys still waiting"
+            );
+        }
+        self.input.update(ctx, |input, ctx| {
+            input.editor().update(ctx, |editor, ctx| {
+                editor.set_interaction_state(crate::editor::InteractionState::Disabled, ctx);
+            });
+        });
+    }
+
+    /// #2223: writes `line` and its Enter to the pty, in typed order (`line` may be empty: a
+    /// bare Enter). Several lines (a paste, Shift-Enter) go as the paste they would be.
+    fn write_declined_enter_line_to_pty(&mut self, line: String, ctx: &mut ViewContext<Self>) {
+        let mut chunks: Vec<Vec<u8>> = Vec::with_capacity(2);
+        if line.contains('\n') {
+            let bracketed = self.paste_routing(self.agent_owns_command_pty(), ctx).1;
+            chunks.push(paste_bytes_for_pty(&line, bracketed));
+        } else if !line.is_empty() {
+            chunks.push(line.into_bytes());
+        }
+        chunks.push(b"\r".to_vec());
+        let keys = chunks.len();
+        self.write_given_up_chunks_to_pty(chunks, keys, "enter_declined_command_running", ctx);
+    }
+
+    /// #2115: closes the `ReportEdit` gate once no report of the shell's line is on its way any
+    /// more (it was inserted, or the hand-off left the wait). While another report is still
+    /// awaited (#1104: a request written behind bytes the first report did not cover) the gate
+    /// stays: the line is not whole yet. One `Cell` read when the editor asked for no gate.
+    fn release_report_edit_gate_if_settled(
+        &mut self,
+        why: &'static str,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        if self.handoff.read().report_pending_before_editor_text() {
+            return;
+        }
+        self.input
+            .update(ctx, |input, ctx| input.release_report_edit_gate(why, ctx));
     }
 
     /// #2207: the report the editor judged as ssh's escape was not inserted: its `~` went to
@@ -19298,14 +19373,26 @@ impl TerminalView {
                         ctx,
                     );
                 }
+                // #2209: nothing reads this pane's pty any more (also when the spawn failed
+                // and the banner was inserted earlier). The ends the hand-off recorded for the
+                // keys it held at the exit (a young Enter's hold, the keys behind a deferred
+                // Enter) are applied NOW, while the editor still takes text, not at a gate's cap
+                // up to a minute later: with the pty gone they become text in the input, in
+                // typed order, none dropped. Operations a busy queue parked go first; an end
+                // that still finds the queue busy is applied from its mailbox.
+                self.pty_gone = true;
+                if FeatureFlag::TypeaheadHandoff.is_enabled() {
+                    self.flush_deferred_queue_ops(ctx);
+                    self.drain_young_hold_ends(ctx);
+                    // #2115: no report is coming any more: the cursor and deletion keys held
+                    // for it (and the keys typed after them) are applied now, in order, while
+                    // the editor still takes them.
+                    self.release_report_edit_gate_if_settled("exit", ctx);
+                }
                 // Mark the editor as disabled to ensure user interactions with
-                // it are ignored.
-                self.input.update(ctx, |input, ctx| {
-                    input.editor().update(ctx, |editor, ctx| {
-                        editor
-                            .set_interaction_state(crate::editor::InteractionState::Disabled, ctx);
-                    });
-                });
+                // it are ignored. #2209: not before the keys replayed into it have landed (a
+                // cursor key waits for the display map, and the keys behind it with it).
+                self.disable_exited_input_editor(EXITED_EDITOR_REPLAY_TURNS, ctx);
 
                 // If we failed to bootstrap by the time we exited, show the
                 // bootstrap block so the user might be able to see what went wrong.
@@ -34224,6 +34311,14 @@ impl TerminalView {
                     ctx,
                 );
             }
+            InputEvent::DeclinedEnterLineToPty(line) => {
+                // #2223: an Enter the editor could not submit because a command is running.
+                // The line and its Enter go to the pty in typed order, as a plain terminal
+                // sends what is typed into a running program; the guarded writer counts them
+                // with the hand-off, and puts them back in the input as text if the pty refuses
+                // them or is gone.
+                self.write_declined_enter_line_to_pty(line.clone(), ctx);
+            }
             InputEvent::DiscardedPtyPastes(ids) => {
                 // #1661 review: pty pastes discarded behind an Enter leave no record behind.
                 for id in ids {
@@ -42832,6 +42927,18 @@ mod dest_table;
 /// Owner decision 2026-11-09 (reversing #1661): a hold that gives up writes its keys to the pty.
 mod give_up_to_pty;
 mod paste_queue;
+
+/// #2209: how many turns of the event loop an exited pane's input editor stays editable for the
+/// keys replayed into it (`TerminalView::disable_exited_input_editor`). A count of turns, not a
+/// time: each replay step is one turn.
+const EXITED_EDITOR_REPLAY_TURNS: u32 = 64;
+
+/// #2209: the spec of the `HandoffReport` gate that holds the keys typed behind deferred Enter
+/// `gate` (the view's own, with its leak net), for the input, which opens that gate itself when
+/// an Enter must queue behind it before the view has opened it.
+pub(crate) fn handoff_report_gate_spec(gate: u64) -> crate::terminal::input_queue::GateSpec {
+    paste_queue::handoff_report_spec(gate)
+}
 mod prompt_notice;
 mod route_facts;
 /// #2080: Shift+Page Up / Page Down / Home / End scroll the scrollback under a running command.

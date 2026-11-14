@@ -106,6 +106,15 @@ pub struct EditorPasteHold {
     map_fresh: Cell<bool>,
     /// Pokes the owner of the replay step (the terminal input) after this update's effects flush.
     display_step_waker: RefCell<Option<async_channel::Sender<()>>>,
+    /// #2115: the pane's typeahead hand-off (the terminal input's editor only), asked whether
+    /// the shell's report of the line is still on its way.
+    report_handoff: RefCell<Option<crate::terminal::model::typeahead_handoff::PaneHandoff>>,
+    /// #2115: the key of the `ReportEdit` gate this editor asked for, while one may be open.
+    report_edit_gate: Cell<Option<u64>>,
+    next_report_edit_gate: Cell<u64>,
+    /// #2115: the gate's net gave up for the report that is still awaited: no second gate is
+    /// opened for that report (the keys act at once, as before the gate existed).
+    report_edit_gave_up: Cell<bool>,
 }
 
 /// What delivering a held editor key does about the display map.
@@ -131,6 +140,10 @@ impl Default for EditorPasteHold {
             next_display_gate: Cell::new(0),
             map_fresh: Cell::new(false),
             display_step_waker: RefCell::new(None),
+            report_handoff: RefCell::new(None),
+            report_edit_gate: Cell::new(None),
+            next_report_edit_gate: Cell::new(0),
+            report_edit_gave_up: Cell::new(false),
         }
     }
 }
@@ -209,6 +222,52 @@ impl EditorPasteHold {
     pub fn enable_display_gate(&self, waker: async_channel::Sender<()>) {
         *self.display_step_waker.borrow_mut() = Some(waker);
         self.display_gate_enabled.set(true);
+    }
+
+    /// #2115: gives this editor the pane's hand-off, so a cursor or deletion key typed while the
+    /// shell's report is still on its way can wait for it ([`Self::report_edit_gate_due`]).
+    pub fn watch_report_for_edit_keys(
+        &self,
+        handoff: crate::terminal::model::typeahead_handoff::PaneHandoff,
+    ) {
+        *self.report_handoff.borrow_mut() = Some(handoff);
+    }
+
+    /// #2115: whether a cursor or deletion key typed now must wait for the shell's report: the
+    /// hand-off says the report will land in FRONT of what the editor holds, the gate's net has
+    /// not given up for this report, and the kill switch is on. One leaf read of the hand-off.
+    pub fn report_edit_gate_due(&self) -> bool {
+        if self.report_edit_gave_up.get()
+            || !crate::terminal::input_queue::switches::hold_edit_keys_behind_report()
+        {
+            return false;
+        }
+        self.report_handoff
+            .borrow()
+            .as_ref()
+            .is_some_and(|handoff| handoff.read().report_pending_before_editor_text())
+    }
+
+    /// #2115: the key of a new `ReportEdit` gate, remembered as the one that may be open.
+    pub fn next_report_edit_gate(&self) -> u64 {
+        let key = self.next_report_edit_gate.get().wrapping_add(1);
+        self.next_report_edit_gate.set(key);
+        self.report_edit_gate.set(Some(key));
+        key
+    }
+
+    /// #2115: the report settled (inserted, or not coming any more): takes the key of the gate
+    /// to close, if this editor asked for one, and forgets a give-up (the next report is a new
+    /// wait).
+    pub fn take_report_edit_gate(&self) -> Option<u64> {
+        self.report_edit_gave_up.set(false);
+        self.report_edit_gate.take()
+    }
+
+    /// #2115: the gate's net gave up while the report is still awaited.
+    pub fn note_report_edit_gave_up(&self) {
+        self.report_edit_gate.set(None);
+        self.report_edit_gave_up.set(true);
     }
 
     /// Held editor keys wait for the display map behind a queue gate, not in the replay list.
@@ -442,7 +501,8 @@ impl Host for EditorQueueHost<'_, '_> {
                 GateKind::EnterVerdict
                 | GateKind::TabCompletion
                 | GateKind::HistoryRecall
-                | GateKind::RemoteTabCompletion,
+                | GateKind::RemoteTabCompletion
+                | GateKind::ReportEdit,
             ) => {}
             other => log::warn!("input queue: editor entry discarded: {other:?}"),
         }

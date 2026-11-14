@@ -1396,29 +1396,98 @@ impl Input {
         true
     }
 
-    /// Queues an Enter that reached the editor while another is deferred behind the hand-off's
-    /// report, behind that Enter's `HandoffReport` gate. The gate is open from the moment the
-    /// Enter is deferred (the view opens it on `TypeaheadHandoffEnterDeferred`); without it the
-    /// Enter has nowhere to wait and is logged.
-    pub(super) fn queue_enter_behind_deferred_enter(&mut self, ctx: &mut ViewContext<Self>) {
+    /// #2209 (and #1016): an Enter reached the editor while the hand-off holds an Enter of its
+    /// own: a young Enter waiting behind the request for the shell's line (its `PromptSeen`
+    /// gate), or an Enter deferred behind the report (its `HandoffReport` gate). Keys can reach
+    /// the focused editor before the terminal takes them, so this Enter was typed AFTER the held
+    /// one and everything behind it: it queues behind that gate, in arrival order, and never
+    /// submits the buffer.
+    ///
+    /// Returns whether the Enter is now IN THE QUEUE OR ITS MAILBOX. The caller answers
+    /// "deferred" only then; an Enter is never reported consumed without being held somewhere:
+    ///
+    /// * the queue is free: under one lock the hand-off is read again. Its hold (or deferral) is
+    ///   live: the Enter is offered behind the gate. If the view has not opened that gate yet,
+    ///   the open (with the spec the view opens it with) and the Enter go through the queue's
+    ///   mailbox instead, in that order, so the view's host opens the gate and arms its net.
+    ///   `true`.
+    /// * the queue is busy (mid-drain, or earlier operations wait): the Enter goes into the
+    ///   queue's FIFO mailbox with its stamp, applied in typed order once the queue is free:
+    ///   behind the gate if it is still open then, as a live Enter if it is not. `true`.
+    /// * the hand-off says neither is live (the hold ended in between): nothing is queued.
+    ///   `false`: the caller decides again from the hand-off as it now is.
+    ///
+    /// It replaces `queue_enter_behind_deferred_enter` (#1016), which warned and returned when
+    /// the gate was not open yet or the queue could not be peeked while its caller still
+    /// answered "deferred": that Enter was consumed and lost.
+    pub(super) fn queue_enter_behind_handoff_gate(&mut self, ctx: &mut ViewContext<Self>) -> bool {
+        use crate::terminal::input_queue::{Deferred, Origin};
+        use crate::terminal::model::typeahead_handoff::EnterQueuesBehind;
+        let now = instant::Instant::now();
         let queue = self.enter_queue_handle(ctx);
-        if !queue
-            .try_peek()
-            .is_some_and(|queue| queue.has_gate_kind(GateKind::HandoffReport))
-        {
-            log::warn!("input queue: an Enter typed behind a deferred Enter found no gate");
-            return;
-        }
         let Some(mut guard) = queue.try_lock_ordered() else {
-            queue.defer(crate::terminal::input_queue::Deferred::Offer {
+            let live = self
+                .model
+                .lock()
+                .typeahead_handoff()
+                .enter_queues_behind(now)
+                .is_some();
+            if !live {
+                return false;
+            }
+            queue.defer(Deferred::Offer {
                 kind: EntryKind::Enter,
-                origin: crate::terminal::input_queue::Origin::Keyboard,
+                origin: Origin::Keyboard,
                 stamp: queue.stamp_now(),
             });
-            return;
+            warpui::input_order::log_hop("enter_behind_handoff_gate", || {
+                "queued=mailbox".to_owned()
+            });
+            return true;
         };
-        let mut host = InputQueueHost::new(self, ctx);
-        guard.offer(&mut host, EntryKind::Enter);
+        let behind = self
+            .model
+            .lock()
+            .typeahead_handoff()
+            .enter_queues_behind(now);
+        let Some(behind) = behind else {
+            return false;
+        };
+        let spec = match behind {
+            EnterQueuesBehind::YoungHold { hold_id, give_up } => {
+                GateSpec::new(GateKind::PromptSeen, hold_id).with_cap(Some(give_up))
+            }
+            EnterQueuesBehind::DeferredEnter { gate } => {
+                crate::terminal::view::handoff_report_gate_spec(gate)
+            }
+        };
+        let gate_was_open = guard.has_gate(spec.kind, spec.key);
+        if !gate_was_open {
+            // The hand-off holds an Enter whose gate the view has not opened yet. The open and
+            // this Enter go through the queue's mailbox, in that order, so the VIEW opens the
+            // gate (its host arms the gate's net, and its give-up is the hand-off's own: this
+            // input's host would arm a net that releases the keys one by one) and this Enter
+            // waits behind it. The view's own open then finds the gate open.
+            drop(guard);
+            queue.defer(Deferred::OpenGate(spec));
+            queue.defer(Deferred::Offer {
+                kind: EntryKind::Enter,
+                origin: Origin::Keyboard,
+                stamp: queue.stamp_now(),
+            });
+        } else {
+            let mut host = InputQueueHost::new(self, ctx);
+            guard.offer(&mut host, EntryKind::Enter);
+        }
+        warpui::input_order::log_hop("enter_behind_handoff_gate", || {
+            format!(
+                "queued=gate gate={} key={} gate_was_open={}",
+                spec.kind.name(),
+                spec.key,
+                u8::from(gate_was_open)
+            )
+        });
+        true
     }
 
     /// An Enter typed behind the one that waits, on the queue behind the Enter's gate. The queue

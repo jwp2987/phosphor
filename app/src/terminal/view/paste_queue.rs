@@ -332,7 +332,7 @@ pub(super) fn unrun_deferred_enter_keys_then(
 }
 
 /// The spec of the `HandoffReport` gate named `id`.
-fn handoff_report_spec(id: u64) -> GateSpec {
+pub(super) fn handoff_report_spec(id: u64) -> GateSpec {
     GateSpec::new(GateKind::HandoffReport, id).with_cap(Some(HANDOFF_GATE_LEAK_NET))
 }
 
@@ -968,6 +968,13 @@ impl TerminalView {
                 .update(ctx, |input, ctx| input.give_up_history_recall(token, ctx));
             return;
         }
+        if kind == Some(GateKind::ReportEdit) {
+            // #2115: the shell's report never came: the held cursor / deletion keys and the keys
+            // typed after them replay in order on the buffer as it is.
+            self.input
+                .update(ctx, |input, ctx| input.give_up_report_edit_gate(token, ctx));
+            return;
+        }
         if kind == Some(GateKind::RemoteTabCompletion) {
             // #2188: the remote completion never answered: the input cancels it, then the held
             // keys replay in order on the line as typed.
@@ -1471,9 +1478,18 @@ impl TerminalView {
         let entries = {
             let Some(mut guard) = queue.try_lock() else {
                 // Mid-drain: nothing else can end the hold, so record it for the next attempt.
-                self.handoff
-                    .write()
-                    .restore_young_hold_end(hold_id, YoungHoldEnd::Dropped);
+                // #2209: an interrupt's flush is recorded by the hand-off (the view cannot name
+                // the flushed end itself). A lone EOF is not a flush: the tty keeps typeahead
+                // across it, so its keys go to the reader once the queue is free (behind the
+                // EOF, which is written now: order is lost in this busy-queue corner, the keys
+                // are not).
+                if before_eof {
+                    self.handoff
+                        .write()
+                        .restore_young_hold_end(hold_id, YoungHoldEnd::ToReader);
+                } else {
+                    self.handoff.write().restore_flushed_young_hold(hold_id);
+                }
                 queue.defer(Deferred::ApplyYoungHoldEnds);
                 return bytes;
             };
@@ -1566,9 +1582,10 @@ impl TerminalView {
     }
 
     /// Applies, to the gate of the queue, every end the hand-off recorded for a young Enter's
-    /// hold (a command written, a report, a signal, a state that outgrew it): the entries are
-    /// dropped, written behind the command, or split at the Enter. Called from the few places a
-    /// hold can end, never per key.
+    /// hold (a command written, a report, a signal, a state that outgrew it, the pty's death):
+    /// the entries are written behind the command, split at the Enter, sent to the reader, kept
+    /// with their line, or (a signal only, #2209) flushed. Called from the few places a hold can
+    /// end, never per key.
     pub(super) fn drain_young_hold_ends(&mut self, ctx: &mut ViewContext<Self>) {
         let ends = self.handoff.write().take_young_hold_ends();
         for (hold_id, end) in ends {
@@ -1621,6 +1638,20 @@ impl TerminalView {
             let mut host = PtyQueueHost::new(self, ctx);
             (kind, guard.close_gate_taking(&mut host, kind, hold_id))
         };
+        // #2209: the two ends that deliver a hold nothing owns any more. They take the entries
+        // in their queue form (every kind has a place: `given_up_entry`), before the conversion
+        // below hands editor entries to the editor.
+        match end {
+            YoungHoldEnd::ToReader => {
+                self.release_unowned_hold_to_reader(hold_id, entries, ctx);
+                return;
+            }
+            YoungHoldEnd::WithLine => {
+                self.keep_unowned_hold_with_line(hold_id, kind, entries, ctx);
+                return;
+            }
+            _ => {}
+        }
         // #2207 (review F2): the hold made for a reported ssh escape holds the keys typed behind
         // a deferred Enter, editor-typed ones among them. Written out, they are ALL the pty's, in
         // typed order: handed to the editor instead, `pwd`, Enter would be applied (and
@@ -1637,7 +1668,16 @@ impl TerminalView {
         };
         let held_bytes: usize = chunks.iter().map(Vec::len).sum();
         match end {
-            YoungHoldEnd::Dropped => {
+            // #2209: the one end that discards, and only a signal can record it (the tty
+            // flushes its typeahead on INTR / QUIT / SUSP). Counts only.
+            YoungHoldEnd::FlushedBySignal(_) => {
+                warpui::input_order::log_hop("young_hold_flushed_by_signal", || {
+                    format!(
+                        "hold_id={hold_id} gate={} chunks={} bytes={held_bytes}",
+                        kind.name(),
+                        chunks.len()
+                    )
+                });
                 trace::release(trace::legacy::HANDOFF, 0, held_bytes, "dropped");
             }
             // #1614: an event (a Preexec, a program taking the tty, the barrier, a decision that
@@ -1646,6 +1686,22 @@ impl TerminalView {
             // ConPTY) and counted as the user bytes they are. Not a timer's write: the cap only
             // hands back (`give_up_queued_young_hold`).
             YoungHoldEnd::Typeahead => {
+                // #2209 (owner decision 2026-11-14, Q1): the pane's pty is gone, so nothing
+                // reads what is written (the write is lost, not refused). The hold made for a
+                // reported ssh escape ends like every other hold then: its Enter and keys
+                // become text in the input, in typed order, through the give-up writer.
+                if self.pane_pty_gone() {
+                    let keys = chunks.len();
+                    warpui::input_order::log_hop("young_hold_typeahead", || {
+                        format!(
+                            "hold_id={hold_id} chunks={keys} bytes=0 held_bytes={held_bytes} pty_gone=1"
+                        )
+                    });
+                    self.input
+                        .update(ctx, |input, _| input.clear_handoff_enter_hold());
+                    self.write_given_up_chunks_to_pty(chunks, keys, "session_gone", ctx);
+                    return;
+                }
                 let writes = self.handoff.write().route_expired_young_chunks(chunks);
                 let written: usize = writes.iter().map(Vec::len).sum();
                 warpui::input_order::log_hop("young_hold_typeahead", || {
@@ -1679,7 +1735,9 @@ impl TerminalView {
                 ctx.emit(Event::RetryTypeaheadHandoffRequest);
             }
             // Handled above, in place.
-            YoungHoldEnd::SubmitOnReport { .. } => {}
+            YoungHoldEnd::SubmitOnReport { .. }
+            | YoungHoldEnd::ToReader
+            | YoungHoldEnd::WithLine => {}
         }
     }
 
