@@ -8834,6 +8834,20 @@ fn bytes_replayed_in_the_editor_keep_every_key() {
         editor_keys_of_bytes(b"a\x10\x0e\x03"),
         vec![K::Text("a".to_owned()), K::Up, K::Down, K::Interrupt]
     );
+    // Owner decision 2026-11-14: Page Up, Page Down and Shift-Tab have editor actions and
+    // replay as themselves; Insert (`ESC [ 2 ~`) and the modified forms stay counted.
+    assert_eq!(
+        editor_keys_of_bytes(b"a\x1b[5~\x1b[6~\x1b[Zb\x1b[2~\x1b[5;5~"),
+        vec![
+            K::Text("a".to_owned()),
+            K::PageUp,
+            K::PageDown,
+            K::ShiftTab,
+            K::Text("b".to_owned()),
+            K::NoEditorKey(4),
+            K::NoEditorKey(6),
+        ]
+    );
     // The cursor keys are NOT clamped here (that is #2115: four Lefts stay four Lefts, for the
     // editor to apply against the joined line), where `line_for_editor` on a one-character line
     // loses three of them.

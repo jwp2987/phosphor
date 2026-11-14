@@ -804,6 +804,9 @@ impl TerminalView {
                             EditorReplayKey::KillToStart => EditorAction::DeleteAllLeft,
                             EditorReplayKey::KillWord => EditorAction::DeleteWordLeft,
                             EditorReplayKey::Tab => EditorAction::Tab,
+                            EditorReplayKey::ShiftTab => EditorAction::ShiftTab,
+                            EditorReplayKey::PageUp => EditorAction::PageUp,
+                            EditorReplayKey::PageDown => EditorAction::PageDown,
                             EditorReplayKey::Escape => EditorAction::Escape,
                         };
                         replay.push(TailKey::Key(HeldPasteKey::Action(action)));
@@ -930,6 +933,8 @@ impl TerminalView {
                         | EditorAction::Tab
                         | EditorAction::ShiftTab
                         | EditorAction::Escape
+                        | EditorAction::PageUp
+                        | EditorAction::PageDown
                 )
             );
             let payload = if yields {
