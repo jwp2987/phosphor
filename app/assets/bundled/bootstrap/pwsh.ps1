@@ -398,11 +398,8 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
             $HOST.UI.RawUI.WindowTitle = $title
         } catch { }
 
-        # If this preexec is called for user command, kill ongoing generator command jobs and clean
-        # up the bookkeeping temp files used to bookkeep.
-        if (-not "$command" -match '^Warp-Run-GeneratorCommand') {
-            Warp-Stop-ActiveThread
-        }
+        # #2169: generators are deliberately NOT stopped on Enter (no Enter cost). The check that used to
+        # call Warp-Stop-ActiveThread here was dead (-not bound before -match) and is gone; see DECLINED.md.
 
         # The housekeeping that used to follow here (cleaning up completed warp jobs, scrubbing our
         # own commands from the history) runs in Warp-Idle-Maintenance, once the next prompt is on
@@ -1143,12 +1140,6 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
         $async = $psOuter.BeginInvoke()
 
         $script:threadOuter["Warp-Outer-$jobNumber"] = $psOuter
-    }
-
-    function Warp-Stop-ActiveThread {
-        if ($script:threadInner.Count -gt 0) {
-            foreach ($t in @($script:threadInner.Values)) { $t.Stop() }
-        }
     }
 
     function Warp-Clean-CompletedThread {

@@ -382,6 +382,11 @@ def main():
         "InitShell pid is the pid of the pwsh that was started",
         "InitShell said %s, started %s" % (RAW_PIDS, SHELL_PIDS),
     )
+    # #2169: Enter must not stop in-flight generator threads (DECLINED.md). The old check was dead; a
+    # "fix" would add a synchronous Stop() to Warp-Preexec and throw on the null thread entries.
+    with open(bootstrap_path) as f:
+        boot_text = f.read()
+    check("Warp-Stop-ActiveThread" not in boot_text, "Warp-Preexec never calls Warp-Stop-ActiveThread (#2169)")
     print("FAILED: %s" % ", ".join(failures) if failures else "all hook sequences identical")
     return 1 if failures else 0
 
