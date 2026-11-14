@@ -19910,9 +19910,11 @@ fn ssh_output_of_any_shape_does_not_open_the_gate_ownership_does() {
             view.keydown_on_terminal("\r", ctx);
         });
         // The yielded drain's waker runs on a later turn (#1421); nothing else delivers it.
-        for _ in 0..16 {
-            futures_lite::future::yield_now().await;
-        }
+        crate::test_util::wait_for(|| {
+            terminal.read(&app, |view, _| ssh_queue_is_idle(view))
+                && pty_writes.borrow().iter().flatten().count() >= b"echo hi\r\r\r".len()
+        })
+        .await;
         terminal.read(&app, |view, _| {
             assert!(ssh_queue_is_idle(view), "nothing left queued");
         });

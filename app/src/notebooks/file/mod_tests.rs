@@ -224,18 +224,16 @@ fn test_malformed_jupyter_notebook_falls_back_to_raw() {
     });
 }
 
-/// #2028: yields until the viewer's render model has had its first size (its element was laid
-/// out and the model took the size), at most 2000 times.
+/// #2028: waits until the viewer's render model has had its first size (its element was laid
+/// out and the model took the size), bounded by wall clock (#2219).
 async fn wait_for_first_layout_release(
     app: &App,
     render_state: &warpui::ModelHandle<warp_editor::render::model::RenderState>,
 ) {
-    for _ in 0..2000 {
-        if !app.read(|ctx| render_state.as_ref(ctx).holding_layout_for_first_size()) {
-            return;
-        }
-        futures_lite::future::yield_now().await;
-    }
+    crate::test_util::wait_for(|| {
+        !app.read(|ctx| render_state.as_ref(ctx).holding_layout_for_first_size())
+    })
+    .await;
 }
 
 /// #2028: a new viewer holds its layout for the first size (nothing is laid out at width 0), and

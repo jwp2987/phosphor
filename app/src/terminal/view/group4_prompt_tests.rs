@@ -297,17 +297,14 @@ fn enter_on_a_pending_approval_card_stays_with_the_card() {
                 ctx,
             );
         });
-        for _ in 0..64 {
-            let is_blocked = action_model.read(&app, |action_model, _| {
+        crate::test_util::wait_for(|| {
+            action_model.read(&app, |action_model, _| {
                 action_model
                     .get_action_status(&action_id)
                     .is_some_and(|status| status.is_blocked())
-            });
-            if is_blocked {
-                break;
-            }
-            futures_lite::future::yield_now().await;
-        }
+            })
+        })
+        .await;
         terminal.update(&mut app, |view, ctx| {
             register_local_session_for_ssh_test(view, ctx);
         });

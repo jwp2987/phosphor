@@ -5622,12 +5622,12 @@ fn forget_terminal_view_evicts_a_done_conversation_once_sqlite_has_written_it() 
             panic!("a write barrier must be queued behind the conversation's writes");
         };
         barrier.reached();
-        for _ in 0..50 {
-            futures_lite::future::yield_now().await;
-            if history_model.read(&app, |model, _| model.conversation(&id).is_none()) {
-                break;
-            }
-        }
+        // Wait by wall clock, not a yield count (#2219): the eviction follows the writer's
+        // barrier through later executor turns.
+        crate::test_util::wait_for(|| {
+            history_model.read(&app, |model, _| model.conversation(&id).is_none())
+        })
+        .await;
         history_model.read(&app, |model, _| {
             assert!(
                 model.conversation(&id).is_none(),
