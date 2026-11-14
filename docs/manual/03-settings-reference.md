@@ -291,7 +291,6 @@ you configure yourself.
 | `agents.warp_agent.active_ai.code_suggestions_enabled` | boolean | `true` | AI code suggestions. |
 | `agents.warp_agent.active_ai.code_suggestions_in_ssh_enabled` | boolean | `false` | Whether the model is also asked for a suggested code diff while the pane is in an ssh session (or one the app cannot identify). Each request sends the contents of the files a prompt suggestion named, and the finished command with its output, to the model provider, so in ssh sessions it is off unless turned on (#2097). Not synced. |
 | `agents.warp_agent.active_ai.natural_language_autosuggestions_enabled` | boolean | `true` | Ghosted-text autosuggestions while typing an AI prompt. Schema-gated on the `PredictAMQueries` flag. |
-| `agents.warp_agent.active_ai.natural_language_autosuggestions_in_ssh_enabled` | boolean | `false` | Whether those autosuggestions are also requested while the pane is in an ssh session. Each request sends the text of the input to the model provider at a typing pause, so in ssh sessions it is off unless turned on (#1982). Not synced. Same flag. |
 | `agents.warp_agent.active_ai.git_operations_autogen_enabled` | boolean | `true` | Whether commit messages and PR titles/bodies are auto-generated in the code-review dialogs. |
 | `agents.warp_agent.active_ai.rule_suggestions_enabled` | boolean | `true` | Whether the agent offers to save a rule after a response. Schema-gated on the `SuggestedRules` flag. |
 

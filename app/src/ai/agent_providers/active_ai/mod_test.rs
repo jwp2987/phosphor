@@ -2,7 +2,7 @@ use super::allowed_for_session;
 
 /// #1982: a query prediction sends the input buffer to the model provider at every typing pause.
 /// In an ssh session, and for a pane whose session is not known, it is requested only when the
-/// user turned `natural_language_autosuggestions_in_ssh_enabled` on.
+/// feature's `..._in_ssh` allowance is on (query prediction has none since 2026-11-14).
 /// Owner decision 2026-11-14: there is no opt-in any more; `nld_predict::dispatch` always passes
 /// `NLD_PREDICT_ALLOWED_IN_SSH`, which is false.
 #[test]

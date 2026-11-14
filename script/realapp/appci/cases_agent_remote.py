@@ -281,7 +281,7 @@ def nld_verdict(local_delta, ssh_delta):
     if local_delta < 1:
         return "unverifiable", "the LOCAL control produced no nld_predict request, so none in the ssh session proves nothing"
     if ssh_delta > 0:
-        return "fail", "%d nld_predict request(s) reached the model while typing in the ssh session (natural_language_autosuggestions_in_ssh_enabled is off by default)" % ssh_delta
+        return "fail", "%d nld_predict request(s) reached the model while typing in the ssh session (query prediction never runs in an ssh session, #1982)" % ssh_delta
     return "pass", ""
 
 

@@ -1618,18 +1618,6 @@ fn models_dev_fetch_defaults_off_and_a_v0_1_17_provider_list_still_parses() {
     assert!(!file.providers[0].disabled && !file.providers[1].disabled);
 }
 
-/// #1982 (owner decision 2026-11-10): query predictions send the input buffer to the model
-/// provider at every typing pause, so in ssh sessions they are off unless the user turns them on.
-/// Written without a compiler; run on the build box.
-#[test]
-fn natural_language_autosuggestions_in_ssh_default_off() {
-    assert!(
-        !*NaturalLanguageAutosuggestionsInSshEnabled::new(None).value(),
-        "an unset natural_language_autosuggestions_in_ssh_enabled is false"
-    );
-    assert!(*NaturalLanguageAutosuggestionsInSshEnabled::new(Some(true)).value());
-}
-
 /// #2094 (owner decision 2026-11-11): next-command suggestions and prompt suggestions follow the
 /// #1982 rule. Their requests carry commands and output to the model provider, so in ssh sessions
 /// they are off unless the user turns them on.
