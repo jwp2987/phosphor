@@ -928,6 +928,46 @@ fn test_msys_cwd_joined_with_relative_prefix_resolves_to_windows_dir() {
     );
 }
 
+/// #2222: the Windows-shaped cwd spellings a Git Bash pane can report resolve to the same native
+/// directory as the msys `/c/...` form; a non-path is still rejected.
+/// These tests all fail when running on UNIX.
+#[test]
+#[cfg(windows)]
+fn test_git_bash_windows_shaped_cwd_forms() {
+    use std::sync::LazyLock;
+    static GIT_BASH_ROOT: LazyLock<WindowsPathBuf> =
+        LazyLock::new(|| WindowsPathBuf::from(r"C:\Program Files\Git"));
+    let convert = |p: &str| {
+        convert_msys2_to_windows_native_path(&TypedPathBuf::from_unix(p).to_path(), &GIT_BASH_ROOT)
+    };
+    for form in [
+        "C:/Users/dev/proj",
+        r"C:\Users\dev\proj",
+        "/C:/Users/dev/proj",
+        "/c:/Users/dev/proj",
+        "C:/Users/dev/proj/",
+    ] {
+        assert_eq!(
+            convert(form).unwrap_or_else(|err| panic!("{form} should convert, got {err:?}")),
+            PathBuf::from(r"C:\Users\dev\proj"),
+            "{form}"
+        );
+    }
+    assert_eq!(convert("C:").unwrap(), PathBuf::from(r"C:\"));
+    assert_eq!(
+        convert("/c/Users/dev").unwrap(),
+        PathBuf::from(r"c:\Users\dev")
+    );
+    assert_eq!(
+        convert("/usr/bin").unwrap(),
+        PathBuf::from(r"C:\Program Files\Git\usr\bin")
+    );
+    // Not a drive spelling: a relative path, a name with a colon, a two-letter "drive".
+    for bad in ["some/relative/path", "foo:/bar", "CC:/bar", "C:foo"] {
+        assert!(convert(bad).is_err(), "{bad} must stay rejected");
+    }
+}
+
 /// These tests all fail when running on UNIX.
 #[test]
 #[cfg(windows)]

@@ -1111,8 +1111,13 @@ impl SessionInfo {
                 )),
             )?);
         }
-        PathBuf::try_from(path.to_path_buf())
-            .map_err(|path| anyhow::anyhow!("Unable to convert path: {path:?}"))
+        PathBuf::try_from(path.to_path_buf()).or_else(|path| {
+            // #2222: a Git Bash pane whose launch data is not MSYS2 still reports a unix-typed
+            // working directory; a Windows drive spelling of it (`C:/x`, `/C:/x`) is native.
+            path.to_str()
+                .and_then(warp_util::path::windows_drive_form_to_native_path)
+                .ok_or_else(|| anyhow::anyhow!("Unable to convert path: {path:?}"))
+        })
     }
 }
 
