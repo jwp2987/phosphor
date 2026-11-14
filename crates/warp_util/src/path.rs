@@ -657,6 +657,28 @@ fn is_wsl_unc_prefix(prefix: &WindowsPrefixComponent) -> bool {
     }
 }
 
+/// #2222: the Windows-shaped spellings of an absolute path that a Git Bash pane can report as its
+/// working directory when it is not the msys `/c/...` form: `C:/Users/x`, `C:\Users\x` and
+/// `/C:/Users/x` (an OSC 7 style `file:///C:/...` path). Returns the native Windows path, or
+/// `None` when `path` is not one of those forms (a path of any other shape is left to the caller).
+/// A drive letter alone (`C:`) is the drive root.
+pub fn windows_drive_form_to_native_path(path: &str) -> Option<PathBuf> {
+    let rest = path.strip_prefix('/').unwrap_or(path);
+    let mut chars = rest.chars();
+    let drive = chars.next().filter(char::is_ascii_alphabetic)?;
+    if chars.next() != Some(':') {
+        return None;
+    }
+    let tail = chars.as_str();
+    if !(tail.is_empty() || tail.starts_with(['/', '\\'])) {
+        return None;
+    }
+    let mut native = format!("{}:\\", drive.to_ascii_uppercase());
+    let parts: Vec<&str> = tail.split(['/', '\\']).filter(|p| !p.is_empty()).collect();
+    native.push_str(&parts.join("\\"));
+    Some(PathBuf::from(native))
+}
+
 /// Converts the given [`typed_path::TypedPath`] representing a file from within Windows' MSYS2 to
 /// a Windows-native [`std::path::PathBuf`] such that the same file can be accessed from the
 /// native Windows environment.
@@ -664,6 +686,15 @@ pub fn convert_msys2_to_windows_native_path(
     unix_path: &TypedPath,
     msys2_root: &WindowsPath,
 ) -> Result<PathBuf, MSYS2PathConversionError> {
+    // #2222: a Windows drive spelling kept as a unix-typed path (`C:/x`, `C:\\x`, `/C:/x`).
+    if unix_path.is_unix()
+        && let Some(native) = unix_path
+            .to_path_buf()
+            .to_str()
+            .and_then(windows_drive_form_to_native_path)
+    {
+        return Ok(native);
+    }
     if !unix_path.is_unix() {
         match unix_path.components().next() {
             // Generally Windows-encoded paths won't come out of MSYS2 sessions.
