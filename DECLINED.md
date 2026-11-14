@@ -2508,15 +2508,16 @@ upstream's behavior is actually a defect rather than a preference.
   (`app/src/secure_storage_notice.rs`); upstream reads it as "not found" and says nothing.
   <!-- markers: keep:KEYRING_INSTALL_SECRET_KEY keep:migrate_legacy_fallback keep:key_source_for_writing -->
 
-- **No query prediction request from an ssh session unless the user turns it on** (`#1982`,
-  2026-11-10, owner decision, `app/src/ai/agent_providers/active_ai/mod.rs`
-  `allowed_for_session` (shared with #2094 since round 16), `app/src/settings/ai.rs`). **Upstream:** the ghosted
-  completion of an agent prompt is requested at every typing pause in any session. **We do:**
-  in an ssh session (and when the pane's session is not known) the request is not built unless
-  `agents.warp_agent.active_ai.natural_language_autosuggestions_in_ssh_enabled` is true
-  (default false; a switch on the AI settings page). Each request carries the input buffer to
-  the model provider, which on a remote session is traffic and context the user did not ask for.
-  <!-- markers: keep:allowed_for_session keep:NaturalLanguageAutosuggestionsInSshEnabled -->
+- **No query prediction request from an ssh session, ever** (`#1982`, 2026-11-10, owner decision;
+  made unconditional 2026-11-14, `app/src/ai/agent_providers/active_ai/mod.rs`
+  `nld_predict::NLD_PREDICT_ALLOWED_IN_SSH` = false, `allowed_for_session` (shared with #2094
+  since round 16)). **Upstream:** the ghosted completion of an agent prompt is requested at every
+  typing pause in any session. **We do:** in an ssh session (and when the pane's session is not
+  known) the request is not built, and there is no setting to turn it on (the opt-in
+  `natural_language_autosuggestions_in_ssh_enabled` was removed; a settings.toml that still has
+  the key is read as before and the key ignored). Each request carries the input buffer to the
+  model provider, which on a remote session is traffic and context the user did not ask for.
+  <!-- markers: keep:allowed_for_session keep:NLD_PREDICT_ALLOWED_IN_SSH -->
 
 - **No next-command or prompt-suggestion request from an ssh session unless the user turns it
   on** (`#2094`, 2026-11-11, owner decision, `app/src/ai/agent_providers/active_ai/mod.rs`

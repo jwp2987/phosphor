@@ -28,9 +28,8 @@ use crate::settings::{
     CodeSuggestionsInSshEnabled, EnableAiCommandSearchHashTrigger, FileBasedMcpEnabled,
     GitOperationsAutogenEnabled, IncludeAgentCommandsInHistory, IntelligentAutosuggestionsEnabled,
     IntelligentAutosuggestionsInSshEnabled, MemoryEnabled, NLDInTerminalEnabled,
-    NaturalLanguageAutosuggestionsEnabled, NaturalLanguageAutosuggestionsInSshEnabled,
-    PromptSuggestionsInSshEnabled, PromptTemplateDir, RuleSuggestionsEnabled,
-    SafeCommandAllowlistEnabled, ShouldRenderCLIAgentToolbar,
+    NaturalLanguageAutosuggestionsEnabled, PromptSuggestionsInSshEnabled, PromptTemplateDir,
+    RuleSuggestionsEnabled, SafeCommandAllowlistEnabled, ShouldRenderCLIAgentToolbar,
     ShouldRenderUseAgentToolbarForUserCommands, ShowAgentTips, ShowAgentZeroStateHints,
     ShowConversationHistory, ShowHintText, ThinkingDisplayMode, TokenPrice, VoiceInputEnabled,
 };
@@ -2854,7 +2853,6 @@ pub enum AISettingsPageAction {
     TogglePromptSuggestions,
     ToggleCodeSuggestions,
     ToggleNaturalLanguageAutosuggestions,
-    ToggleNaturalLanguageAutosuggestionsInSsh,
     ToggleIntelligentAutosuggestionsInSsh,
     TogglePromptSuggestionsInSsh,
     ToggleCodeSuggestionsInSsh,
@@ -3248,18 +3246,6 @@ impl TypedActionView for AISettingsPageView {
                             "Failed to set value for Natural Language Autosuggestions setting: {e:?}"
                         );
                     }
-                }
-                ctx.notify();
-            }
-            AISettingsPageAction::ToggleNaturalLanguageAutosuggestionsInSsh => {
-                if let Err(e) = AISettings::handle(ctx).update(ctx, |settings, ctx| {
-                    settings
-                        .natural_language_autosuggestions_in_ssh_enabled_internal
-                        .toggle_and_save_value(ctx)
-                }) {
-                    log::warn!(
-                        "Failed to set value for Natural Language Autosuggestions in ssh sessions setting: {e:?}"
-                    );
                 }
                 ctx.notify();
             }
@@ -5356,7 +5342,6 @@ struct ActiveAIWidget {
     prompt_suggestions_toggle: SwitchStateHandle,
     code_suggestions_toggle: SwitchStateHandle,
     natural_language_autosuggestions_toggle: SwitchStateHandle,
-    natural_language_autosuggestions_in_ssh_toggle: SwitchStateHandle,
     intelligent_autosuggestions_in_ssh_toggle: SwitchStateHandle,
     prompt_suggestions_in_ssh_toggle: SwitchStateHandle,
     code_suggestions_in_ssh_toggle: SwitchStateHandle,
@@ -5540,8 +5525,6 @@ impl ActiveAIWidget {
     ) -> Box<dyn warpui::Element> {
         let ai_settings = AISettings::as_ref(app);
         let is_toggleable = ai_settings.is_active_ai_enabled(app);
-        // The ssh switch refines the one above it: it decides nothing while that one is off.
-        let is_in_ssh_toggleable = ai_settings.is_natural_language_autosuggestions_enabled(app);
         Flex::column()
             .with_child(render_ai_setting_toggle::<
                 NaturalLanguageAutosuggestionsEnabled,
@@ -5557,22 +5540,6 @@ impl ActiveAIWidget {
             .with_child(render_ai_setting_description(
                 crate::t!("settings-ai-natural-language-autosuggestions"),
                 is_toggleable,
-                app,
-            ))
-            .with_child(render_ai_setting_toggle::<
-                NaturalLanguageAutosuggestionsInSshEnabled,
-            >(
-                crate::t!("settings-ai-natural-language-autosuggestions-in-ssh-label"),
-                AISettingsPageAction::ToggleNaturalLanguageAutosuggestionsInSsh,
-                ai_settings.is_natural_language_autosuggestions_in_ssh_enabled(),
-                is_in_ssh_toggleable,
-                self.natural_language_autosuggestions_in_ssh_toggle.clone(),
-                &view.local_only_icon_tooltip_states,
-                app,
-            ))
-            .with_child(render_ai_setting_description(
-                crate::t!("settings-ai-natural-language-autosuggestions-in-ssh-description"),
-                is_in_ssh_toggleable,
                 app,
             ))
             .finish()

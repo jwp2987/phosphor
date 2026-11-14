@@ -43,8 +43,6 @@ SETTINGS = {
                     forced="true in the agent pass (a shell line typed in the agent view must reach the shell); the terminal pass keeps the seed's value"),
     "nld_in_terminal": S("agents.warp_agent.input.nld_in_terminal_enabled", "true", "natural-language detection on the plain terminal (settings/ai.rs)",
                          forced="true in the agent pass; the terminal pass keeps the seed's value"),
-    "nld_predict_in_ssh": S("agents.warp_agent.active_ai.natural_language_autosuggestions_in_ssh_enabled", "false",
-                            "query predictions from an ssh pane (settings/ai.rs, #1982)"),
     "next_command_in_ssh": S("agents.warp_agent.active_ai.intelligent_autosuggestions_in_ssh_enabled", "false",
                              "next-command suggestions requested from an ssh pane (settings/ai.rs, #2094)"),
     "prompt_suggestions": S("agents.warp_agent.active_ai.agent_mode_query_suggestions_enabled", "true",
@@ -569,8 +567,8 @@ lab("lab_read_files_remote.* lab_diff_apply_remote.* lab_agent_remote_flow.* lab
 lab("lab_agent_remote_drop.*", needs=AGENT_ASK, reads=MODEL, note="the run_shell_command must stop at its approval card before the connection is reset")
 lab("lab_fam_agent_edit_conflict.* lab_fam_agent_delete_conflict.* lab_fam_agent_edit_endings.* lab_fam_agent_edit_touch_only.*", needs=KEYS, reads=MODEL,
     note="as agent_edit_*: the diff card of an edit the scripted model proposes, accepted by the card's default keys")
-lab("lab_agent_nld_predict_ssh.*", needs=dict(nld_predict_in_ssh=False), reads=MODEL,
-    note="written against the default (no prediction request from an ssh pane, #1982); the local control makes the case UNVERIFIABLE itself when predictions are off")
+lab("lab_agent_nld_predict_ssh.*", reads=MODEL,
+    note="no prediction request from an ssh pane, ever (#1982, owner 2026-11-14: no opt-in); the local control makes the case UNVERIFIABLE itself when predictions are off")
 lab("lab_agent_suggestions_ssh.*", needs=dict(next_command_in_ssh=False, prompt_suggestions_in_ssh=False), reads=MODEL,
     note="written against the defaults (no suggestion request from an ssh pane, #2094); each purpose is judged only against its own local control")
 lab("lab_freeze_and_wake.*", reads=MODEL, note="as freeze_and_wake, against the lab host with its link stalled")

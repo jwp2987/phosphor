@@ -1999,20 +1999,6 @@ define_settings_group!(AISettings, settings: [
         description: "Controls whether ghosted text autosuggestions are shown for AI input queries.",
         feature_flag: FeatureFlag::PredictAMQueries,
     }
-    // #1982: a query prediction sends the input buffer to the model provider at every typing
-    // pause. In an ssh session that is off unless the user turns this on (default false). Not
-    // synced: it is a statement about this machine's sessions. Read through
-    // `is_natural_language_autosuggestions_in_ssh_enabled()`.
-    natural_language_autosuggestions_in_ssh_enabled_internal: NaturalLanguageAutosuggestionsInSshEnabled {
-        type: bool,
-        default: false,
-        supported_platforms: SupportedPlatforms::ALL,
-        sync_to_cloud: SyncToCloud::Never,
-        private: false,
-        toml_path: "agents.warp_agent.active_ai.natural_language_autosuggestions_in_ssh_enabled",
-        description: "Controls whether ghosted text autosuggestions for AI input queries are also requested in ssh sessions; false (default) sends nothing to the model while typing in an ssh session.",
-        feature_flag: FeatureFlag::PredictAMQueries,
-    }
     // #2094 (owner decision 2026-11-11, the #1982 rule for two more features): a next-command
     // suggestion request carries recent commands, similar history and the typed prefix to the
     // model provider. In an ssh session that is off unless the user turns this on (default
@@ -3053,13 +3039,6 @@ impl AISettings {
 
     pub fn is_natural_language_autosuggestions_enabled(&self, app: &warpui::AppContext) -> bool {
         self.is_active_ai_enabled(app) && *self.natural_language_autosuggestions_enabled_internal
-    }
-
-    /// Whether query predictions (natural language autosuggestions) may also be requested while
-    /// the pane is in an ssh session (#1982). Only meaningful when
-    /// [`Self::is_natural_language_autosuggestions_enabled`] is true.
-    pub fn is_natural_language_autosuggestions_in_ssh_enabled(&self) -> bool {
-        *self.natural_language_autosuggestions_in_ssh_enabled_internal
     }
 
     pub fn is_git_operations_autogen_enabled(&self, app: &warpui::AppContext) -> bool {
