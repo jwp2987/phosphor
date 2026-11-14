@@ -6445,6 +6445,8 @@ impl TerminalView {
                 .active_block_session_id()
                 .and_then(|session_id| self.sessions.as_ref(ctx).get(session_id))
                 .is_some_and(|session| shell_reports_vi_mode(&session)),
+            // #1984 (2026-11-14): Escape leaves the view only with an empty input box.
+            input_has_text: !self.input.as_ref(ctx).buffer_text(ctx).is_empty(),
         }
     }
 
@@ -6464,7 +6466,7 @@ impl TerminalView {
     /// snapshot, never waits for the model.
     fn escape_stays_with_vi_keys(&self, ctx: &AppContext) -> bool {
         let facts = self.vi_key_facts(ctx);
-        if !facts.editor_vim_keys && !facts.shell_vi_mode {
+        if !facts.editor_vim_keys && !facts.shell_vi_mode && !facts.input_has_text {
             return false;
         }
         let view_can_be_left_now = self.can_exit_agent_view_for_terminal_view(ctx).is_ok()
@@ -6477,8 +6479,8 @@ impl TerminalView {
         if stays {
             warpui::input_order::log_hop("agent_view_escape_stays_vi", || {
                 format!(
-                    "editor_vim_keys={} shell_vi_mode={}",
-                    facts.editor_vim_keys, facts.shell_vi_mode
+                    "editor_vim_keys={} shell_vi_mode={} input_has_text={}",
+                    facts.editor_vim_keys, facts.shell_vi_mode, facts.input_has_text
                 )
             });
         }

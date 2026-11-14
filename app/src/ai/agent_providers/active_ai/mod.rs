@@ -240,9 +240,10 @@ pub mod prompt_suggestions {
 
 pub mod nld_predict {
     use super::*;
-    use warpui::{AppContext, EntityId, SingletonEntity as _};
+    use warpui::{AppContext, EntityId};
 
-    use crate::settings::AISettings;
+    /// Query prediction has no ssh opt-in (#1982).
+    pub(super) const NLD_PREDICT_ALLOWED_IN_SSH: bool = false;
 
     pub struct Input {
         pub partial_query: String,
@@ -255,13 +256,10 @@ pub mod nld_predict {
         terminal_view_id: Option<EntityId>,
         input: Input,
     ) -> Option<RenderedRequest> {
-        let allowed_in_ssh =
-            AISettings::as_ref(app).is_natural_language_autosuggestions_in_ssh_enabled();
-        if !allowed_for_pane(app, terminal_view_id, allowed_in_ssh) {
-            log::debug!(
-                "[active_ai] nld_predict not requested: ssh session (or unknown) and \
-                 natural_language_autosuggestions_in_ssh_enabled is off"
-            );
+        // #1982 (owner decision 2026-11-14): query prediction never runs in an ssh session,
+        // managed or not, and not in a pane whose session is unknown. There is no opt-in.
+        if !allowed_for_pane(app, terminal_view_id, NLD_PREDICT_ALLOWED_IN_SSH) {
+            log::debug!("[active_ai] nld_predict not requested: ssh session (or unknown)");
             return None;
         }
         let cfg = resolve_active_ai_oneshot_with(app, terminal_view_id, WhileKeysLoading::Skip)?;

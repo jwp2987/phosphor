@@ -4,7 +4,37 @@ fn facts(editor_vim_keys: bool, shell_vi_mode: bool) -> ViKeyFacts {
     ViKeyFacts {
         editor_vim_keys,
         shell_vi_mode,
+        input_has_text: false,
     }
+}
+
+fn with_text(facts: ViKeyFacts) -> ViKeyFacts {
+    ViKeyFacts {
+        input_has_text: true,
+        ..facts
+    }
+}
+
+/// #1984 (owner 2026-11-14): with text in the input box Escape goes to the editor, not out.
+#[test]
+fn escape_stays_when_the_input_box_has_text() {
+    assert_eq!(
+        agent_view_escape(with_text(facts(false, false)), true, true),
+        AgentViewEscape::StaysWithViKeys
+    );
+}
+
+/// An empty box (no vi keys) still leaves; text does not stop a running-command Escape.
+#[test]
+fn escape_leaves_with_an_empty_box_and_text_does_not_block_a_running_command() {
+    assert_eq!(
+        agent_view_escape(facts(false, false), true, true),
+        AgentViewEscape::Leave
+    );
+    assert_eq!(
+        agent_view_escape(with_text(facts(false, false)), false, true),
+        AgentViewEscape::Leave
+    );
 }
 
 /// The behaviour that is kept: without vi keys, Escape leaves the agent view.

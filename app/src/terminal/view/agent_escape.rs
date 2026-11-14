@@ -42,6 +42,9 @@ pub(super) struct ViKeyFacts {
     pub editor_vim_keys: bool,
     /// The pane's shell reported vi line editing at bootstrap.
     pub shell_vi_mode: bool,
+    /// The input box holds text (#1984, owner decision 2026-11-14): Escape then goes to the
+    /// editor and never leaves the view; it leaves only when the box is empty.
+    pub input_has_text: bool,
 }
 
 /// What an Escape that reached the agent view's exit does.
@@ -64,7 +67,10 @@ pub(super) fn agent_view_escape(
     view_can_be_left_now: bool,
     rule_enabled: bool,
 ) -> AgentViewEscape {
-    if rule_enabled && view_can_be_left_now && (facts.editor_vim_keys || facts.shell_vi_mode) {
+    if rule_enabled
+        && view_can_be_left_now
+        && (facts.editor_vim_keys || facts.shell_vi_mode || facts.input_has_text)
+    {
         AgentViewEscape::StaysWithViKeys
     } else {
         AgentViewEscape::Leave
