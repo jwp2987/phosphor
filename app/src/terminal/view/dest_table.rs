@@ -194,7 +194,9 @@ impl TerminalView {
         };
         let held_typed = class == HELD_TYPED;
         self.paste_queue.delivering_held_typed = held_typed;
+        self.paste_queue.delivering_ssh_held = true;
         self.deliver_via_table(input, Origin::Held, stamp, ctx);
+        self.paste_queue.delivering_ssh_held = false;
         if held_typed {
             self.paste_queue.delivering_held_typed = false;
         }

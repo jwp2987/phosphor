@@ -8850,3 +8850,69 @@ fn bytes_replayed_in_the_editor_keep_every_key() {
     );
     assert!(editor_keys_of_bytes(b"").is_empty());
 }
+
+/// r30f (`lab_connect_typeahead`, macOS lab, agent mode): the ssh connect hold was released at
+/// the first remote prompt in the same pass that committed the prompt to the editor, and its
+/// keys were delivered to the pty. The hand-off, editor-owned, only noted them as untracked
+/// bytes; the rest of the line went to the editor and its Enter submitted that rest alone. The
+/// delivered keys now take the line for the pty: they are counted as line content, the rest of
+/// the line follows them to the pty, and the line is handed to the editor whole (the request and
+/// its report) or stays the pty's until its Enter when no request can be made.
+#[test]
+fn delivered_ssh_typeahead_takes_the_prompts_line_for_the_pty() {
+    let mut handoff = TypeaheadHandoff::default();
+    assert_eq!(handoff.state(), &HandoffState::EditorOwned);
+    assert!(handoff.take_prompt_line_for_delivered_typeahead());
+    assert!(handoff.routes_keys_to_pty(), "the line is the pty's");
+    for key in b"echo T4_yng" {
+        assert_eq!(
+            type_and_flush(&mut handoff, &[*key]),
+            UserBytesRoute::WriteCounted,
+            "a delivered key is line content, not an untracked byte"
+        );
+    }
+    assert_eq!(
+        handoff.state(),
+        &HandoffState::PtyOwned {
+            wrote_user_bytes: true,
+            enters_written: 0,
+            precmds_seen: 0,
+        }
+    );
+    // The rest of the line, typed live, follows the part already there.
+    assert_eq!(
+        type_and_flush(&mut handoff, b" >> ~/rl.txt"),
+        UserBytesRoute::WriteCounted
+    );
+    // No request can be made (the line editor is not proven reading): the pty keeps the line,
+    // it is never committed to the editor in two halves (#2197).
+    assert_eq!(
+        handoff.on_line_editor_active(true, false),
+        ActiveDecision::Drain
+    );
+    assert!(handoff.is_pty_owned());
+    assert!(
+        !handoff.try_commit_at_prompt(),
+        "a typed line is in the shell"
+    );
+    // With a request the whole line comes back in the shell's report.
+    assert_eq!(
+        handoff.on_line_editor_active(true, true),
+        ActiveDecision::SendRequest
+    );
+    assert!(matches!(
+        handoff.on_report(),
+        ReportDisposition::Insert | ReportDisposition::InsertYoung
+    ));
+    assert_eq!(handoff.state(), &HandoffState::EditorOwned);
+
+    // Only from an editor-owned prompt: a request outstanding, or a line the pty already owns,
+    // is left as it is.
+    let mut waiting = awaiting_report();
+    assert!(!waiting.take_prompt_line_for_delivered_typeahead());
+    assert_eq!(waiting.state(), &HandoffState::AwaitingReport);
+    let mut owned = after_submit();
+    let before = owned.state().clone();
+    assert!(!owned.take_prompt_line_for_delivered_typeahead());
+    assert_eq!(owned.state(), &before);
+}

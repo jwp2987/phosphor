@@ -3983,6 +3983,38 @@ impl TypeaheadHandoff {
         true
     }
 
+    /// r30f (`lab_connect_typeahead`, agent mode: "the line typed behind `ssh host` never reached
+    /// the remote shell"): keys held for an ssh connect are being DELIVERED to the pty while the
+    /// editor owns input at a prompt. The delivery's destination is decided on facts that are
+    /// read without waiting for the pty reader, so right after the prompt's commit they can
+    /// still say "the pty takes typed keys": the first part of the line then went raw into the
+    /// shell's line, the hand-off (editor-owned) only noted it as untracked bytes, the rest of
+    /// the line was typed into the editor, and its Enter submitted that rest alone (its kill
+    /// prefix wiped the part in the shell).
+    ///
+    /// A line is never split between the pty and the editor: the keys about to be written make
+    /// the line the pty's. The pty owns input from here, at a prompt with nothing queued, so the
+    /// write is counted as line content like any typed key, the rest of the line follows it to
+    /// the pty in typed order, and the line comes back to the editor the usual way (the request
+    /// and its report, or the prompt after its Enter). Only from [`HandoffState::EditorOwned`]:
+    /// with a request outstanding the report still decides. Returns whether the pty took the
+    /// line.
+    pub fn take_prompt_line_for_delivered_typeahead(&mut self) -> bool {
+        if self.state != HandoffState::EditorOwned {
+            return false;
+        }
+        self.keys_follow_editor = false;
+        self.editor_took_over_at = None;
+        self.state = HandoffState::PtyOwned {
+            wrote_user_bytes: false,
+            enters_written: 0,
+            precmds_seen: 0,
+        };
+        self.young_line = false;
+        warpui::input_order::log_hop("handoff_line_taken_for_delivered_typeahead", String::new);
+        true
+    }
+
     /// Hands input back to the editor without a request when nothing the user typed can be in
     /// the shell's line. Called on the main thread once a prompt was seen, after the editor has
     /// been reinitialized for the new block. Returns whether the editor took over.
