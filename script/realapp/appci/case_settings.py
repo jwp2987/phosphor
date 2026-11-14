@@ -418,6 +418,7 @@ decl("editor_save_mixed_endings editor_memory_7mb", needs=KEYS)
 decl("editor_daily", needs=KEYS, reads=("quit_warning",), note="quit_warning false also switches off the unsaved-changes question: the case says UNVERIFIABLE itself")
 decl("flood_scrollback_find scroll_keys_position find_basic scroll_keys_foreground", needs=KEYS,
      note="positions come from the app's own geometry lines; where OCR is used the theme and text size are the seed's and are not read")
+decl("agent_bg_job_output", needs=KEYS, note="bash/zsh subshell job; OCR of the agent view; no setting is read")
 decl("tab_lifecycle_keys", needs=KEYS, reads=("quit_warning",), note="with quit_warning false the close key does not ask: the cancel half is not run (noted)")
 decl("settings_ui_toggle_persists", needs=KEYS, sets=("vertical_tabs", "font_size"),
      note="toggles vertical tabs from whichever state the profile has and raises the font size one step from the file's value; the file's bytes are put back")

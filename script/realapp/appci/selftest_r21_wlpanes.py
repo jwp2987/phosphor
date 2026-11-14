@@ -188,22 +188,17 @@ def r21_scroll_keys_position_agent_view_judges():
     must fail; the app strings and behaviours the agent arm rests on are read from the Rust sources."""
     import cases_r14_w1a as W
     S = W.skp_stream_state
-    assert S("terminal", 12, 6) == "drawn" and S("agent", 12, 4) == "drawn" and S("agent", 12, 1) == "agent_hidden"      # r27: one stale line is not drawn output
-    assert S("agent", 12, 0) == "agent_hidden" and S("terminal", 12, 0) == "missing"
+    assert S("terminal", 12, 6) == "drawn" and S("agent", 12, 4) == "drawn" and S("agent", 12, 1) == "missing"      # #2145: hidden output is a failure, not noref
+    assert S("agent", 12, 0) == "missing" and S("terminal", 12, 0) == "missing"
     assert S("agent", 3, 0) == "too_early" and S("terminal", 0, 0) == "too_early"
     assert W.skp_top_keys("terminal", "ctrl+up") == ["ctrl+up", "Home"] and W.skp_top_keys("agent", "ctrl+up") == ["shift+Home"]
     V = W.skp_after_key_verdict
     assert V("drawn", 3, [], 500) == ("pass", "")
     assert V("drawn", 0, [470, 500], 500)[0] == "fail"                     # numbered lines do not excuse a missing tail where output is drawn
     assert V("missing", 0, [500], 500)[0] == "fail" and V("too_early", 0, [500], 500)[0] == "fail"
-    kind, why = V("agent_hidden", 0, [461, 480, 500], 500)
-    assert kind == "noref" and "#%d" % W.ISSUE_AGENT_BG_OUTPUT in why and "NOT judged" in why and "shift+Home" in why, why
-    assert V("agent_hidden", 0, [316, 361], 500)[0] == "fail"              # the view is still up: the key did not bring the end back
-    assert V("agent_hidden", 0, [], 500)[0] == "fail"
-    assert V("agent_hidden", 0, [485], 500)[0] == "noref" and V("agent_hidden", 0, [484], 500)[0] == "fail"
     body = inspect.getsource(W.c_scroll_keys_position)
     assert body.index('ctx.ocr("skp_0_stream")') < body.index('ctx.ocr("skp_1_pageup")') < body.index("skp_top_keys(ctx.mode") < body.index("skp_after_key_verdict(")
-    assert 'stream_state == "drawn"' in body and "r.no_reference(why)" in body
+    assert 'stream_state == "drawn"' in body and "r.no_reference" not in body
     # the app side: Shift+Home is the scrollback-top key and logs key=top; it is live at a prompt
     keys = _src("app", "src", "terminal", "view", "scrollback_keys.rs")
     assert 'Self::Top => "shift-home"' in keys and 'Self::Top => "top"' in keys and 'format!("key={}", key.hop_name())' in keys
@@ -212,9 +207,9 @@ def r21_scroll_keys_position_agent_view_judges():
     view = _src("app", "src", "terminal", "view.rs")
     assert "we don't want to divert the focus away from the input box" in view
     assert "if !is_shift_down && self.should_use_agent_transcript_navigation(ctx) {" in view
-    # a block no command of the conversation produced is hidden in that conversation (why the job's output is on no screen there)
+    # #2145: a background block with content is shown in the conversation (display only; it carries no conversation id)
     block = _src("app", "src", "terminal", "model", "block.rs")
-    assert "if !visible_in_conversation && !self.shown_to_tty_reader() {" in block
+    assert "&& !self.shows_background_output()" in block
 
 
 @check

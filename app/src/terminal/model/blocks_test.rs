@@ -4298,34 +4298,32 @@ fn block_list_with_a_precmd_question(
     (block_list, scope, question)
 }
 
-/// #2053 (owner decision 2026-11-10): an agent conversation shows the question a precmd function
-/// asks ONLY WHILE something reads the tty. Round 12, agent pass: `question_on_screen_hp0 = false`,
-/// the background block that holds `vault pin: ` has height 0 in the conversation's scope. While
-/// the reader waits the block has its height there (and the cached heights follow at once, no
-/// frame-time rebuild); when the reader is over it is hidden again. Asking twice changes nothing.
+/// #2053 (owner decision 2026-11-10), changed by #2145 (owner decision 2026-11-13): the agent view
+/// shows background output as the terminal does. Round 12 had `question_on_screen_hp0 = false`:
+/// the background block that holds `vault pin: ` had height 0 in the conversation's scope, shown
+/// only while the reader waited. Now it has its height there from its first content, with or
+/// without a reader; the reader's flag is set and cleared as before and changes no height.
+/// Asking twice changes nothing.
 #[test]
-fn a_tty_readers_question_is_shown_in_a_conversation_only_while_the_reader_waits() {
+fn a_tty_readers_question_is_shown_in_a_conversation_with_or_without_the_reader() {
     let _agent_view_flag = FeatureFlag::AgentView.override_enabled(true);
     let (mut block_list, scope, question) =
         block_list_with_a_precmd_question(ChannelEventListener::new_for_test());
     let visible =
         |block_list: &BlockList| block_list.block_at(question).unwrap().is_visible(&scope);
-    let hidden_height = block_list.block_heights().summary().height;
+    let height_without_reader = block_list.block_heights().summary().height;
     assert!(
-        !visible(&block_list),
-        "the round 12 state: the conversation hides the question"
+        visible(&block_list),
+        "#2145: the conversation shows the background block (was: hidden until a reader waits)"
     );
 
     assert!(block_list.show_question_of_tty_reader(true));
-    assert!(
-        visible(&block_list),
-        "the reader waits: the question is shown"
-    );
+    assert!(visible(&block_list));
     assert!(block_list.block_at(question).unwrap().shown_to_tty_reader());
     let shown_height = block_list.block_heights().summary().height;
-    assert!(
-        shown_height > hidden_height,
-        "the cached heights hold the question's block: {shown_height:?} vs {hidden_height:?}"
+    assert_eq!(
+        shown_height, height_without_reader,
+        "the reader changes no height any more (was: shown_height > hidden_height)"
     );
     assert_eq!(
         block_list.tty_reader_question_block(),
@@ -4344,12 +4342,15 @@ fn a_tty_readers_question_is_shown_in_a_conversation_only_while_the_reader_waits
 
     assert!(block_list.show_question_of_tty_reader(false));
     assert!(
-        !visible(&block_list),
-        "the reader is over: no command of the conversation produced this block"
+        visible(&block_list),
+        "the reader is over: the output stays shown (was: hidden again)"
     );
     assert!(!block_list.block_at(question).unwrap().shown_to_tty_reader());
     assert!(block_list.tty_reader_question_block().is_none());
-    assert_eq!(block_list.block_heights().summary().height, hidden_height);
+    assert!(
+        block_list.block_heights().summary().height >= height_without_reader,
+        "the block keeps its height (was: back to the hidden height)"
+    );
     assert!(!block_list.show_question_of_tty_reader(false));
 }
 
@@ -4375,11 +4376,12 @@ fn a_tty_readers_question_changes_nothing_in_the_terminal_scope() {
 
 /// #2053: a block that is finished is no question a reader waits at. The next command's end
 /// finishes the background block; if the view has not yet told the list that the reader is over,
-/// the list hides the block in the conversation itself, BEFORE it decides whether the block is
-/// saved: a block no conversation owns is not reported as completed there, exactly as before.
-/// A reader noted after that finds no block of the old question to show.
+/// the list clears the reader's flag itself. #2145: the block now stays shown in the conversation,
+/// so it is reported as completed (saved for restoration) exactly as in the terminal scope (was:
+/// hidden in the conversation, not reported). A reader noted after that finds no block of the old
+/// question to show.
 #[test]
-fn a_finished_question_block_is_hidden_in_the_conversation_and_not_reported() {
+fn a_finished_question_block_stays_shown_in_the_conversation_and_is_reported() {
     let _agent_view_flag = FeatureFlag::AgentView.override_enabled(true);
     let (events_tx, events_rx) = async_channel::unbounded();
     let (mut block_list, scope, question) = block_list_with_a_precmd_question(
@@ -4395,7 +4397,7 @@ fn a_finished_question_block_is_hidden_in_the_conversation_and_not_reported() {
     let block = block_list.block_at(question).unwrap();
     assert!(block.finished());
     assert!(!block.shown_to_tty_reader());
-    assert!(!block.is_visible(&scope));
+    assert!(block.is_visible(&scope), "#2145 (was: !is_visible)");
     assert!(block_list.tty_reader_question_block().is_none());
     let mut background_completed = 0;
     while let Ok(event) = events_rx.try_recv() {
@@ -4406,8 +4408,8 @@ fn a_finished_question_block_is_hidden_in_the_conversation_and_not_reported() {
         }
     }
     assert_eq!(
-        background_completed, 0,
-        "hidden in the conversation when it finished: not reported, as before #2053"
+        background_completed, 1,
+        "#2145: shown in the conversation when it finished: reported like the terminal scope (was 0)"
     );
     assert!(
         !block_list.show_question_of_tty_reader(true),
@@ -4462,9 +4464,120 @@ fn test_find_matches_output_of_restored_blocks() {
         .with_lazy_restore_min_bytes(0)
         .build();
     assert!(
-        deferred.blocks()[0].find_output_grid_matches(&dfas).is_empty(),
+        deferred.blocks()[0]
+            .find_output_grid_matches(&dfas)
+            .is_empty(),
         "a placeholder holds no output until the background parse is installed"
     );
     assert!(deferred.install_ready_deferred_restores());
     assert_found(&deferred, "deferred restore after install");
+}
+
+// ---- #2145: the agent view shows background-job output (display only)
+
+/// A conversation scope on a list whose last command finished and whose Precmd was parsed: the
+/// next output is early output, a background block.
+fn conversation_list_after_a_precmd() -> (BlockList, TranscriptScope) {
+    let mut block_list =
+        new_bootstrapped_block_list(None, None, ChannelEventListener::new_for_test());
+    command_finished_and_precmd(&mut block_list);
+    insert_block(&mut block_list, "touch go.txt", "");
+    let scope = TranscriptScope::Conversation(AIConversationId::new());
+    block_list.set_transcript_scope(scope);
+    (block_list, scope)
+}
+
+/// Test 1: a background block with content is not hidden in a conversation; an empty one
+/// (typeahead-only, nothing printed) is.
+#[test]
+fn a_background_block_with_content_is_shown_in_a_conversation_and_an_empty_one_is_not() {
+    let _agent_view_flag = FeatureFlag::AgentView.override_enabled(true);
+    let (mut block_list, scope) = conversation_list_after_a_precmd();
+    input_string(&mut block_list, "done");
+    let index = block_list
+        .background_block_mut()
+        .expect("background")
+        .index();
+    let block = block_list.block_at(index).unwrap();
+    assert!(block.is_background());
+    assert!(!block.should_hide_block(&scope));
+    assert!(block.is_visible(&scope));
+
+    // An empty background block (nothing printed) stays hidden.
+    let (mut empty_list, scope) = conversation_list_after_a_precmd();
+    if let Some(block) = empty_list.background_block_mut() {
+        assert!(
+            block.should_hide_block(&scope),
+            "an empty background block is hidden"
+        );
+    }
+}
+
+/// Test 2: a block that is not background and has no tie to the conversation is still hidden.
+#[test]
+fn a_terminal_block_with_no_tie_to_the_conversation_is_still_hidden() {
+    let _agent_view_flag = FeatureFlag::AgentView.override_enabled(true);
+    let (mut block_list, scope) = conversation_list_after_a_precmd();
+    let index = insert_block(&mut block_list, "echo hi", "hi");
+    let block = block_list.block_at(index).unwrap();
+    assert!(!block.is_background());
+    assert!(block.should_hide_block(&scope));
+    assert!(!block.is_visible(&scope));
+}
+
+/// Tests 3, 4 and 5: the job prints `done` after a Precmd: nonzero height in the conversation's
+/// scope on first content; the next command starts a separate block that does not hold the text;
+/// the background block is attached to no conversation (so it is no agent context and no
+/// requested command's capture); Conversation -> Terminal -> Conversation keeps heights.
+#[test]
+fn background_output_after_a_precmd_is_drawn_in_the_agent_view_and_is_no_context() {
+    let _agent_view_flag = FeatureFlag::AgentView.override_enabled(true);
+    let (mut block_list, scope) = conversation_list_after_a_precmd();
+    let before = block_list.block_heights().summary().height;
+    input_string(&mut block_list, "done");
+    let bg = block_list
+        .background_block_mut()
+        .expect("background")
+        .index();
+    assert!(block_list.block_at(bg).unwrap().is_visible(&scope));
+    let drawn = block_list.block_heights().summary().height;
+    assert!(
+        drawn > before,
+        "first content gives the block a height: {drawn:?} vs {before:?}"
+    );
+
+    // Display only: tied to no conversation, pending or attached.
+    match block_list.block_at(bg).unwrap().agent_view_visibility() {
+        AgentViewVisibility::Terminal {
+            pending_conversation_ids,
+            conversation_ids,
+        } => assert!(pending_conversation_ids.is_empty() && conversation_ids.is_empty()),
+        other => panic!("a background block is a terminal block, got {other:?}"),
+    }
+
+    // The next command is a separate block that does not hold the text.
+    let next = insert_block(&mut block_list, "echo next", "next");
+    assert_ne!(next, bg);
+    let next_output = block_list.block_at(next).unwrap().output_to_string();
+    assert!(!next_output.contains("done"), "{next_output:?}");
+    assert!(
+        block_list
+            .block_at(bg)
+            .unwrap()
+            .output_to_string()
+            .contains("done")
+    );
+
+    // Scope switches recompute the heights.
+    let in_conversation = block_list.block_heights().summary().height;
+    block_list.set_transcript_scope(TranscriptScope::Terminal);
+    assert!(
+        block_list
+            .block_at(bg)
+            .unwrap()
+            .is_visible(&TranscriptScope::Terminal)
+    );
+    block_list.set_transcript_scope(scope);
+    assert_eq!(block_list.block_heights().summary().height, in_conversation);
+    assert!(block_list.block_at(bg).unwrap().is_visible(&scope));
 }

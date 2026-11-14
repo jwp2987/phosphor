@@ -453,3 +453,4 @@ BOTH.update({"keybinding_rebind", "editor_daily"})
 # Windows only for lack of OCR; it prints with bash `cat`, runs a bash background job and checks rec.log: Git Bash pane.
 NOT_WINDOWS.pop("scroll_keys_position", None)
 GITBASH_ONLY["scroll_keys_position"] = "r23 (#2060): bash `cat` of numbered lines, a bash background job, rec.log; the scroll position is read by Windows.Media.Ocr (winocr): runs in the Git Bash pane, SKIPs with the reason where the VM has no OCR engine"
+GITBASH_ONLY["agent_bg_job_output"] = "#2145: a bash `( ... &)` background job, rec.log, OCR of the agent view: runs in the Git Bash pane, SKIPs with the reason where the VM has no OCR engine"

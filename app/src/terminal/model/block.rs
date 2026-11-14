@@ -1506,6 +1506,12 @@ impl Block {
         self.state == BlockState::Background
     }
 
+    /// #2145: a background block that holds something to draw (not empty or typeahead-only: those
+    /// stay hidden by `should_hide_block`'s empty-background rule).
+    fn shows_background_output(&self) -> bool {
+        self.is_background() && !self.output_grid.should_show_as_empty_when_finished()
+    }
+
     /// Returns `true` if this is a static block. See docs on [`BlockState::Static`] for more
     /// context on static blocks.
     pub fn is_static(&self) -> bool {
@@ -1541,7 +1547,14 @@ impl Block {
                     };
                     // #2053: a question something waits at the tty for is shown in whatever
                     // conversation is on screen, for as long as the reader waits.
-                    if !visible_in_conversation && !self.shown_to_tty_reader() {
+                    // #2145 (owner decision 2026-11-13): output of a background job is drawn in
+                    // the agent view, as in the terminal view. DISPLAY ONLY: such a block is not
+                    // attached to the conversation (no conversation id), so it is never sent as
+                    // agent context or captured as a requested command's output.
+                    if !visible_in_conversation
+                        && !self.shown_to_tty_reader()
+                        && !self.shows_background_output()
+                    {
                         return true;
                     }
                 }

@@ -81,9 +81,9 @@ Low. A hidden block becomes visible, in agent view only, only while a reader is 
 
 ### Tests
 
-- `model/blocks_test.rs`: `a_tty_readers_question_is_shown_in_a_conversation_only_while_the_reader_waits`,
+- `model/blocks_test.rs`: `a_tty_readers_question_is_shown_in_a_conversation_with_or_without_the_reader`,
   `a_tty_readers_question_changes_nothing_in_the_terminal_scope`,
-  `a_finished_question_block_is_hidden_in_the_conversation_and_not_reported`.
+  `a_finished_question_block_stays_shown_in_the_conversation_and_is_reported`.
 - `terminal/view_test.rs`: `a_precmd_question_is_shown_in_an_agent_conversation_while_its_reader_has_the_keys`
   (the #2050 fixture in a conversation scope; shown at the look after the reader is noted, kept
   while the PIN is typed, hidden at the look after the line editor's signal; control arm = kill
