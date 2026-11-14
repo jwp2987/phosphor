@@ -47,7 +47,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -248,6 +248,42 @@ struct Generation {
     /// Who asked for it, in order (the starter first), for the debug lines.
     producers: Arc<Mutex<Vec<&'static str>>>,
     fut: Fetched,
+    /// How many callers are awaiting `fut` right now (see [`Waiter`]).
+    waiters: Arc<AtomicUsize>,
+}
+
+/// One caller awaiting a generation. The batch's exec is a `Shared` future that only the callers
+/// awaiting it drive, and it keeps its in-flight slot (and its ssh client) while suspended. A
+/// generation started by a caller that is then dropped (a prompt chip superseded by the next
+/// refresh) and joined by nobody would sit suspended in the map for [`KEEP`], holding one of the
+/// host's few exec slots, which the Tab completer and every other exec then queue behind (#2216,
+/// #2188). When the last waiter of an unfinished generation goes, the generation is evicted: its
+/// future is dropped, which cancels the exec and frees the slot, and the next producer starts a
+/// fresh one.
+struct Waiter<'a> {
+    store: &'a GitBatchStore,
+    key: String,
+    id: u64,
+    waiters: Arc<AtomicUsize>,
+    fut: Fetched,
+}
+
+impl Drop for Waiter<'_> {
+    fn drop(&mut self) {
+        if self.waiters.fetch_sub(1, Ordering::SeqCst) != 1 || self.fut.peek().is_some() {
+            return;
+        }
+        let mut repos = self.store.repos.lock().unwrap_or_else(|e| e.into_inner());
+        if self.waiters.load(Ordering::SeqCst) == 0
+            && repos.get(&self.key).is_some_and(|g| g.id == self.id)
+        {
+            repos.remove(&self.key);
+            log::debug!(
+                "git batch: generation={} dropped: its last waiter went before the exec finished",
+                self.id
+            );
+        }
+    }
 }
 
 /// The generations of one host, by repo path. Shared by every backend the router builds for the
@@ -368,6 +404,7 @@ impl GitBatchStore {
                 .get(&key)
                 .filter(|g| self.joinable(g, prompt))
                 .map(|g| {
+                    g.waiters.fetch_add(1, Ordering::SeqCst);
                     g.producers
                         .lock()
                         .unwrap_or_else(|e| e.into_inner())
@@ -377,7 +414,7 @@ impl GitBatchStore {
                          path={repo_path}",
                         g.id
                     );
-                    g.fut.clone()
+                    (g.id, g.waiters.clone(), g.fut.clone())
                 });
             match joined {
                 Some(fut) => fut,
@@ -399,19 +436,29 @@ impl GitBatchStore {
                     )
                     .boxed()
                     .shared();
+                    let waiters = Arc::new(AtomicUsize::new(1));
                     repos.insert(
-                        key,
+                        key.clone(),
                         Generation {
                             opened: Instant::now(),
                             prompt,
                             id,
                             producers,
                             fut: fut.clone(),
+                            waiters: waiters.clone(),
                         },
                     );
-                    fut
+                    (id, waiters, fut)
                 }
             }
+        };
+        let (id, waiters, fut) = fut;
+        let _waiter = Waiter {
+            store: self,
+            key,
+            id,
+            waiters,
+            fut: fut.clone(),
         };
         fut.await
     }
