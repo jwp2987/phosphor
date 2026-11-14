@@ -469,6 +469,7 @@ independent("first_run_defaults", "stops the app, moves the config directory asi
                                   "the profile is put back at the end")
 independent("installer_smoke", "installs the build's artefact and runs the installed copy on data of its own making; the pass's app is stopped meanwhile")
 independent("upgrade_from_previous_release", "the previous release writes its own profile (or the checked-in fixture's) and the build under test upgrades that")
+independent("phosphor_scheme_handler", "second launches of the app with phosphor:// URLs; opens one tab in a directory of its own making")
 independent("keychain_startup_macos", "three launches judged on first frame, log and exact typing against keychains the harness creates; no setting of the profile is read")
 
 

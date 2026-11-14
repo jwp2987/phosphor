@@ -138,6 +138,8 @@ PROVING = (
     # launched, joined by a second launch, `phosphor <path>`, uninstalled with the user's data kept; the upgrade from the previous release fetched from
     # the project's package registry; and the pane-shell case of the Windows pwsh7 / cmd / wsl passes, which no tier had ever played
     "installer_smoke", "upgrade_from_previous_release", "startup_shell_pane",
+    # #1546: the phosphor:// handler end to end, run against the running build as the operating system would (cases_install.py)
+    "phosphor_scheme_handler",
     # round 15 wave 4, macOS harness (#2061, r14-test-gaps T32; cases_macptr.py): the Mac pointer tool and the app-only chords proven on the machine
     "mac_pointer_chord_proof",
     # round 15 wave 5 part A (docs/design/r14-test-gaps.md T42, T45, T50; design docs/design/r15-w5a.md; #2076): the macOS keychain at start
@@ -3839,6 +3841,21 @@ def wait_ssh_gave_up(srv, ct, now=time.time, sleep=time.sleep, quiet=3.0):
     return (closed_at if closed_at is not None else now()), n
 
 
+def _pane_state_note(ctx):
+    """#2206: the app's last logged pane state (command_interactive / enters_written / precmds_seen) at this case's start and now, for the 'no TCP accept'
+    verdict: busy at the start = the case before left the pane busy (APP, or a restore that did not hold); clean at the start and busy now = this
+    case's own ssh never started. Empty where the case did not take a start state (every pane but the Git Bash one)."""
+    start = getattr(ctx, "pane_state_at_case_start", None)
+    if start is None:
+        return ""
+    try:
+        import cases_caseremote as _R
+        now_state = _R.pane_state_now(ctx)
+    except Exception:
+        now_state = "unknown"
+    return " [app's pane state at case start: %s; now: %s]" % (start, now_state)
+
+
 def ssh_fail_body(ctx, r):
     """ssh_failing_not_local, and (inside cases_caseremote.in_msys_managed_ssh) ssh_gitbash_failing_not_local_managed"""
     ctx.rm("sf.txt")
@@ -3849,7 +3866,7 @@ def ssh_fail_body(ctx, r):
         ctx.be.type("ssh -p %d -o ConnectTimeout=%d -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null 127.0.0.1" % (srv.port, ct), 12, enter=True)
         ok = ctx.until(lambda: srv.poll()[0] >= 1, 8)
         if not ok:
-            r.check(False, "HARNESS: the ssh never connected to the hanging listener on 127.0.0.1:%d within 8 s (no TCP accept): not a test of typing behind a connecting ssh" % srv.port)
+            r.check(False, "HARNESS: the ssh never connected to the hanging listener on 127.0.0.1:%d within 8 s (no TCP accept): not a test of typing behind a connecting ssh%s" % (srv.port, _pane_state_note(ctx)))
             ctx.reset()
             return
         time.sleep(0.3)

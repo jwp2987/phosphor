@@ -1444,7 +1444,9 @@ def report_cmd(run, a, note):
             # the release gate (#1495, script/ci/check_release_gate.py) reads the FULL commit this job ran on from results.json
             "sha=" + os.environ.get("CI_COMMIT_SHA", "local"),
             "owner_settings=" + note, "tier=" + (os.environ.get("APPCI_TIER") or "full"),
-            "scale=" + os.environ.get("APPCI_SCALE", "1")]
+            "scale=" + os.environ.get("APPCI_SCALE", "1"),
+            # #2078: the display the run used (APPCI_SCALE above is the COUNT scale of a smoke run, not this)
+            "display_scale=" + os.environ.get("APPCI_DISPLAY_SCALE", "1"), "outputs=" + os.environ.get("APPCI_OUTPUTS", "1")]
 
 
 def finish(run, a, code, write_meta=True):

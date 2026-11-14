@@ -140,6 +140,7 @@ PS_ONLY = {
 PS_ONLY["powershell_setup_ctrl_c_keys"] = "#1890: a PowerShell-in-PowerShell Phosphorize setup and the PowerShell hold's post-abort prompt; the Git Bash pane has the bash subshell lab (cases_subshell_ready)"
 PS_ONLY["installer_smoke"] = "T43: the installer does not depend on the pane's shell: runs once, in the PowerShell pane (the app's default shell)"
 PS_ONLY["upgrade_from_previous_release"] = "T44: the upgrade does not depend on the pane's shell: runs once, in the PowerShell pane (the app's default shell)"
+PS_ONLY["phosphor_scheme_handler"] = "#1546: the URL handler does not depend on the pane's shell: runs once, in the PowerShell pane (the app's default shell)"
 # not on Windows at all, with the reason
 NOT_WINDOWS = {
     # round 14 wave 3a (T21 to T25). The Windows pointer exists since r15 wave 4 (SendInput, T31: selection_modes moved to GITBASH_ONLY); the cases

@@ -255,6 +255,11 @@ if [[ -f ./script/ci/test_check_release_gate.py ]]; then
     python3 ./script/ci/test_check_release_gate.py >/dev/null 2>&1 && ok "release gate self-test" \
         || fail "release gate self-test -- run python3 script/ci/test_check_release_gate.py for detail"
 fi
+if [[ -f ./script/ci/agent_fuzz_catches_wave0.py ]]; then
+    python3 ./script/ci/agent_fuzz_catches_wave0.py --self-test >/dev/null 2>&1 && python3 ./script/ci/agent_fuzz_catches_wave0.py --check >/dev/null 2>&1 \
+        && ok "agent fuzz wave 0 proof (offline)" \
+        || fail "agent fuzz wave 0 proof -- run python3 script/ci/agent_fuzz_catches_wave0.py --self-test and --check for detail"
+fi
 if [[ -f ./script/ci/perf_bands.py ]]; then
     python3 ./script/ci/test_perf_bands.py >/dev/null 2>&1 && ok "perf bands self-test" \
         || fail "perf bands self-test -- run python3 script/ci/test_perf_bands.py for detail"

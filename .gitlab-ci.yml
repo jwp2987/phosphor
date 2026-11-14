@@ -124,6 +124,9 @@ guards:
     - python3 script/realapp/appci/selftest.py --require every_check_function_is_registered_2086,r15_proving_lab_is_one_list
     # the tier driver's own self-test (pure: reads this file and cases.py, no network): the fix-tier lab job gets every PROVING_LAB entry once
     - python3 script/ci/ci_seq.py --self-test
+    # #1836: the Wave 0 proof's parser and verdicts, and that each bug-restoring edit still matches the source exactly once (no cargo; the build half is the manual job agent-fuzz-catches-wave0)
+    - python3 script/ci/agent_fuzz_catches_wave0.py --self-test
+    - python3 script/ci/agent_fuzz_catches_wave0.py --check
     # #2148 / #2150: a child that holds the job's output pipe cannot keep a step open (run_bounded.py ends the tree it started; reap_leftovers ends the
     # processes naming the out dir); both pure/offline.
     - python3 script/ci/run_bounded.py --self-test
@@ -930,6 +933,25 @@ fuzz-smoke:
       - fuzz/artifacts/
       - fuzz/logs/
 
+# #1836: the agent fuzzer's corpus catches #1796 / #1797 / #1799. Puts each bug back into the tree under test (script/ci/agent_fuzz_catches_wave0.py),
+# builds the warp lib tests and replays the Wave 0 scenarios: the control must pass and every arm must FAIL with its own scenario / invariant (CAUGHT).
+# A NOT CAUGHT arm fails this job. Five incremental builds of the warp lib tests; the offline half (--self-test, --check: every edit still applies exactly
+# once) runs in `guards` and script/precheck on every push. Manual: play it after changing the fuzzer's oracle, the corpus, or the code around a switch.
+agent-fuzz-catches-wave0:
+  extends: .box_job
+  timeout: 150m
+  when: manual
+  script:
+    - 'python3 script/ci/agent_fuzz_catches_wave0.py --run --workdir "$CI_PROJECT_DIR/.ci/agent-fuzz-proof" --commit "$CI_COMMIT_SHA" --label agent-fuzz-proof'
+  after_script:
+    - 'python3 script/ci/agent_fuzz_catches_wave0.py --cleanup --workdir "$CI_PROJECT_DIR/.ci/agent-fuzz-proof" || true'
+  artifacts:
+    when: always
+    expire_in: 14 days
+    paths:
+      - .ci/agent-fuzz-proof/logs/
+      - .ci/agent-fuzz-proof/verdict.txt
+
 # ---------------------------------------------------------------------------------------------------------------------
 # REPO VALIDATION (not a release gate): the jobs `bench`, `bench-remote-server`, `mutants`, `mutants-warpui-core` and their
 # `-macos` / `-windows` twins measure the code and its tests, not the app. Owner 2026-11-12: they are no longer part of the
@@ -1600,6 +1622,28 @@ app-test-replay-linux:
     APPCI_FAKE_MODEL: "1"
     APPCI_LAB_MATRIX: "quick"
     APPCI_REPLAY_MINUTES: "15"
+
+# #2063: the same replay on the Mac and Windows machines, against the box's fixed lab slot (the quick matrix has the 150 ms arm; the replay is
+# one arm of one family, bash on the remote side). MANUAL, played by hand or from a targeted file (`linux-lab`-style names are not needed: play the job).
+# Windows plays the Git Bash pane only: the replay's steps are POSIX shell lines (`cd .. && echo >> file`, /tmp), which the PowerShell pane cannot run.
+app-test-replay-macos:
+  extends: app-test-lab-macos
+  variables:
+    APPCI_CASES: "lab_replay*"
+    APPCI_FAKE_EMBEDDINGS: "0"
+    APPCI_FAKE_MODEL: "1"
+    APPCI_LAB_MATRIX: "quick"
+    APPCI_REPLAY_MINUTES: "15"
+
+app-test-replay-windows:
+  extends: app-test-lab-windows
+  variables:
+    APPCI_CASES: "lab_replay*"
+    APPCI_FAKE_EMBEDDINGS: "0"
+    APPCI_FAKE_MODEL: "1"
+    APPCI_LAB_MATRIX: "quick"
+    APPCI_REPLAY_MINUTES: "15"
+    APPCI_WIN_SHELLS: "gitbash"
 
 # ---------------------------------------------------------------------------
 # Reuse variants (app-test-*-reuse): test an EARLIER pipeline's build of an app-identical commit instead of rebuilding

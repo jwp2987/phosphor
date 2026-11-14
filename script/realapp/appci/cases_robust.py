@@ -1078,6 +1078,14 @@ def growth_verdict(rss_mb):
     return "pass", "window medians %s MB, monotonic=%s, growth %+.0f MB (limit %.0f MB)" % ([round(x) for x in w], mono, g, lim)
 
 
+def rss_drops(rss_mb, frac=0.25):
+    """#1780: pure. The windows (medians of 5 consecutive samples, as growth_verdict builds them) whose median is more than `frac` below the one before,
+    as [(window index, before MB, after MB)]. growth_verdict only judges growth, so a mid-soak fall (r18u23: 365 -> 157 MB) passed through it unseen."""
+    xs = rss_mb[max(3, len(rss_mb) // 10):]
+    w = [statistics.median(xs[i:i + 5]) for i in range(0, len(xs) - 4, 5)]
+    return [(i + 1, round(a), round(b)) for i, (a, b) in enumerate(zip(w, w[1:])) if b < a * (1 - frac)]
+
+
 SOAK_ALERT = re.compile(r"panic|SIGSEGV|SIGBUS|crash|terminal.?server[^\n]*(exit|died|restart|respawn|lost)|Session abandoned", re.I)
 
 
@@ -1258,6 +1266,14 @@ def c_soak(ctx, r):
                         "panic/crash lines in minutes %s; missing throw-away-tab tokens (minute, prompt was up) %s" % (
         d["arrived"], len(exp), len(d["missing"]), d["missing"][:5], len(d["unexpected"]), "kept" if d["order_ok"] else "BROKEN",
         [c[0] for c in pid_changes] or "none", [a[0] for a in alerts] or "none", [(a, c) for a, _, c in lost_tab] or "none"))
+    drops = rss_drops(rss_s)
+    r.metric("rss_window_drops", drops)
+    if drops:
+        # a fall is NOT judged as a failure by itself (a flood's scrollback is released when it is evicted); it is said with what the sampler saw of the
+        # process set, so "the app restarted" (pid change, panic line) and "memory was released" (same pids, no alert) are told apart
+        r.note("soak: memory fell more than 25 %% between windows %s (window, MB before, MB after); app process set changed in minutes %s; panic/crash lines in "
+               "minutes %s: %s" % (drops, [c[0] for c in pid_changes] or "none", [a[0] for a in alerts] or "none",
+                                   "same processes and no alert = memory released, not a restart" if not pid_changes and not alerts else "a restart or crash is possible: read the app log of those minutes (soak_alerts.log)"))
     v, text = growth_verdict(rss_s)
     r.metric("rss_growth_verdict", v)
     if v == "fail":

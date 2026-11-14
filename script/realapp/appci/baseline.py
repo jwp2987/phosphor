@@ -34,6 +34,8 @@ def eligibility(doc):
         why.append("tier=%s (only a run recorded as full-tier is promotable)" % meta.get("tier"))
     if str(meta.get("scale", "1")) not in ("1", "1.0"):
         why.append("scale=%s (a scaled run is not promotable)" % meta.get("scale"))
+    if str(meta.get("display_scale", "1")) not in ("1", "1.0") or str(meta.get("outputs", "1")) != "1":
+        why.append("display_scale=%s outputs=%s (a run on a scaled or two-output display is not promotable: the baselines are scale 1, one output)" % (meta.get("display_scale"), meta.get("outputs")))
     cases = doc.get("cases", [])
     if (doc.get("summary") or {}).get("fail"):
         why.append("%d case(s) failed" % doc["summary"]["fail"])

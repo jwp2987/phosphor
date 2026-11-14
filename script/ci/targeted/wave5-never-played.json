@@ -1,0 +1,14 @@
+{
+  "note": "#2076 / #1546 / #2078: the wave 5 cases that have no row in any committed run (test-results/TREND.md 'No row in any committed run'). One play of this file per platform is the first evidence for them. Soak and scale_matrix are not in it (no new soak / perf case in the targeted tier). Play: python3 script/ci/ci_seq.py build/<ref> --tier targeted --cases-file script/ci/targeted/wave5-never-played.json",
+  "platforms": {
+    "linux-wayland": {
+      "cases": ["installer_smoke", "upgrade_from_previous_release", "phosphor_scheme_handler", "gpu_real_render", "keybinding_rebind", "editor_daily", "zero_network_startup", "sudo_su_real_shell", "subshell_ready_relay_shape"]
+    },
+    "macos": {
+      "cases": ["keychain_startup_macos", "installer_smoke", "upgrade_from_previous_release", "phosphor_scheme_handler", "zero_network_startup", "keybinding_rebind", "editor_daily"]
+    },
+    "windows": {
+      "cases": ["installer_smoke", "upgrade_from_previous_release", "phosphor_scheme_handler", "zero_network_startup", "startup_shell_pane", "keybinding_rebind", "editor_daily"]
+    }
+  }
+}

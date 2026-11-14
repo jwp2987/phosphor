@@ -18,6 +18,11 @@
 # /usr/sbin/sshd or python3-paramiko (ssh cases), vulkan drivers for the GPU (mesa-vulkan-drivers).
 # Environment: APPCI_OLLAMA_URL (optional provider endpoint; without it provider-dependent agent cases skip), APPCI_SCALE,
 # APPCI_TABS, APPCI_BIG_MB, APPCI_SSH_TRIALS, APPCI_SEED, APPCI_WL_KEY_MODE=batch|perkey, APPCI_WL_KBD_HOLD=0|1 (default 1: persistent virtual keyboard, #1414), APPCI_WL_PTR_HOLD=0|1 (default 1: persistent virtual pointer, #1789), APPCI_IDLE_CPU_MAX.
+# Display matrix (#2078, harness only; default unchanged = scale 1, one output): APPCI_DISPLAY_SCALE=<0.5..4> (e.g. 1.25 1.5 2) runs the WHOLE run at that
+# display scale (wayland / xwayland: sway `output HEADLESS-1 ... scale S`; x11: Xvfb -dpi and the Xft.dpi X resource, which needs `xrdb`, else the run exits 2
+# rather than silently running at scale 1). APPCI_SECOND_OUTPUT_SCALE=<s> (wayland / xwayland only) adds a second headless output of that scale to the right of
+# the first, so windows can sit on, or be moved to, an output of another scale. Both are recorded in results.json meta (display_scale, outputs). NOT the
+# same as APPCI_SCALE, which shortens counts for a smoke run. Cases that assume scale 1 are expected to say so, not to be skipped here.
 # usage: wayland_session.sh --mode M --dist DIR_WITH_deb_or_AppImage [--bin PATH] [--out DIR] [--modes terminal,agent] [--cases a,b] [--skip a,b]
 # APPCI_TIER=smoke runs only the fix-tier case list (appci/cases.py SMOKE + PROVING); the Wayland job skips its xwayland pass then. The x11 job runs in
 # every tier since round 15 (#2058), both session modes (the --modes default below).
@@ -129,6 +134,16 @@ mkdir -p "$RT"; chmod 700 "$RT"
 export XDG_RUNTIME_DIR="$RT"
 unset WAYLAND_DISPLAY DISPLAY SWAYSOCK WAYLAND_SOCKET
 
+DSCALE="${APPCI_DISPLAY_SCALE:-1}" SCALE2="${APPCI_SECOND_OUTPUT_SCALE:-}"
+scale_ok() { awk -v s="$1" 'BEGIN{ exit !(s ~ /^[0-9]+(\.[0-9]+)?$/ && s+0 >= 0.5 && s+0 <= 4) }'; }
+scale_ok "$DSCALE" || { log "APPCI_DISPLAY_SCALE=$DSCALE is not a number between 0.5 and 4"; exit 2; }
+if [ -n "$SCALE2" ]; then
+  scale_ok "$SCALE2" || { log "APPCI_SECOND_OUTPUT_SCALE=$SCALE2 is not a number between 0.5 and 4"; exit 2; }
+  [ "$MODE" = x11 ] && { log "APPCI_SECOND_OUTPUT_SCALE needs a Wayland session (sway outputs); the x11 mode has one screen"; exit 2; }
+fi
+export APPCI_DISPLAY_SCALE="$DSCALE" APPCI_OUTPUTS=1
+[ -n "$SCALE2" ] && export APPCI_OUTPUTS=2
+
 start_sway() { # renderer
   local r=$1 i
   rm -f "$RT"/wayland-* "$RT"/sway-ipc.*
@@ -137,7 +152,7 @@ xwayland enable
 default_border none
 default_floating_border none
 focus_follows_mouse no
-output HEADLESS-1 resolution ${APPCI_RES:-1600x1000} position 0 0
+output HEADLESS-1 resolution ${APPCI_RES:-1600x1000} position 0 0 scale ${DSCALE}
 exec_always sh -c 'echo "\$DISPLAY" > "$OUT/xdisplay"'
 CONF
   local rdev=()
@@ -160,6 +175,12 @@ if [ "$MODE" = x11 ]; then
   for i in $(seq 1 40); do [ -s "$OUT/xdisp" ] && break; sleep 0.25; done
   [ -s "$OUT/xdisp" ] || { log "Xvfb did not start"; cat "$OUT/xvfb.log"; exit 2; }
   export DISPLAY=":$(head -1 "$OUT/xdisp" | tr -d '[:space:]')"
+  if [ "$DSCALE" != 1 ] && [ "$DSCALE" != 1.0 ]; then
+    command -v xrdb >/dev/null || { log "APPCI_DISPLAY_SCALE=$DSCALE needs xrdb (x11-xserver-utils) on this machine; refusing to run at scale 1 under a scaled name"; exit 2; }
+    dpi=$(awk -v s="$DSCALE" 'BEGIN{printf "%d", 96*s + 0.5}')
+    printf 'Xft.dpi:\t%s\n' "$dpi" | xrdb -merge || { log "xrdb -merge of Xft.dpi=$dpi failed"; exit 2; }
+    log "x11 display scale $DSCALE: Xft.dpi=$dpi"
+  fi
   BACKEND=x11 APPDISP=x11 RENDERER=llvmpipe
 else
   RENDERER=""
@@ -172,6 +193,18 @@ else
   W=$(basename "$(ls "$RT"/wayland-[0-9]* | grep -v '\.lock$' | head -1)")
   export WAYLAND_DISPLAY="$W" SWAYSOCK="$(ls "$RT"/sway-ipc.*.sock | head -1)"
   sleep 1
+  if [ -n "$SCALE2" ]; then
+    # #2078: a second headless output of another scale, right of the first (logical width = pixel width / the first output's scale)
+    res=${APPCI_RES:-1600x1000}; w1=${res%x*}
+    x2=$(awk -v w="$w1" -v s="$DSCALE" 'BEGIN{printf "%d", w/s + 0.5}')
+    before=$(swaymsg -t get_outputs -r 2>/dev/null | grep -o '"name": *"[^"]*"' | sort)
+    swaymsg create_output >/dev/null 2>&1 || { log "swaymsg create_output failed: no second output"; exit 2; }
+    sleep 0.5
+    out2=$(swaymsg -t get_outputs -r 2>/dev/null | grep -o '"name": *"[^"]*"' | sort | comm -13 <(echo "$before") - | head -1 | sed 's/.*: *"\(.*\)"/\1/')
+    [ -n "$out2" ] || { log "create_output succeeded but sway lists no new output"; exit 2; }
+    swaymsg "output $out2 resolution $res position $x2 0 scale $SCALE2" >/dev/null 2>&1 || { log "could not configure $out2"; exit 2; }
+    log "second output $out2 at scale $SCALE2, position $x2,0 (first output scale $DSCALE)"
+  fi
   # #1414: ONE virtual keyboard for the whole session. Every wtype call creates (and on exit destroys) its own virtual keyboard, so with
   # none alive the seat's keyboard capability flips 0->2->0 per call and wtype's first key lands before any client has bound the new
   # wl_keyboard (a lost first character; key-only calls like ctrl+c lose the whole key). A long-lived wtype that only sleeps keeps its
