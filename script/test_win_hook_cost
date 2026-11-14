@@ -1,0 +1,193 @@
+#!/usr/bin/env python3
+"""Pins the fork-free, cmdlet-free Enter -> command-start path of the Windows hooks (#1280, #1492).
+
+WHY THIS EXISTS
+---------------
+On Windows every fork costs about 10 ms (MSYS2 Git Bash) and every cmdlet call several ms (Windows
+PowerShell 5.1). script/test_hook_forks counts processes on Linux, where a fork is cheap and the
+MSYS2 branches (WARP_IN_MSYS2=true) never run; nothing stopped a `$(...)` or a cmdlet creeping
+back into the code that runs between the user's Enter and the command starting. This is a text
+check of that code plus a table test of the one replacement that changes a code path.
+
+CHECKS
+  bash  the MSYS2 preexec path (the DEBUG trap, __bp_preexec_invoke_exec_impl, __warp_preexec_impl,
+        the kv-pair helpers, warp_title, __warp_set_title_active_on_preexec_impl,
+        __bp_history1_viafile) has no command substitution or backtick or pipeline outside an
+        explicit allow-list (each entry names why it is not on the per-command path);
+        __bp_in_prompt_command answers a non-prompt command before the here-string read, and
+        agrees with the original on a table (run in bash).
+  pwsh  Warp-Preexec calls no cmdlet and no ConvertTo-Json; the history scrub in
+        Warp-Idle-Maintenance runs only when Warp-Preexec flagged a line of ours;
+        Warp-Get-PSReadLineState reads options through GetOptions(), not a cmdlet.
+
+USAGE
+    script/test_win_hook_cost
+"""
+import os
+import re
+import shutil
+import subprocess
+import sys
+
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+BOOT = os.path.join(ROOT, "app", "assets", "bundled", "bootstrap")
+BASH_SH = open(os.path.join(BOOT, "bash.sh")).read()
+BODY = open(os.path.join(BOOT, "bash_body.sh")).read()
+PWSH = open(os.path.join(BOOT, "pwsh.ps1")).read()
+failures = []
+
+
+def check(cond, what, detail=""):
+    print(("  ok   " if cond else "  FAIL ") + what)
+    if not cond:
+        failures.append(what)
+        if detail:
+            print("       " + detail)
+
+
+def bash_func(text, name):
+    """Source text of `name () {` / `name() {` up to its closing brace at the same indent."""
+    m = re.search(r"^( *)(?:function )?%s ?\(\) *\{\n(.*?)^\1\}" % re.escape(name), text, re.S | re.M)
+    if not m:
+        sys.exit("function %s not found" % name)
+    return m.group(2)
+
+
+def code_lines(body):
+    out = []
+    for line in body.splitlines():
+        s = line.strip()
+        if not s or s.startswith("#"):
+            continue
+        out.append(s)
+    return out
+
+
+def forky(line):
+    """A command substitution, backtick or pipeline (not $((..)), ||, >|, ;;, or a trailing comment)."""
+    line = re.sub(r"\s#\s.*$", "", line)
+    line = re.sub(r"^[\w|*]+\)", " ", line)  # a case label such as `a|b)`
+    for ok in ("$((", "||", ">|", "|&"):
+        line = line.replace(ok, " ")
+    return bool(re.search(r"\$\(|`|\|", line))
+
+# function -> substrings of lines allowed to fork, with the reason they are off the per-command path
+ALLOW = {
+    "__bp_preexec_invoke_exec_impl": [
+        "this_command=$(",  # bash < 5.3 AND no temp file: the original pipeline, only when viafile failed
+        "history 1 | sed",  # (continuation of the line above)
+    ],
+    "warp_title": [],
+    "__bp_history1_viafile": [
+        "mktemp",  # once per shell, the first command; the file is reused
+    ],
+    "__warp_set_title_active_on_preexec_impl": [
+        "jobs ",  # only a first word of `fg`: guarded by [[ "${1-}" == *fg* ]]
+    ],
+}
+
+PATH_FUNCS = [
+    (BASH_SH, "__bp_preexec_invoke_exec_impl"),
+    (BASH_SH, "__bp_history1_viafile"),
+    (BASH_SH, "__bp_history1_strip"),
+    (BASH_SH, "__bp_in_prompt_command"),
+    (BASH_SH, "__bp_trim_whitespace"),
+    (BODY, "__warp_preexec_impl"),
+    (BODY, "__warp_run_relaxed"),
+    (BODY, "__warp_relax_opts"),
+    (BODY, "warp_send_hook_via_kv_pairs_start"),
+    (BODY, "warp_send_hook_kv_pair"),
+    (BODY, "warp_send_hook_kv_pair_escaped"),
+    (BODY, "warp_send_hook_via_kv_pairs_end_and_reset_grid"),
+    (BODY, "warp_title"),
+    (BODY, "__warp_set_title_active_on_preexec_impl"),
+]
+
+print("bash: MSYS2 Enter -> command start path is fork-free")
+for text, name in PATH_FUNCS:
+    bad = []
+    for line in code_lines(bash_func(text, name)):
+        # the non-MSYS branch of __warp_preexec_impl is not run under MSYS2
+        if forky(line) and not any(a in line for a in ALLOW.get(name, [])):
+            bad.append(line)
+    if name == "__warp_preexec_impl":
+        # keep only the MSYS2 branch's lines
+        body = bash_func(text, name)
+        m = re.search(r'WARP_IN_MSYS2:-\}" = true \]; then\n(.*?)\n        else\n', body, re.S)
+        check(m is not None, "%s: MSYS2 branch found" % name)
+        bad = [l for l in code_lines(m.group(1)) if forky(l)] if m else []
+    check(not bad, "%s has no command substitution, backtick or pipe" % name, "; ".join(bad))
+
+print("bash: the DEBUG trap tests before it calls anything")
+check("__bp_preexec_invoke_exec \"$__warp_bp_u\"' DEBUG" in BASH_SH and "[[ -z ${__bp_preexec_interactive_mode:-}" in BASH_SH,
+      "the DEBUG trap string guards the full path with a builtin test")
+
+print("bash: __bp_in_prompt_command skips the here-string for a command that is not in PROMPT_COMMAND")
+body = bash_func(BASH_SH, "__bp_in_prompt_command")
+nc = "\n".join(code_lines(body))
+pre = nc.find('!= *"$trimmed_arg"*')
+here = nc.find("<<<")
+check(pre != -1 and here != -1 and pre < here, "the substring pre-check comes before the here-string read")
+
+new_fn = "__bp_in_prompt_command() {\n" + body + "\n}\n"
+trim_fn = "__bp_trim_whitespace() {\n" + bash_func(BASH_SH, "__bp_trim_whitespace") + "\n}\n"
+old_body = body.replace('''         if [[ -n $trimmed_arg && "${PROMPT_COMMAND[*]:-}" != *"$trimmed_arg"* ]]; then
+             return 1
+         fi
+''', "")
+old_fn = "__bp_in_prompt_command_old() {\n" + old_body + "\n}\n"
+check(old_body != body, "reference (pre-check removed) differs from the real function")
+PCS = [
+    "__bp_precmd_invoke_cmd\nstarship_precmd\n__bp_interactive_mode",
+    "__bp_precmd_invoke_cmd\n__bp_interactive_mode",
+    "echo pc; printf x\n__bp_interactive_mode",
+    "  spaced  \n__bp_interactive_mode",
+    ":",
+    "",
+]
+ARGS = ["ls", "ls -la", "starship_precmd", "__bp_interactive_mode", "echo pc", "printf x", "spaced",
+        "  spaced ", "pc", "echo", ":", "", "  ", "a*", "*", "[x]", "__bp_precmd_invoke_cmd ; x"]
+bash = shutil.which("bash") or "/bin/bash"
+mismatch = []
+for pc in PCS:
+    for arg in ARGS:
+        script = new_fn.replace("__bp_in_prompt_command()", "__bp_in_prompt_command_new()") + trim_fn + old_fn + (
+            'PROMPT_COMMAND=%s\n__bp_in_prompt_command_new %s; a=$?\n__bp_in_prompt_command_old %s; b=$?\necho $a $b\n'
+            % (repr(pc).replace("\\n", "'$'\\n''"), repr(arg), repr(arg))
+        )
+        # build with real newlines via $'..' instead of the repr trick
+        script = new_fn.replace("__bp_in_prompt_command()", "__bp_in_prompt_command_new()") + trim_fn + old_fn
+        script += "PROMPT_COMMAND=" + "$'" + pc.replace("\\", "\\\\").replace("'", "\\'").replace("\n", "\\n") + "'\n"
+        a = "$'" + arg.replace("\\", "\\\\").replace("'", "\\'") + "'"
+        script += "__bp_in_prompt_command_new %s; a=$?\n__bp_in_prompt_command_old %s; b=$?\necho $a $b\n" % (a, a)
+        r = subprocess.run([bash, "-c", script], capture_output=True, text=True)
+        got = r.stdout.split()
+        if len(got) != 2 or got[0] != got[1]:
+            mismatch.append((pc, arg, r.stdout.strip(), r.stderr.strip()))
+check(not mismatch, "new and original __bp_in_prompt_command agree on %d cases" % (len(PCS) * len(ARGS)), repr(mismatch[:2]))
+
+print("pwsh: Preexec and the idle scrub")
+pre = PWSH[PWSH.index("function Warp-Preexec"):PWSH.index("function Warp-Idle-Maintenance") if False else PWSH.index("# Housekeeping that does not have to happen")]
+pre_code = "\n".join(l for l in pre.splitlines() if not l.strip().startswith("#"))
+check("ConvertTo-Json" not in pre_code, "Warp-Preexec does not call ConvertTo-Json")
+cmdlets = re.findall(r"(?<![\w.:-])(?:[A-Z][A-Za-z]+\\)?(?:Get|Set|Clear|Remove|Write|Test|New|Select|Where|ForEach|Out|Add|Invoke|Join|Split)-[A-Za-z]+", pre_code)
+cmdlets = [c for c in cmdlets if not c.startswith("Warp-")]
+check(not cmdlets, "Warp-Preexec calls no cmdlet", ", ".join(cmdlets))
+check("$script:warpHistoryDirty = $true" in pre, "Warp-Preexec flags a line of ours for the history scrub")
+idle = PWSH[PWSH.index("function Warp-Idle-Maintenance"):PWSH.index("function Warp-Send-LineEditorReading")]
+g = idle.find("if ($script:warpHistoryDirty -ne $false)")
+c = idle.find("Clear-History")
+check(g != -1 and c != -1 and g < c and idle.count("Clear-History") == 2 and "Warp-Clear-BootstrapHistory" in idle[g:],
+      "every Clear-History in Warp-Idle-Maintenance is behind the dirty flag")
+state = PWSH[PWSH.index("function Warp-Get-PSReadLineOptionObject"):PWSH.index("# Runs at every prompt.")]
+check("[Microsoft.PowerShell.PSConsoleReadLine]::GetOptions()" in state and "Get-PSReadLineOption" in state,
+      "PSReadLine options are read with GetOptions(), the cmdlet only as the fallback")
+ifc = re.search(r"function Warp-Configure-PSReadLine-IfChanged \{\n(.*?)\n    \}\n", PWSH, re.S).group(1)
+check("PSReadLine\\Get-PSReadLineOption" not in ifc,
+      "the per-prompt reconfigure check does not call Get-PSReadLineOption")
+
+print()
+if failures:
+    print("FAILED: %d" % len(failures))
+    sys.exit(1)
+print("all checks passed")

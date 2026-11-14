@@ -177,6 +177,7 @@ guards:
         "./script/$name"
       }
       run_harness test_hijack_bootstrap python3 bash
+      run_harness test_win_hook_cost python3 bash
       run_harness test_bash_preexec_large_command python3 bash
       run_harness test_zsh_hex_encoder zsh od tr
       run_harness test_fish_bootstrap python3 fish

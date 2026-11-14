@@ -241,11 +241,19 @@
 
      __bp_in_prompt_command() {
 
-         local prompt_command_array IFS=$'\n;'
-         builtin read -rd '' -a prompt_command_array <<< "${PROMPT_COMMAND[*]:-}"
-
+ #### Phosphor (#1492): the first simple command of EVERY typed line comes through here, and the
+ #### `read ... <<<` below is a here-string (a pipe or temp file on MSYS2, where file and pipe
+ #### creation are Win32 calls) plus a trim per prompt-command line. A piece that equals the
+ #### trimmed command is a substring of PROMPT_COMMAND, so a command that is not one (every user
+ #### command) answers no with one pattern match. Same result, no here-string.
          local trimmed_arg
          __bp_trim_whitespace trimmed_arg "${1:-}"
+         if [[ -n $trimmed_arg && "${PROMPT_COMMAND[*]:-}" != *"$trimmed_arg"* ]]; then
+             return 1
+         fi
+
+         local prompt_command_array IFS=$'\n;'
+         builtin read -rd '' -a prompt_command_array <<< "${PROMPT_COMMAND[*]:-}"
 
          local command trimmed_command
          for command in "${prompt_command_array[@]:-}"; do
@@ -286,7 +294,21 @@
      __bp_history1_viafile() {
          __bp_history1=
          if [[ -z ${__bp_h1_file:-} ]]; then
-             __bp_h1_file=$(command -p mktemp 2>/dev/null) || __bp_h1_file=
+             # Phosphor (#1492): on MSYS2 the scratch file goes to /dev/shm (the runtime's in-memory
+             # object namespace) when a write and read back works there: the Windows temp
+             # directory is NTFS, where every command's write+read of it is a file the
+             # real-time virus scanner may look at. Anything unexpected falls back to the default.
+             __bp_h1_file=
+             if [[ ${OSTYPE:-} == msys* || ${OSTYPE:-} == cygwin* ]] && [[ -d /dev/shm && -w /dev/shm ]]; then
+                 __bp_h1_file=$(command -p mktemp -p /dev/shm 2>/dev/null) || __bp_h1_file=
+                 if [[ -n $__bp_h1_file ]]; then
+                     { builtin printf 'ok\n' >| "$__bp_h1_file" && IFS= builtin read -r __bp_h1_probe < "$__bp_h1_file" && [[ $__bp_h1_probe == ok ]]; } 2>/dev/null || {
+                         command -p rm -f "$__bp_h1_file" 2>/dev/null
+                         __bp_h1_file=
+                     }
+                 fi
+             fi
+             [[ -n $__bp_h1_file ]] || __bp_h1_file=$(command -p mktemp 2>/dev/null) || __bp_h1_file=
              [[ -n $__bp_h1_file ]] || __bp_h1_file=none
          fi
          [[ $__bp_h1_file != none ]] || return 1

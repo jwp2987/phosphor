@@ -396,6 +396,7 @@ shell_test_needs() {
         test_zsh_hex_encoder) echo "zsh od tr" ;;
         test_bash_preexec_large_command) echo "python3 bash" ;;
         test_hijack_bootstrap) echo "python3" ;;
+        test_win_hook_cost) echo "python3 bash" ;;
         test_fish_bootstrap) echo "python3 fish" ;;
         test_hook_forks) echo "python3 git strace" ;;
         test_line_editor_markers) echo "python3" ;;
@@ -425,7 +426,7 @@ run_shell_test() {
     fi
 }
 step "shell tests (packaging and bootstrap scripts)"
-for shell_test in ./script/macos/test_create_warpctrl_wrapper ./script/test_warpctrl_early_dispatch ./script/test_bash_bootstrap_nounset ./script/test_zsh_bootstrap_strict_options ./script/test_bootstrap_hook_equivalence ./script/test_pwsh_hook_equivalence ./script/test_nu_bootstrap_hook_equivalence ./script/test_nu_agent_pager_env ./script/test_bash_bootstrap_builtins ./script/test_ssh_keepalive ./script/test_ssh_probe_cache ./script/test_ssh_wrapper_forks ./script/test_ssh_hosts_denylist ./script/test_ssh_auth_once ./script/test_ssh_raw_bootstrap_hook ./script/test_local_counted_bootstrap ./script/test_native_completions ./script/test_cwd_listing ./script/test_child_ps1 ./script/test_init_shell_escaping ./script/test_reader_marker ./script/test_hijack_bootstrap ./script/test_bash_preexec_large_command ./script/test_zsh_hex_encoder; do
+for shell_test in ./script/macos/test_create_warpctrl_wrapper ./script/test_warpctrl_early_dispatch ./script/test_bash_bootstrap_nounset ./script/test_zsh_bootstrap_strict_options ./script/test_bootstrap_hook_equivalence ./script/test_pwsh_hook_equivalence ./script/test_nu_bootstrap_hook_equivalence ./script/test_nu_agent_pager_env ./script/test_bash_bootstrap_builtins ./script/test_ssh_keepalive ./script/test_ssh_probe_cache ./script/test_ssh_wrapper_forks ./script/test_ssh_hosts_denylist ./script/test_ssh_auth_once ./script/test_ssh_raw_bootstrap_hook ./script/test_local_counted_bootstrap ./script/test_native_completions ./script/test_cwd_listing ./script/test_child_ps1 ./script/test_init_shell_escaping ./script/test_reader_marker ./script/test_hijack_bootstrap ./script/test_bash_preexec_large_command ./script/test_zsh_hex_encoder ./script/test_win_hook_cost; do
     run_shell_test "$shell_test"
 done
 
