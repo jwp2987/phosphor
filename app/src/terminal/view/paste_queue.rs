@@ -163,6 +163,10 @@ pub(super) struct PasteQueueState {
     /// The entry being delivered is a typed key the ssh gate held (#2181): inserted into the editor
     /// it is judged for the line-start ssh escape like a typed key.
     pub(super) delivering_held_typed: bool,
+    /// The entry being delivered is an input the ssh connect hold held, of any class (r30f):
+    /// written to the pty at a prompt the editor owns, it takes the line for the pty
+    /// (`TypeaheadHandoff::take_prompt_line_for_delivered_typeahead`).
+    pub(super) delivering_ssh_held: bool,
     /// The hand-off held the entry being delivered; the host answers `Requeue` with this.
     requeue_request: Option<RequeueRequest>,
     /// What goes back to the front of the queue after a `Requeue` when the entry delivered is not
@@ -227,6 +231,7 @@ impl PasteQueueState {
             delivering: false,
             delivering_synced: false,
             delivering_held_typed: false,
+            delivering_ssh_held: false,
             requeue_request: None,
             requeue_replacement: None,
             prompt_hold_waiting_told: None,

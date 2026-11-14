@@ -22773,3 +22773,83 @@ fn test_an_arrow_in_the_segment_acts_in_place_when_the_shell_exits() {
         assert!(pane_queue_is_idle(&app, &editor), "nothing is left held");
     });
 }
+
+// ---- r30f: ssh connect typeahead delivered to the pty at an editor-owned prompt -----------------
+
+/// r30f (`lab_connect_typeahead.zsh.lan.*`, macOS lab, AGENT mode), the logged hop sequence:
+/// `echo T4_yng` is held for the ssh connect (`Hold(SshConnect)`); `ssh_gate_released
+/// how=first_prompt` and `handoff_commit_at_prompt committed=true` in the same pass; then
+/// `ssh_held_delivery held_bytes=11` with every key decided `row=D6 outcome=Pty(Typed)` and
+/// routed `hand_route reason=unheld state=editor_owned` (`handoff_untracked_line_bytes`). The
+/// rest of the line was typed into the editor and its Enter submitted `> ~/rl.txt` alone.
+///
+/// A managed ssh pane with the agent mode's autodetected input, the hand-off editor-owned at the
+/// remote prompt, the held keys delivered to the pty one by one: the line becomes the pty's, so
+/// the rest of the line typed next goes to the pty behind them, in typed order, and nothing of
+/// the line lands in the editor.
+#[test]
+fn test_ssh_typeahead_delivered_to_the_pty_at_an_editor_owned_prompt_is_not_split() {
+    use crate::terminal::model::typeahead_handoff::HandoffState;
+    const AGENT_MODE_INPUT: InputConfig = InputConfig {
+        input_type: InputType::AI,
+        is_locked: false,
+    };
+    App::test((), move |mut app| async move {
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+        initialize_app(&mut app);
+        let (terminal, input, _editor, writes) =
+            pane_and_terminal_for_ssh_escape_test(&mut app, true, AGENT_MODE_INPUT).await;
+        assert_eq!(
+            handoff_state(&app, &input),
+            HandoffState::EditorOwned,
+            "test setup: the prompt was committed to the editor"
+        );
+        // `ssh_held_delivery`: the hold's keys, one write each, decided for the pty.
+        for key in b"echo T4_yng" {
+            let written = terminal.update(&mut app, |view, ctx| {
+                view.deliver_held_ssh_typed_to_pty_for_test(&[*key], ctx)
+            });
+            assert!(written, "test setup: the delivered key reached the pty");
+        }
+        assert_eq!(
+            writes.borrow().concat(),
+            b"echo T4_yng".to_vec(),
+            "the held keys reached the pty in typed order"
+        );
+        assert_eq!(
+            handoff_state(&app, &input),
+            HandoffState::PtyOwned {
+                wrote_user_bytes: true,
+                enters_written: 0,
+                precmds_seen: 0,
+            },
+            "the line is the pty's: the delivered keys are counted as its content"
+        );
+        // The rest of the line, typed next.
+        for key in b" >> ~/rl.txt" {
+            terminal.update(&mut app, |view, ctx| {
+                view.write_user_bytes_for_test(&[*key], ctx);
+            });
+        }
+        assert_eq!(
+            writes.borrow().concat(),
+            b"echo T4_yng >> ~/rl.txt".to_vec(),
+            "the rest of the line follows the delivered keys to the pty, in typed order: {:?}",
+            writes.borrow()
+        );
+        input.read(&app, |input, ctx| {
+            assert_eq!(
+                input.buffer_text(ctx),
+                "",
+                "nothing of the line landed in the editor"
+            );
+        });
+        input.read(&app, |input, _| {
+            assert!(
+                input.model.lock().typeahead_handoff().routes_keys_to_pty(),
+                "the keys typed next still go to the pty"
+            );
+        });
+    });
+}

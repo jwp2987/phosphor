@@ -14636,6 +14636,13 @@ impl TerminalView {
             // model look once a block is shown; none at all with no reader noted.)
             self.show_question_of_tty_reader("key", ctx);
         }
+        // r30f: a key of the ssh connect hold delivered to the pty takes the prompt's line for
+        // the pty when the editor owns input and holds nothing (a line the editor already holds
+        // text of stays the editor's; these bytes are then noted as untracked, as before).
+        let held_typeahead_takes_the_line = self.paste_queue.delivering_ssh_held
+            && !facts.alt_screen
+            && self.input.as_ref(ctx).buffer_text(ctx).is_empty();
+        let mut line_taken_for_held_typeahead = false;
         let handoff_route = if FeatureFlag::TypeaheadHandoff.is_enabled() {
             let mut handoff = self.handoff.write();
             let route = if facts.alt_screen {
@@ -14652,6 +14659,14 @@ impl TerminalView {
                     if !handoff.adopt_untracked_typeahead() {
                         handoff.note_untracked_line_bytes();
                     }
+                } else if held_typeahead_takes_the_line
+                    && handoff.take_prompt_line_for_delivered_typeahead()
+                {
+                    // r30f: keys held for an ssh connect are delivered to the pty while the
+                    // editor owns input at a prompt (the delivery was decided on facts read
+                    // without waiting for the pty reader). The line is the pty's from here, so
+                    // the rest of it follows these keys instead of landing in the editor.
+                    line_taken_for_held_typeahead = true;
                 } else if facts.shell_reports_line {
                     handoff.note_untracked_line_bytes();
                 }
@@ -14691,6 +14706,11 @@ impl TerminalView {
         warpui::input_order::log_hop("user_bytes_route", || {
             format!("bytes={} route={handoff_route:?}", bytes.len())
         });
+        if line_taken_for_held_typeahead {
+            // The pty owns input again: focus follows it, so the keys typed next reach the pty.
+            self.request_queue_pin_clear();
+            self.redetermine_terminal_focus(ctx);
+        }
         if handoff_route == UserBytesRoute::Held {
             input_queue::trace::hold(input_queue::trace::legacy::HANDOFF, bytes.len());
             // #933: an Enter held because the command may already have finished.
@@ -15392,6 +15412,21 @@ impl TerminalView {
     #[cfg(test)]
     pub(crate) fn handle_typeahead_report_for_test(&mut self, ctx: &mut ViewContext<Self>) {
         self.handle_typeahead_report_with_handoff(true, ctx);
+    }
+
+    /// Test seam (r30f): one typed key of the ssh connect hold, delivered to the pty by the
+    /// queue's hand-over (the destination table chose the pty).
+    #[cfg(test)]
+    pub(crate) fn deliver_held_ssh_typed_to_pty_for_test(
+        &mut self,
+        bytes: &[u8],
+        ctx: &mut ViewContext<Self>,
+    ) -> bool {
+        self.paste_queue.delivering_ssh_held = true;
+        let written =
+            self.write_user_bytes_to_pty_after_paste_stage(Cow::Owned(bytes.to_vec()), true, ctx);
+        self.paste_queue.delivering_ssh_held = false;
+        written
     }
 
     /// Test seam (#2202): a key typed with the terminal focused, on the user-key write path.
