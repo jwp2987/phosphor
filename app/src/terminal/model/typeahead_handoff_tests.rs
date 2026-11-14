@@ -8930,3 +8930,71 @@ fn delivered_ssh_typeahead_takes_the_prompts_line_for_the_pty() {
     assert!(!owned.take_prompt_line_for_delivered_typeahead());
     assert_eq!(owned.state(), &before);
 }
+
+// ---- #2182 (b): a command parked behind the app's own in-band command --------------------------
+
+/// The side call was written while the editor owned input (nothing counted). Parking the user's
+/// command hands the keys to the pty at once and counts BOTH Enters, so the side call's prompt
+/// answers the side call and the parked command's own prompt is still awaited.
+#[test]
+fn a_parked_command_counts_the_side_call_ahead_of_it() {
+    let mut handoff = TypeaheadHandoff::default();
+    handoff.on_command_parked(true);
+    assert!(
+        matches!(
+            handoff.state(),
+            HandoffState::PtyOwned {
+                enters_written: 2,
+                precmds_seen: 0,
+                ..
+            }
+        ),
+        "{:?}",
+        handoff.state()
+    );
+    assert!(handoff.routes_keys_to_pty(), "keys typed now follow it");
+
+    handoff.on_precmd();
+    assert!(
+        handoff.has_unanswered_lines(),
+        "the side call's prompt does not answer the parked command's Enter"
+    );
+    handoff.on_parked_command_written("exit");
+    handoff.on_precmd();
+    assert!(!handoff.has_unanswered_lines());
+}
+
+/// A side call written while the pty owned input counted its own Enter: the park adds one.
+#[test]
+fn a_parked_command_behind_a_counted_side_call_adds_only_its_own_enter() {
+    let mut handoff = after_submit();
+    handoff.on_precmd();
+    handoff.on_uncounted_command_written();
+    handoff.on_command_parked(true);
+    assert!(
+        matches!(
+            handoff.state(),
+            HandoffState::PtyOwned {
+                enters_written: 3,
+                precmds_seen: 1,
+                ..
+            }
+        ),
+        "{:?}",
+        handoff.state()
+    );
+}
+
+/// A parked command that is dropped (the shell exited, a Ctrl-C) leaves no Enter to wait for.
+#[test]
+fn a_dropped_parked_command_takes_its_enter_back() {
+    let mut handoff = TypeaheadHandoff::default();
+    handoff.on_command_parked(true);
+    handoff.on_parked_command_dropped();
+    handoff.on_precmd();
+    assert!(
+        !handoff.has_unanswered_lines(),
+        "only the side call's Enter was counted, and its prompt came: {:?}",
+        handoff.state()
+    );
+}

@@ -3677,6 +3677,89 @@ impl TypeaheadHandoff {
         }
     }
 
+    /// #2182 (b): the editor's command is PARKED behind the app's own in-band command: accepted,
+    /// queued at the front of the controller's writes, and written at that command's prompt.
+    /// From here on the pty owns the keys, exactly as after [`Self::on_command_written`] (which
+    /// this runs): what the user types next follows the command instead of landing in the
+    /// editor behind the submitted text.
+    ///
+    /// What differs from a command written now is what is AHEAD of it in the tty:
+    /// `side_call_prompt_pending` says the in-band command is written and its prompt is still to
+    /// come. Its Enter is counted here when it was not (it was written while the editor owned
+    /// input, where nothing is counted), so its Precmd answers its own Enter and not the parked
+    /// command's. And the next Preexec is not the parked command's own, so nothing is settled by
+    /// it: [`Self::on_parked_command_written`] arms that when the command's bytes go.
+    pub fn on_command_parked(&mut self, side_call_prompt_pending: bool) {
+        let side_call_counted = matches!(self.state, HandoffState::PtyOwned { .. });
+        self.on_command_written();
+        self.requests_written_before_command = None;
+        self.own_preexec_pending = false;
+        self.command_written_at = None;
+        if side_call_prompt_pending
+            && !side_call_counted
+            && let HandoffState::PtyOwned { enters_written, .. } = &mut self.state
+        {
+            *enters_written = enters_written.saturating_add(1);
+        }
+        warpui::input_order::log_hop("handoff_command_parked", || {
+            format!(
+                "side_call_prompt_pending={side_call_prompt_pending} side_call_counted={side_call_counted}"
+            )
+        });
+    }
+
+    /// #2182 (b): the bytes of the command parked by [`Self::on_command_parked`] go to the pty
+    /// now (its block has just started). Its Enter was counted at the park; what a write adds is
+    /// done here: its own Preexec is the next one and settles the requests written before it
+    /// (unless lines are still queued ahead of it, as in [`Self::on_command_written`]), the
+    /// enter window opens, and the prompt's reading marker is consumed by its Enter.
+    pub fn on_parked_command_written(&mut self, command: &str) {
+        let lines_queued_ahead = matches!(
+            self.state,
+            HandoffState::PtyOwned {
+                enters_written,
+                precmds_seen,
+                ..
+            } if enters_written > precmds_seen.saturating_add(1)
+        );
+        self.requests_written_before_command = if lines_queued_ahead {
+            None
+        } else {
+            Some(CommandRequestSnapshot {
+                requests_written: self.requests_written_total,
+                command: Some(command.trim().to_owned()),
+            })
+        };
+        self.own_preexec_pending = true;
+        self.command_interactive = false;
+        let now = Instant::now();
+        if self.enter_window_may_open() {
+            self.enter_window_since = Some(now);
+        }
+        self.last_activity_at = Some(now);
+        self.note_fresh_activity_for_test();
+        self.command_written_at = Some(now);
+        self.clear_reading_marker_for_enter();
+    }
+
+    /// #2182 (b): the command parked by [`Self::on_command_parked`] will never be written (the
+    /// shell exited, a Ctrl-C dropped it): the Enter counted for it is taken back, so no prompt
+    /// is awaited for a line that was never sent.
+    pub fn on_parked_command_dropped(&mut self) {
+        self.own_preexec_pending = false;
+        self.requests_written_before_command = None;
+        if let HandoffState::PtyOwned {
+            enters_written,
+            precmds_seen,
+            ..
+        } = &mut self.state
+            && *enters_written > *precmds_seen
+        {
+            *enters_written -= 1;
+        }
+        warpui::input_order::log_hop("handoff_parked_command_dropped", String::new);
+    }
+
     /// The view wrote the keys of queued young hold `id` behind the command (it took them out of
     /// the gate for [`YoungHoldEnd::FollowCommand`]): they are counted as the lines and bytes
     /// they are, exactly as the buffered hold's keys were when the command was written, and as one

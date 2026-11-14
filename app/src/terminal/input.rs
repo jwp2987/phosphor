@@ -2645,6 +2645,11 @@ pub struct Input {
     /// #2223: what the buffer still holds of the command this editor submitted, while its block
     /// runs ([`SubmittedPrefix`]).
     submitted_prefix: SubmittedPrefix,
+    /// #2182 (b) review M1: the editor's submission was made while the app's own in-band command
+    /// held the active block, so its command is parked in the pty controller and the block
+    /// `submitted_prefix` recorded is the side call's. The command's own block is the next one
+    /// that runs a user command; the prefix is re-stamped with it when it is first asked for.
+    submitted_block_pending: bool,
     /// Whether the last Enter submitted an agent query (sent it, or asked to enter the agent view
     /// with it); read by the misroute recovery to tell a real submit from a refused one (#835).
     last_enter_submitted_ai_query: bool,
@@ -4555,6 +4560,7 @@ impl Input {
             editor_submission_session: None,
             editor_submission_from_pending: false,
             submitted_prefix: SubmittedPrefix::None,
+            submitted_block_pending: false,
             last_enter_submitted_ai_query: false,
             submitting_misroute_recovery: false,
             weak_view_handle: ctx.handle(),
@@ -7663,6 +7669,19 @@ impl Input {
         self.note_edit_for_submitted_prefix(ctx);
         let buffer = self.editor.as_ref(ctx).buffer_text(ctx);
         let running_block = self.model.lock().active_block_id().clone();
+        // #2182 (b) review M1: a submission parked behind the app's side call recorded the side
+        // call's block. The command that runs now (a user command: this path is only taken over
+        // one) is that submission's: nothing else is started ahead of a parked command. Without
+        // this its prefix read as stale and the command's own text was sent to it as input.
+        if std::mem::take(&mut self.submitted_block_pending) {
+            warpui::input_order::log_hop("submitted_prefix_restamped", String::new);
+            match &mut self.submitted_prefix {
+                SubmittedPrefix::Intact { block, .. }
+                | SubmittedPrefix::Gone { block }
+                | SubmittedPrefix::Edited { block } => *block = running_block.clone(),
+                SubmittedPrefix::None => {}
+            }
+        }
         // The prefix of a submission that is not the running block's is stale (that block is
         // over): nothing of it is in the buffer.
         let prefix = match &self.submitted_prefix {
@@ -7726,11 +7745,19 @@ impl Input {
     /// and which block runs it ([`SubmittedPrefix::Intact`]).
     fn note_editor_submission(&mut self, ctx: &mut ViewContext<Self>) {
         let buffer = self.editor.as_ref(ctx).buffer_text(ctx);
-        let block = self.model.lock().active_block_id().clone();
+        let (block, over_in_band_block) = {
+            let model = self.model.lock();
+            (
+                model.active_block_id().clone(),
+                model.block_list().active_block().is_in_band_command_block(),
+            )
+        };
         self.submitted_prefix = SubmittedPrefix::Intact {
             bytes: buffer.len(),
             block,
         };
+        // #2182 (b): over the app's side call the command is parked; its block comes later.
+        self.submitted_block_pending = over_in_band_block;
         self.editor_submission = Some(buffer);
     }
 
@@ -18913,6 +18940,7 @@ impl Input {
         // is enabled (#1451); other newer text is the hand-off's.
         // #2223: the submission ends here (its block completed, or its shell exited).
         self.submitted_prefix = SubmittedPrefix::None;
+        self.submitted_block_pending = false;
         let from_pending = std::mem::take(&mut self.editor_submission_from_pending);
         if !(FeatureFlag::TypeaheadHandoff.is_enabled() || from_pending)
             || self

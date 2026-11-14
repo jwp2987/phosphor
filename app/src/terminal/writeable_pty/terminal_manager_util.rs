@@ -1,4 +1,3 @@
-use crate::features::FeatureFlag;
 use crate::persistence::ModelEvent;
 use crate::terminal::line_editor_status::LineEditorStatus;
 use crate::terminal::model::escape_sequences;
@@ -170,30 +169,26 @@ pub fn wire_up_pty_controller_with_surface<T: EventLoopSender, S: TerminalSurfac
                     return;
                 };
 
-                if FeatureFlag::TypeaheadHandoff.is_enabled() {
-                    let workflow_id = event.workflow_id;
-                    let outcome = controller.update(ctx, |controller, ctx| {
-                        controller.write_command_annotating_block(
-                            &event.command,
-                            shell_type,
-                            event.source.clone(),
-                            move |model| {
-                                model
-                                    .block_list_mut()
-                                    .active_block_mut()
-                                    .set_cloud_workflow_state(workflow_id)
-                            },
-                            ctx,
-                        )
-                    });
-                    handle_command_not_run(&surface_weak_handle_for_intents, &event, outcome, ctx);
-                } else {
-                    model_clone.lock().block_list_mut().active_block_mut().set_cloud_workflow_state(event.workflow_id);
-                    let outcome = controller.update(ctx, |controller, ctx| {
-                        controller.write_command(&event.command, shell_type, event.source.clone(), ctx)
-                    });
-                    handle_command_not_run(&surface_weak_handle_for_intents, &event, outcome, ctx);
-                }
+                // One path with and without the typeahead hand-off (#2182 b, review m3): the
+                // cloud-workflow annotation is applied to the block the command starts, when it
+                // starts (now, or at the write of a held or parked command), never before the
+                // start to whichever block is active.
+                let workflow_id = event.workflow_id;
+                let outcome = controller.update(ctx, |controller, ctx| {
+                    controller.write_command_annotating_block(
+                        &event.command,
+                        shell_type,
+                        event.source.clone(),
+                        move |model| {
+                            model
+                                .block_list_mut()
+                                .active_block_mut()
+                                .set_cloud_workflow_state(workflow_id)
+                        },
+                        ctx,
+                    )
+                });
+                handle_command_not_run(&surface_weak_handle_for_intents, &event, outcome, ctx);
 
                 if event.should_add_command_to_history {
                     update_command_history(

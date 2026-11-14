@@ -162,3 +162,56 @@ Not changed, and worth knowing:
   the pty); the parked command still runs at the prompt that follows. It is not cancelled.
 - `SharedSession` and agent (`AI`) commands are not parked: their refusal is unchanged, and now
   logged.
+
+## Review round (one follow-up commit; written without a compiler)
+
+A read-only review of `912ee73bf` found that parking only the WRITE left a window in which the
+facts said "the editor owns the keys" while the editor still held the submitted text. What
+changed:
+
+- **B1: the hand-off is told at the PARK, not at the write** (this reverses step 2 above for the
+  hand-off's part; the block still starts at the write). For the editor's command on a shell
+  that reports its line, `park_user_command_behind_in_band` calls
+  `TypeaheadHandoff::on_command_parked`, sets `handoff_command_pending` and emits
+  `TypeaheadHandoffChanged`, as `write_command` does for a command queued behind an inactive
+  line editor. From the Enter on the pty owns the keys; `write_handoff_user_bytes` keeps them
+  behind the parked command and the drain writes them right after it. Before this, `exit`
+  parked and then `ssh h` + Enter submitted `exitssh h`, and a key typed before the write went
+  to the editor while one typed after it went to the pty.
+- **The count of what is ahead.** The side call was written while the editor owned input, where
+  nothing is counted. `on_command_parked(side_call_prompt_pending)` counts the side call's Enter
+  too when it was not counted, so the side call's Precmd answers the side call and not the
+  parked command (otherwise the hand-off would have taken the side call's prompt for the
+  command's). `on_parked_command_written` arms the command's own Preexec at the write;
+  `on_parked_command_dropped` takes its Enter back. The hand-off's "a command whose block
+  starts at its write waits for unanswered lines" gate (`handoff_holds_front_command`) does not
+  apply to a parked user command: it would wait for its own Enter.
+- **M1:** the input's `SubmittedPrefix` recorded the side call's block. `submitted_block_pending`
+  marks a submission made over an in-band block; the declined-Enter path re-stamps the prefix
+  with the running block the first time it is asked.
+- **M2:** `discard_pending_command_writes` (the agent's discard) no longer drops a parked user
+  command.
+- **M3:** a command that is not the user's is `Coalesced` while a user command is parked.
+- **m1:** the side call's Precmd also drains the queue when a user command is parked (the line
+  editor emits nothing for a Precmd that finds it already active).
+- **m2:** a user command is not parked under tmux control mode (a write there can be taken into
+  tmux's pending buffer before the block start runs); the refusal is unchanged there. If control
+  mode starts after a park, the not-started arm undoes the hand-off's count, writes the keys
+  typed behind the command and tells the view "not engaged".
+- **m3:** the flag-off path uses `write_command_annotating_block` too; one path.
+- **m4:** every drop of a parked command emits `TypeaheadHandoffNotEngaged`.
+- **m5 (coordinator's decision from the owner's #2209 Q3):** a real Ctrl-C drops a parked user
+  command (`parked_user_command_dropped reason=ctrl_c`). The keys typed behind it are written
+  ahead of the ^C, where the tty's interrupt handling decides what is left of them, as if they
+  had been written when typed. This replaces "It is not cancelled" above.
+
+Still open after this round:
+
+- A shell that cannot report its line (the hand-off does not engage) keeps the old window: keys
+  typed between the Enter and the parked write go to the editor behind the submitted text, and
+  an Enter there submits both.
+- The agent's interrupt sends a ^C right after its discard, so by m5 it drops a parked user
+  command after all; the two cannot be told apart at the controller. They should not coexist
+  (an agent command in the active block means no side call holds it).
+- After a Ctrl-C drop the editor still holds the dropped command's text as its submission until
+  the next report or block completion replaces it.
