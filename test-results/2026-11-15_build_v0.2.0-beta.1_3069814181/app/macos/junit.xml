@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="appci-macos" tests="2" failures="0" skipped="0">
+<testcase classname="terminal" name="mode_proof" time="3.70">
+</testcase>
+<testcase classname="agent" name="mode_proof" time="2.70">
+</testcase>
+</testsuite>
