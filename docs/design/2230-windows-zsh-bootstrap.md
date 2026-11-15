@@ -1,6 +1,7 @@
 # #2230: the typed zsh bootstrap on the Windows one-connection ssh outlives its give-up
 
-Design only. No code is changed by this document. Follow-up of #2155.
+Follow-up of #2155. **Decided by the owner on 2026-11-14: the plain session (see the last
+section). The budget design below was not taken and is kept as the record of the alternative.**
 
 ## What happened (r31b, Windows Git Bash, `lab_path_detect.p_exec.lan.nohelper`)
 
@@ -93,3 +94,31 @@ On Windows Git Bash, a host whose profile switches to zsh takes about a minute t
 usable, because the setup text has to be typed through a slow channel. Is waiting that minute
 (with keys held, then delivered) what you want, or would you rather such a host be a plain ssh
 session at once, with no Phosphor features, on Windows only?
+
+## Owner answer (2026-11-14) and what was built
+
+Plain session at once, on Windows only. Linux and macOS keep the #2155 hand-over.
+
+- **Wrapper** (`bash_body.sh`, before `warp_rc_snippet`): when the session runs on one
+  connection (`warp_single`), the remote bash's rcfile gets `WARP_SSH_PLAIN_HOOK`, the hex of
+  this shell's `PlainSSHFallback`. Empty on every other path.
+- **Remote** (`bash_body.sh`, the `__warp_exec_zsh` block): the value rides in
+  `__WARP_EXEC_ZSH`. The zsh that is the replaced shell prints it instead of InitShell, puts
+  ZDOTDIR back, reads the user's own startup files and is a normal login zsh. Nothing is typed.
+- **Model** (`TerminalModel::ssh_wrapper_verdict`): a plain verdict while a one-connection
+  session is announced and not bootstrapped drops that session
+  (`make_pending_one_connection_ssh_session_plain`), marks the block list bootstrapped and
+  continues in a running block named after the typed ssh command, as an abandoned subshell
+  bootstrap does.
+- **View** (`ssh_on_replaced_shell_plain`): the bootstrap give-up for that session is
+  cancelled, its pending entry forgotten, and the connect window ends as an ended connect
+  does; what it holds is written to the pty in typed order, to ssh (the write every give-up of
+  this hold uses, run by the event). Hop: `ssh_wrapper replaced_shell_plain`.
+- **The two other faults.** The grace taken on the replaced bash's Precmd still applied to the
+  Linux and macOS hand-over and is fixed: an InitShell under an id whose bootstrap prompt was
+  already seen clears that evidence. The typeahead give-up writing into a bootstrap that is
+  still being read is not specific to this path any more (the one-minute typed bootstrap is
+  gone) and is NOT changed: it remains possible wherever a typed bootstrap outlasts the
+  ceiling on a platform without the tty-read probe, and needs its own issue and design.
+- **Lab.** `lab_path_detect.p_exec` on the Git Bash pane expects the hop above and no
+  takeover line, then leaves the session; the managed-session checks are not judged there.

@@ -56,7 +56,7 @@ def r32_2155_path_detect_case_asks_for_the_evidence():
     import cases
     import cases_lab as C
     body = inspect.getsource(C.c_path_detect)
-    assert 'exec_replaced_shell_evidence(arm["user"], ctx.log_since(off0))' in body
+    assert 'exec_replaced_shell_evidence(arm["user"], ctx.log_since(off0), one_conn)' in body
     assert body.index("exec_replaced_shell_evidence(") > body.index("connect_or_fail(")
     assert "elif proof is not None:" in body and "r.check(False, \"p_exec: no hop=cwd_listing" in body
     names = {c["name"] for c in cases.CASES}
@@ -78,3 +78,48 @@ def r32_2155_lab_user_and_bootstrap_block_are_in_place():
     assert "${WARP_IS_SSH-} == 1" in block and "${PHOSPHOR_SSH_EXEC_ZSH-} != 0" in block
     assert boot.index("source \"$HOME/.bash_profile\"") > boot.index(": __warp_exec_zsh_end")
     assert boot.index(": __warp_exec_zsh_done_begin") > boot.index("source \"$HOME/.profile\"")
+
+
+@check
+def r32_2230_one_connection_p_exec_is_a_plain_session():
+    """#2230: on the Windows Git Bash pane p_exec must show the plain-login hop and NOT the #2155 takeover line; everywhere else the #2155 line is demanded"""
+    import cases  # noqa: F401
+    import cases_lab as C
+    take = "InitShell from the shell that replaced the pending ssh session's (Bash -> Zsh, exec in the remote profile)"
+    plain = "[DEBUG] input_order hop=ssh_wrapper replaced_shell_plain holding=false held_bytes=0 t=1.0"
+    assert C.exec_replaced_shell_evidence("u_bash", plain, True) is None
+    ok, msg = C.exec_replaced_shell_evidence("p_exec", "a\n" + plain + "\nb", True)
+    assert ok and "#2230" in msg
+    for text in ("", None, take, plain + "\n" + take, "hop=ssh_wrapper replaced_shell_plainer"):
+        ok, msg = C.exec_replaced_shell_evidence("p_exec", text, True)
+        assert not ok, text
+    # the ControlMaster arms are unchanged: the plain hop is no proof there, the takeover line is
+    assert not C.exec_replaced_shell_evidence("p_exec", plain, False)[0] and C.exec_replaced_shell_evidence("p_exec", take, False)[0]
+    assert C.exec_replaced_shell_evidence("p_exec", take)[0]
+
+    class Ctx:
+        def __init__(self, win, pane):
+            self.win, self.pane = win, pane
+    assert C.one_connection_pane(Ctx(True, "gitbash"))
+    assert not C.one_connection_pane(Ctx(True, "pwsh")) and not C.one_connection_pane(Ctx(False, "gitbash")) and not C.one_connection_pane(object())
+    why = C.exec_replaced_shell_plain_limit("p_exec", True)
+    assert why and "#2230" in why and C.EXEC_REPLACED_SHELL_PLAIN_DECISION in why
+    assert os.path.exists(os.path.join(ROOT, C.EXEC_REPLACED_SHELL_PLAIN_DECISION.split(" ")[0]))
+    assert C.exec_replaced_shell_plain_limit("p_exec", False) is None and C.exec_replaced_shell_plain_limit("u_bash", True) is None
+
+
+@check
+def r32_2230_path_detect_leaves_the_plain_arm_before_the_managed_checks():
+    """the case returns through finish_remote on the plain arm, before it types the cd; and the hop the pattern reads is the one the view logs"""
+    import cases  # noqa: F401
+    import cases_lab as C
+    body = inspect.getsource(C.c_path_detect)
+    gate = body.index("plain_why = exec_replaced_shell_plain_limit(")
+    assert body.index("exec_replaced_shell_evidence(") < gate < body.index('ctx.be.type("cd %spd%s"')
+    block = body[gate:body.index("time.sleep(2.0 + 3 * rt)")]
+    assert "r.unverifiable(plain_why)" in block and "finish_remote(ctx, r)" in block and "return" in block
+    view = _src("app/src/terminal/view.rs")
+    at = view.index("fn ssh_on_replaced_shell_plain(")
+    assert 'log_hop("ssh_wrapper"' in view[at:at + 1600] and '"replaced_shell_plain holding={} held_bytes={}"' in view[at:at + 1600]
+    boot = _src("app/assets/bundled/bootstrap/bash_body.sh")
+    assert "WARP_SSH_PLAIN_HOOK='$warp_plain_hex'" in boot and "if [[ $warp_single -eq 1 ]]; then" in boot

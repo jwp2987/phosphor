@@ -19685,6 +19685,62 @@ fn plain_enter_always_reaches_the_pty() {
     })
 }
 
+/// #2230: the announced one-connection session became a plain login (the zsh that replaced its
+/// bash printed the wrapper's plain verdict). The window, which holds keys for the managed
+/// session's first prompt (announced, wrapper-managed, ssh block replaced), ends at that event
+/// as an ended connect does: released at once, by an event (not a give-up), holding nothing.
+/// Not compiled/run when written (no builds on the laptop).
+#[test]
+fn ssh_connect_gate_ends_when_its_announced_session_becomes_plain() {
+    let t0 = Instant::now();
+    let mut gate = SshConnectGate::new(t0);
+    gate.wrapper = SshWrapperHold::Managed;
+    gate.single_awaits_remote = true;
+    gate.tty_owned = true;
+    // The remote bash announced itself: the window holds for its first prompt.
+    assert!(!gate.should_release(t0, true));
+    gate.note_block_completed(t0, true);
+    assert!(gate.drops_keys(false));
+    assert!(!gate.should_release(t0 + Duration::from_secs(1), true));
+
+    gate.end_for_plain_session();
+    assert_eq!(gate.wrapper, SshWrapperHold::Off);
+    assert!(!gate.single_awaits_remote);
+    assert!(!gate.drops_keys(false), "nothing is held for a plain login");
+    // The pending session is gone (the model dropped it at the verdict).
+    assert!(gate.should_release(t0 + Duration::from_secs(1), false));
+    let how = gate.release_reason(t0 + Duration::from_secs(1), false);
+    assert_eq!(how, crate::terminal::input_queue::SshRelease::Failed);
+    assert!(!how.is_give_up());
+}
+
+/// #2155: the bootstrap prompt seen for a session id is evidence for the shell that printed
+/// it. A login shell announcing itself again under that id replaced it; a subshell's InitShell
+/// and another session's do not touch it.
+#[test]
+fn bootstrap_prompt_evidence_does_not_carry_over_to_a_replacing_shell() {
+    let id = SessionId::from(7u64);
+    let other = SessionId::from(8u64);
+    assert!(bootstrap_prompt_evidence_is_of_a_replaced_shell(
+        Some(id),
+        id,
+        false
+    ));
+    assert!(!bootstrap_prompt_evidence_is_of_a_replaced_shell(
+        Some(id),
+        id,
+        true
+    ));
+    assert!(!bootstrap_prompt_evidence_is_of_a_replaced_shell(
+        Some(other),
+        id,
+        false
+    ));
+    assert!(!bootstrap_prompt_evidence_is_of_a_replaced_shell(
+        None, id, false
+    ));
+}
+
 /// #983: the gate's pure transitions. ssh owning the tty ends the pre-ownership hold (#1611,
 /// #1612, #1621; nothing read from the screen does), a clean block end keeps holding for the
 /// bootstrap grace, a failure or a session that came up releases.

@@ -623,6 +623,10 @@ pub struct TerminalModel {
     /// a shell that was only slow (an rc file sleeping before it reads the script) still gets
     /// its session when the late `Bootstrapped` finally arrives (#1014).
     abandoned_subshell_session: Option<SessionInfo>,
+    /// #2230: the pending one-connection ssh session a plain verdict just dropped
+    /// (`make_pending_one_connection_ssh_session_plain`), until the view takes it to end its
+    /// own hold for that session.
+    ssh_pending_made_plain: Option<SessionId>,
     /// The typeahead mode each bootstrapped session configured. `EarlyOutput` holds ONE mode, set by
     /// the latest `Bootstrapped`; a subshell that cannot report its line (macOS bash 3.2:
     /// `InputMatching`) left it there after it exited into a parent that can (`ShellReported`), so
@@ -1370,6 +1374,7 @@ impl TerminalModel {
             active_shell_launch_data: None,
             pending_session_info: None,
             abandoned_subshell_session: None,
+            ssh_pending_made_plain: None,
             typeahead_mode_by_session: HashMap::new(),
             ignore_bootstrapping_messages: false,
             session_startup_path,
@@ -1902,6 +1907,49 @@ impl TerminalModel {
             });
         }
         true
+    }
+
+    /// #2230 (owner 2026-11-14): a plain verdict (`PlainSSHFallback`) that arrives while a
+    /// one-connection ssh session (Git Bash) is announced and not bootstrapped. The remote bash
+    /// profile replaced the shell with zsh (`exec zsh -l`); on that path a zsh bootstrap would be
+    /// typed through `ssh.exe`'s console for about a minute, so the zsh prints the wrapper's
+    /// plain verdict instead of announcing itself (`bash_body.sh`, the `__warp_exec_zsh` block)
+    /// and is a plain login. The pending session is dropped, the block list is marked
+    /// bootstrapped as `Bootstrapped` would have, and the pane continues in an ordinary running
+    /// block named after the typed `ssh` command, as an abandoned subshell bootstrap does
+    /// (`abandon_stalled_subshell_bootstrap`). Returns whether anything changed. Nothing else
+    /// takes this path: every other plain verdict comes before the remote announces a session.
+    pub(crate) fn make_pending_one_connection_ssh_session_plain(&mut self) -> bool {
+        if !SessionInfo::is_pending_one_connection_ssh_login(self.pending_session_info.as_ref())
+            || self.block_list.is_bootstrapped()
+        {
+            return false;
+        }
+        let Some(dropped) = self.pending_session_info.take() else {
+            return false;
+        };
+        log::info!(
+            "Plain verdict for the pending one-connection ssh session: its shell was replaced \
+             (exec in the remote profile) and is a plain login; the session is dropped (#2230)"
+        );
+        self.disarm_setup_echo();
+        self.block_list.set_bootstrapped();
+        if self.block_list.replace_stalled_bootstrap_block() {
+            self.preexec(PreexecValue {
+                command: dropped
+                    .legacy_ssh_spawning_command
+                    .clone()
+                    .unwrap_or_default(),
+                session_id: None,
+            });
+        }
+        self.ssh_pending_made_plain = Some(dropped.session_id);
+        true
+    }
+
+    /// #2230: the session [`Self::make_pending_one_connection_ssh_session_plain`] dropped, once.
+    pub(crate) fn take_ssh_pending_made_plain(&mut self) -> Option<SessionId> {
+        self.ssh_pending_made_plain.take()
     }
 
     pub fn pending_subshell_session(&self) -> Option<&SubshellInitializationInfo> {
@@ -4248,6 +4296,11 @@ impl ansi::Handler for TerminalModel {
     }
 
     fn ssh_wrapper_verdict(&mut self, managed: bool, session_id: Option<u64>) {
+        // #2230: a plain verdict for an announced one-connection session drops that session
+        // here, in stream order; the view ends its hold when it handles the event below.
+        if !managed {
+            self.make_pending_one_connection_ssh_session_plain();
+        }
         self.event_proxy
             .send_terminal_event(Event::SshWrapperVerdict {
                 managed,

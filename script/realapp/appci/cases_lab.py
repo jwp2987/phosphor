@@ -1017,15 +1017,42 @@ def c_tab_remote_dir(ctx, r, arm):
 EXEC_REPLACED_SHELL_RE = re.compile(r"InitShell from the shell that replaced the pending ssh session's \((\w+) -> (\w+),")
 
 
-def exec_replaced_shell_evidence(user, log_text):
-    """pure: None for every user but p_exec (nothing to prove); else (ok, message): ok = the connect's app log says a zsh replaced the pending bash and was
-    bootstrapped as the same ssh session. Without that line the session is the unmanaged zsh of #2155 (no hooks, `exit` not seen)."""
+# #2230 (owner 2026-11-14): on the Windows Git Bash pane the managed ssh is ONE connection, and there the zsh that replaced p_exec's bash is a PLAIN login at
+# once (a zsh bootstrap would be typed through ssh.exe's console for about a minute): the zsh prints the wrapper's plain verdict, the app drops the pending
+# session and says so with this hop; the takeover line above must NOT appear.
+EXEC_REPLACED_SHELL_PLAIN_RE = re.compile(r"hop=ssh_wrapper replaced_shell_plain\b")
+EXEC_REPLACED_SHELL_PLAIN_DECISION = "docs/design/2230-windows-zsh-bootstrap.md (owner decision 2026-11-14)"
+
+
+def one_connection_pane(ctx):
+    """the pane whose ssh wrapper runs the managed session on one connection: the Windows Git Bash pane (cases_caseremote.in_msys_managed_ssh switches it on)"""
+    return bool(getattr(ctx, "win", False)) and getattr(ctx, "pane", None) == "gitbash"
+
+
+def exec_replaced_shell_evidence(user, log_text, one_connection=False):
+    """pure: None for every user but p_exec (nothing to prove); else (ok, message). Over a ControlMaster (Linux, macOS): ok = the connect's app log says a zsh
+    replaced the pending bash and was bootstrapped as the same ssh session (#2155); without that line the session is the unmanaged zsh of the issue.
+    `one_connection` (the Windows Git Bash pane, #2230): ok = the log has the plain-login hop and NOT the takeover line."""
     if user != "p_exec":
         return None
-    m = EXEC_REPLACED_SHELL_RE.search(log_text or "")
+    text = log_text or ""
+    m = EXEC_REPLACED_SHELL_RE.search(text)
     got = "%s -> %s" % (m.group(1), m.group(2)) if m else "no such line"
+    if one_connection:
+        plain = bool(EXEC_REPLACED_SHELL_PLAIN_RE.search(text))
+        return (plain and not m,
+                "p_exec on the one-connection path (#2230): the zsh that replaced the bash must be a plain login at once: `hop=ssh_wrapper replaced_shell_plain` "
+                "in the app log: %s; the #2155 takeover line (must be absent): %s" % ("yes" if plain else "NO", got))
     return (bool(m) and (m.group(1), m.group(2)) == ("Bash", "Zsh"),
             "p_exec's profile execs zsh: the app log must say the zsh replaced the pending bash and took over its ssh session (#2155); it says: %s" % got)
+
+
+def exec_replaced_shell_plain_limit(user, one_connection):
+    """pure: the reason the managed-session checks of a case are not judged on p_exec's one-connection arm (it is a plain session by decision), else None"""
+    if user != "p_exec" or not one_connection:
+        return None
+    return ("KNOWN LIMITATION (owner decision, #2230): on the Windows one-connection ssh a host whose bash profile execs zsh is a plain ssh session at once; "
+            "the pushed listing and path detection need a managed session. Not judged; see %s" % EXEC_REPLACED_SHELL_PLAIN_DECISION)
 
 
 # ------------------------------------------------------------------ 2. path detection while typing
@@ -1041,9 +1068,18 @@ def c_path_detect(ctx, r, arm):
     if connect_or_fail(ctx, r, arm) is None:
         ctx.reset()
         return
-    proof = exec_replaced_shell_evidence(arm["user"], ctx.log_since(off0))      # #2155: p_exec only
+    one_conn = one_connection_pane(ctx)
+    proof = exec_replaced_shell_evidence(arm["user"], ctx.log_since(off0), one_conn)      # #2155 / #2230: p_exec only
     if proof is not None:
         r.check(proof[0], proof[1])
+    plain_why = exec_replaced_shell_plain_limit(arm["user"], one_conn)
+    if plain_why:
+        # #2230: a plain session by decision. The connect itself (the remote prompt above) and the leave below (`exit` ends the ssh, the pane is local
+        # again) are still judged; the managed-session checks are not.
+        r.metric("plain_session_by_decision", arm["user"])
+        r.unverifiable(plain_why)
+        finish_remote(ctx, r)
+        return
     time.sleep(2.0 + 3 * rt)                         # the connection's own start-up channels settle first
     wait_helper_takeover(ctx, r, arm, off0)          # #2164: the helper takeover and the index sync settle before the window opens
     off = ctx.log_size()

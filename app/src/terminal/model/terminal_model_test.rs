@@ -422,6 +422,119 @@ fn a_shell_that_replaces_the_pending_ssh_shell_is_bootstrapped_as_the_same_ssh_s
     assert!(terminal.is_active_block_bootstrapped());
 }
 
+/// Drives the local `ssh me@box` block, the SSH hook `hook` and the remote bash's InitShell and
+/// bootstrap Precmd: the state in which the remote profile runs (#2155, #2230).
+fn ssh_session_whose_bash_reached_its_rcfiles(terminal: &mut TerminalModel, hook: SSHValue) {
+    command_finished_and_precmd(terminal);
+    command_finished_and_precmd(terminal);
+    terminal.bootstrapped(BootstrappedValue {
+        shell: String::from("bash"),
+        ..Default::default()
+    });
+    command_finished_and_precmd(terminal);
+    terminal.start_command_execution();
+    for c in "ssh me@box".chars() {
+        terminal.block_list_mut().input(c);
+    }
+    terminal.preexec(PreexecValue {
+        command: "ssh me@box".to_owned(),
+        session_id: None,
+    });
+    terminal.ssh(hook);
+    terminal.init_shell(InitShellValue {
+        pid: None,
+        shell: "bash".into(),
+        user: "me".to_owned(),
+        hostname: "box".to_owned(),
+        session_id: 0.into(),
+        ..Default::default()
+    });
+    command_finished_and_precmd(terminal);
+    assert!(terminal.block_list().is_script_execution());
+}
+
+/// #2230 (owner 2026-11-14): on the one-connection path (Git Bash) the zsh that replaced the
+/// remote bash prints the wrapper's plain verdict instead of announcing itself. The pending
+/// session is dropped at that hook, the block list is bootstrapped again and the pane continues
+/// in an ordinary running block named after the typed ssh command; the view is told once which
+/// session went. Not compiled/run when written (no builds on the laptop).
+#[test]
+fn a_plain_verdict_drops_the_pending_one_connection_ssh_session() {
+    let mut terminal = TerminalModel::mock(None, None);
+    let _recovery_enabled = FeatureFlag::TerminalLifecycleRecovery.override_enabled(true);
+    ssh_session_whose_bash_reached_its_rcfiles(
+        &mut terminal,
+        SSHValue {
+            remote_shell: "bash".to_owned(),
+            remote_session_id: Some(8_675_309_123),
+            single_connection: true,
+            bootstrap_in_command: true,
+            ..Default::default()
+        },
+    );
+    let pending = terminal
+        .pending_session_id()
+        .expect("the remote bash is pending");
+    assert!(!terminal.block_list().is_bootstrapped());
+
+    terminal.ssh_wrapper_verdict(false, Some(1));
+
+    assert!(terminal.pending_session_info.is_none());
+    assert_eq!(terminal.pending_session_id(), None);
+    assert!(terminal.block_list().is_bootstrapped());
+    let active = terminal.block_list().active_block();
+    assert_eq!(
+        active.bootstrap_stage(),
+        BootstrapStage::PostBootstrapPrecmd
+    );
+    assert_eq!(active.command_to_string(), "ssh me@box");
+    assert_eq!(terminal.take_ssh_pending_made_plain(), Some(pending));
+    assert_eq!(terminal.take_ssh_pending_made_plain(), None, "told once");
+    // A second plain verdict has nothing left to drop.
+    terminal.ssh_wrapper_verdict(false, Some(1));
+    assert_eq!(terminal.take_ssh_pending_made_plain(), None);
+}
+
+/// #2230: only an announced ONE-CONNECTION session is dropped by a plain verdict. Over a
+/// ControlMaster (Linux, macOS) the replacing zsh is handed the session (#2155) and a plain
+/// verdict after the announcement changes nothing, as before; a managed verdict never drops.
+#[test]
+fn a_plain_verdict_leaves_a_pending_control_master_ssh_session_alone() {
+    let mut terminal = TerminalModel::mock(None, None);
+    let _recovery_enabled = FeatureFlag::TerminalLifecycleRecovery.override_enabled(true);
+    ssh_session_whose_bash_reached_its_rcfiles(
+        &mut terminal,
+        SSHValue {
+            socket_path: "/tmp/ssh-sock/1".into(),
+            remote_shell: "bash".to_owned(),
+            remote_session_id: Some(8_675_309_123),
+            ..Default::default()
+        },
+    );
+    let pending = terminal.pending_session_id();
+    assert!(pending.is_some());
+
+    terminal.ssh_wrapper_verdict(false, Some(1));
+    assert_eq!(terminal.pending_session_id(), pending);
+    assert!(terminal.block_list().is_script_execution());
+    assert_eq!(terminal.take_ssh_pending_made_plain(), None);
+
+    // The same session on one connection, and a MANAGED verdict: nothing is dropped either.
+    let mut terminal = TerminalModel::mock(None, None);
+    ssh_session_whose_bash_reached_its_rcfiles(
+        &mut terminal,
+        SSHValue {
+            remote_shell: "bash".to_owned(),
+            remote_session_id: Some(8_675_309_123),
+            single_connection: true,
+            ..Default::default()
+        },
+    );
+    terminal.ssh_wrapper_verdict(true, Some(1));
+    assert!(terminal.pending_session_id().is_some());
+    assert_eq!(terminal.take_ssh_pending_made_plain(), None);
+}
+
 /// #2155: only the shell that replaced a pending ssh login shell takes over its ssh identity.
 /// A second InitShell after a NEW SSH hook is a new ssh, a subshell's is a subshell, another
 /// session id is another session, and a pending session that is not ssh has nothing to hand on.
