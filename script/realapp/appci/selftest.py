@@ -3869,6 +3869,19 @@ def effect_file_is_not_read_while_a_burst_line_may_open_it_2093():
 
 
 @check
+def windows_rust_log_enables_the_chip_value_line_r31b():
+    """r31b: the Windows launcher's RUST_LOG lets `[chips] update_chip_value` (Info, warp::context_chips::current_prompt) and the backend's `git batch:` debug
+    lines through; lab_chips judged the chip by that line and failed on Windows with the chip on screen"""
+    import app as A
+    assert A.rust_log_enabled(A.WINDOWS_RUST_LOG, "warp::context_chips::current_prompt", "info")
+    assert A.rust_log_enabled(A.WINDOWS_RUST_LOG, "remote_server::backend::shell", "debug")
+    assert not A.rust_log_enabled(A.WINDOWS_RUST_LOG, "warp::context_chips::display", "info"), "only the one module was opened"
+    # #2155 p_exec: the `InitShell from the shell that replaced ..` line (terminal_model.rs, Info) is what exec_replaced_shell_evidence reads
+    assert A.rust_log_enabled(A.WINDOWS_RUST_LOG, "warp::terminal::model::terminal_model", "info")
+    assert not A.rust_log_enabled(A.WINDOWS_RUST_LOG, "warp::terminal::model::blocks", "info")
+
+
+@check
 def windows_rust_log_enables_every_hop_module_1966():
     """#1966: the Windows launcher's RUST_LOG (bare `warn` base) enables every module that emits, with a plain `log::info!`/`debug!`, a `hop=` line some appci
     case reads. Scans the Rust sources; the module path comes from the file path (app -> warp, crates/x -> x). `backend_route` is logged through a helper

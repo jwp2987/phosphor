@@ -5603,6 +5603,8 @@ hundred microseconds per 500 processes), `leader` over ssh, never `scan`, and ne
   base commit (its `_hostname` snippet search finds nothing in `bash_body.sh`), unrelated to this change. (Repaired in round 12, 2026-11-10: see `test_init_shell_escaping` in the script-test table.) Not covered: the real app's `sh` child in a real
   pane (no run yet; worked, unproven).
 
+- **r31b (Windows lab rows, TEST).** `lab_chips.bash.lan.nohelper` and `lab_path_detect.p_exec.lan.nohelper` failed on Windows (pipeline 3069275695, job 18037846375) on log lines the Windows `RUST_LOG` (`warn` base) hid: `[chips] update_chip_value ShellGitBranch -> ..` (`warp::context_chips::current_prompt`, Info) and `InitShell from the shell that replaced the pending ssh session's (Bash -> Zsh ..` (`warp::terminal::model::terminal_model`, Info). The app had done both (the branch chip was on screen and the in-band `git branch` side call ran at the cd's prompt; the zsh bootstrap was typed and the zsh's hooks arrived about 60 s later). `app.WINDOWS_RUST_LOG` now enables both modules and `remote_server::backend=debug` (the `git batch:` / `shell exec:` notes). Selftest `windows_rust_log_enables_the_chip_value_line_r31b`. Known limit, filed: the typed 64 KB zsh bootstrap takes about 60 s through ssh.exe's console and the bootstrap give-up fires at about 10 s.
+
 ## Round 10: `ssh_nested_typeahead` on Linux Wayland (#2013; design `docs/design/r10-wl-ssh-nested.md`)
 
 - **APP bug, a race; the case is unchanged.** Round 9b terminal mode: the nested `ssh fake` was written 1 ms after the first remote Precmd, before the

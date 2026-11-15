@@ -69,6 +69,15 @@ WINDOWS_RUST_LOG += ",editor_disk=debug,warp::pane_group=info"
 #   warp_editor::render::model=info   'rich text: first size ..' (cases_r17_misc.FIRST_SIZE_RE, #2028)
 WINDOWS_RUST_LOG += ",warpui_core::core::app=info,warp_editor::render::model=info"
 # macOS: the same trace, and the CLI-agent event line the two plugin cases read (the Linux launcher has had it since they were written)
+# Round 31b (#2216 follow-up): the Windows lab_chips.bash.lan.nohelper row failed "the app log has no update_chip_value ShellGitBranch" while the chip WAS on screen
+# and the in-band side call ran (`warp_run_generator_command .. git branch ..` at the cd's prompt): `[chips] update_chip_value` is a plain Info line of
+# warp::context_chips::current_prompt, hidden by the bare `warn` base. remote_server::backend=debug is the Linux/macOS launcher's own directive: the
+# `git batch: exec done` / `shell exec: producer=` lines the lab rows' side-call notes read.
+WINDOWS_RUST_LOG += ",warp::context_chips::current_prompt=info,remote_server::backend=debug"
+# Round 31b (#2155): lab_path_detect.p_exec.lan.nohelper failed "no such line" on Windows while the zsh DID replace the bash (the app typed the zsh bootstrap, 64019 bytes,
+# `exec -l zsh` in it, and the zsh's hooks arrived): the line `InitShell from the shell that replaced the pending ssh session's (Bash -> Zsh ..` is a plain Info line of
+# terminal_model.rs, hidden by the `warn` base. The same module logs the #1933/#2051 'SSH wrapper runs this session on one connection' lines.
+WINDOWS_RUST_LOG += ",warp::terminal::model::terminal_model=info"
 MAC_RUST_LOG_MORE = ",editor_disk=debug,warp::terminal::cli_agent_sessions::event=info"
 
 
