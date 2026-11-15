@@ -115,3 +115,29 @@ fn a_skipped_event_while_running_does_not_set_dirty() {
     assert_eq!(c.on_event(&precmd("/r", Some("ls"))), RefreshDecision::Skip);
     assert!(!c.finished());
 }
+
+#[test]
+fn a_navigation_issued_before_the_first_execs_replaces_it_so_one_exec_runs_2229() {
+    let mut tickets = NavigationTickets::new();
+    let first = tickets.issue(1u32);
+    let second = tickets.issue(1u32);
+    // Each task checks its ticket right before it would exec: only the newest does.
+    let execs = [first, second]
+        .into_iter()
+        .filter(|t| tickets.is_current(1, *t))
+        .count();
+    assert_eq!(execs, 1);
+    assert!(tickets.is_current(1, second));
+    assert!(!tickets.is_current(1, first));
+}
+
+#[test]
+fn navigation_tickets_are_per_session_and_forgotten_on_reset_2229() {
+    let mut tickets = NavigationTickets::new();
+    let a = tickets.issue(1u32);
+    let b = tickets.issue(2u32);
+    assert!(tickets.is_current(1, a) && tickets.is_current(2, b));
+    tickets.forget(1);
+    assert!(!tickets.is_current(1, a));
+    assert!(tickets.is_current(2, b));
+}

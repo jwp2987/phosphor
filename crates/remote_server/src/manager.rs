@@ -854,6 +854,9 @@ pub struct RemoteServerManager {
     /// Sessions whose `navigate_to_directory` is running, and since when. A refresh event meanwhile
     /// would re-read the PREVIOUS root (an exec of its own); the navigation's snapshot is fresher.
     navigating: HashMap<SessionId, std::time::Instant>,
+    /// Single-flight for `navigate_to_directory` (#2229): the newest navigation per session is
+    /// the only one that execs and publishes.
+    nav_tickets: crate::backend::refresh::NavigationTickets<SessionId>,
     /// The root `navigate_to_directory` last indexed for each session: the tree a shell-mode
     /// refresh re-reads.
     indexed_root: HashMap<SessionId, String>,
@@ -949,6 +952,7 @@ impl RemoteServerManager {
             spawner: ctx.spawner(),
             last_navigated_path: HashMap::new(),
             navigating: HashMap::new(),
+            nav_tickets: crate::backend::refresh::NavigationTickets::new(),
             indexed_root: HashMap::new(),
             tree_refresh: HashMap::new(),
             agent_refresh: HashMap::new(),
@@ -1933,6 +1937,7 @@ impl RemoteServerManager {
     ) {
         self.last_navigated_path.remove(&session_id);
         self.navigating.remove(&session_id);
+        self.nav_tickets.forget(session_id);
         self.indexed_root.remove(&session_id);
         self.tree_refresh.remove(&session_id);
         self.agent_refresh.remove(&session_id);
@@ -2145,6 +2150,13 @@ impl RemoteServerManager {
         self.last_navigated_path.insert(session_id, path.clone());
         self.navigating
             .insert(session_id, std::time::Instant::now());
+        let ticket = self.nav_tickets.issue(session_id);
+        log::info!(
+            "hop=file_tree navigate_requested session={session_id:?} ticket={ticket} path_hash={:08x}",
+            path.bytes()
+                .fold(2_166_136_261u32, |h, b| (h ^ u32::from(b))
+                    .wrapping_mul(16_777_619))
+        );
         // The cd's navigation comes before its Precmd: it opens the batch generation that Precmd
         // then joins (#2156).
         self.router.git_batch_for(&host_id).begin_navigation();
@@ -2158,6 +2170,17 @@ impl RemoteServerManager {
         let spawner = self.spawner.clone();
         ctx.background_executor()
             .spawn(async move {
+                // A newer navigation of this session replaces this one before it execs (#2229).
+                let current = spawner
+                    .spawn(move |me, _| me.nav_tickets.is_current(session_id, ticket))
+                    .await
+                    .unwrap_or(true);
+                if !current {
+                    log::info!(
+                        "hop=file_tree navigate_superseded session={session_id:?} ticket={ticket} stage=before_exec"
+                    );
+                    return;
+                }
                 match backend.navigate_to_directory(path).await {
                     Ok(resp) => {
                         // Shell mode: the snapshot the call queued, emitted right after the
@@ -2866,6 +2889,7 @@ impl RemoteServerManager {
         // navigated path is only deduping for the current _remote server session.
         self.last_navigated_path.remove(&session_id);
         self.navigating.remove(&session_id);
+        self.nav_tickets.forget(session_id);
         self.indexed_root.remove(&session_id);
 
         // A daemon that keeps dying right after the handshake is not reconnected to forever
