@@ -2427,3 +2427,23 @@ fn a_queued_ctrl_c_goes_ahead_of_typed_keys_but_behind_replies_setup_and_agent_w
         ]
     );
 }
+
+/// #2231: a discard reports how much of the cut job was already handed to the pty, which a ^C
+/// written next goes out behind.
+#[test]
+fn discard_cut_summary_names_the_bytes_already_handed_to_the_pty() {
+    let mut state = State::default();
+    assert_eq!(state.discard_cut_summary(), None);
+    state.queue_paste_input(Cow::Owned(vec![b'x'; 10_000]));
+    state.queue_command_input(Cow::Owned(vec![b'y'; 50]));
+    state.ensure_next();
+    let mut current = state.take_current().expect("the paste is being written");
+    current.advance(4096);
+    state.set_current(Some(current));
+    assert_eq!(
+        state.discard_cut_summary().as_deref(),
+        Some("handed=4096 dropped_tail=5904 queued_jobs=1 queued_bytes=50")
+    );
+    state.discard_queued_input();
+    assert_eq!(state.discard_cut_summary(), None);
+}

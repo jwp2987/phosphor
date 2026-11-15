@@ -792,6 +792,32 @@ impl State {
         });
     }
 
+    /// #2231: `None` when a discard would cut nothing; else how much of the discardable job in
+    /// flight (or parked) was already handed to the pty (`handed`, which no discard can recall,
+    /// and which a ^C written next goes out BEHIND) and how much of it is dropped, plus the
+    /// discardable jobs still queued whole.
+    fn discard_cut_summary(&self) -> Option<String> {
+        let in_flight = self
+            .writing
+            .iter()
+            .chain(self.parked.iter())
+            .find(|w| w.class.is_discardable());
+        let (queued_jobs, queued_bytes) = self
+            .write_list
+            .iter()
+            .filter(|entry| entry.class.is_discardable())
+            .fold((0usize, 0usize), |(n, b), e| (n + 1, b + e.bytes.len()));
+        if in_flight.is_none() && queued_jobs == 0 {
+            return None;
+        }
+        let (handed, dropped) = in_flight.map_or((0, 0), |w| {
+            (w.written, w.source.len().saturating_sub(w.written))
+        });
+        Some(format!(
+            "handed={handed} dropped_tail={dropped} queued_jobs={queued_jobs} queued_bytes={queued_bytes}"
+        ))
+    }
+
     /// Removes the unwritten jobs of `class`, and cuts the write in progress if it is one. A
     /// write cut inside a bracketed paste is followed by the paste close, so the shell does not
     /// swallow what comes next as pasted text.
@@ -897,6 +923,11 @@ impl State {
     /// and not yet started is dropped too. If the write in progress was cut inside a bracketed
     /// paste, the paste is closed so the shell does not swallow what follows as pasted text.
     fn discard_queued_input(&mut self) {
+        // #2231: what the discard leaves ALREADY handed to the pty, and what it cuts, so a run
+        // shows whether a ^C went out behind a big paste's bytes that were already in the pipe.
+        if let Some(line) = self.discard_cut_summary() {
+            warpui::input_order::log_hop("discard_cut", || line);
+        }
         self.write_list
             .retain(|entry| !entry.class.is_discardable());
         if self
