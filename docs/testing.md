@@ -8640,3 +8640,5 @@ With #2225 a zsh session without compsys reports it at its Precmd and the app sk
 Beta known-issues label: a beta tag reads the issues of the version it heads for (`v0.2.0-beta.1` lists the open `v0.2.0` fixed-untested issues; `beta_issue_label`), since issues never carry a beta label.
 
 Release channel (#2233): release-meta always exports `CHANNEL=oss` (the only Phosphor channel the bundlers build); a beta tag picks the `beta` entry of `.gitlab/release_configurations.json` only for the release name, body text and prerelease flag.
+
+Beta helper (#2234, owner 2026-11-15): a beta tag builds and pins only the x86_64 `phosphor-remote`; aarch64 hosts take the no-helper path. Every non-beta tag still builds and pins both, so v0.2.0 cannot ship until #2234 is fixed.

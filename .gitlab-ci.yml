@@ -2029,7 +2029,11 @@ build-remote-helper:
       export GIT_RELEASE_TAG="$RELEASE_TAG" PHOSPHOR_REMOTE_BUILD_ID="$CI_COMMIT_SHORT_SHA"
       mkdir -p helper-artifacts
       MAX_BYTES=$((20 * 1024 * 1024))
-      for TARGET in x86_64-unknown-linux-musl aarch64-unknown-linux-musl; do
+      # #2234: the aarch64 musl helper does not link yet (zig 0.13 rejects --fix-cortex-a53-843419). Owner 2026-11-15: a BETA ships
+      # without it (aarch64 hosts take the no-helper path, the primary design); every other tag still builds and requires it.
+      TARGETS="x86_64-unknown-linux-musl aarch64-unknown-linux-musl"
+      if [[ "$RELEASE_TAG" =~ [Bb][Ee][Tt][Aa] ]]; then TARGETS="x86_64-unknown-linux-musl"; echo "NOTE beta tag $RELEASE_TAG: no aarch64 helper (#2234)"; fi
+      for TARGET in $TARGETS; do
         ARCH="${TARGET%%-*}"
         cargo zigbuild -p remote_server --profile release-remote-helper --no-default-features --features daemon --target "$TARGET" --bin phosphor-remote
         BIN="target/$TARGET/release-remote-helper/phosphor-remote"
@@ -2108,7 +2112,8 @@ cli-macos:
     echo "$var=$digest"
   }
   pin PHOSPHOR_REMOTE_SHA256_LINUX_X86_64 phosphor-remote-linux-x86_64
-  pin PHOSPHOR_REMOTE_SHA256_LINUX_AARCH64 phosphor-remote-linux-aarch64
+  # #2234: a beta has no aarch64 helper (owner 2026-11-15); its digest stays unset, so aarch64 hosts use the no-helper path
+  if [[ "$RELEASE_TAG" =~ [Bb][Ee][Tt][Aa] ]]; then echo "NOTE beta: no aarch64 helper pinned (#2234)"; else pin PHOSPHOR_REMOTE_SHA256_LINUX_AARCH64 phosphor-remote-linux-aarch64; fi
   export PHOSPHOR_REMOTE_HELPER_DIR="$CI_PROJECT_DIR/helper-artifacts"
 
 release-macos-arm64:
@@ -2225,7 +2230,10 @@ release-windows-x86_64:
     - foreach ($t in "cargo","rustc","perl","cmake","ISCC") { if (-not (Get-Command $t -ErrorAction SilentlyContinue)) { Write-Error "$t is missing on this runner"; exit 1 } }
     - if (-not (Test-Path "$env:PROTOC")) { Write-Error "PROTOC is not set to an existing protoc.exe on this runner"; exit 1 }
     - |
-      foreach ($pin in @(@("PHOSPHOR_REMOTE_SHA256_LINUX_X86_64", "phosphor-remote-linux-x86_64"), @("PHOSPHOR_REMOTE_SHA256_LINUX_AARCH64", "phosphor-remote-linux-aarch64"))) {
+      $pins = @(,@("PHOSPHOR_REMOTE_SHA256_LINUX_X86_64", "phosphor-remote-linux-x86_64"))
+      # #2234: a beta has no aarch64 helper (owner 2026-11-15); its digest stays unset (no-helper path on aarch64 hosts)
+      if ($env:RELEASE_TAG -notmatch "(?i)beta") { $pins += ,@("PHOSPHOR_REMOTE_SHA256_LINUX_AARCH64", "phosphor-remote-linux-aarch64") } else { "NOTE beta: no aarch64 helper pinned (#2234)" }
+      foreach ($pin in $pins) {
         $file = "helper-artifacts\$($pin[1]).sha256"
         if (-not (Test-Path $file)) { Write-Error "missing helper digest $file; the client would compile with no pinned digest and refuse every helper install"; exit 1 }
         $digest = (Get-Content $file -Raw).Trim().ToLower()
