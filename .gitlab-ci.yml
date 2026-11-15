@@ -1876,10 +1876,13 @@ release-meta:
         PREV=$(git describe --tags --abbrev=0 --match='v*' HEAD 2>/dev/null || echo "")
       fi
       if [ -n "${CI_COMMIT_TAG:-}" ]; then VERSION="$TAG"; else VERSION="dev-${CI_PIPELINE_IID}"; fi
-      if [[ "$TAG" =~ [Bb][Ee][Tt][Aa] ]]; then CHANNEL=beta; else CHANNEL=oss; fi
-      # Channel settings (release name, body text, prerelease flag) live in release_configurations.json.
-      CFG=$(jq -c --arg c "$CHANNEL" '.channels[] | select(.channel == $c)' .gitlab/release_configurations.json)
-      [ -n "$CFG" ] || { echo "ERROR no channel '$CHANNEL' in release_configurations.json" >&2; exit 1; }
+      # The app always builds as the oss Channel (the bundlers know no other Phosphor channel; a beta tag once exported CHANNEL=beta and every
+      # bundle step failed with an empty --bin, v0.2.0-beta.1). A beta tag only picks the "beta" RELEASE config: name, body text, prerelease flag.
+      CHANNEL=oss
+      if [[ "$TAG" =~ [Bb][Ee][Tt][Aa] ]]; then RELEASE_CFG=beta; else RELEASE_CFG=oss; fi
+      # Release settings (release name, body text, prerelease flag) live in release_configurations.json.
+      CFG=$(jq -c --arg c "$RELEASE_CFG" '.channels[] | select(.channel == $c)' .gitlab/release_configurations.json)
+      [ -n "$CFG" ] || { echo "ERROR no release config '$RELEASE_CFG' in release_configurations.json" >&2; exit 1; }
       BASE_NAME=$(jq -r .release_base_name <<<"$CFG")
       BODY_TEXT=$(jq -r .release_body_text <<<"$CFG")
       IS_PRERELEASE=$(jq -r .is_prerelease <<<"$CFG")
