@@ -13960,10 +13960,14 @@ impl Input {
 
                     if as_you_type_argument {
                         let (local, msys2, shell) = &as_you_type_session;
-                        log::debug!(
-                            "as-you-type completion for an argument: {} candidates (completer: {completer_count:?}, local: {local}, msys2: {msys2}, shell: {shell})",
-                            suggestions.as_ref().map_or(0, |s| s.suggestions.len()),
-                        );
+                        // input_order hop, not a plain debug line: the Windows launcher's
+                        // RUST_LOG (`warn` base) enables `warp::input_order` only (r31b).
+                        let count = suggestions.as_ref().map_or(0, |s| s.suggestions.len());
+                        warpui::input_order::log_hop("as_you_type_arg", || {
+                            format!(
+                                "candidates={count} completer={completer_count:?} local={local} msys2={msys2} shell={shell}"
+                            )
+                        });
                     }
 
                     if let Some(session_id) = remote_tab_session {
