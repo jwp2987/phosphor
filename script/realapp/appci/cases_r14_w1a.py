@@ -376,6 +376,34 @@ def skp_after_key_verdict(state, tail_on_screen, numbered, total):
     return "fail", "after one typed key none of the job's last lines is on screen: the key did not bring the view back to the bottom"
 
 
+def skp_tail_hits(tail, text):
+    """pure (r31b): which of the job's last lines (`tail`, 6-glyph words: a 3-glyph tag and three digits) an OCR text holds. A word counts when
+    its three digit glyphs are read exactly and its tag is read with at most ONE glyph wrong: OCR turns the tag's `c` into `e` (r31b Wayland:
+    `neaaky` for `ncaaky`, both modes read 0 of 8 on a screen that shows the last lines). The digits stay exact, so a word of another line (a
+    neighbour differs in a digit glyph) never counts and a view scrolled up still fails."""
+    low = (text or "").lower()
+    out = []
+    for w in tail:
+        if not w:
+            continue
+        if w in low:
+            out.append(w)
+            continue
+        if len(w) != 6:
+            continue
+        for i in range(len(low) - 5):
+            if low[i + 3:i + 6] == w[3:] and sum(a != b for a, b in zip(low[i:i + 3], w[:3])) <= 1:
+                out.append(w)
+                break
+    return out
+
+
+def skp_ocr_tail_sample(text, n=6):
+    """pure: the last n non-empty lines of an OCR text, for a failure message (what OCR read where the job's last lines are drawn)"""
+    rows = [l.strip() for l in (text or "").splitlines() if l.strip()]
+    return rows[-n:]
+
+
 def skp_word(tag, i):
     """pure: the word of numbered line i (0..4095): the tag and three base-16 digits written in SKP_CODE"""
     return tag + SKP_CODE[(i >> 8) & 15] + SKP_CODE[(i >> 4) & 15] + SKP_CODE[i & 15]
@@ -543,10 +571,11 @@ def c_scroll_keys_position(ctx, r):
         typed(ctx, last[0], enter=False)
         time.sleep(0.8)
         t5 = ctx.ocr("skp_5_after_key")
-        on_screen = [w for w in tail if w and w in (t5 or "").lower()]
+        on_screen = skp_tail_hits(tail, t5)
         r.metric("skp_tail_lines_on_screen_after_key", len(on_screen))
         verdict, why = skp_after_key_verdict(stream_state, len(on_screen), skp_visible(t5, tag, SKP_LINES), SKP_LINES)
-        r.check(verdict == "pass", "%s (the job's last %d lines were looked for; shots/*skp_5_after_key.png)" % (why, len(tail)))
+        r.check(verdict == "pass", "%s (the job's last %d lines %s were looked for; OCR's last rows: %s; shots/*skp_5_after_key.png)" % (
+            why, len(tail), tail, skp_ocr_tail_sample(t5)))
         typed(ctx, last[1:])
         ctx.until(lambda: ctx.lines(eff), 8)
         got = rec.wait(3, 5)

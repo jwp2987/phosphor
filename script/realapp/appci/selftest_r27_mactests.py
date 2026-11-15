@@ -24,6 +24,23 @@ def r27_skp_stale_line_is_not_drawn():
 
 
 @check
+def r31b_skp_tail_hits_tolerates_a_misread_tag_only():
+    """r31b Wayland, both modes: the shot showed the job's last lines and the case read 0 of 8. The tag's `c` is read as `e` by OCR; the digits
+    decide which line it is, so they stay exact (a view scrolled up must still fail)"""
+    import cases_r14_w1a as W
+    tail = ["ncaakx", "ncaaky", "ncaama", "ncaamc"]
+    assert W.skp_tail_hits(tail, "ncaakx\nneaaky\nnaaama\nncaamc") == tail                      # exact, one tag glyph wrong, one tag glyph wrong, exact
+    assert W.skp_tail_hits(["ncaaky"], "neaaky") == ["ncaaky"]
+    assert W.skp_tail_hits(["ncaaky"], "neaakt") == []                                           # a neighbour line: another digit glyph
+    assert W.skp_tail_hits(["ncaaky"], "nxaaky") == ["ncaaky"] and W.skp_tail_hits(["ncaaky"], "heaaky") == []
+    assert W.skp_tail_hits(["ncaaky", ""], "") == [] and W.skp_tail_hits([], "ncaaky") == []
+    assert W.skp_ocr_tail_sample("a\n\n b \nc", 2) == ["b", "c"] and W.skp_ocr_tail_sample(None) == []
+    import inspect
+    body = inspect.getsource(W.c_scroll_keys_position)
+    assert "skp_tail_hits(tail, t5)" in body and "skp_ocr_tail_sample(t5)" in body
+
+
+@check
 def r27_skp_verdict_is_judged_in_agent_mode():
     """#2145: the NO-REFERENCE branch is gone; the tail of the job's lines must be on screen after one key in both modes"""
     import cases_r14_w1a as W
