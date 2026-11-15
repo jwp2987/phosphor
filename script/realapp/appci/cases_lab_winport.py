@@ -257,8 +257,12 @@ def c_tab_no_helper(ctx, r, arm):
     # lands there (the completed line below is still judged); bash and zshc (zsh WITH compinit) must have the remote shell's own candidates.
     if CL.native_tab_expectation(arm) == "empty":
         seg = ctx.log_since(off0)
-        r.check(not hits and CL.native_tab_empty(seg) >= 1, "zsh without compinit answers an in-band Tab with nothing by design (#2174), so the completer answers: "
-                "%d candidate line(s), %d empty answer(s)" % (len(hits), CL.native_tab_empty(seg)))
+        # #2225: once the session reported compsys missing the app skips the in-band request and asks the completer at once; a Tab before the first
+        # Precmd still gets the empty in-band answer (#2174). Either is the completer path; a candidate line from the remote shell is not.
+        empty, skipped = CL.native_tab_empty(seg), CL.native_tab_compsys_skips(seg)
+        r.metric("zsh_nocompsys_tabs", {"empty_answer": empty, "compsys_skip": skipped})
+        r.check(not hits and empty + skipped >= 1, "zsh without compinit must take the completer path (#2174/#2225): %d candidate line(s), %d empty "
+                "answer(s), %d compsys-missing skip(s)" % (len(hits), empty, skipped))
         hits = []
     else:
         r.check(bool(hits), "the app log has no 'candidates from the remote shell' line: Tab did not take the in-band path (#1801)")

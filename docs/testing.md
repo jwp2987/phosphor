@@ -8606,3 +8606,7 @@ r30f (pipeline 3068353168) `lab_connect_typeahead.zsh.*` failed every trial afte
 ## r31b: agent_bg_job_output's typed line never holds the token whole
 
 r31b macOS `[agent] agent_bg_job_output` FAILED "the job's line is on screen 2 times" (TEST): the app drew `BGDONE_<tok>` once, in its own block (#2145 works), but zsh's job-done notice `[1] + done ( sleep 2; echo BGDONE_dnw""ydu; )` reprints the typed command and OCR dropped the `""`. The job is now `(sleep 2; printf 'BGDONE_%s%s\n' <half> <half>) &`, so no echo of the command can hold the token even with its quotes dropped (OCR keeps the space between the two halves); the case asserts that on its own typed line every run. The exactly-once / above-the-next-command judge is unchanged.
+
+## r31b: lab_tab_no_helper's zsh (no compinit) arm accepts the #2225 route
+
+With #2225 a zsh session without compsys reports it at its Precmd and the app skips the in-band request (`native use None (... compsys missing: true)`), asking the completer at once. r31b macOS `lab_tab_no_helper.zsh.lan.nohelper` failed because the judge still required the #2174 empty in-band answer. The arm now passes on either completer route (`native_tab_compsys_skips` or `native_tab_empty`, metric `zsh_nocompsys_tabs`) and still fails on any candidate line from the remote shell. Self-test `zsh_nocompsys_tab_takes_the_completer_path_by_either_route_2225`.

@@ -884,6 +884,16 @@ def native_tab_empty(log_text):
     return (log_text or "").count(NATIVE_TAB_EMPTY)
 
 
+NATIVE_TAB_COMPSYS_SKIP_RE = re.compile(r"native use None \(.*compsys missing: true\)")
+
+
+def native_tab_compsys_skips(log_text):
+    """pure (#2225): how many Tabs the app sent straight to the completer because the zsh session reported compsys missing (no in-band request
+    written). With #2225 a zsh WITHOUT compinit answers this way once its first Precmd has arrived; only a Tab before that still takes the empty
+    in-band answer (#2174)."""
+    return len(NATIVE_TAB_COMPSYS_SKIP_RE.findall(log_text or ""))
+
+
 def native_tab_expectation(arm):
     """pure: what an explicit Tab of a lab arm must do in-band. 'answers': the remote shell offers candidates (bash with bash-completion, zsh WITH compinit
     = zshc, fish via `complete -C`, #2196); 'empty': zsh WITHOUT compinit answers nothing by design (#2174: the app never runs compinit for the user), so

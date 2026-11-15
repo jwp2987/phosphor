@@ -188,3 +188,19 @@ def r30_tab_no_helper_judges_the_in_band_answer_per_shell_2196():
         assert "lab_tab_no_helper.%s.lan.nohelper" % sh in names, sh
     src = _src("script", "realapp", "appci", "cases_lab_winport.py")
     assert 'CL.native_tab_expectation(arm) == "empty"' in src
+
+
+@check
+def zsh_nocompsys_tab_takes_the_completer_path_by_either_route_2225():
+    """#2225: a zsh without compinit reaches the completer either through the empty in-band answer (a Tab before the first Precmd, #2174) or
+    straight, with the app's 'compsys missing: true' decision and no in-band request. The lab_tab_no_helper judge counts both; a candidate line
+    from the remote shell is still a failure for that arm."""
+    import cases_lab as CL
+    skip = ('Tab on remote session SessionId(7): native use None (shell supports native: true, remote without helper: true, allowed: true, '
+            'ai input: false, compsys missing: true)')
+    keep = skip.replace("compsys missing: true", "compsys missing: false")
+    assert CL.native_tab_compsys_skips(skip) == 1
+    assert CL.native_tab_compsys_skips(keep) == 0
+    assert CL.native_tab_compsys_skips(skip + "\n" + skip) == 2
+    assert CL.native_tab_empty(CL.NATIVE_TAB_EMPTY) == 1
+    assert "native_tab_compsys_skips" in _src("script", "realapp", "appci", "cases_lab_winport.py")
