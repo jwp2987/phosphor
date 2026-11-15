@@ -124,6 +124,43 @@ impl RefreshCoordinator {
     }
 }
 
+/// Single-flight for a session's `navigate_to_directory` (#2229). Every navigation takes a
+/// ticket; only the newest ticket may exec, and only the newest may publish its snapshot. A second
+/// navigation that arrives before the first has started its exec therefore replaces it (one exec,
+/// not two), and one that arrives while the first is running makes the first's snapshot stale
+/// (dropped) so the tree never flips back to an older root.
+#[derive(Debug, Default)]
+pub struct NavigationTickets<K: std::hash::Hash + Eq + Copy> {
+    newest: std::collections::HashMap<K, u64>,
+    next: u64,
+}
+
+impl<K: std::hash::Hash + Eq + Copy> NavigationTickets<K> {
+    pub fn new() -> Self {
+        Self {
+            newest: std::collections::HashMap::new(),
+            next: 0,
+        }
+    }
+
+    /// Takes a ticket for `key`; every earlier ticket of that key is now superseded.
+    pub fn issue(&mut self, key: K) -> u64 {
+        self.next += 1;
+        self.newest.insert(key, self.next);
+        self.next
+    }
+
+    /// Whether `ticket` is still the newest for `key`.
+    pub fn is_current(&self, key: K, ticket: u64) -> bool {
+        self.newest.get(&key) == Some(&ticket)
+    }
+
+    /// Forgets `key` (session ended or reconnected): all its tickets are superseded.
+    pub fn forget(&mut self, key: K) {
+        self.newest.remove(&key);
+    }
+}
+
 #[cfg(test)]
 #[path = "refresh_tests.rs"]
 mod tests;
