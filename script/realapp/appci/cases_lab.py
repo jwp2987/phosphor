@@ -515,6 +515,41 @@ def wait_helper_takeover(ctx, r, arm, off, give_up=30.0, quiet=1.0):
     return ok
 
 
+# ---- r31b: the session's own connect-time work (the remote file tree's snapshot execs, repo_metadata routes, the first index sync) runs a few RTTs after the
+# ControlMaster is registered. At 150 ms it was still opening exec channels when the chips window opened (r30e + r31b macOS lab_chips.zsh.150.nohelper:
+# 2 channels 0.02-0.24 s into the window with 0 backend_route lines logged since, the app log shows the two `hop=file_tree event=snapshot source=shell`
+# lines at the same second; the real per-prompt batch came at 1.8 s). Those are the session's, not a prompt's.
+HOOK_CM_REGISTERED = re.compile(r"ControlMaster registered as the out-of-band channel")
+HOOK_BOOT_ACTIVITY = re.compile(r"hop=file_tree event=snapshot|hop=backend_route family=|hop=remote_index_sync (?:start|done|skipped|failed)\b")
+
+
+def bootstrap_state(log_text):
+    """pure: (registered, n_activity) of an app-log excerpt: whether the ControlMaster was registered as the out-of-band channel, and how many connect-time
+    work lines (file-tree snapshots, backend routes, index-sync lines) the log holds. Settled = registered and n_activity unchanged for a quiet period."""
+    t = log_text or ""
+    return bool(HOOK_CM_REGISTERED.search(t) or HOOK_EXECUTOR_CREATED.search(t)), len(HOOK_BOOT_ACTIVITY.findall(t))
+
+
+def wait_bootstrap_quiet(ctx, r, off, give_up=30.0, quiet=1.5):
+    """r31b: before an exec-channel window opens, wait (event-driven; `give_up` is only a net, noted on the row, the checks' limits are NOT widened) until the
+    ControlMaster is registered and the app has logged no new connect-time work (file-tree snapshot, backend route, index sync) for `quiet` s (> a few RTTs at
+    150 ms). Returns True when it settled."""
+    st = {"n": None, "since": None}
+
+    def settled():
+        reg, n = bootstrap_state(ctx.log_since(off))
+        if not reg or n != st["n"]:
+            st["n"], st["since"] = n, None
+            return False
+        if st["since"] is None:
+            st["since"] = time.time()
+        return time.time() - st["since"] >= quiet
+    ok = bool(ctx.until(settled, give_up, step=0.1))
+    reg, n = bootstrap_state(ctx.log_since(off))
+    r.note("connect-time work %s: registered=%s activity_lines=%d" % ("settled" if ok else "NOT settled within %.0f s" % give_up, reg, n))
+    return ok
+
+
 def channel_timeline(sshd_text):
     """pure: the kinds of the 'Starting session: <kind>' lines of an sshd log excerpt, in order (labd's sshd.log lines carry no timestamp, so ChannelWatch
     stamps each channel with the moment the harness first saw it)"""
@@ -1056,6 +1091,7 @@ def c_path_detect(ctx, r, arm):
         r.check(proof[0], proof[1])
     time.sleep(2.0 + 3 * rt)                         # the connection's own start-up channels settle first
     wait_helper_takeover(ctx, r, arm, off0)          # #2164: the helper takeover and the index sync settle before the window opens
+    wait_bootstrap_quiet(ctx, r, off0)               # r31b: the session's own connect-time execs are not typing's
     off = ctx.log_size()
     ctx.be.type("cd %spd%s" % (base, uid), type_pace(ctx), enter=True)
     got = ctx.until(lambda: [m for m in HOOK_CWD_LISTING.finditer(ctx.log_since(off)) if m.group(3) == "2"], 10 + 6 * rt, step=0.1)
@@ -1105,6 +1141,7 @@ def c_chips(ctx, r, arm):
     if plain_gate(ctx, r, arm, off0, "the git branch chip of the managed session"):
         return
     wait_helper_takeover(ctx, r, arm, off0)
+    wait_bootstrap_quiet(ctx, r, off0)               # r31b: the session's own connect-time execs are not this prompt's
     size0 = lab.sshd_since(0)["size"]
     off = ctx.log_size()
     watch = ChannelWatch(ctx, lab, size0, off).start()
