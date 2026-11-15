@@ -46,13 +46,17 @@ threads-required = 8
 slow-timeout = { period = "60s", terminate-after = 3 }
 
 [[profile.default.overrides]]
-# #2194: on Windows these tests passed but the runner flagged them LEAK (the set varied from run to run: r27a, r30b, r30e). They are the tests whose app code
-# starts a real child process and does not wait for it before the test returns: the agent fuzz rig gives its session a `bash` found on PATH (git-bash)
-# that runs the app's own `git rev-parse` probes (rig.rs give_the_session_a_shell_this_machine_has), the prompt chips run `git` for the branch chip, the
-# workspace and input view tests build a terminal with a real session. Starting git / bash on Windows takes more than the default 100 ms leak
-# window, so the child still held the output pipe when the test returned. The children are short-lived; a longer window lets them finish while a child
-# that never ends is still reported as LEAK after it. Only these tests get the longer window; every other test keeps the default, and no assertion changed.
-filter = 'test(/agent_fuzz::matrix::pairs_/) | test(/agent_fuzz::matrix::triples_/) | test(/context_chips::current_prompt::tests::/) | test(/workspace::view::tests::test_(closing_a_code_pane|reopening_a_file_whose_code_pane|code_editor_entry_points|active_tab_bar_position)/) | test(test_history_file_does_not_route_requests_or_bare_english_words_to_the_shell)'
+# #2194: on Windows these tests passed but the runner flagged them LEAK. The 3 s window below was a stopgap and r31b showed it was not the cause:
+# agent_fuzz pairs_failing_command / pairs_question / triples_command `on`, input test_history_file_does_not_route_..., and workspace
+# test_open_file_with_target_event_preserves_requested_line still leaked after it, so their children are not short-lived. Real causes, fixed in app code:
+# (1) `Sessions` (the model) now ends the children its executors spawned when it is dropped (`Drop for Sessions`, `CommandExecutor::end_spawned_children`):
+# the per-session executable-names probe, generators and `git rev-parse` probes run as `bash` / `git` children of background tasks that outlive the model
+# and, once the test process exits, keep nextest's inherited stdout / stderr handles open. (2) A `TerminalManager` dropped in a unit test now waits
+# (bounded) for its pty reader to kill the shell, as the app does at exit (`shutdown_all_pty_event_loops`): on Windows the ConPTY shell + OpenConsole
+# outlived the process. Those four tests lost their exception; every other test keeps the default window.
+# STILL HERE, with the 3 s window, only for the tests that passed under it in r31b: no Windows run has shown them clean at the default 100 ms yet.
+# Remove this block after one test-windows run with the two fixes shows no LEAK for them (docs/testing.md, #2194).
+filter = 'test(/context_chips::current_prompt::tests::/) | test(/workspace::view::tests::test_(closing_a_code_pane|reopening_a_file_whose_code_pane|code_editor_entry_points|active_tab_bar_position)/)'
 leak-timeout = "3s"
 
 [[profile.default.overrides]]

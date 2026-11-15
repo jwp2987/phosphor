@@ -182,6 +182,56 @@ mod unix {
         });
     }
 
+    /// #2194: the `Sessions` model owning the executor going away ends its in-flight children.
+    /// The command future is held by a background task (here: a task that outlives the model),
+    /// so nothing drops it; `Drop for Sessions` calls `end_spawned_children`.
+    #[test]
+    fn dropping_sessions_ends_the_children_of_in_flight_commands() {
+        use crate::terminal::model::session::Sessions;
+
+        futures_lite::future::block_on(async {
+            let temp_dir = tempfile::tempdir().expect("create temp dir");
+            let mut release_fifo = create_release_fifo(temp_dir.path());
+            let ready_file = temp_dir.path().join("ready");
+            let side_effect_file = temp_dir.path().join("side-effect");
+            let executor = Arc::new(executor());
+            let mut sessions = Sessions::new_for_test();
+            sessions.set_command_executor_for_all_sessions(executor.clone());
+
+            let task_executor = async_executor::LocalExecutor::new();
+            task_executor
+                .run(async {
+                    let running = executor.clone();
+                    let environment = command_environment(temp_dir.path());
+                    let command_task = task_executor.spawn(async move {
+                        running
+                            .execute_local_command(
+                                descendant_command(),
+                                None,
+                                Some(environment),
+                                ExecuteCommandOptions::default(),
+                            )
+                            .await
+                    });
+                    let descendant_pid = wait_for_descendant_pid(&ready_file).await;
+
+                    // The executor is still held by the running task; only the model's Drop ends
+                    // the child.
+                    drop(sessions);
+                    let _ = command_task.await;
+
+                    writeln!(release_fifo, "continue").expect("release descendant");
+                    wait_for_process_exit(descendant_pid).await;
+                    assert!(
+                        !side_effect_file.exists(),
+                        "a descendant outlived the dropped Sessions and created {}",
+                        side_effect_file.display()
+                    );
+                })
+                .await;
+        });
+    }
+
     #[test]
     fn completed_command_is_not_canceled_later() {
         futures_lite::future::block_on(async {

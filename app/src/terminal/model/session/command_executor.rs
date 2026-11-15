@@ -85,6 +85,13 @@ pub trait CommandExecutor: Send + Sync + Debug {
     /// implementation is given.
     fn cancel_active_commands(&self) {}
 
+    /// Ends every child process this executor has spawned and not yet reaped. Called when the
+    /// `Sessions` model that owns the executor goes away (a closed window, app exit, the end of a
+    /// test): the in-flight command futures are held by background tasks that outlive the model,
+    /// so without this their `bash` / `git` children are only ended if those tasks happen to be
+    /// dropped first (#2194). Executors that spawn no child of their own keep the default.
+    fn end_spawned_children(&self) {}
+
     /// Allows us to downcast an executor to check what command execution method is used by a
     /// session.
     fn as_any(&self) -> &dyn Any;

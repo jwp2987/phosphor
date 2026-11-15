@@ -103,6 +103,14 @@ impl ActiveProcessGroups {
         true
     }
 
+    #[cfg(windows)]
+    fn is_registered(&self, process_group: &Arc<ActiveProcessGroup>) -> bool {
+        self.process_groups
+            .lock()
+            .get(&process_group.id)
+            .is_some_and(|active| Arc::ptr_eq(active, process_group))
+    }
+
     fn complete(&self, process_group: &Arc<ActiveProcessGroup>) {
         self.remove(process_group);
         // The command finished on its own: close the job without killing deliberately
@@ -158,6 +166,10 @@ impl SpawnedChildCleanup {
             return;
         };
         match command::windows::KillOnCloseJob::with_process(process_handle) {
+            // The group was ended (`cancel_all`, e.g. the owning `Sessions` model dropped) between
+            // the spawn and this point, so no job existed to close then: close this one now
+            // instead of leaving the child running (#2194).
+            Ok(job) if !self.active_process_groups.is_registered(process_group) => drop(job),
             Ok(job) => *process_group.job.lock() = Some(job),
             Err(e) => log::warn!(
                 "Could not place process {} in a job object: {e:#}",
@@ -635,6 +647,10 @@ impl CommandExecutor for LocalCommandExecutor {
     }
 
     fn cancel_active_commands(&self) {
+        self.active_process_groups.cancel_all();
+    }
+
+    fn end_spawned_children(&self) {
         self.active_process_groups.cancel_all();
     }
 }
