@@ -1,0 +1,50 @@
+{
+ "summary_line": "Summary [ 808.596s] 12126 tests run: 12126 passed (10 slow, 5 leaky), 47 skipped",
+ "duration_s": 808.596,
+ "run": 12126,
+ "passed": 12126,
+ "failed": 0,
+ "timed_out": 0,
+ "skipped": 47,
+ "slow": 10,
+ "flaky": 0,
+ "failures": [
+  {
+   "kind": "LEAK",
+   "crate": "warp",
+   "test": "ai::blocklist::agent_fuzz::matrix::pairs_failing_command::on",
+   "seconds": 56.031
+  },
+  {
+   "kind": "LEAK",
+   "crate": "warp",
+   "test": "ai::blocklist::agent_fuzz::matrix::pairs_question::on",
+   "seconds": 54.069
+  },
+  {
+   "kind": "LEAK",
+   "crate": "warp",
+   "test": "ai::blocklist::agent_fuzz::matrix::triples_command::on",
+   "seconds": 133.636
+  },
+  {
+   "kind": "LEAK",
+   "crate": "warp",
+   "test": "terminal::input::tests::test_history_file_does_not_route_requests_or_bare_english_words_to_the_shell",
+   "seconds": 3.717
+  },
+  {
+   "kind": "LEAK",
+   "crate": "warp",
+   "test": "workspace::view::tests::test_open_file_with_target_event_preserves_requested_line",
+   "seconds": 2.06
+  }
+ ],
+ "regressions": [],
+ "notes": [
+  "tests: ok (0 known failure(s), no regressions)"
+ ],
+ "job": "test-windows",
+ "status": "success",
+ "duration": 2721.3001
+}

@@ -1,0 +1,3052 @@
+{
+ "meta": {
+  "platform": "linux-wayland",
+  "backend": "wayland",
+  "app_display": "wayland",
+  "seed": "1",
+  "commit": "6936b7cf",
+  "sha": "6936b7cf2d8706e6acf95d65c1bb30e783f18c3b",
+  "owner_settings": "sha256 81d188e9844d",
+  "tier": "targeted",
+  "scale": "1",
+  "display_scale": "1",
+  "outputs": "1"
+ },
+ "generated": "2026-11-14T19:27:59-0600",
+ "summary": {
+  "pass": 23,
+  "fail": 4,
+  "skip": 0,
+  "noref": 11
+ },
+ "cases": [
+  {
+   "name": "lab_tab_remote_dir.bash.150.nohelper",
+   "mode": "terminal",
+   "status": "noref",
+   "ran_mode": "terminal",
+   "seconds": 16.4,
+   "evidence": [
+    "enter_route: 7 Enter(s) reached the input editor: Shell=7 [Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794705149.589,
+    1794705166.035
+   ],
+   "detail": [
+    "NO-REFERENCE: Tab -> insert took 258 ms (RTT 150 ms): no band yet for wayland/terminal/lab_tab_remote_dir.bash.150.nohelper/tab_to_insert (a new metric or pane: NOREF, not a pass) [wayland/terminal/lab_tab_remote_dir.bash.150.nohelper/tab_to_insert]",
+    "remote Tab wait (#2188): the app logged no remote_tab_wait line for this step (a build before #2188, PHOSPHOR_REMOTE_TAB_ENTER_WAIT=0, the remote shell answered in-band (#1801), or the completion had already answered when the Enter arrived)",
+    "injector accounting: injector sent 253; app saw 253; lost-before-app 0 (Enter: sent 6, app saw 6); of the app's: 238 unbound keydown/typed, 9 taken by a key binding, 6 Enter by a binding",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 6 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 150.6,
+     "target": 150,
+     "n": 15,
+     "tol": 15.0
+    },
+    "tab_insert_s": 0.258,
+    "tab_to_insert_ms": 258.1,
+    "tab_native_ms": 215,
+    "injector": {
+     "sent": 253,
+     "enters_sent": 6,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 253,
+     "unbound": 238,
+     "bound": 9,
+     "enters_bound": 6,
+     "seen": 253,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 6
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 6
+    }
+   },
+   "shots": [
+    "shots/terminal_lab_tab_remote_dir.bash.150.nohelper.png"
+   ]
+  },
+  {
+   "name": "lab_tab_remote_dir.zshc.150.nohelper",
+   "mode": "terminal",
+   "status": "noref",
+   "ran_mode": "terminal",
+   "seconds": 17.3,
+   "evidence": [
+    "enter_route: 7 Enter(s) reached the input editor: Shell=7 [Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794705167.708,
+    1794705184.969
+   ],
+   "detail": [
+    "NO-REFERENCE: Tab -> insert took 216 ms (RTT 150 ms): no band yet for wayland/terminal/lab_tab_remote_dir.zshc.150.nohelper/tab_to_insert (a new metric or pane: NOREF, not a pass) [wayland/terminal/lab_tab_remote_dir.zshc.150.nohelper/tab_to_insert]",
+    "remote Tab wait (#2188): the app logged no remote_tab_wait line for this step (a build before #2188, PHOSPHOR_REMOTE_TAB_ENTER_WAIT=0, the remote shell answered in-band (#1801), or the completion had already answered when the Enter arrived)",
+    "injector accounting: injector sent 253; app saw 253; lost-before-app 0 (Enter: sent 6, app saw 6); of the app's: 238 unbound keydown/typed, 9 taken by a key binding, 6 Enter by a binding",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 6 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 150.8,
+     "target": 150,
+     "n": 15,
+     "tol": 15.0
+    },
+    "tab_insert_s": 0.216,
+    "tab_to_insert_ms": 216.1,
+    "tab_native_ms": 177,
+    "injector": {
+     "sent": 253,
+     "enters_sent": 6,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 253,
+     "unbound": 238,
+     "bound": 9,
+     "enters_bound": 6,
+     "seen": 253,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 6
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 6
+    }
+   },
+   "shots": [
+    "shots/terminal_lab_tab_remote_dir.zshc.150.nohelper.png"
+   ]
+  },
+  {
+   "name": "lab_tab_remote_dir.fish.150.nohelper",
+   "mode": "terminal",
+   "status": "noref",
+   "ran_mode": "terminal",
+   "seconds": 17.6,
+   "evidence": [
+    "enter_route: 7 Enter(s) reached the input editor: Shell=7 [Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794705186.718,
+    1794705204.298
+   ],
+   "detail": [
+    "NO-REFERENCE: Tab -> insert took 222 ms (RTT 150 ms): no band yet for wayland/terminal/lab_tab_remote_dir.fish.150.nohelper/tab_to_insert (a new metric or pane: NOREF, not a pass) [wayland/terminal/lab_tab_remote_dir.fish.150.nohelper/tab_to_insert]",
+    "remote Tab wait (#2188): the app logged no remote_tab_wait line for this step (a build before #2188, PHOSPHOR_REMOTE_TAB_ENTER_WAIT=0, the remote shell answered in-band (#1801), or the completion had already answered when the Enter arrived)",
+    "injector accounting: injector sent 253; app saw 253; lost-before-app 0 (Enter: sent 6, app saw 6); of the app's: 238 unbound keydown/typed, 9 taken by a key binding, 6 Enter by a binding",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 6 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 150.7,
+     "target": 150,
+     "n": 15,
+     "tol": 15.0
+    },
+    "tab_insert_s": 0.222,
+    "tab_to_insert_ms": 222.3,
+    "tab_native_ms": 164,
+    "injector": {
+     "sent": 253,
+     "enters_sent": 6,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 253,
+     "unbound": 238,
+     "bound": 9,
+     "enters_bound": 6,
+     "seen": 253,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 6
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 6
+    }
+   },
+   "shots": [
+    "shots/terminal_lab_tab_remote_dir.fish.150.nohelper.png"
+   ]
+  },
+  {
+   "name": "lab_tab_remote_dir.p_slowrc.lan.nohelper",
+   "mode": "terminal",
+   "status": "noref",
+   "ran_mode": "terminal",
+   "seconds": 26.3,
+   "evidence": [
+    "enter_route: 7 Enter(s) reached the input editor: Shell=7 [Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794705206.194,
+    1794705232.522
+   ],
+   "detail": [
+    "NO-REFERENCE: Tab -> insert took 107 ms (RTT 0 ms): no band yet for wayland/terminal/lab_tab_remote_dir.p_slowrc.lan.nohelper/tab_to_insert (a new metric or pane: NOREF, not a pass) [wayland/terminal/lab_tab_remote_dir.p_slowrc.lan.nohelper/tab_to_insert]",
+    "remote Tab wait (#2188): the app logged no remote_tab_wait line for this step (a build before #2188, PHOSPHOR_REMOTE_TAB_ENTER_WAIT=0, the remote shell answered in-band (#1801), or the completion had already answered when the Enter arrived)",
+    "injector accounting: injector sent 272; app saw 272; lost-before-app 0 (Enter: sent 6, app saw 6); of the app's: 257 unbound keydown/typed, 9 taken by a key binding, 6 Enter by a binding",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 6 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 0.6,
+     "target": 0,
+     "n": 15,
+     "tol": 15.0
+    },
+    "tab_insert_s": 0.107,
+    "tab_to_insert_ms": 107.2,
+    "injector": {
+     "sent": 272,
+     "enters_sent": 6,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 272,
+     "unbound": 257,
+     "bound": 9,
+     "enters_bound": 6,
+     "seen": 272,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 6
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 6
+    }
+   },
+   "shots": [
+    "shots/terminal_lab_tab_remote_dir.p_slowrc.lan.nohelper.png"
+   ]
+  },
+  {
+   "name": "lab_tab_remote_dir.p_slowrc.150.nohelper",
+   "mode": "terminal",
+   "status": "noref",
+   "ran_mode": "terminal",
+   "seconds": 29.3,
+   "evidence": [
+    "enter_route: 7 Enter(s) reached the input editor: Shell=7 [Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794705234.389,
+    1794705263.735
+   ],
+   "detail": [
+    "NO-REFERENCE: Tab -> insert took 238 ms (RTT 150 ms): no band yet for wayland/terminal/lab_tab_remote_dir.p_slowrc.150.nohelper/tab_to_insert (a new metric or pane: NOREF, not a pass) [wayland/terminal/lab_tab_remote_dir.p_slowrc.150.nohelper/tab_to_insert]",
+    "remote Tab wait (#2188): the app logged no remote_tab_wait line for this step (a build before #2188, PHOSPHOR_REMOTE_TAB_ENTER_WAIT=0, the remote shell answered in-band (#1801), or the completion had already answered when the Enter arrived)",
+    "injector accounting: injector sent 272; app saw 272; lost-before-app 0 (Enter: sent 6, app saw 6); of the app's: 257 unbound keydown/typed, 9 taken by a key binding, 6 Enter by a binding",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 6 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 150.6,
+     "target": 150,
+     "n": 15,
+     "tol": 15.0
+    },
+    "tab_insert_s": 0.238,
+    "tab_to_insert_ms": 237.6,
+    "injector": {
+     "sent": 272,
+     "enters_sent": 6,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 272,
+     "unbound": 257,
+     "bound": 9,
+     "enters_bound": 6,
+     "seen": 272,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 6
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 6
+    }
+   },
+   "shots": [
+    "shots/terminal_lab_tab_remote_dir.p_slowrc.150.nohelper.png"
+   ]
+  },
+  {
+   "name": "lab_path_detect.p_exec.lan.nohelper",
+   "mode": "terminal",
+   "status": "pass",
+   "ran_mode": "terminal",
+   "seconds": 7.7,
+   "evidence": [
+    "enter_route: 4 Enter(s) reached the input editor: Shell=4 [Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794705265.629,
+    1794705273.32
+   ],
+   "detail": [
+    "injector accounting: injector sent 97; app saw 97; lost-before-app 0 (Enter: sent 4, app saw 4); of the app's: 87 unbound keydown/typed, 6 taken by a key binding, 4 Enter by a binding",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 4 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 0.6,
+     "target": 0,
+     "n": 15,
+     "tol": 15.0
+    },
+    "exec_channel_timeline": [],
+    "exec_channels_while_typing": {
+     "command": 0,
+     "shell": 0,
+     "subsystem": 0
+    },
+    "injector": {
+     "sent": 97,
+     "enters_sent": 4,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 97,
+     "unbound": 87,
+     "bound": 6,
+     "enters_bound": 4,
+     "seen": 97,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 4
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 4
+    }
+   },
+   "shots": [
+    "shots/terminal_lab_path_detect.p_exec.lan.nohelper.png"
+   ]
+  },
+  {
+   "name": "lab_chips.bash.lan.nohelper",
+   "mode": "terminal",
+   "status": "pass",
+   "ran_mode": "terminal",
+   "seconds": 6.6,
+   "evidence": [
+    "enter_route: 4 Enter(s) reached the input editor: Shell=4 [Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794705275.207,
+    1794705281.794
+   ],
+   "detail": [
+    "exec_channel_timeline (s after the window opened, backend_route lines logged by then): 1.02/1",
+    "side-call producers (#2156): batched exec #3 (ok): navigate_tree+chip_branch_dropdown+chip_diff_shortstat; shell exec lines by producer: run_script=1; prompts the app ran a batch for: [2]",
+    "injector accounting: injector sent 92; app saw 92; lost-before-app 0 (Enter: sent 4, app saw 4); of the app's: 84 unbound keydown/typed, 4 taken by a key binding, 4 Enter by a binding",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 4 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 0.7,
+     "target": 0,
+     "n": 15,
+     "tol": 15.0
+    },
+    "exec_channel_timeline": [
+     [
+      1.02,
+      1
+     ]
+    ],
+    "side_calls": 1,
+    "prompts": 1,
+    "injector": {
+     "sent": 92,
+     "enters_sent": 4,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 92,
+     "unbound": 84,
+     "bound": 4,
+     "enters_bound": 4,
+     "seen": 92,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 4
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 4
+    }
+   },
+   "shots": [
+    "shots/terminal_lab_chips.bash.lan.nohelper.png"
+   ]
+  },
+  {
+   "name": "lab_chips.zsh.lan.nohelper",
+   "mode": "terminal",
+   "status": "pass",
+   "ran_mode": "terminal",
+   "seconds": 6.8,
+   "evidence": [
+    "enter_route: 4 Enter(s) reached the input editor: Shell=4 [Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794705283.626,
+    1794705290.378
+   ],
+   "detail": [
+    "exec_channel_timeline (s after the window opened, backend_route lines logged by then): 1.02/5",
+    "side-call producers (#2156): batched exec #4 (ok): navigate_tree+chip_branch_dropdown+chip_diff_shortstat; shell exec lines by producer: run_script=1; prompts the app ran a batch for: [3]",
+    "injector accounting: injector sent 90; app saw 90; lost-before-app 0 (Enter: sent 4, app saw 4); of the app's: 82 unbound keydown/typed, 4 taken by a key binding, 4 Enter by a binding",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 4 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 0.6,
+     "target": 0,
+     "n": 15,
+     "tol": 15.0
+    },
+    "exec_channel_timeline": [
+     [
+      1.02,
+      5
+     ]
+    ],
+    "side_calls": 1,
+    "prompts": 1,
+    "injector": {
+     "sent": 90,
+     "enters_sent": 4,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 90,
+     "unbound": 82,
+     "bound": 4,
+     "enters_bound": 4,
+     "seen": 90,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 4
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 4
+    }
+   },
+   "shots": [
+    "shots/terminal_lab_chips.zsh.lan.nohelper.png"
+   ]
+  },
+  {
+   "name": "lab_connect_typeahead.bash.lan.nohelper",
+   "mode": "terminal",
+   "status": "pass",
+   "ran_mode": "terminal",
+   "seconds": 24.5,
+   "evidence": [
+    "enter_route: 24 Enter(s) reached the input editor: Shell=24 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794705292.242,
+    1794705316.762
+   ],
+   "detail": [
+    "lab_connect_typeahead loss: 0 of 6 typed-ahead commands lost (observed 0.0 %); 95 % upper confidence bound 39.3 %; this n cannot exclude a 1/40 (2.5 %) rate: needs 119 clean trials",
+    "ssh trial verdicts: exact=6",
+    "typed-during-connect: in 0 of 6 trials keys were in the console before the session and were held at the front (typeahead_front adopted=true)",
+    "injector accounting: injector sent 514; app saw 514; lost-before-app 0 (Enter: sent 24, app saw 24); of the app's: 486 unbound keydown/typed, 4 taken by a key binding, 24 Enter by a binding",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 24 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 0.7,
+     "target": 0,
+     "n": 15,
+     "tol": 15.0
+    },
+    "trials": 6,
+    "loss": {
+     "lost": 0,
+     "n": 6,
+     "rate": 0.0,
+     "upper_bound": 0.393,
+     "conf": 0.95,
+     "text": "0 of 6 typed-ahead commands lost (observed 0.0 %); 95 % upper confidence bound 39.3 %; this n cannot exclude a 1/40 (2.5 %) rate: needs 119 clean trials"
+    },
+    "ssh_trial_verdicts": [
+     {
+      "exact": true,
+      "held_keys": 12,
+      "held_bytes": 12,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "precmd",
+        12
+       ]
+      ],
+      "finish": [
+       "delivered=remote"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 20,
+      "held_bytes": 20,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "precmd",
+        20
+       ]
+      ],
+      "finish": [
+       "delivered=remote"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 23,
+      "held_bytes": 23,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "precmd",
+        23
+       ]
+      ],
+      "finish": [
+       "delivered=remote"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 11,
+      "held_bytes": 11,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "precmd",
+        11
+       ]
+      ],
+      "finish": [
+       "delivered=remote"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 7,
+      "held_bytes": 7,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "precmd",
+        7
+       ]
+      ],
+      "finish": [
+       "delivered=remote"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     }
+    ],
+    "injector": {
+     "sent": 514,
+     "enters_sent": 24,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 514,
+     "unbound": 486,
+     "bound": 4,
+     "enters_bound": 24,
+     "seen": 514,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 24
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 24
+    }
+   },
+   "shots": [
+    "shots/terminal_lab_connect_typeahead.bash.lan.nohelper.png"
+   ]
+  },
+  {
+   "name": "lab_connect_typeahead.bash.150.nohelper",
+   "mode": "terminal",
+   "status": "pass",
+   "ran_mode": "terminal",
+   "seconds": 42.3,
+   "evidence": [
+    "enter_route: 24 Enter(s) reached the input editor: Shell=24 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794705318.574,
+    1794705360.864
+   ],
+   "detail": [
+    "lab_connect_typeahead loss: 0 of 6 typed-ahead commands lost (observed 0.0 %); 95 % upper confidence bound 39.3 %; this n cannot exclude a 1/40 (2.5 %) rate: needs 119 clean trials",
+    "ssh trial verdicts: exact=6",
+    "typed-during-connect: in 0 of 6 trials keys were in the console before the session and were held at the front (typeahead_front adopted=true)",
+    "injector accounting: injector sent 514; app saw 514; lost-before-app 0 (Enter: sent 24, app saw 24); of the app's: 492 unbound keydown/typed, 4 taken by a key binding, 18 Enter by a binding",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 24 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 150.8,
+     "target": 150,
+     "n": 15,
+     "tol": 15.0
+    },
+    "trials": 6,
+    "loss": {
+     "lost": 0,
+     "n": 6,
+     "rate": 0.0,
+     "upper_bound": 0.393,
+     "conf": 0.95,
+     "text": "0 of 6 typed-ahead commands lost (observed 0.0 %); 95 % upper confidence bound 39.3 %; this n cannot exclude a 1/40 (2.5 %) rate: needs 119 clean trials"
+    },
+    "ssh_trial_verdicts": [
+     {
+      "exact": true,
+      "held_keys": 28,
+      "held_bytes": 28,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "precmd",
+        28
+       ]
+      ],
+      "finish": [
+       "delivered=remote"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 28,
+      "held_bytes": 28,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "precmd",
+        28
+       ]
+      ],
+      "finish": [
+       "delivered=remote"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 28,
+      "held_bytes": 28,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "precmd",
+        28
+       ]
+      ],
+      "finish": [
+       "delivered=remote"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 28,
+      "held_bytes": 28,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "precmd",
+        28
+       ]
+      ],
+      "finish": [
+       "delivered=remote"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 28,
+      "held_bytes": 28,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "precmd",
+        28
+       ]
+      ],
+      "finish": [
+       "delivered=remote"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 28,
+      "held_bytes": 28,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "precmd",
+        28
+       ]
+      ],
+      "finish": [
+       "delivered=remote"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     }
+    ],
+    "injector": {
+     "sent": 514,
+     "enters_sent": 24,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 514,
+     "unbound": 492,
+     "bound": 4,
+     "enters_bound": 18,
+     "seen": 514,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 24
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 24
+    }
+   },
+   "shots": [
+    "shots/terminal_lab_connect_typeahead.bash.150.nohelper.png"
+   ]
+  },
+  {
+   "name": "lab_tab_no_helper.bash.lan.nohelper",
+   "mode": "terminal",
+   "status": "pass",
+   "ran_mode": "terminal",
+   "seconds": 17.9,
+   "evidence": [
+    "enter_route: 12 Enter(s) reached the input editor: Shell=12 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794705362.821,
+    1794705380.683
+   ],
+   "detail": [
+    "injector accounting: injector sent 357; app saw 357; lost-before-app 0 (Enter: sent 12, app saw 12); of the app's: 337 unbound keydown/typed, 8 taken by a key binding, 12 Enter by a binding",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 12 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 0.6,
+     "target": 0,
+     "n": 15,
+     "tol": 15.0
+    },
+    "remote_tab_in_band_ms": 62,
+    "injector": {
+     "sent": 357,
+     "enters_sent": 12,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 357,
+     "unbound": 337,
+     "bound": 8,
+     "enters_bound": 12,
+     "seen": 357,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 12
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 12
+    }
+   },
+   "shots": [
+    "shots/terminal_lab_tab_no_helper.bash.lan.nohelper.png"
+   ]
+  },
+  {
+   "name": "lab_tab_no_helper.bash.150.nohelper",
+   "mode": "terminal",
+   "status": "pass",
+   "ran_mode": "terminal",
+   "seconds": 24.2,
+   "evidence": [
+    "enter_route: 15 Enter(s) reached the input editor: Shell=15 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794705382.689,
+    1794705406.852
+   ],
+   "detail": [
+    "injector accounting: injector sent 357; app saw 357; lost-before-app 0 (Enter: sent 12, app saw 12); of the app's: 337 unbound keydown/typed, 8 taken by a key binding, 12 Enter by a binding",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 12 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 150.8,
+     "target": 150,
+     "n": 15,
+     "tol": 15.0
+    },
+    "remote_tab_in_band_ms": 182,
+    "injector": {
+     "sent": 357,
+     "enters_sent": 12,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 357,
+     "unbound": 337,
+     "bound": 8,
+     "enters_bound": 12,
+     "seen": 357,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 12
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 12
+    }
+   },
+   "shots": [
+    "shots/terminal_lab_tab_no_helper.bash.150.nohelper.png"
+   ]
+  },
+  {
+   "name": "lab_tab_no_helper.zsh.lan.nohelper",
+   "mode": "terminal",
+   "status": "fail",
+   "ran_mode": "terminal",
+   "seconds": 16.8,
+   "evidence": [
+    "enter_route: 12 Enter(s) reached the input editor: Shell=12 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794705408.747,
+    1794705425.54
+   ],
+   "detail": [
+    "zsh without compinit answers an in-band Tab with nothing by design (#2174), so the completer answers: 0 candidate line(s), 0 empty answer(s)",
+    "injector accounting: injector sent 348; app saw 348; lost-before-app 0 (Enter: sent 12, app saw 12); of the app's: 328 unbound keydown/typed, 8 taken by a key binding, 12 Enter by a binding",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 12 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 0.6,
+     "target": 0,
+     "n": 15,
+     "tol": 15.0
+    },
+    "injector": {
+     "sent": 348,
+     "enters_sent": 12,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 348,
+     "unbound": 328,
+     "bound": 8,
+     "enters_bound": 12,
+     "seen": 348,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 12
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 12
+    }
+   },
+   "shots": [
+    "shots/terminal_lab_tab_no_helper.zsh.lan.nohelper_FAIL.png"
+   ]
+  },
+  {
+   "name": "lab_tab_no_helper.zsh.150.nohelper",
+   "mode": "terminal",
+   "status": "fail",
+   "ran_mode": "terminal",
+   "seconds": 25.2,
+   "evidence": [
+    "enter_route: 14 Enter(s) reached the input editor: Shell=14 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794705428.813,
+    1794705453.988
+   ],
+   "detail": [
+    "zsh without compinit answers an in-band Tab with nothing by design (#2174), so the completer answers: 0 candidate line(s), 0 empty answer(s)",
+    "injector accounting: injector sent 348; app saw 348; lost-before-app 0 (Enter: sent 12, app saw 12); of the app's: 328 unbound keydown/typed, 8 taken by a key binding, 12 Enter by a binding",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 14 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 150.7,
+     "target": 150,
+     "n": 15,
+     "tol": 15.0
+    },
+    "injector": {
+     "sent": 348,
+     "enters_sent": 12,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 348,
+     "unbound": 328,
+     "bound": 8,
+     "enters_bound": 12,
+     "seen": 348,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 12
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 14
+    }
+   },
+   "shots": [
+    "shots/terminal_lab_tab_no_helper.zsh.150.nohelper_FAIL.png"
+   ]
+  },
+  {
+   "name": "lab_tab_no_helper.zshc.lan.nohelper",
+   "mode": "terminal",
+   "status": "pass",
+   "ran_mode": "terminal",
+   "seconds": 17.2,
+   "evidence": [
+    "enter_route: 12 Enter(s) reached the input editor: Shell=12 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794705457.298,
+    1794705474.535
+   ],
+   "detail": [
+    "injector accounting: injector sent 357; app saw 357; lost-before-app 0 (Enter: sent 12, app saw 12); of the app's: 337 unbound keydown/typed, 8 taken by a key binding, 12 Enter by a binding",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 12 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 0.7,
+     "target": 0,
+     "n": 15,
+     "tol": 15.0
+    },
+    "remote_tab_in_band_ms": 49,
+    "injector": {
+     "sent": 357,
+     "enters_sent": 12,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 357,
+     "unbound": 337,
+     "bound": 8,
+     "enters_bound": 12,
+     "seen": 357,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 12
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 12
+    }
+   },
+   "shots": [
+    "shots/terminal_lab_tab_no_helper.zshc.lan.nohelper.png"
+   ]
+  },
+  {
+   "name": "lab_tab_no_helper.zshc.150.nohelper",
+   "mode": "terminal",
+   "status": "pass",
+   "ran_mode": "terminal",
+   "seconds": 24.9,
+   "evidence": [
+    "enter_route: 15 Enter(s) reached the input editor: Shell=15 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794705476.606,
+    1794705501.51
+   ],
+   "detail": [
+    "injector accounting: injector sent 357; app saw 357; lost-before-app 0 (Enter: sent 12, app saw 12); of the app's: 337 unbound keydown/typed, 8 taken by a key binding, 12 Enter by a binding",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 12 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 150.8,
+     "target": 150,
+     "n": 15,
+     "tol": 15.0
+    },
+    "remote_tab_in_band_ms": 204,
+    "injector": {
+     "sent": 357,
+     "enters_sent": 12,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 357,
+     "unbound": 337,
+     "bound": 8,
+     "enters_bound": 12,
+     "seen": 357,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 12
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 12
+    }
+   },
+   "shots": [
+    "shots/terminal_lab_tab_no_helper.zshc.150.nohelper.png"
+   ]
+  },
+  {
+   "name": "lab_connect_typeahead.bash.lan.helper",
+   "mode": "terminal",
+   "status": "pass",
+   "ran_mode": "terminal",
+   "seconds": 35.4,
+   "evidence": [
+    "enter_route: 24 Enter(s) reached the input editor: Shell=24 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794705503.605,
+    1794705538.987
+   ],
+   "detail": [
+    "lab_connect_typeahead loss: 0 of 6 typed-ahead commands lost (observed 0.0 %); 95 % upper confidence bound 39.3 %; this n cannot exclude a 1/40 (2.5 %) rate: needs 119 clean trials",
+    "ssh trial verdicts: exact=6",
+    "typed-during-connect: in 0 of 6 trials keys were in the console before the session and were held at the front (typeahead_front adopted=true)",
+    "SETTINGS LEFT CHANGED: the settings file differs from the one this case started on, in: warpify.ssh.remote_helper_denied_hosts",
+    "injector accounting: injector sent 523; app saw 523; lost-before-app 0 (Enter: sent 24, app saw 24); of the app's: 494 unbound keydown/typed, 5 taken by a key binding, 24 Enter by a binding",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 24 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 0.7,
+     "target": 0,
+     "n": 15,
+     "tol": 15.0
+    },
+    "trials": 6,
+    "loss": {
+     "lost": 0,
+     "n": 6,
+     "rate": 0.0,
+     "upper_bound": 0.393,
+     "conf": 0.95,
+     "text": "0 of 6 typed-ahead commands lost (observed 0.0 %); 95 % upper confidence bound 39.3 %; this n cannot exclude a 1/40 (2.5 %) rate: needs 119 clean trials"
+    },
+    "ssh_trial_verdicts": [
+     {
+      "exact": true,
+      "held_keys": 17,
+      "held_bytes": 17,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "precmd",
+        17
+       ]
+      ],
+      "finish": [
+       "delivered=remote"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 20,
+      "held_bytes": 20,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "precmd",
+        20
+       ]
+      ],
+      "finish": [
+       "delivered=remote"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 14,
+      "held_bytes": 14,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "precmd",
+        14
+       ]
+      ],
+      "finish": [
+       "delivered=remote"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 7,
+      "held_bytes": 7,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "precmd",
+        7
+       ]
+      ],
+      "finish": [
+       "delivered=remote"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 5,
+      "held_bytes": 5,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "precmd",
+        5
+       ]
+      ],
+      "finish": [
+       "delivered=remote"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     }
+    ],
+    "injector": {
+     "sent": 523,
+     "enters_sent": 24,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 523,
+     "unbound": 494,
+     "bound": 5,
+     "enters_bound": 24,
+     "seen": 523,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 24
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 24
+    }
+   },
+   "shots": [
+    "shots/terminal_lab_connect_typeahead.bash.lan.helper.png"
+   ]
+  },
+  {
+   "name": "lab_connect_typeahead.bash.150.helper",
+   "mode": "terminal",
+   "status": "pass",
+   "ran_mode": "terminal",
+   "seconds": 39.6,
+   "evidence": [
+    "enter_route: 25 Enter(s) reached the input editor: Shell=25 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794705539.656,
+    1794705579.304
+   ],
+   "detail": [
+    "lab_connect_typeahead loss: 0 of 6 typed-ahead commands lost (observed 0.0 %); 95 % upper confidence bound 39.3 %; this n cannot exclude a 1/40 (2.5 %) rate: needs 119 clean trials",
+    "ssh trial verdicts: exact=6",
+    "typed-during-connect: in 0 of 6 trials keys were in the console before the session and were held at the front (typeahead_front adopted=true)",
+    "injector accounting: injector sent 576; app saw 576; lost-before-app 0 (Enter: sent 25, app saw 25); of the app's: 553 unbound keydown/typed, 4 taken by a key binding, 19 Enter by a binding",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 25 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 150.7,
+     "target": 150,
+     "n": 15,
+     "tol": 15.0
+    },
+    "trials": 6,
+    "loss": {
+     "lost": 0,
+     "n": 6,
+     "rate": 0.0,
+     "upper_bound": 0.393,
+     "conf": 0.95,
+     "text": "0 of 6 typed-ahead commands lost (observed 0.0 %); 95 % upper confidence bound 39.3 %; this n cannot exclude a 1/40 (2.5 %) rate: needs 119 clean trials"
+    },
+    "ssh_trial_verdicts": [
+     {
+      "exact": true,
+      "held_keys": 29,
+      "held_bytes": 29,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "precmd",
+        29
+       ]
+      ],
+      "finish": [
+       "delivered=remote"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 29,
+      "held_bytes": 29,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "precmd",
+        29
+       ]
+      ],
+      "finish": [
+       "delivered=remote"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 29,
+      "held_bytes": 29,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "precmd",
+        29
+       ]
+      ],
+      "finish": [
+       "delivered=remote"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 29,
+      "held_bytes": 29,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "precmd",
+        29
+       ]
+      ],
+      "finish": [
+       "delivered=remote"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 29,
+      "held_bytes": 29,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "precmd",
+        29
+       ]
+      ],
+      "finish": [
+       "delivered=remote"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 29,
+      "held_bytes": 29,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "precmd",
+        29
+       ]
+      ],
+      "finish": [
+       "delivered=remote"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     }
+    ],
+    "injector": {
+     "sent": 576,
+     "enters_sent": 25,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 576,
+     "unbound": 553,
+     "bound": 4,
+     "enters_bound": 19,
+     "seen": 576,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 25
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 25
+    }
+   },
+   "shots": [
+    "shots/terminal_lab_connect_typeahead.bash.150.helper.png"
+   ]
+  },
+  {
+   "name": "lab_tab_remote_dir.bash.150.nohelper",
+   "mode": "agent",
+   "status": "noref",
+   "ran_mode": "agent",
+   "seconds": 16.5,
+   "evidence": [
+    "enter_route: 7 Enter(s) reached the input editor: Shell=7 [Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794705595.042,
+    1794705611.509
+   ],
+   "detail": [
+    "NO-REFERENCE: Tab -> insert took 242 ms (RTT 150 ms): no band yet for wayland/agent/lab_tab_remote_dir.bash.150.nohelper/tab_to_insert (a new metric or pane: NOREF, not a pass) [wayland/agent/lab_tab_remote_dir.bash.150.nohelper/tab_to_insert]",
+    "remote Tab wait (#2188): the app logged no remote_tab_wait line for this step (a build before #2188, PHOSPHOR_REMOTE_TAB_ENTER_WAIT=0, the remote shell answered in-band (#1801), or the completion had already answered when the Enter arrived)",
+    "injector accounting: injector sent 253; app saw 253; lost-before-app 0 (Enter: sent 6, app saw 6); of the app's: 238 unbound keydown/typed, 9 taken by a key binding, 6 Enter by a binding",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 6 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 150.8,
+     "target": 150,
+     "n": 15,
+     "tol": 15.0
+    },
+    "tab_insert_s": 0.242,
+    "tab_to_insert_ms": 242.0,
+    "tab_native_ms": 182,
+    "injector": {
+     "sent": 253,
+     "enters_sent": 6,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 253,
+     "unbound": 238,
+     "bound": 9,
+     "enters_bound": 6,
+     "seen": 253,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 6
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 6
+    }
+   },
+   "shots": [
+    "shots/agent_lab_tab_remote_dir.bash.150.nohelper.png"
+   ]
+  },
+  {
+   "name": "lab_tab_remote_dir.zshc.150.nohelper",
+   "mode": "agent",
+   "status": "noref",
+   "ran_mode": "agent",
+   "seconds": 17.3,
+   "evidence": [
+    "enter_route: 7 Enter(s) reached the input editor: Shell=7 [Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794705613.299,
+    1794705630.626
+   ],
+   "detail": [
+    "NO-REFERENCE: Tab -> insert took 219 ms (RTT 150 ms): no band yet for wayland/agent/lab_tab_remote_dir.zshc.150.nohelper/tab_to_insert (a new metric or pane: NOREF, not a pass) [wayland/agent/lab_tab_remote_dir.zshc.150.nohelper/tab_to_insert]",
+    "remote Tab wait (#2188): the app logged no remote_tab_wait line for this step (a build before #2188, PHOSPHOR_REMOTE_TAB_ENTER_WAIT=0, the remote shell answered in-band (#1801), or the completion had already answered when the Enter arrived)",
+    "injector accounting: injector sent 253; app saw 253; lost-before-app 0 (Enter: sent 6, app saw 6); of the app's: 238 unbound keydown/typed, 9 taken by a key binding, 6 Enter by a binding",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 6 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 150.8,
+     "target": 150,
+     "n": 15,
+     "tol": 15.0
+    },
+    "tab_insert_s": 0.219,
+    "tab_to_insert_ms": 218.7,
+    "tab_native_ms": 172,
+    "injector": {
+     "sent": 253,
+     "enters_sent": 6,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 253,
+     "unbound": 238,
+     "bound": 9,
+     "enters_bound": 6,
+     "seen": 253,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 6
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 6
+    }
+   },
+   "shots": [
+    "shots/agent_lab_tab_remote_dir.zshc.150.nohelper.png"
+   ]
+  },
+  {
+   "name": "lab_tab_remote_dir.fish.150.nohelper",
+   "mode": "agent",
+   "status": "noref",
+   "ran_mode": "agent",
+   "seconds": 17.6,
+   "evidence": [
+    "enter_route: 7 Enter(s) reached the input editor: Shell=7 [Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794705632.377,
+    1794705649.95
+   ],
+   "detail": [
+    "NO-REFERENCE: Tab -> insert took 249 ms (RTT 150 ms): no band yet for wayland/agent/lab_tab_remote_dir.fish.150.nohelper/tab_to_insert (a new metric or pane: NOREF, not a pass) [wayland/agent/lab_tab_remote_dir.fish.150.nohelper/tab_to_insert]",
+    "remote Tab wait (#2188): the app logged no remote_tab_wait line for this step (a build before #2188, PHOSPHOR_REMOTE_TAB_ENTER_WAIT=0, the remote shell answered in-band (#1801), or the completion had already answered when the Enter arrived)",
+    "injector accounting: injector sent 253; app saw 253; lost-before-app 0 (Enter: sent 6, app saw 6); of the app's: 238 unbound keydown/typed, 9 taken by a key binding, 6 Enter by a binding",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 6 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 150.8,
+     "target": 150,
+     "n": 15,
+     "tol": 15.0
+    },
+    "tab_insert_s": 0.249,
+    "tab_to_insert_ms": 248.9,
+    "tab_native_ms": 191,
+    "injector": {
+     "sent": 253,
+     "enters_sent": 6,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 253,
+     "unbound": 238,
+     "bound": 9,
+     "enters_bound": 6,
+     "seen": 253,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 6
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 6
+    }
+   },
+   "shots": [
+    "shots/agent_lab_tab_remote_dir.fish.150.nohelper.png"
+   ]
+  },
+  {
+   "name": "lab_tab_remote_dir.p_slowrc.lan.nohelper",
+   "mode": "agent",
+   "status": "noref",
+   "ran_mode": "agent",
+   "seconds": 26.2,
+   "evidence": [
+    "enter_route: 6 Enter(s) reached the input editor: Shell=6 [Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794705651.745,
+    1794705677.952
+   ],
+   "detail": [
+    "NO-REFERENCE: Tab -> insert took 110 ms (RTT 0 ms): no band yet for wayland/agent/lab_tab_remote_dir.p_slowrc.lan.nohelper/tab_to_insert (a new metric or pane: NOREF, not a pass) [wayland/agent/lab_tab_remote_dir.p_slowrc.lan.nohelper/tab_to_insert]",
+    "remote Tab wait (#2188): the app logged no remote_tab_wait line for this step (a build before #2188, PHOSPHOR_REMOTE_TAB_ENTER_WAIT=0, the remote shell answered in-band (#1801), or the completion had already answered when the Enter arrived)",
+    "injector accounting: injector sent 272; app saw 272; lost-before-app 0 (Enter: sent 6, app saw 6); of the app's: 257 unbound keydown/typed, 9 taken by a key binding, 6 Enter by a binding",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 6 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 0.6,
+     "target": 0,
+     "n": 15,
+     "tol": 15.0
+    },
+    "tab_insert_s": 0.109,
+    "tab_to_insert_ms": 109.5,
+    "injector": {
+     "sent": 272,
+     "enters_sent": 6,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 272,
+     "unbound": 257,
+     "bound": 9,
+     "enters_bound": 6,
+     "seen": 272,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 6
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 6
+    }
+   },
+   "shots": [
+    "shots/agent_lab_tab_remote_dir.p_slowrc.lan.nohelper.png"
+   ]
+  },
+  {
+   "name": "lab_tab_remote_dir.p_slowrc.150.nohelper",
+   "mode": "agent",
+   "status": "noref",
+   "ran_mode": "agent",
+   "seconds": 29.5,
+   "evidence": [
+    "enter_route: 7 Enter(s) reached the input editor: Shell=7 [Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794705679.852,
+    1794705709.356
+   ],
+   "detail": [
+    "NO-REFERENCE: Tab -> insert took 264 ms (RTT 150 ms): no band yet for wayland/agent/lab_tab_remote_dir.p_slowrc.150.nohelper/tab_to_insert (a new metric or pane: NOREF, not a pass) [wayland/agent/lab_tab_remote_dir.p_slowrc.150.nohelper/tab_to_insert]",
+    "remote Tab wait (#2188): the app logged no remote_tab_wait line for this step (a build before #2188, PHOSPHOR_REMOTE_TAB_ENTER_WAIT=0, the remote shell answered in-band (#1801), or the completion had already answered when the Enter arrived)",
+    "injector accounting: injector sent 272; app saw 272; lost-before-app 0 (Enter: sent 6, app saw 6); of the app's: 257 unbound keydown/typed, 9 taken by a key binding, 6 Enter by a binding",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 6 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 150.7,
+     "target": 150,
+     "n": 15,
+     "tol": 15.0
+    },
+    "tab_insert_s": 0.264,
+    "tab_to_insert_ms": 263.9,
+    "injector": {
+     "sent": 272,
+     "enters_sent": 6,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 272,
+     "unbound": 257,
+     "bound": 9,
+     "enters_bound": 6,
+     "seen": 272,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 6
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 6
+    }
+   },
+   "shots": [
+    "shots/agent_lab_tab_remote_dir.p_slowrc.150.nohelper.png"
+   ]
+  },
+  {
+   "name": "lab_path_detect.p_exec.lan.nohelper",
+   "mode": "agent",
+   "status": "pass",
+   "ran_mode": "agent",
+   "seconds": 7.8,
+   "evidence": [
+    "enter_route: 4 Enter(s) reached the input editor: Shell=4 [Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794705711.242,
+    1794705719.058
+   ],
+   "detail": [
+    "injector accounting: injector sent 97; app saw 97; lost-before-app 0 (Enter: sent 4, app saw 4); of the app's: 87 unbound keydown/typed, 6 taken by a key binding, 4 Enter by a binding",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 4 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 0.6,
+     "target": 0,
+     "n": 15,
+     "tol": 15.0
+    },
+    "exec_channel_timeline": [],
+    "exec_channels_while_typing": {
+     "command": 0,
+     "shell": 0,
+     "subsystem": 0
+    },
+    "injector": {
+     "sent": 97,
+     "enters_sent": 4,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 97,
+     "unbound": 87,
+     "bound": 6,
+     "enters_bound": 4,
+     "seen": 97,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 4
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 4
+    }
+   },
+   "shots": [
+    "shots/agent_lab_path_detect.p_exec.lan.nohelper.png"
+   ]
+  },
+  {
+   "name": "lab_chips.bash.lan.nohelper",
+   "mode": "agent",
+   "status": "pass",
+   "ran_mode": "agent",
+   "seconds": 6.7,
+   "evidence": [
+    "enter_route: 4 Enter(s) reached the input editor: Shell=4 [Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794705721.011,
+    1794705727.74
+   ],
+   "detail": [
+    "exec_channel_timeline (s after the window opened, backend_route lines logged by then): 1.03/1",
+    "side-call producers (#2156): batched exec #3 (ok): navigate_tree+chip_branch_dropdown+chip_diff_shortstat; shell exec lines by producer: run_script=1; prompts the app ran a batch for: [2]",
+    "injector accounting: injector sent 92; app saw 92; lost-before-app 0 (Enter: sent 4, app saw 4); of the app's: 84 unbound keydown/typed, 4 taken by a key binding, 4 Enter by a binding",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 4 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 0.7,
+     "target": 0,
+     "n": 15,
+     "tol": 15.0
+    },
+    "exec_channel_timeline": [
+     [
+      1.03,
+      1
+     ]
+    ],
+    "side_calls": 1,
+    "prompts": 1,
+    "injector": {
+     "sent": 92,
+     "enters_sent": 4,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 92,
+     "unbound": 84,
+     "bound": 4,
+     "enters_bound": 4,
+     "seen": 92,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 4
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 4
+    }
+   },
+   "shots": [
+    "shots/agent_lab_chips.bash.lan.nohelper.png"
+   ]
+  },
+  {
+   "name": "lab_chips.zsh.lan.nohelper",
+   "mode": "agent",
+   "status": "pass",
+   "ran_mode": "agent",
+   "seconds": 6.8,
+   "evidence": [
+    "enter_route: 4 Enter(s) reached the input editor: Shell=4 [Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794705729.672,
+    1794705736.461
+   ],
+   "detail": [
+    "exec_channel_timeline (s after the window opened, backend_route lines logged by then): 1.02/5",
+    "side-call producers (#2156): batched exec #4 (ok): navigate_tree+chip_branch_dropdown; shell exec lines by producer: run_script=1; prompts the app ran a batch for: [3]",
+    "injector accounting: injector sent 90; app saw 90; lost-before-app 0 (Enter: sent 4, app saw 4); of the app's: 82 unbound keydown/typed, 4 taken by a key binding, 4 Enter by a binding",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 4 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 0.6,
+     "target": 0,
+     "n": 15,
+     "tol": 15.0
+    },
+    "exec_channel_timeline": [
+     [
+      1.02,
+      5
+     ]
+    ],
+    "side_calls": 1,
+    "prompts": 1,
+    "injector": {
+     "sent": 90,
+     "enters_sent": 4,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 90,
+     "unbound": 82,
+     "bound": 4,
+     "enters_bound": 4,
+     "seen": 90,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 4
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 4
+    }
+   },
+   "shots": [
+    "shots/agent_lab_chips.zsh.lan.nohelper.png"
+   ]
+  },
+  {
+   "name": "lab_connect_typeahead.bash.lan.nohelper",
+   "mode": "agent",
+   "status": "pass",
+   "ran_mode": "agent",
+   "seconds": 24.5,
+   "evidence": [
+    "enter_route: 24 Enter(s) reached the input editor: Shell=24 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794705738.406,
+    1794705762.931
+   ],
+   "detail": [
+    "lab_connect_typeahead loss: 0 of 6 typed-ahead commands lost (observed 0.0 %); 95 % upper confidence bound 39.3 %; this n cannot exclude a 1/40 (2.5 %) rate: needs 119 clean trials",
+    "ssh trial verdicts: exact=6",
+    "typed-during-connect: in 0 of 6 trials keys were in the console before the session and were held at the front (typeahead_front adopted=true)",
+    "injector accounting: injector sent 514; app saw 514; lost-before-app 0 (Enter: sent 24, app saw 24); of the app's: 486 unbound keydown/typed, 4 taken by a key binding, 24 Enter by a binding",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 24 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 0.6,
+     "target": 0,
+     "n": 15,
+     "tol": 15.0
+    },
+    "trials": 6,
+    "loss": {
+     "lost": 0,
+     "n": 6,
+     "rate": 0.0,
+     "upper_bound": 0.393,
+     "conf": 0.95,
+     "text": "0 of 6 typed-ahead commands lost (observed 0.0 %); 95 % upper confidence bound 39.3 %; this n cannot exclude a 1/40 (2.5 %) rate: needs 119 clean trials"
+    },
+    "ssh_trial_verdicts": [
+     {
+      "exact": true,
+      "held_keys": 10,
+      "held_bytes": 10,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "precmd",
+        10
+       ]
+      ],
+      "finish": [
+       "delivered=remote"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 20,
+      "held_bytes": 20,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "precmd",
+        20
+       ]
+      ],
+      "finish": [
+       "delivered=remote"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 17,
+      "held_bytes": 17,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "precmd",
+        17
+       ]
+      ],
+      "finish": [
+       "delivered=remote"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 10,
+      "held_bytes": 10,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "precmd",
+        10
+       ]
+      ],
+      "finish": [
+       "delivered=remote"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 6,
+      "held_bytes": 6,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "precmd",
+        6
+       ]
+      ],
+      "finish": [
+       "delivered=remote"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 0,
+      "held_bytes": 0,
+      "deferred_busy": 0,
+      "handovers": [],
+      "finish": [],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     }
+    ],
+    "injector": {
+     "sent": 514,
+     "enters_sent": 24,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 514,
+     "unbound": 486,
+     "bound": 4,
+     "enters_bound": 24,
+     "seen": 514,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 24
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 24
+    }
+   },
+   "shots": [
+    "shots/agent_lab_connect_typeahead.bash.lan.nohelper.png"
+   ]
+  },
+  {
+   "name": "lab_connect_typeahead.bash.150.nohelper",
+   "mode": "agent",
+   "status": "pass",
+   "ran_mode": "agent",
+   "seconds": 42.3,
+   "evidence": [
+    "enter_route: 24 Enter(s) reached the input editor: Shell=24 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794705764.802,
+    1794705807.071
+   ],
+   "detail": [
+    "lab_connect_typeahead loss: 0 of 6 typed-ahead commands lost (observed 0.0 %); 95 % upper confidence bound 39.3 %; this n cannot exclude a 1/40 (2.5 %) rate: needs 119 clean trials",
+    "ssh trial verdicts: exact=6",
+    "typed-during-connect: in 0 of 6 trials keys were in the console before the session and were held at the front (typeahead_front adopted=true)",
+    "injector accounting: injector sent 514; app saw 514; lost-before-app 0 (Enter: sent 24, app saw 24); of the app's: 492 unbound keydown/typed, 4 taken by a key binding, 18 Enter by a binding",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 24 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 150.8,
+     "target": 150,
+     "n": 15,
+     "tol": 15.0
+    },
+    "trials": 6,
+    "loss": {
+     "lost": 0,
+     "n": 6,
+     "rate": 0.0,
+     "upper_bound": 0.393,
+     "conf": 0.95,
+     "text": "0 of 6 typed-ahead commands lost (observed 0.0 %); 95 % upper confidence bound 39.3 %; this n cannot exclude a 1/40 (2.5 %) rate: needs 119 clean trials"
+    },
+    "ssh_trial_verdicts": [
+     {
+      "exact": true,
+      "held_keys": 28,
+      "held_bytes": 28,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "precmd",
+        28
+       ]
+      ],
+      "finish": [
+       "delivered=remote"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 28,
+      "held_bytes": 28,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "precmd",
+        28
+       ]
+      ],
+      "finish": [
+       "delivered=remote"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 28,
+      "held_bytes": 28,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "session_bootstrapped",
+        28
+       ]
+      ],
+      "finish": [
+       "delivered=remote"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 28,
+      "held_bytes": 28,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "precmd",
+        28
+       ]
+      ],
+      "finish": [
+       "delivered=remote"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 28,
+      "held_bytes": 28,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "precmd",
+        28
+       ]
+      ],
+      "finish": [
+       "delivered=remote"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 28,
+      "held_bytes": 28,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "precmd",
+        28
+       ]
+      ],
+      "finish": [
+       "delivered=remote"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     }
+    ],
+    "injector": {
+     "sent": 514,
+     "enters_sent": 24,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 514,
+     "unbound": 492,
+     "bound": 4,
+     "enters_bound": 18,
+     "seen": 514,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 24
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 24
+    }
+   },
+   "shots": [
+    "shots/agent_lab_connect_typeahead.bash.150.nohelper.png"
+   ]
+  },
+  {
+   "name": "lab_tab_no_helper.bash.lan.nohelper",
+   "mode": "agent",
+   "status": "pass",
+   "ran_mode": "agent",
+   "seconds": 17.7,
+   "evidence": [
+    "enter_route: 12 Enter(s) reached the input editor: Shell=12 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794705809.077,
+    1794705826.773
+   ],
+   "detail": [
+    "injector accounting: injector sent 357; app saw 357; lost-before-app 0 (Enter: sent 12, app saw 12); of the app's: 337 unbound keydown/typed, 8 taken by a key binding, 12 Enter by a binding",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 12 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 0.6,
+     "target": 0,
+     "n": 15,
+     "tol": 15.0
+    },
+    "remote_tab_in_band_ms": 62,
+    "injector": {
+     "sent": 357,
+     "enters_sent": 12,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 357,
+     "unbound": 337,
+     "bound": 8,
+     "enters_bound": 12,
+     "seen": 357,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 12
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 12
+    }
+   },
+   "shots": [
+    "shots/agent_lab_tab_no_helper.bash.lan.nohelper.png"
+   ]
+  },
+  {
+   "name": "lab_tab_no_helper.bash.150.nohelper",
+   "mode": "agent",
+   "status": "pass",
+   "ran_mode": "agent",
+   "seconds": 24.1,
+   "evidence": [
+    "enter_route: 15 Enter(s) reached the input editor: Shell=15 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794705828.751,
+    1794705852.841
+   ],
+   "detail": [
+    "injector accounting: injector sent 357; app saw 357; lost-before-app 0 (Enter: sent 12, app saw 12); of the app's: 337 unbound keydown/typed, 8 taken by a key binding, 12 Enter by a binding",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 12 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 150.8,
+     "target": 150,
+     "n": 15,
+     "tol": 15.0
+    },
+    "remote_tab_in_band_ms": 183,
+    "injector": {
+     "sent": 357,
+     "enters_sent": 12,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 357,
+     "unbound": 337,
+     "bound": 8,
+     "enters_bound": 12,
+     "seen": 357,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 12
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 12
+    }
+   },
+   "shots": [
+    "shots/agent_lab_tab_no_helper.bash.150.nohelper.png"
+   ]
+  },
+  {
+   "name": "lab_tab_no_helper.zsh.lan.nohelper",
+   "mode": "agent",
+   "status": "fail",
+   "ran_mode": "agent",
+   "seconds": 16.9,
+   "evidence": [
+    "enter_route: 12 Enter(s) reached the input editor: Shell=12 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794705854.902,
+    1794705871.801
+   ],
+   "detail": [
+    "zsh without compinit answers an in-band Tab with nothing by design (#2174), so the completer answers: 0 candidate line(s), 0 empty answer(s)",
+    "injector accounting: injector sent 348; app saw 348; lost-before-app 0 (Enter: sent 12, app saw 12); of the app's: 328 unbound keydown/typed, 8 taken by a key binding, 12 Enter by a binding",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 12 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 0.6,
+     "target": 0,
+     "n": 15,
+     "tol": 15.0
+    },
+    "injector": {
+     "sent": 348,
+     "enters_sent": 12,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 348,
+     "unbound": 328,
+     "bound": 8,
+     "enters_bound": 12,
+     "seen": 348,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 12
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 12
+    }
+   },
+   "shots": [
+    "shots/agent_lab_tab_no_helper.zsh.lan.nohelper_FAIL.png"
+   ]
+  },
+  {
+   "name": "lab_tab_no_helper.zsh.150.nohelper",
+   "mode": "agent",
+   "status": "fail",
+   "ran_mode": "agent",
+   "seconds": 25.3,
+   "evidence": [
+    "enter_route: 15 Enter(s) reached the input editor: Shell=15 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794705875.14,
+    1794705900.395
+   ],
+   "detail": [
+    "zsh without compinit answers an in-band Tab with nothing by design (#2174), so the completer answers: 0 candidate line(s), 0 empty answer(s)",
+    "injector accounting: injector sent 348; app saw 348; lost-before-app 0 (Enter: sent 12, app saw 12); of the app's: 328 unbound keydown/typed, 8 taken by a key binding, 12 Enter by a binding",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 15 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 150.8,
+     "target": 150,
+     "n": 15,
+     "tol": 15.0
+    },
+    "injector": {
+     "sent": 348,
+     "enters_sent": 12,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 348,
+     "unbound": 328,
+     "bound": 8,
+     "enters_bound": 12,
+     "seen": 348,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 12
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 15
+    }
+   },
+   "shots": [
+    "shots/agent_lab_tab_no_helper.zsh.150.nohelper_FAIL.png"
+   ]
+  },
+  {
+   "name": "lab_tab_no_helper.zshc.lan.nohelper",
+   "mode": "agent",
+   "status": "pass",
+   "ran_mode": "agent",
+   "seconds": 17.3,
+   "evidence": [
+    "enter_route: 12 Enter(s) reached the input editor: Shell=12 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794705903.807,
+    1794705921.113
+   ],
+   "detail": [
+    "injector accounting: injector sent 357; app saw 357; lost-before-app 0 (Enter: sent 12, app saw 12); of the app's: 337 unbound keydown/typed, 8 taken by a key binding, 12 Enter by a binding",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 12 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 0.6,
+     "target": 0,
+     "n": 15,
+     "tol": 15.0
+    },
+    "remote_tab_in_band_ms": 51,
+    "injector": {
+     "sent": 357,
+     "enters_sent": 12,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 357,
+     "unbound": 337,
+     "bound": 8,
+     "enters_bound": 12,
+     "seen": 357,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 12
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 12
+    }
+   },
+   "shots": [
+    "shots/agent_lab_tab_no_helper.zshc.lan.nohelper.png"
+   ]
+  },
+  {
+   "name": "lab_tab_no_helper.zshc.150.nohelper",
+   "mode": "agent",
+   "status": "pass",
+   "ran_mode": "agent",
+   "seconds": 24.7,
+   "evidence": [
+    "enter_route: 15 Enter(s) reached the input editor: Shell=15 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794705923.371,
+    1794705948.115
+   ],
+   "detail": [
+    "injector accounting: injector sent 357; app saw 357; lost-before-app 0 (Enter: sent 12, app saw 12); of the app's: 337 unbound keydown/typed, 8 taken by a key binding, 12 Enter by a binding",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 12 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 150.8,
+     "target": 150,
+     "n": 15,
+     "tol": 15.0
+    },
+    "remote_tab_in_band_ms": 205,
+    "injector": {
+     "sent": 357,
+     "enters_sent": 12,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 357,
+     "unbound": 337,
+     "bound": 8,
+     "enters_bound": 12,
+     "seen": 357,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 12
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 12
+    }
+   },
+   "shots": [
+    "shots/agent_lab_tab_no_helper.zshc.150.nohelper.png"
+   ]
+  },
+  {
+   "name": "lab_agent_nld_predict_ssh.bash.lan.nohelper",
+   "mode": "agent",
+   "status": "noref",
+   "ran_mode": "agent",
+   "seconds": 28.9,
+   "evidence": [
+    "enter_route: 5 Enter(s) reached the input editor: Shell=5 [Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794705950.364,
+    1794705979.28
+   ],
+   "detail": [
+    "NO-REFERENCE: UNVERIFIABLE: the LOCAL control produced no nld_predict request, so none in the ssh session proves nothing",
+    "injector accounting: injector sent 184; app saw 184; lost-before-app 0 (Enter: sent 5, app saw 5); of the app's: 170 unbound keydown/typed, 9 taken by a key binding, 5 Enter by a binding",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 5 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 0.6,
+     "target": 0,
+     "n": 15,
+     "tol": 15.0
+    },
+    "nld_predict_requests_local": 0,
+    "nld_predict_requests_ssh": 0,
+    "injector": {
+     "sent": 184,
+     "enters_sent": 5,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 184,
+     "unbound": 170,
+     "bound": 9,
+     "enters_bound": 5,
+     "seen": 184,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 5
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 5
+    }
+   },
+   "shots": [
+    "shots/agent_lab_agent_nld_predict_ssh.bash.lan.nohelper.png"
+   ]
+  },
+  {
+   "name": "lab_connect_typeahead.bash.lan.helper",
+   "mode": "agent",
+   "status": "pass",
+   "ran_mode": "agent",
+   "seconds": 35.6,
+   "evidence": [
+    "enter_route: 24 Enter(s) reached the input editor: Shell=24 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794705981.385,
+    1794706016.95
+   ],
+   "detail": [
+    "lab_connect_typeahead loss: 0 of 6 typed-ahead commands lost (observed 0.0 %); 95 % upper confidence bound 39.3 %; this n cannot exclude a 1/40 (2.5 %) rate: needs 119 clean trials",
+    "ssh trial verdicts: exact=6",
+    "typed-during-connect: in 0 of 6 trials keys were in the console before the session and were held at the front (typeahead_front adopted=true)",
+    "SETTINGS LEFT CHANGED: the settings file differs from the one this case started on, in: warpify.ssh.remote_helper_denied_hosts",
+    "injector accounting: injector sent 526; app saw 526; lost-before-app 0 (Enter: sent 24, app saw 24); of the app's: 497 unbound keydown/typed, 5 taken by a key binding, 24 Enter by a binding",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 24 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 0.6,
+     "target": 0,
+     "n": 15,
+     "tol": 15.0
+    },
+    "trials": 6,
+    "loss": {
+     "lost": 0,
+     "n": 6,
+     "rate": 0.0,
+     "upper_bound": 0.393,
+     "conf": 0.95,
+     "text": "0 of 6 typed-ahead commands lost (observed 0.0 %); 95 % upper confidence bound 39.3 %; this n cannot exclude a 1/40 (2.5 %) rate: needs 119 clean trials"
+    },
+    "ssh_trial_verdicts": [
+     {
+      "exact": true,
+      "held_keys": 13,
+      "held_bytes": 13,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "precmd",
+        13
+       ]
+      ],
+      "finish": [
+       "delivered=remote"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 22,
+      "held_bytes": 22,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "precmd",
+        22
+       ]
+      ],
+      "finish": [
+       "delivered=remote"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 12,
+      "held_bytes": 12,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "precmd",
+        12
+       ]
+      ],
+      "finish": [
+       "delivered=remote"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 13,
+      "held_bytes": 13,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "precmd",
+        13
+       ]
+      ],
+      "finish": [
+       "delivered=remote"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 4,
+      "held_bytes": 4,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "precmd",
+        4
+       ]
+      ],
+      "finish": [
+       "delivered=remote"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 2,
+      "held_bytes": 2,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "precmd",
+        2
+       ]
+      ],
+      "finish": [
+       "delivered=remote"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     }
+    ],
+    "injector": {
+     "sent": 526,
+     "enters_sent": 24,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 526,
+     "unbound": 497,
+     "bound": 5,
+     "enters_bound": 24,
+     "seen": 526,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 24
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 24
+    }
+   },
+   "shots": [
+    "shots/agent_lab_connect_typeahead.bash.lan.helper.png"
+   ]
+  },
+  {
+   "name": "agent_view_not_restored_after_lab_connect_typeahead.bash.lan.helper",
+   "mode": "agent",
+   "status": "pass",
+   "seconds": 0,
+   "shots": [
+    "shots/agent_left_agent_after_lab_connect_typeahead.bash.lan.helper.png"
+   ],
+   "detail": [
+    "lab_connect_typeahead.bash.lan.helper relaunched the app itself (pid 2463890 -> 2481472); a relaunched app starts in a terminal session, so this is not an app finding. The app is relaunched again (fresh agent session) so the cases after it run in agent mode."
+   ]
+  },
+  {
+   "name": "lab_connect_typeahead.bash.150.helper",
+   "mode": "agent",
+   "status": "pass",
+   "ran_mode": "agent",
+   "seconds": 38.8,
+   "evidence": [
+    "enter_route: 24 Enter(s) reached the input editor: Shell=24 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794706028.944,
+    1794706067.782
+   ],
+   "detail": [
+    "lab_connect_typeahead loss: 0 of 6 typed-ahead commands lost (observed 0.0 %); 95 % upper confidence bound 39.3 %; this n cannot exclude a 1/40 (2.5 %) rate: needs 119 clean trials",
+    "ssh trial verdicts: exact=6",
+    "typed-during-connect: in 0 of 6 trials keys were in the console before the session and were held at the front (typeahead_front adopted=true)",
+    "injector accounting: injector sent 526; app saw 526; lost-before-app 0 (Enter: sent 24, app saw 24); of the app's: 504 unbound keydown/typed, 4 taken by a key binding, 18 Enter by a binding",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 24 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "rtt_gate": {
+     "verdict": "ok",
+     "median": 150.7,
+     "target": 150,
+     "n": 15,
+     "tol": 15.0
+    },
+    "trials": 6,
+    "loss": {
+     "lost": 0,
+     "n": 6,
+     "rate": 0.0,
+     "upper_bound": 0.393,
+     "conf": 0.95,
+     "text": "0 of 6 typed-ahead commands lost (observed 0.0 %); 95 % upper confidence bound 39.3 %; this n cannot exclude a 1/40 (2.5 %) rate: needs 119 clean trials"
+    },
+    "ssh_trial_verdicts": [
+     {
+      "exact": true,
+      "held_keys": 29,
+      "held_bytes": 29,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "precmd",
+        29
+       ]
+      ],
+      "finish": [
+       "delivered=remote"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 29,
+      "held_bytes": 29,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "precmd",
+        29
+       ]
+      ],
+      "finish": [
+       "delivered=remote"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 29,
+      "held_bytes": 29,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "precmd",
+        29
+       ]
+      ],
+      "finish": [
+       "delivered=remote"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 29,
+      "held_bytes": 29,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "precmd",
+        29
+       ]
+      ],
+      "finish": [
+       "delivered=remote"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 29,
+      "held_bytes": 29,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "precmd",
+        29
+       ]
+      ],
+      "finish": [
+       "delivered=remote"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     },
+     {
+      "exact": true,
+      "held_keys": 29,
+      "held_bytes": 29,
+      "deferred_busy": 0,
+      "handovers": [
+       [
+        "precmd",
+        29
+       ]
+      ],
+      "finish": [
+       "delivered=remote"
+      ],
+      "refused": 0,
+      "handed_back": [],
+      "enter_handed_back": null,
+      "app_saw_line": true,
+      "missing": []
+     }
+    ],
+    "injector": {
+     "sent": 526,
+     "enters_sent": 24,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 526,
+     "unbound": 504,
+     "bound": 4,
+     "enters_bound": 18,
+     "seen": 526,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 24
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 24
+    }
+   },
+   "shots": [
+    "shots/agent_lab_connect_typeahead.bash.150.helper.png"
+   ]
+  }
+ ]
+}

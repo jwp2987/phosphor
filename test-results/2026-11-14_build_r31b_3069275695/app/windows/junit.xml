@@ -1,0 +1,176 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="appci-windows" tests="63" failures="8" skipped="20">
+<testcase classname="terminal" name="mode_proof" time="2.90">
+</testcase>
+<testcase classname="terminal" name="key_delivery" time="0.00">
+</testcase>
+<testcase classname="terminal" name="enter_loss_control" time="98.70">
+</testcase>
+<testcase classname="terminal" name="expert_fuzz" time="0.00">
+<skipped message="not run in the PowerShell pane: BackSpace / Left / Ctrl-W editing of `echo ... &gt;&gt;` lines; PSReadLine's Ctrl-W differs: runs in the Git Bash pane"/>
+</testcase>
+<testcase classname="terminal" name="ctrl_c_behind_big_paste" time="17.80">
+<failure message="the reader was stopped by the ^C: the next line ran (file [])">the reader was stopped by the ^C: the next line ran (file [])
+NO-REFERENCE: ^C behind a 64 KiB paste: 2.6 ms from ctrl_c_keydown to its pty write (pty_write_bytes): no band yet for windows/terminal/ctrl_c_behind_big_paste/ctrl_c_to_pty_write_ms (a new metric or pane: NOREF, not a pass) [windows/terminal/ctrl_c_behind_big_paste/ctrl_c_to_pty_write_ms]
+injector accounting: injector sent 106; app saw 106; lost-before-app 0 (Enter: sent 2, app saw 2); of the app's: 99 unbound keydown/typed, 6 taken by a key binding, 1 Enter by a binding</failure>
+</testcase>
+<testcase classname="terminal" name="powershell_setup_ctrl_c_keys" time="13.80">
+</testcase>
+<testcase classname="terminal" name="routing_table" time="0.00">
+<skipped message="not run in the PowerShell pane: asserts what the shell received from rec.log: runs in the Git Bash pane"/>
+</testcase>
+<testcase classname="terminal" name="intl_wide_paste" time="16.00">
+</testcase>
+<testcase classname="terminal" name="ssh_gitbash_managed" time="0.00">
+<skipped message="not run in the PowerShell pane: the bash ssh wrapper's one-connection managed session (#1933): only the Git Bash pane has the wrapper"/>
+</testcase>
+<testcase classname="terminal" name="ssh_gitbash_failing_not_local_managed" time="0.00">
+<skipped message="not run in the PowerShell pane: a failing ssh behind the bash ssh wrapper with the one-connection path switched on (round 14): only the Git Bash pane has the wrapper"/>
+</testcase>
+<testcase classname="terminal" name="ui_completions_as_you_type_local" time="0.00">
+<skipped message="not run in the PowerShell pane: asserts the menu on screen after typing in the Git Bash pane (the as-you-type default under test)"/>
+</testcase>
+<testcase classname="terminal" name="selection_modes" time="0.00">
+<skipped message="not run in the PowerShell pane: T31 (r14 T22): `cat` of the fixture files, the `sh` stream program and rec.log: runs in the Git Bash pane (pointer and held Shift by SendInput, positions from the app's"/>
+</testcase>
+<testcase classname="terminal" name="gitbash_typeahead_reps" time="0.00">
+<skipped message="not run in the PowerShell pane: bash precmd_functions and rec.log of the pane's bash, the ConPTY prompt hold of a bash pane (#1393): runs in the Git Bash pane"/>
+</testcase>
+<testcase classname="terminal" name="phosphor_scheme_handler" time="32.50">
+<failure message="scheme_end: file has 0/2 lines, exact match False first diff: exp='t73_rhlgozo52y' got=None [first bad line 0: injector call #127 posted its ENTER at 17:34:11.348]">scheme_end: file has 0/2 lines, exact match False first diff: exp='t73_rhlgozo52y' got=None [first bad line 0: injector call #127 posted its ENTER at 17:34:11.348]
+an unknown action: exit 0, handed over: True, refused with a log line: True
+another scheme: exit 0, handed over: True, refused with a log line: True
+scheme_end: PSReadLine history has all 2 typed lines exactly and in order: PowerShell accepted every line, so a line missing from the effect file is a command that ran and did not write (e.g. Add-Content refused the file: 'being used by another process'), not lost typing (#2093)
+injector accounting: injector sent 241; app saw 241; lost-before-app 0 (Enter: sent 3, app saw 3); of the app's: 234 unbound keydown/typed, 4 taken by a key binding, 3 Enter by a binding
+pty writes: 12, of which carrying a CR (\r): 1; Enter(s) the input editor started: 3 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="terminal@gitbash" name="mode_proof" time="2.80">
+</testcase>
+<testcase classname="terminal@gitbash" name="key_delivery" time="0.00">
+</testcase>
+<testcase classname="terminal@gitbash" name="enter_loss_control" time="58.70">
+</testcase>
+<testcase classname="terminal@gitbash" name="expert_fuzz" time="15.30">
+</testcase>
+<testcase classname="terminal@gitbash" name="ctrl_c_behind_big_paste" time="17.60">
+<failure message="the reader was stopped by the ^C: the next line ran (file [])">the reader was stopped by the ^C: the next line ran (file [])
+NO-REFERENCE: ^C behind a 64 KiB paste: 2.3 ms from ctrl_c_keydown to its pty write (pty_write_bytes): no band yet for windows/terminal@gitbash/ctrl_c_behind_big_paste/ctrl_c_to_pty_write_ms (a new metric or pane: NOREF, not a pass) [windows/terminal@gitbash/ctrl_c_behind_big_paste/ctrl_c_to_pty_write_ms]
+injector accounting: injector sent 80; app saw 80; lost-before-app 0 (Enter: sent 2, app saw 2); of the app's: 73 unbound keydown/typed, 6 taken by a key binding, 1 Enter by a binding</failure>
+</testcase>
+<testcase classname="terminal@gitbash" name="powershell_setup_ctrl_c_keys" time="0.00">
+<skipped message="not run in the Git Bash pane: #1890: a PowerShell-in-PowerShell Phosphorize setup and the PowerShell hold's post-abort prompt; the Git Bash pane has the bash subshell lab (cases_subshell_ready)"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="routing_table" time="59.80">
+</testcase>
+<testcase classname="terminal@gitbash" name="intl_wide_paste" time="6.30">
+</testcase>
+<testcase classname="terminal@gitbash" name="ssh_gitbash_managed" time="0.00">
+<skipped message="not played in the Windows app job (owner rule 2026-11-13: ssh tests run against the real lab, not the Windows fake sshd, #2007 #2051 #1992): the same behaviour is judged by lab_managed_connect in app-"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="ssh_gitbash_failing_not_local_managed" time="23.80">
+</testcase>
+<testcase classname="terminal@gitbash" name="ui_completions_as_you_type_local" time="4.70">
+<failure message="no completion menu with both candidates after typing a shared prefix without Tab">no completion menu with both candidates after typing a shared prefix without Tab
+fixture dir C:\gl\b\07xLPX_fG\0\winters-phosphor\phosphor\appci-out\windows\run\home/w\tc exists=True files=['cayt_alpha.txt', 'cayt_bravo.txt', 'zzcompl_alpha_unique.txt']; menu hops: ['from=[closed] to=[completions trigger=AsYouType candidates=240] t=1794706720429.467', 'from=[completions trigger=AsYouType candidates=240] to=[completions trigger=AsYouType cand', 'from=[completions trigger=AsYouType candidates=41] to=[closed] t=1794706720450.324']
+injector accounting: injector sent 16; app saw 16; lost-before-app 0 (Enter: sent 0, app saw 0); of the app's: 11 unbound keydown/typed, 5 taken by a key binding, 0 Enter by a binding</failure>
+</testcase>
+<testcase classname="terminal@gitbash" name="selection_modes" time="25.60">
+</testcase>
+<testcase classname="terminal@gitbash" name="gitbash_typeahead_reps" time="174.60">
+</testcase>
+<testcase classname="terminal@gitbash" name="phosphor_scheme_handler" time="0.00">
+<skipped message="not run in the Git Bash pane: #1546: the URL handler does not depend on the pane's shell: runs once, in the PowerShell pane (the app's default shell)"/>
+</testcase>
+<testcase classname="terminal@pwsh7" name="mode_proof" time="3.10">
+</testcase>
+<testcase classname="terminal@pwsh7" name="key_delivery" time="0.00">
+</testcase>
+<testcase classname="terminal@pwsh7" name="ctrl_c_behind_big_paste" time="17.80">
+<failure message="the reader was stopped by the ^C: the next line ran (file [])">the reader was stopped by the ^C: the next line ran (file [])
+NO-REFERENCE: ^C behind a 64 KiB paste: 2.5 ms from ctrl_c_keydown to its pty write (pty_write_bytes): no band yet for windows/terminal@pwsh7/ctrl_c_behind_big_paste/ctrl_c_to_pty_write_ms (a new metric or pane: NOREF, not a pass) [windows/terminal@pwsh7/ctrl_c_behind_big_paste/ctrl_c_to_pty_write_ms]
+injector accounting: injector sent 105; app saw 105; lost-before-app 0 (Enter: sent 2, app saw 2); of the app's: 98 unbound keydown/typed, 6 taken by a key binding, 1 Enter by a binding</failure>
+</testcase>
+<testcase classname="terminal@pwsh7" name="powershell_setup_ctrl_c_keys" time="13.70">
+</testcase>
+<testcase classname="agent" name="mode_proof" time="2.50">
+</testcase>
+<testcase classname="agent" name="expert_fuzz" time="0.00">
+<skipped message="not run in the PowerShell pane: BackSpace / Left / Ctrl-W editing of `echo ... &gt;&gt;` lines; PSReadLine's Ctrl-W differs: runs in the Git Bash pane"/>
+</testcase>
+<testcase classname="agent" name="key_delivery" time="0.00">
+</testcase>
+<testcase classname="agent" name="ctrl_c_behind_big_paste" time="17.90">
+<failure message="the reader was stopped by the ^C: the next line ran (file [])">the reader was stopped by the ^C: the next line ran (file [])
+NO-REFERENCE: ^C behind a 64 KiB paste: 2.2 ms from ctrl_c_keydown to its pty write (pty_write_bytes): no band yet for windows/agent/ctrl_c_behind_big_paste/ctrl_c_to_pty_write_ms (a new metric or pane: NOREF, not a pass) [windows/agent/ctrl_c_behind_big_paste/ctrl_c_to_pty_write_ms]
+injector accounting: injector sent 105; app saw 105; lost-before-app 0 (Enter: sent 2, app saw 2); of the app's: 98 unbound keydown/typed, 6 taken by a key binding, 1 Enter by a binding</failure>
+</testcase>
+<testcase classname="agent" name="powershell_setup_ctrl_c_keys" time="14.10">
+</testcase>
+<testcase classname="agent" name="routing_table" time="0.00">
+<skipped message="not run in the PowerShell pane: asserts what the shell received from rec.log: runs in the Git Bash pane"/>
+</testcase>
+<testcase classname="agent" name="intl_wide_paste" time="16.40">
+</testcase>
+<testcase classname="agent" name="ssh_gitbash_managed" time="0.00">
+<skipped message="not run in the PowerShell pane: the bash ssh wrapper's one-connection managed session (#1933): only the Git Bash pane has the wrapper"/>
+</testcase>
+<testcase classname="agent" name="ssh_gitbash_failing_not_local_managed" time="0.00">
+<skipped message="not run in the PowerShell pane: a failing ssh behind the bash ssh wrapper with the one-connection path switched on (round 14): only the Git Bash pane has the wrapper"/>
+</testcase>
+<testcase classname="agent" name="selection_modes" time="0.00">
+<skipped message="not run in the PowerShell pane: T31 (r14 T22): `cat` of the fixture files, the `sh` stream program and rec.log: runs in the Git Bash pane (pointer and held Shift by SendInput, positions from the app's"/>
+</testcase>
+<testcase classname="agent" name="gitbash_typeahead_reps" time="0.00">
+<skipped message="not run in the PowerShell pane: bash precmd_functions and rec.log of the pane's bash, the ConPTY prompt hold of a bash pane (#1393): runs in the Git Bash pane"/>
+</testcase>
+<testcase classname="agent@gitbash" name="mode_proof" time="2.20">
+</testcase>
+<testcase classname="agent@gitbash" name="key_delivery" time="0.00">
+</testcase>
+<testcase classname="agent@gitbash" name="expert_fuzz" time="15.30">
+</testcase>
+<testcase classname="agent@gitbash" name="ctrl_c_behind_big_paste" time="17.60">
+<failure message="the reader was stopped by the ^C: the next line ran (file [])">the reader was stopped by the ^C: the next line ran (file [])
+NO-REFERENCE: ^C behind a 64 KiB paste: 2.4 ms from ctrl_c_keydown to its pty write (pty_write_bytes): no band yet for windows/agent@gitbash/ctrl_c_behind_big_paste/ctrl_c_to_pty_write_ms (a new metric or pane: NOREF, not a pass) [windows/agent@gitbash/ctrl_c_behind_big_paste/ctrl_c_to_pty_write_ms]
+injector accounting: injector sent 79; app saw 79; lost-before-app 0 (Enter: sent 2, app saw 2); of the app's: 72 unbound keydown/typed, 6 taken by a key binding, 1 Enter by a binding</failure>
+</testcase>
+<testcase classname="agent@gitbash" name="powershell_setup_ctrl_c_keys" time="0.00">
+<skipped message="not run in the Git Bash pane: #1890: a PowerShell-in-PowerShell Phosphorize setup and the PowerShell hold's post-abort prompt; the Git Bash pane has the bash subshell lab (cases_subshell_ready)"/>
+</testcase>
+<testcase classname="agent@gitbash" name="routing_table" time="57.90">
+</testcase>
+<testcase classname="agent@gitbash" name="intl_wide_paste" time="6.30">
+</testcase>
+<testcase classname="agent@gitbash" name="ssh_gitbash_managed" time="0.00">
+<skipped message="not played in the Windows app job (owner rule 2026-11-13: ssh tests run against the real lab, not the Windows fake sshd, #2007 #2051 #1992): the same behaviour is judged by lab_managed_connect in app-"/>
+</testcase>
+<testcase classname="agent@gitbash" name="ssh_gitbash_failing_not_local_managed" time="23.70">
+</testcase>
+<testcase classname="agent@gitbash" name="selection_modes" time="29.20">
+</testcase>
+<testcase classname="agent@gitbash" name="gitbash_typeahead_reps" time="177.40">
+</testcase>
+<testcase classname="agent@pwsh7" name="mode_proof" time="2.30">
+</testcase>
+<testcase classname="agent@pwsh7" name="key_delivery" time="0.00">
+</testcase>
+<testcase classname="agent@pwsh7" name="ctrl_c_behind_big_paste" time="17.80">
+<failure message="the reader was stopped by the ^C: the next line ran (file [])">the reader was stopped by the ^C: the next line ran (file [])
+NO-REFERENCE: ^C behind a 64 KiB paste: 2.4 ms from ctrl_c_keydown to its pty write (pty_write_bytes): no band yet for windows/agent@pwsh7/ctrl_c_behind_big_paste/ctrl_c_to_pty_write_ms (a new metric or pane: NOREF, not a pass) [windows/agent@pwsh7/ctrl_c_behind_big_paste/ctrl_c_to_pty_write_ms]
+injector accounting: injector sent 105; app saw 105; lost-before-app 0 (Enter: sent 2, app saw 2); of the app's: 98 unbound keydown/typed, 6 taken by a key binding, 1 Enter by a binding</failure>
+</testcase>
+<testcase classname="agent@pwsh7" name="powershell_setup_ctrl_c_keys" time="13.70">
+</testcase>
+<testcase classname="agent@fake" name="key_delivery" time="0.00">
+</testcase>
+<testcase classname="agent@fake" name="agent_code_recycle" time="146.40">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: the copy key (ctrl+shift+c) put none of the snippets on the clipboard: the snippet answer was not the selected block when the key was sent (clipboard 0 "/>
+</testcase>
+<testcase classname="agent@gitbash+fake" name="key_delivery" time="0.00">
+</testcase>
+<testcase classname="agent@gitbash+fake" name="agent_code_recycle" time="146.50">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: the copy key (ctrl+shift+c) put none of the snippets on the clipboard: the snippet answer was not the selected block when the key was sent (clipboard 0 "/>
+</testcase>
+<testcase classname="-" name="restore" time="0.00">
+</testcase>
+</testsuite>

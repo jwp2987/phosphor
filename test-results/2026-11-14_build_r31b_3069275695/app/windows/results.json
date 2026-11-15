@@ -1,0 +1,2524 @@
+{
+ "meta": {
+  "platform": "windows",
+  "backend": "windows",
+  "app_display": "windows",
+  "seed": "1",
+  "commit": "6936b7cf",
+  "sha": "6936b7cf2d8706e6acf95d65c1bb30e783f18c3b",
+  "owner_settings": "sha256 81d188e9844d",
+  "tier": "targeted",
+  "scale": "1",
+  "display_scale": "1",
+  "outputs": "1"
+ },
+ "generated": "2026-11-14T17:57:34-0800",
+ "summary": {
+  "pass": 35,
+  "fail": 8,
+  "skip": 18,
+  "noref": 2
+ },
+ "cases": [
+  {
+   "name": "mode_proof",
+   "mode": "terminal",
+   "status": "pass",
+   "ran_mode": "terminal",
+   "seconds": 2.9,
+   "evidence": [
+    "mode_proof: log_view_mode=terminal ocr_agent_markers=False ocr_terminal_hint=True queue_destination=table"
+   ],
+   "tainted": false,
+   "wall": [
+    1794706263.046,
+    1794706265.981
+   ],
+   "detail": [
+    "injector accounting: injector sent 1 keys (0 Enter); app key trace not available, so nothing to compare"
+   ],
+   "metrics": {
+    "log_view_mode": "terminal",
+    "queue_destination": "table",
+    "ocr_agent_markers": false,
+    "ocr_terminal_hint": true,
+    "injector": {
+     "sent": 1,
+     "enters_sent": 0,
+     "seen": null,
+     "lost": null,
+     "extra": null,
+     "enters_seen": null,
+     "errs": 0,
+     "pastes": 0
+    }
+   },
+   "shots": [
+    "shots\\terminal_mode_proof.png"
+   ]
+  },
+  {
+   "name": "key_delivery",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 0,
+   "detail": [
+    "marker typed and received via SendInput vk"
+   ],
+   "metrics": {
+    "method": "vk"
+   },
+   "shots": []
+  },
+  {
+   "name": "enter_loss_control",
+   "mode": "terminal",
+   "status": "pass",
+   "ran_mode": "terminal",
+   "seconds": 98.7,
+   "evidence": [],
+   "tainted": false,
+   "wall": [
+    1794706276.707,
+    1794706375.382
+   ],
+   "detail": [
+    "reference conhost (powershell.exe) gap 0.00s: 0/30 lines missing (merged/lost Enter), None lines not received exactly, injector posted 30 Enters",
+    "reference conhost (powershell.exe) gap 0.25s: 1/30 lines missing (merged/lost Enter), None lines not received exactly, injector posted 30 Enters",
+    "the injector/OS loses instant Enters even in the reference: fast_typing reports such a loss as 'injector/OS lost Enter (reference too)', not an app bug",
+    "injector accounting: injector sent 2; app saw 2; lost-before-app 0 (Enter: sent 0, app saw 0); of the app's: 0 unbound keydown/typed, 2 taken by a key binding, 0 Enter by a binding"
+   ],
+   "metrics": {
+    "enter_control": {
+     "reference": "conhost (powershell.exe)",
+     "runs": {
+      "0.0": {
+       "ref": "conhost (powershell.exe)",
+       "n": 30,
+       "bad": 0,
+       "posted": 30,
+       "lines": 30,
+       "exact_bad": null
+      },
+      "0.25": {
+       "ref": "conhost (powershell.exe)",
+       "n": 30,
+       "bad": 1,
+       "posted": 30,
+       "lines": 29,
+       "exact_bad": null
+      }
+     }
+    },
+    "injector": {
+     "sent": 2,
+     "enters_sent": 0,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 2,
+     "unbound": 0,
+     "bound": 2,
+     "enters_bound": 0,
+     "seen": 2,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 0
+    }
+   },
+   "shots": [
+    "shots\\terminal_enter_loss_control.png"
+   ]
+  },
+  {
+   "name": "expert_fuzz",
+   "mode": "terminal",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run in the PowerShell pane: BackSpace / Left / Ctrl-W editing of `echo ... >>` lines; PSReadLine's Ctrl-W differs: runs in the Git Bash pane"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "ctrl_c_behind_big_paste",
+   "mode": "terminal",
+   "status": "fail",
+   "ran_mode": "terminal",
+   "seconds": 17.8,
+   "evidence": [
+    "enter_route: 1 Enter(s) reached the input editor: Shell=1 [Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794706378.812,
+    1794706396.643
+   ],
+   "detail": [
+    "the reader was stopped by the ^C: the next line ran (file [])",
+    "NO-REFERENCE: ^C behind a 64 KiB paste: 2.6 ms from ctrl_c_keydown to its pty write (pty_write_bytes): no band yet for windows/terminal/ctrl_c_behind_big_paste/ctrl_c_to_pty_write_ms (a new metric or pane: NOREF, not a pass) [windows/terminal/ctrl_c_behind_big_paste/ctrl_c_to_pty_write_ms]",
+    "injector accounting: injector sent 106; app saw 106; lost-before-app 0 (Enter: sent 2, app saw 2); of the app's: 99 unbound keydown/typed, 6 taken by a key binding, 1 Enter by a binding"
+   ],
+   "metrics": {
+    "ctrl_c_to_pty_write_ms": 2.65,
+    "ctrl_c_hop_used": "pty_write_bytes",
+    "injector": {
+     "sent": 106,
+     "enters_sent": 2,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 106,
+     "unbound": 99,
+     "bound": 6,
+     "enters_bound": 1,
+     "seen": 106,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 2
+    },
+    "pty_write_cr": {
+     "writes": 42,
+     "with_cr": 7,
+     "enters": 1
+    }
+   },
+   "shots": [
+    "shots\\terminal_ctrl_c_behind_big_paste_FAIL.png"
+   ]
+  },
+  {
+   "name": "powershell_setup_ctrl_c_keys",
+   "mode": "terminal",
+   "status": "pass",
+   "ran_mode": "terminal",
+   "seconds": 13.8,
+   "evidence": [
+    "enter_route: 2 Enter(s) reached the input editor: Shell=2 [Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794706401.523,
+    1794706415.35
+   ],
+   "detail": [
+    "the ^C did not skip the setup (hop subshell_setup_aborted_by_user absent: not stalled, so it cancelled the held line); the 4.5 s bound was not judged",
+    "injector accounting: injector sent 206; app saw 206; lost-before-app 0 (Enter: sent 6, app saw 6); of the app's: 198 unbound keydown/typed, 6 taken by a key binding, 2 Enter by a binding"
+   ],
+   "metrics": {
+    "setup_ctrl_c_line_after_ctrl_c_s": 0.43,
+    "setup_ctrl_c_aborted_by_user": false,
+    "injector": {
+     "sent": 206,
+     "enters_sent": 6,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 206,
+     "unbound": 198,
+     "bound": 6,
+     "enters_bound": 2,
+     "seen": 206,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 6
+    },
+    "pty_write_cr": {
+     "writes": 130,
+     "with_cr": 4,
+     "enters": 2
+    }
+   },
+   "shots": [
+    "shots\\terminal_powershell_setup_ctrl_c_keys.png"
+   ]
+  },
+  {
+   "name": "routing_table",
+   "mode": "terminal",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run in the PowerShell pane: asserts what the shell received from rec.log: runs in the Git Bash pane"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "intl_wide_paste",
+   "mode": "terminal",
+   "status": "pass",
+   "ran_mode": "terminal",
+   "seconds": 16.0,
+   "evidence": [
+    "enter_route: 10 Enter(s) reached the input editor: Shell=10 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794706419.738,
+    1794706435.744
+   ],
+   "detail": [
+    "paste inside typed cjk: rec.log empty (hook not run): the command line the shell RECEIVED was NOT verified; only the effect file's bytes were",
+    "paste inside typed accents: rec.log empty (hook not run): the command line the shell RECEIVED was NOT verified; only the effect file's bytes were",
+    "paste inside typed emoji: rec.log empty (hook not run): the command line the shell RECEIVED was NOT verified; only the effect file's bytes were",
+    "paste inside typed zwj: rec.log empty (hook not run): the command line the shell RECEIVED was NOT verified; only the effect file's bytes were",
+    "paste inside typed mixed: rec.log empty (hook not run): the command line the shell RECEIVED was NOT verified; only the effect file's bytes were",
+    "verified: 10 effect-file byte comparison(s) against the exact UTF-8 of the text; received command line verified 0 time(s), NOT verified 5 time(s) (no rec.log)",
+    "injector accounting: injector sent 845; app saw 845; lost-before-app 0 (Enter: sent 10, app saw 10); of the app's: 823 unbound keydown/typed, 12 taken by a key binding, 10 Enter by a binding",
+    "pty writes: 20, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 10 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "intl_checked_file_bytes": 10,
+    "intl_unchecked_received_command_line": 5,
+    "injector": {
+     "sent": 845,
+     "enters_sent": 10,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 845,
+     "unbound": 823,
+     "bound": 12,
+     "enters_bound": 10,
+     "seen": 845,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 10
+    },
+    "pty_write_cr": {
+     "writes": 20,
+     "with_cr": 0,
+     "enters": 10
+    }
+   },
+   "shots": [
+    "shots\\terminal_intl_wide_paste.png"
+   ]
+  },
+  {
+   "name": "ssh_gitbash_managed",
+   "mode": "terminal",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run in the PowerShell pane: the bash ssh wrapper's one-connection managed session (#1933): only the Git Bash pane has the wrapper"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "ssh_gitbash_failing_not_local_managed",
+   "mode": "terminal",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run in the PowerShell pane: a failing ssh behind the bash ssh wrapper with the one-connection path switched on (round 14): only the Git Bash pane has the wrapper"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "ui_completions_as_you_type_local",
+   "mode": "terminal",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run in the PowerShell pane: asserts the menu on screen after typing in the Git Bash pane (the as-you-type default under test)"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "selection_modes",
+   "mode": "terminal",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run in the PowerShell pane: T31 (r14 T22): `cat` of the fixture files, the `sh` stream program and rec.log: runs in the Git Bash pane (pointer and held Shift by SendInput, positions from the app's find hook)"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "gitbash_typeahead_reps",
+   "mode": "terminal",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run in the PowerShell pane: bash precmd_functions and rec.log of the pane's bash, the ConPTY prompt hold of a bash pane (#1393): runs in the Git Bash pane"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "phosphor_scheme_handler",
+   "mode": "terminal",
+   "status": "fail",
+   "ran_mode": "terminal",
+   "seconds": 32.5,
+   "evidence": [
+    "enter_route: 3 Enter(s) reached the input editor: Shell=3 [Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794706441.996,
+    1794706474.48
+   ],
+   "detail": [
+    "scheme_end: file has 0/2 lines, exact match False first diff: exp='t73_rhlgozo52y' got=None [first bad line 0: injector call #127 posted its ENTER at 17:34:11.348]",
+    "an unknown action: exit 0, handed over: True, refused with a log line: True",
+    "another scheme: exit 0, handed over: True, refused with a log line: True",
+    "scheme_end: PSReadLine history has all 2 typed lines exactly and in order: PowerShell accepted every line, so a line missing from the effect file is a command that ran and did not write (e.g. Add-Content refused the file: 'being used by another process'), not lost typing (#2093)",
+    "injector accounting: injector sent 241; app saw 241; lost-before-app 0 (Enter: sent 3, app saw 3); of the app's: 234 unbound keydown/typed, 4 taken by a key binding, 3 Enter by a binding",
+    "pty writes: 12, of which carrying a CR (\\r): 1; Enter(s) the input editor started: 3 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "injector": {
+     "sent": 241,
+     "enters_sent": 3,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 241,
+     "unbound": 234,
+     "bound": 4,
+     "enters_bound": 3,
+     "seen": 241,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 3
+    },
+    "pty_write_cr": {
+     "writes": 12,
+     "with_cr": 1,
+     "enters": 3
+    }
+   },
+   "shots": [
+    "shots\\terminal_phosphor_scheme_handler_FAIL.png"
+   ]
+  },
+  {
+   "name": "mode_proof",
+   "mode": "terminal@gitbash",
+   "status": "pass",
+   "ran_mode": "terminal",
+   "seconds": 2.8,
+   "evidence": [
+    "mode_proof: log_view_mode=terminal ocr_agent_markers=False ocr_terminal_hint=True queue_destination=table"
+   ],
+   "tainted": false,
+   "wall": [
+    1794706503.982,
+    1794706506.755
+   ],
+   "detail": [
+    "injector accounting: injector sent 1 keys (0 Enter); app key trace not available, so nothing to compare"
+   ],
+   "metrics": {
+    "log_view_mode": "terminal",
+    "queue_destination": "table",
+    "ocr_agent_markers": false,
+    "ocr_terminal_hint": true,
+    "injector": {
+     "sent": 1,
+     "enters_sent": 0,
+     "seen": null,
+     "lost": null,
+     "extra": null,
+     "enters_seen": null,
+     "errs": 0,
+     "pastes": 0
+    }
+   },
+   "shots": [
+    "shots\\terminal@gitbash_mode_proof.png"
+   ]
+  },
+  {
+   "name": "key_delivery",
+   "mode": "terminal@gitbash",
+   "status": "pass",
+   "seconds": 0,
+   "detail": [
+    "marker typed and received via SendInput vk"
+   ],
+   "metrics": {
+    "method": "vk"
+   },
+   "shots": []
+  },
+  {
+   "name": "enter_loss_control",
+   "mode": "terminal@gitbash",
+   "status": "pass",
+   "ran_mode": "terminal",
+   "seconds": 58.7,
+   "evidence": [],
+   "tainted": false,
+   "wall": [
+    1794706512.217,
+    1794706570.891
+   ],
+   "detail": [
+    "reference conhost (bash) gap 0.00s: 0/30 lines missing (merged/lost Enter), 0 lines not received exactly, injector posted 30 Enters",
+    "reference conhost (bash) gap 0.25s: 0/30 lines missing (merged/lost Enter), 0 lines not received exactly, injector posted 30 Enters",
+    "injector accounting: injector sent 2; app saw 2; lost-before-app 0 (Enter: sent 0, app saw 0); of the app's: 0 unbound keydown/typed, 2 taken by a key binding, 0 Enter by a binding"
+   ],
+   "metrics": {
+    "enter_control": {
+     "reference": "conhost (bash)",
+     "runs": {
+      "0.0": {
+       "ref": "conhost (bash)",
+       "n": 30,
+       "bad": 0,
+       "posted": 30,
+       "lines": 30,
+       "exact_bad": 0
+      },
+      "0.25": {
+       "ref": "conhost (bash)",
+       "n": 30,
+       "bad": 0,
+       "posted": 30,
+       "lines": 30,
+       "exact_bad": 0
+      }
+     }
+    },
+    "injector": {
+     "sent": 2,
+     "enters_sent": 0,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 2,
+     "unbound": 0,
+     "bound": 2,
+     "enters_bound": 0,
+     "seen": 2,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 0
+    }
+   },
+   "shots": [
+    "shots\\terminal@gitbash_enter_loss_control.png"
+   ]
+  },
+  {
+   "name": "expert_fuzz",
+   "mode": "terminal@gitbash",
+   "status": "pass",
+   "ran_mode": "terminal",
+   "seconds": 15.3,
+   "evidence": [
+    "enter_route: 25 Enter(s) reached the input editor: Shell=25 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794706573.702,
+    1794706589.042
+   ],
+   "detail": [
+    "injector accounting: injector sent 718; app saw 718; lost-before-app 0 (Enter: sent 25, app saw 25); of the app's: 651 unbound keydown/typed, 42 taken by a key binding, 25 Enter by a binding",
+    "pty writes: 82, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 25 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "injector": {
+     "sent": 718,
+     "enters_sent": 25,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 718,
+     "unbound": 651,
+     "bound": 42,
+     "enters_bound": 25,
+     "seen": 718,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 25
+    },
+    "pty_write_cr": {
+     "writes": 82,
+     "with_cr": 0,
+     "enters": 25
+    }
+   },
+   "shots": [
+    "shots\\terminal@gitbash_expert_fuzz.png"
+   ]
+  },
+  {
+   "name": "ctrl_c_behind_big_paste",
+   "mode": "terminal@gitbash",
+   "status": "fail",
+   "ran_mode": "terminal",
+   "seconds": 17.6,
+   "evidence": [
+    "enter_route: 1 Enter(s) reached the input editor: Shell=1 [Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794706591.786,
+    1794706609.361
+   ],
+   "detail": [
+    "the reader was stopped by the ^C: the next line ran (file [])",
+    "NO-REFERENCE: ^C behind a 64 KiB paste: 2.3 ms from ctrl_c_keydown to its pty write (pty_write_bytes): no band yet for windows/terminal@gitbash/ctrl_c_behind_big_paste/ctrl_c_to_pty_write_ms (a new metric or pane: NOREF, not a pass) [windows/terminal@gitbash/ctrl_c_behind_big_paste/ctrl_c_to_pty_write_ms]",
+    "injector accounting: injector sent 80; app saw 80; lost-before-app 0 (Enter: sent 2, app saw 2); of the app's: 73 unbound keydown/typed, 6 taken by a key binding, 1 Enter by a binding"
+   ],
+   "metrics": {
+    "ctrl_c_to_pty_write_ms": 2.32,
+    "ctrl_c_hop_used": "pty_write_bytes",
+    "injector": {
+     "sent": 80,
+     "enters_sent": 2,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 80,
+     "unbound": 73,
+     "bound": 6,
+     "enters_bound": 1,
+     "seen": 80,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 2
+    },
+    "pty_write_cr": {
+     "writes": 47,
+     "with_cr": 17,
+     "enters": 1
+    }
+   },
+   "shots": [
+    "shots\\terminal@gitbash_ctrl_c_behind_big_paste_FAIL.png"
+   ]
+  },
+  {
+   "name": "powershell_setup_ctrl_c_keys",
+   "mode": "terminal@gitbash",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run in the Git Bash pane: #1890: a PowerShell-in-PowerShell Phosphorize setup and the PowerShell hold's post-abort prompt; the Git Bash pane has the bash subshell lab (cases_subshell_ready)"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "routing_table",
+   "mode": "terminal@gitbash",
+   "status": "pass",
+   "ran_mode": "terminal",
+   "seconds": 59.8,
+   "evidence": [
+    "enter_route: 29 Enter(s) reached the input editor: AI=15 Shell=14 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,AI,AI,AI,AI,AI,AI,AI,AI,AI,AI,AI,AI,AI,AI,AI]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794706614.813,
+    1794706674.642
+   ],
+   "detail": [
+    "injector accounting: injector sent 645; app saw 645; lost-before-app 0 (Enter: sent 27, app saw 27); of the app's: 548 unbound keydown/typed, 70 taken by a key binding, 27 Enter by a binding",
+    "pty writes: 15, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 27 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "settings_nld_in_terminal": true,
+    "settings_ai_auto_detection": true,
+    "recorder_dark": false,
+    "routing_rows": [
+     {
+      "line": "ls -la",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": "PlainTerminal",
+      "rule": "command-shape (#808/#1203)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "git status",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": "PlainTerminal",
+      "rule": "command-shape (#808/#1203)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "grep foo foo.txt",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": "PlainTerminal",
+      "rule": "command-shape (#808/#1203)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "echo hello world",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": "PlainTerminal",
+      "rule": "installed-head (#906/#964)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "pwd",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": "PlainTerminal",
+      "rule": "installed-head (#906/#964)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "cat foo.txt",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": "PlainTerminal",
+      "rule": "command-shape (#808/#1203)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "wc -l foo.txt",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": "PlainTerminal",
+      "rule": "command-shape (#808/#1203)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "uname -a",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": "PlainTerminal",
+      "rule": "command-shape (#808/#1203)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "ls the",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": "PlainTerminal",
+      "rule": "installed-head (#906/#964)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "date",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": "PlainTerminal",
+      "rule": "installed-head (#906/#964)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "print -r -- $EPOCHREALTIME > lat_0",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": "PlainTerminal",
+      "rule": "installed-head (#906/#964)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "notacmd_x $HOME/x",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": "PlainTerminal",
+      "rule": "shell-structure-unknown-head (#1560)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "xyz_nocmd > out_nc.txt",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": "PlainTerminal",
+      "rule": "shell-structure-unknown-head (#1560)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "foo_nocmd --bar | grep x",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": "PlainTerminal",
+      "rule": "shell-structure-unknown-head (#1560)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "what does this error mean",
+      "kind": "prose",
+      "want": "agent",
+      "got": "agent",
+      "surface": "PlainTerminal",
+      "rule": "request-shape (#834/#965)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "how do I undo my last git commit",
+      "kind": "prose",
+      "want": "agent",
+      "got": "agent",
+      "surface": "AgentConversation",
+      "rule": "sentence-shape (#1234)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "explain why the build is failing",
+      "kind": "prose",
+      "want": "agent",
+      "got": "agent",
+      "surface": "AgentConversation",
+      "rule": "request-shape (#834/#965)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "why is my disk full",
+      "kind": "prose",
+      "want": "agent",
+      "got": "agent",
+      "surface": "AgentConversation",
+      "rule": "sentence-shape (#1234)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "can you summarize the changes in this repo",
+      "kind": "prose",
+      "want": "agent",
+      "got": "agent",
+      "surface": "AgentConversation",
+      "rule": "request-shape (#834/#965)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "please walk me through the failing test",
+      "kind": "prose",
+      "want": "agent",
+      "got": "agent",
+      "surface": "AgentConversation",
+      "rule": "request-shape (#834/#965)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "is five bigger than three",
+      "kind": "prose",
+      "want": "agent",
+      "got": "agent",
+      "surface": "AgentConversation",
+      "rule": "no-evidence-in-conversation (#1183)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "can you show me how to use --verbose?",
+      "kind": "prose",
+      "want": "agent",
+      "got": "agent",
+      "surface": "AgentConversation",
+      "rule": "model",
+      "verdict_give_up": false
+     },
+     {
+      "line": "explain $PATH to me",
+      "kind": "prose",
+      "want": "agent",
+      "got": "agent",
+      "surface": "AgentConversation",
+      "rule": "sentence-shape (#1234)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "find the bug in main.rs",
+      "kind": "ambiguous",
+      "want": "shell",
+      "got": "shell",
+      "surface": "AgentConversation",
+      "rule": "evidence-in-conversation (#1183)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "make a PR",
+      "kind": "ambiguous",
+      "want": "agent",
+      "got": "agent",
+      "surface": "AgentConversation",
+      "rule": "no-evidence-in-conversation (#1183)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "cat the error log and tell me what is wrong",
+      "kind": "ambiguous",
+      "want": "agent",
+      "got": "agent",
+      "surface": "AgentConversation",
+      "rule": "request-shape (#834/#965)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "what is 5 > 3",
+      "kind": "ambiguous",
+      "want": "agent",
+      "got": "agent",
+      "surface": "AgentConversation",
+      "rule": "model",
+      "verdict_give_up": false
+     }
+    ],
+    "misroutes": 0,
+    "verdict_give_ups": 0,
+    "injector": {
+     "sent": 645,
+     "enters_sent": 27,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 645,
+     "unbound": 548,
+     "bound": 70,
+     "enters_bound": 27,
+     "seen": 645,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 27
+    },
+    "pty_write_cr": {
+     "writes": 15,
+     "with_cr": 0,
+     "enters": 27
+    }
+   },
+   "shots": [
+    "shots\\terminal@gitbash_routing_table.png"
+   ]
+  },
+  {
+   "name": "intl_wide_paste",
+   "mode": "terminal@gitbash",
+   "status": "pass",
+   "ran_mode": "terminal",
+   "seconds": 6.3,
+   "evidence": [
+    "enter_route: 10 Enter(s) reached the input editor: Shell=10 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794706681.191,
+    1794706687.45
+   ],
+   "detail": [
+    "mode guard: the pane was in agent before this terminal case; put back with escape",
+    "verified: 10 effect-file byte comparison(s) against the exact UTF-8 of the text; received command line verified 5 time(s), NOT verified 0 time(s) (no rec.log)",
+    "injector accounting: injector sent 125; app saw 125; lost-before-app 0 (Enter: sent 10, app saw 10); of the app's: 103 unbound keydown/typed, 12 taken by a key binding, 10 Enter by a binding",
+    "pty writes: 10, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 10 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "intl_checked_file_bytes": 10,
+    "intl_checked_received_command_line": 5,
+    "injector": {
+     "sent": 125,
+     "enters_sent": 10,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 125,
+     "unbound": 103,
+     "bound": 12,
+     "enters_bound": 10,
+     "seen": 125,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 10
+    },
+    "pty_write_cr": {
+     "writes": 10,
+     "with_cr": 0,
+     "enters": 10
+    }
+   },
+   "shots": [
+    "shots\\terminal@gitbash_intl_wide_paste.png"
+   ]
+  },
+  {
+   "name": "ssh_gitbash_managed",
+   "mode": "terminal@gitbash",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not played in the Windows app job (owner rule 2026-11-13: ssh tests run against the real lab, not the Windows fake sshd, #2007 #2051 #1992): the same behaviour is judged by lab_managed_connect in app-test-lab-windows (Git Bash pane), and by the same family on Linux and macOS; to run this fake-sshd version by hand set APPCI_WIN_FAKESSHD=1"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "ssh_gitbash_failing_not_local_managed",
+   "mode": "terminal@gitbash",
+   "status": "pass",
+   "ran_mode": "terminal",
+   "seconds": 23.8,
+   "evidence": [
+    "enter_route: 4 Enter(s) reached the input editor: Shell=4 [Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794706691.197,
+    1794706714.995
+   ],
+   "detail": [
+    "ssh_failing_not_local: ssh started 2.38 s before the first MUSTNOT key; the hanging listener had accepted 1 connection(s), 1 still open when typing began and 1 when it ended (ConnectTimeout 6 s)",
+    "the hanging listener accepted 2 connection(s) in all (1 when the line was typed): more than one is the Git Bash wrapper's banner check followed by ssh itself (the managed path is switched on in this shell)",
+    "ssh gate at the first MUSTNOT key: t=+0.002s [DEBUG] input_order hop=kh_hold_entry seq=1792 holding=false held_bytes=0 gate_armed=true pending_session=false table=1 t=1794706694982.410; first gate release/exit after it: t=+0.002s [DEBUG] input_order hop=kh_hold_exit seq=1792 branch=held held_bytes=0 table=1 t=1794706694982.426; ssh failed (connection closed) 10.96 s after typing began; listener-side typing window 0.34 s",
+    "injector accounting: injector sent 285; app saw 285; lost-before-app 0 (Enter: sent 5, app saw 5); of the app's: 277 unbound keydown/typed, 4 taken by a key binding, 4 Enter by a binding",
+    "pty writes: 11, of which carrying a CR (\\r): 1; Enter(s) the input editor started: 4 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "injector": {
+     "sent": 285,
+     "enters_sent": 5,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 285,
+     "unbound": 277,
+     "bound": 4,
+     "enters_bound": 4,
+     "seen": 285,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 5
+    },
+    "pty_write_cr": {
+     "writes": 11,
+     "with_cr": 1,
+     "enters": 4
+    }
+   },
+   "shots": [
+    "shots\\terminal@gitbash_ssh_gitbash_failing_not_local_managed.png"
+   ]
+  },
+  {
+   "name": "ui_completions_as_you_type_local",
+   "mode": "terminal@gitbash",
+   "status": "fail",
+   "ran_mode": "terminal",
+   "seconds": 4.7,
+   "evidence": [],
+   "tainted": false,
+   "wall": [
+    1794706719.973,
+    1794706724.69
+   ],
+   "detail": [
+    "no completion menu with both candidates after typing a shared prefix without Tab",
+    "fixture dir C:\\gl\\b\\07xLPX_fG\\0\\winters-phosphor\\phosphor\\appci-out\\windows\\run\\home/w\\tc exists=True files=['cayt_alpha.txt', 'cayt_bravo.txt', 'zzcompl_alpha_unique.txt']; menu hops: ['from=[closed] to=[completions trigger=AsYouType candidates=240] t=1794706720429.467', 'from=[completions trigger=AsYouType candidates=240] to=[completions trigger=AsYouType cand', 'from=[completions trigger=AsYouType candidates=41] to=[closed] t=1794706720450.324']",
+    "injector accounting: injector sent 16; app saw 16; lost-before-app 0 (Enter: sent 0, app saw 0); of the app's: 11 unbound keydown/typed, 5 taken by a key binding, 0 Enter by a binding"
+   ],
+   "metrics": {
+    "injector": {
+     "sent": 16,
+     "enters_sent": 0,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 16,
+     "unbound": 11,
+     "bound": 5,
+     "enters_bound": 0,
+     "seen": 16,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 0
+    }
+   },
+   "shots": [
+    "shots\\terminal@gitbash_ui_completions_as_you_type_local_FAIL.png"
+   ]
+  },
+  {
+   "name": "selection_modes",
+   "mode": "terminal@gitbash",
+   "status": "pass",
+   "ran_mode": "terminal",
+   "seconds": 25.6,
+   "evidence": [
+    "enter_route: 8 Enter(s) reached the input editor: Shell=8 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794706729.657,
+    1794706755.26
+   ],
+   "detail": [
+    "injector accounting: injector sent 292; app saw 292; lost-before-app 0 (Enter: sent 8, app saw 8); of the app's: 267 unbound keydown/typed, 17 taken by a key binding, 8 Enter by a binding",
+    "pty writes: 18, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 8 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "idle_ctrl_c_copy": {
+     "copied": true,
+     "selection_dropped": true
+    },
+    "cross_block_middle_lines": 1,
+    "stream_ticks_around_drag": [
+     3,
+     12,
+     15
+    ],
+    "ctrl_c_copy_ticks": [
+     15,
+     20
+    ],
+    "injector": {
+     "sent": 292,
+     "enters_sent": 8,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 292,
+     "unbound": 267,
+     "bound": 17,
+     "enters_bound": 8,
+     "seen": 292,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 8
+    },
+    "pty_write_cr": {
+     "writes": 18,
+     "with_cr": 0,
+     "enters": 8
+    }
+   },
+   "shots": [
+    "shots\\terminal@gitbash_selection_modes.png"
+   ]
+  },
+  {
+   "name": "gitbash_typeahead_reps",
+   "mode": "terminal@gitbash",
+   "status": "pass",
+   "ran_mode": "terminal",
+   "seconds": 174.6,
+   "evidence": [
+    "enter_route: 247 Enter(s) reached the input editor: Shell=247 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,...]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794706759.194,
+    1794706933.841
+   ],
+   "detail": [
+    "injector accounting: injector sent 8457; app saw 8457; lost-before-app 0 (Enter: sent 242, app saw 242); of the app's: 8222 unbound keydown/typed, 2 taken by a key binding, 233 Enter by a binding",
+    "pty writes: 1576, of which carrying a CR (\\r): 9; Enter(s) the input editor started: 245 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "typeahead_reps": {
+     "reps": 24,
+     "lines_per_rep": 10,
+     "slow_precmd_reps": 12,
+     "reps_with_a_bad_line": []
+    },
+    "injector": {
+     "sent": 8457,
+     "enters_sent": 242,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 8457,
+     "unbound": 8222,
+     "bound": 2,
+     "enters_bound": 233,
+     "seen": 8457,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 242
+    },
+    "pty_write_cr": {
+     "writes": 1576,
+     "with_cr": 9,
+     "enters": 245
+    }
+   },
+   "shots": [
+    "shots\\terminal@gitbash_gitbash_typeahead_reps.png"
+   ]
+  },
+  {
+   "name": "phosphor_scheme_handler",
+   "mode": "terminal@gitbash",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run in the Git Bash pane: #1546: the URL handler does not depend on the pane's shell: runs once, in the PowerShell pane (the app's default shell)"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "mode_proof",
+   "mode": "terminal@pwsh7",
+   "status": "pass",
+   "ran_mode": "terminal",
+   "seconds": 3.1,
+   "evidence": [
+    "mode_proof: log_view_mode=terminal ocr_agent_markers=False ocr_terminal_hint=True queue_destination=table"
+   ],
+   "tainted": false,
+   "wall": [
+    1794706947.54,
+    1794706950.67
+   ],
+   "detail": [
+    "injector accounting: injector sent 1 keys (0 Enter); app key trace not available, so nothing to compare"
+   ],
+   "metrics": {
+    "log_view_mode": "terminal",
+    "queue_destination": "table",
+    "ocr_agent_markers": false,
+    "ocr_terminal_hint": true,
+    "injector": {
+     "sent": 1,
+     "enters_sent": 0,
+     "seen": null,
+     "lost": null,
+     "extra": null,
+     "enters_seen": null,
+     "errs": 0,
+     "pastes": 0
+    }
+   },
+   "shots": [
+    "shots\\terminal@pwsh7_mode_proof.png"
+   ]
+  },
+  {
+   "name": "key_delivery",
+   "mode": "terminal@pwsh7",
+   "status": "pass",
+   "seconds": 0,
+   "detail": [
+    "marker typed and received via SendInput vk"
+   ],
+   "metrics": {
+    "method": "vk"
+   },
+   "shots": []
+  },
+  {
+   "name": "ctrl_c_behind_big_paste",
+   "mode": "terminal@pwsh7",
+   "status": "fail",
+   "ran_mode": "terminal",
+   "seconds": 17.8,
+   "evidence": [
+    "enter_route: 1 Enter(s) reached the input editor: Shell=1 [Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794706961.259,
+    1794706979.095
+   ],
+   "detail": [
+    "the reader was stopped by the ^C: the next line ran (file [])",
+    "NO-REFERENCE: ^C behind a 64 KiB paste: 2.5 ms from ctrl_c_keydown to its pty write (pty_write_bytes): no band yet for windows/terminal@pwsh7/ctrl_c_behind_big_paste/ctrl_c_to_pty_write_ms (a new metric or pane: NOREF, not a pass) [windows/terminal@pwsh7/ctrl_c_behind_big_paste/ctrl_c_to_pty_write_ms]",
+    "injector accounting: injector sent 105; app saw 105; lost-before-app 0 (Enter: sent 2, app saw 2); of the app's: 98 unbound keydown/typed, 6 taken by a key binding, 1 Enter by a binding"
+   ],
+   "metrics": {
+    "ctrl_c_to_pty_write_ms": 2.54,
+    "ctrl_c_hop_used": "pty_write_bytes",
+    "injector": {
+     "sent": 105,
+     "enters_sent": 2,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 105,
+     "unbound": 98,
+     "bound": 6,
+     "enters_bound": 1,
+     "seen": 105,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 2
+    },
+    "pty_write_cr": {
+     "writes": 48,
+     "with_cr": 14,
+     "enters": 1
+    }
+   },
+   "shots": [
+    "shots\\terminal@pwsh7_ctrl_c_behind_big_paste_FAIL.png"
+   ]
+  },
+  {
+   "name": "powershell_setup_ctrl_c_keys",
+   "mode": "terminal@pwsh7",
+   "status": "pass",
+   "ran_mode": "terminal",
+   "seconds": 13.7,
+   "evidence": [
+    "enter_route: 2 Enter(s) reached the input editor: Shell=2 [Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794706983.752,
+    1794706997.5
+   ],
+   "detail": [
+    "the ^C did not skip the setup (hop subshell_setup_aborted_by_user absent: not stalled, so it cancelled the held line); the 4.5 s bound was not judged",
+    "injector accounting: injector sent 197; app saw 197; lost-before-app 0 (Enter: sent 6, app saw 6); of the app's: 189 unbound keydown/typed, 6 taken by a key binding, 2 Enter by a binding"
+   ],
+   "metrics": {
+    "setup_ctrl_c_line_after_ctrl_c_s": 0.43,
+    "setup_ctrl_c_aborted_by_user": false,
+    "injector": {
+     "sent": 197,
+     "enters_sent": 6,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 197,
+     "unbound": 189,
+     "bound": 6,
+     "enters_bound": 2,
+     "seen": 197,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 6
+    },
+    "pty_write_cr": {
+     "writes": 128,
+     "with_cr": 4,
+     "enters": 2
+    }
+   },
+   "shots": [
+    "shots\\terminal@pwsh7_powershell_setup_ctrl_c_keys.png"
+   ]
+  },
+  {
+   "name": "mode_proof",
+   "mode": "agent",
+   "status": "pass",
+   "ran_mode": "agent",
+   "seconds": 2.5,
+   "evidence": [
+    "mode_proof: log_view_mode=agent ocr_agent_markers=True ocr_terminal_hint=False queue_destination=table"
+   ],
+   "tainted": false,
+   "wall": [
+    1794707009.411,
+    1794707011.902
+   ],
+   "detail": [],
+   "metrics": {
+    "log_view_mode": "agent",
+    "queue_destination": "table",
+    "ocr_agent_markers": true,
+    "ocr_terminal_hint": false,
+    "ocr_model_chip_gpt_oss": true
+   },
+   "shots": [
+    "shots\\agent_mode_proof.png"
+   ]
+  },
+  {
+   "name": "expert_fuzz",
+   "mode": "agent",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run in the PowerShell pane: BackSpace / Left / Ctrl-W editing of `echo ... >>` lines; PSReadLine's Ctrl-W differs: runs in the Git Bash pane"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "key_delivery",
+   "mode": "agent",
+   "status": "pass",
+   "seconds": 0,
+   "detail": [
+    "marker typed and received via SendInput vk"
+   ],
+   "metrics": {
+    "method": "vk"
+   },
+   "shots": []
+  },
+  {
+   "name": "ctrl_c_behind_big_paste",
+   "mode": "agent",
+   "status": "fail",
+   "ran_mode": "agent",
+   "seconds": 17.9,
+   "evidence": [
+    "enter_route: 1 Enter(s) reached the input editor: Shell=1 [Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794707023.845,
+    1794707041.703
+   ],
+   "detail": [
+    "the reader was stopped by the ^C: the next line ran (file [])",
+    "NO-REFERENCE: ^C behind a 64 KiB paste: 2.2 ms from ctrl_c_keydown to its pty write (pty_write_bytes): no band yet for windows/agent/ctrl_c_behind_big_paste/ctrl_c_to_pty_write_ms (a new metric or pane: NOREF, not a pass) [windows/agent/ctrl_c_behind_big_paste/ctrl_c_to_pty_write_ms]",
+    "injector accounting: injector sent 105; app saw 105; lost-before-app 0 (Enter: sent 2, app saw 2); of the app's: 98 unbound keydown/typed, 6 taken by a key binding, 1 Enter by a binding"
+   ],
+   "metrics": {
+    "ctrl_c_to_pty_write_ms": 2.25,
+    "ctrl_c_hop_used": "pty_write_bytes",
+    "injector": {
+     "sent": 105,
+     "enters_sent": 2,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 105,
+     "unbound": 98,
+     "bound": 6,
+     "enters_bound": 1,
+     "seen": 105,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 2
+    },
+    "pty_write_cr": {
+     "writes": 50,
+     "with_cr": 16,
+     "enters": 1
+    }
+   },
+   "shots": [
+    "shots\\agent_ctrl_c_behind_big_paste_FAIL.png"
+   ]
+  },
+  {
+   "name": "powershell_setup_ctrl_c_keys",
+   "mode": "agent",
+   "status": "pass",
+   "ran_mode": "agent",
+   "seconds": 14.1,
+   "evidence": [
+    "enter_route: 2 Enter(s) reached the input editor: Shell=2 [Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794707046.512,
+    1794707060.57
+   ],
+   "detail": [
+    "the ^C did not skip the setup (hop subshell_setup_aborted_by_user absent: not stalled, so it cancelled the held line); the 4.5 s bound was not judged",
+    "injector accounting: injector sent 203; app saw 203; lost-before-app 0 (Enter: sent 6, app saw 6); of the app's: 195 unbound keydown/typed, 6 taken by a key binding, 2 Enter by a binding"
+   ],
+   "metrics": {
+    "setup_ctrl_c_line_after_ctrl_c_s": 0.43,
+    "setup_ctrl_c_aborted_by_user": false,
+    "injector": {
+     "sent": 203,
+     "enters_sent": 6,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 203,
+     "unbound": 195,
+     "bound": 6,
+     "enters_bound": 2,
+     "seen": 203,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 6
+    },
+    "pty_write_cr": {
+     "writes": 128,
+     "with_cr": 4,
+     "enters": 2
+    }
+   },
+   "shots": [
+    "shots\\agent_powershell_setup_ctrl_c_keys.png"
+   ]
+  },
+  {
+   "name": "routing_table",
+   "mode": "agent",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run in the PowerShell pane: asserts what the shell received from rec.log: runs in the Git Bash pane"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "intl_wide_paste",
+   "mode": "agent",
+   "status": "pass",
+   "ran_mode": "agent",
+   "seconds": 16.4,
+   "evidence": [
+    "enter_route: 10 Enter(s) reached the input editor: Shell=10 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794707064.983,
+    1794707081.391
+   ],
+   "detail": [
+    "paste inside typed cjk: rec.log empty (hook not run): the command line the shell RECEIVED was NOT verified; only the effect file's bytes were",
+    "paste inside typed accents: rec.log empty (hook not run): the command line the shell RECEIVED was NOT verified; only the effect file's bytes were",
+    "paste inside typed emoji: rec.log empty (hook not run): the command line the shell RECEIVED was NOT verified; only the effect file's bytes were",
+    "paste inside typed zwj: rec.log empty (hook not run): the command line the shell RECEIVED was NOT verified; only the effect file's bytes were",
+    "paste inside typed mixed: rec.log empty (hook not run): the command line the shell RECEIVED was NOT verified; only the effect file's bytes were",
+    "verified: 10 effect-file byte comparison(s) against the exact UTF-8 of the text; received command line verified 0 time(s), NOT verified 5 time(s) (no rec.log)",
+    "injector accounting: injector sent 845; app saw 845; lost-before-app 0 (Enter: sent 10, app saw 10); of the app's: 823 unbound keydown/typed, 12 taken by a key binding, 10 Enter by a binding",
+    "pty writes: 20, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 10 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "intl_checked_file_bytes": 10,
+    "intl_unchecked_received_command_line": 5,
+    "injector": {
+     "sent": 845,
+     "enters_sent": 10,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 845,
+     "unbound": 823,
+     "bound": 12,
+     "enters_bound": 10,
+     "seen": 845,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 10
+    },
+    "pty_write_cr": {
+     "writes": 20,
+     "with_cr": 0,
+     "enters": 10
+    }
+   },
+   "shots": [
+    "shots\\agent_intl_wide_paste.png"
+   ]
+  },
+  {
+   "name": "ssh_gitbash_managed",
+   "mode": "agent",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run in the PowerShell pane: the bash ssh wrapper's one-connection managed session (#1933): only the Git Bash pane has the wrapper"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "ssh_gitbash_failing_not_local_managed",
+   "mode": "agent",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run in the PowerShell pane: a failing ssh behind the bash ssh wrapper with the one-connection path switched on (round 14): only the Git Bash pane has the wrapper"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "selection_modes",
+   "mode": "agent",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run in the PowerShell pane: T31 (r14 T22): `cat` of the fixture files, the `sh` stream program and rec.log: runs in the Git Bash pane (pointer and held Shift by SendInput, positions from the app's find hook)"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "gitbash_typeahead_reps",
+   "mode": "agent",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run in the PowerShell pane: bash precmd_functions and rec.log of the pane's bash, the ConPTY prompt hold of a bash pane (#1393): runs in the Git Bash pane"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "mode_proof",
+   "mode": "agent@gitbash",
+   "status": "pass",
+   "ran_mode": "agent",
+   "seconds": 2.2,
+   "evidence": [
+    "mode_proof: log_view_mode=agent ocr_agent_markers=True ocr_terminal_hint=False queue_destination=table"
+   ],
+   "tainted": false,
+   "wall": [
+    1794707096.755,
+    1794707099.003
+   ],
+   "detail": [],
+   "metrics": {
+    "log_view_mode": "agent",
+    "queue_destination": "table",
+    "ocr_agent_markers": true,
+    "ocr_terminal_hint": false,
+    "ocr_model_chip_gpt_oss": true
+   },
+   "shots": [
+    "shots\\agent@gitbash_mode_proof.png"
+   ]
+  },
+  {
+   "name": "key_delivery",
+   "mode": "agent@gitbash",
+   "status": "pass",
+   "seconds": 0,
+   "detail": [
+    "marker typed and received via SendInput vk"
+   ],
+   "metrics": {
+    "method": "vk"
+   },
+   "shots": []
+  },
+  {
+   "name": "expert_fuzz",
+   "mode": "agent@gitbash",
+   "status": "pass",
+   "ran_mode": "agent",
+   "seconds": 15.3,
+   "evidence": [
+    "enter_route: 25 Enter(s) reached the input editor: Shell=25 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794707104.799,
+    1794707120.125
+   ],
+   "detail": [
+    "injector accounting: injector sent 750; app saw 750; lost-before-app 0 (Enter: sent 25, app saw 25); of the app's: 678 unbound keydown/typed, 47 taken by a key binding, 25 Enter by a binding",
+    "pty writes: 109, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 25 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "injector": {
+     "sent": 750,
+     "enters_sent": 25,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 750,
+     "unbound": 678,
+     "bound": 47,
+     "enters_bound": 25,
+     "seen": 750,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 25
+    },
+    "pty_write_cr": {
+     "writes": 109,
+     "with_cr": 0,
+     "enters": 25
+    }
+   },
+   "shots": [
+    "shots\\agent@gitbash_expert_fuzz.png"
+   ]
+  },
+  {
+   "name": "ctrl_c_behind_big_paste",
+   "mode": "agent@gitbash",
+   "status": "fail",
+   "ran_mode": "agent",
+   "seconds": 17.6,
+   "evidence": [
+    "enter_route: 1 Enter(s) reached the input editor: Shell=1 [Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794707122.787,
+    1794707140.42
+   ],
+   "detail": [
+    "the reader was stopped by the ^C: the next line ran (file [])",
+    "NO-REFERENCE: ^C behind a 64 KiB paste: 2.4 ms from ctrl_c_keydown to its pty write (pty_write_bytes): no band yet for windows/agent@gitbash/ctrl_c_behind_big_paste/ctrl_c_to_pty_write_ms (a new metric or pane: NOREF, not a pass) [windows/agent@gitbash/ctrl_c_behind_big_paste/ctrl_c_to_pty_write_ms]",
+    "injector accounting: injector sent 79; app saw 79; lost-before-app 0 (Enter: sent 2, app saw 2); of the app's: 72 unbound keydown/typed, 6 taken by a key binding, 1 Enter by a binding"
+   ],
+   "metrics": {
+    "ctrl_c_to_pty_write_ms": 2.37,
+    "ctrl_c_hop_used": "pty_write_bytes",
+    "injector": {
+     "sent": 79,
+     "enters_sent": 2,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 79,
+     "unbound": 72,
+     "bound": 6,
+     "enters_bound": 1,
+     "seen": 79,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 2
+    },
+    "pty_write_cr": {
+     "writes": 46,
+     "with_cr": 17,
+     "enters": 1
+    }
+   },
+   "shots": [
+    "shots\\agent@gitbash_ctrl_c_behind_big_paste_FAIL.png"
+   ]
+  },
+  {
+   "name": "powershell_setup_ctrl_c_keys",
+   "mode": "agent@gitbash",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run in the Git Bash pane: #1890: a PowerShell-in-PowerShell Phosphorize setup and the PowerShell hold's post-abort prompt; the Git Bash pane has the bash subshell lab (cases_subshell_ready)"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "routing_table",
+   "mode": "agent@gitbash",
+   "status": "pass",
+   "ran_mode": "agent",
+   "seconds": 57.9,
+   "evidence": [
+    "enter_route: 29 Enter(s) reached the input editor: AI=16 Shell=13 [Shell,AI,Shell,Shell,AI,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,AI,AI,AI,AI,AI,AI,AI,AI,AI,AI,Shell,AI,AI,AI,AI]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794707145.841,
+    1794707203.746
+   ],
+   "detail": [
+    "injector accounting: injector sent 625; app saw 625; lost-before-app 0 (Enter: sent 27, app saw 27); of the app's: 548 unbound keydown/typed, 50 taken by a key binding, 27 Enter by a binding",
+    "pty writes: 15, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 27 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "settings_nld_in_terminal": true,
+    "settings_ai_auto_detection": true,
+    "recorder_dark": false,
+    "routing_rows": [
+     {
+      "line": "ls -la",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": "AgentConversation",
+      "rule": "command-shape (#808/#1203)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "git status",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": "AgentConversation",
+      "rule": "command-shape (#808/#1203)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "grep foo foo.txt",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": "AgentConversation",
+      "rule": "command-shape (#808/#1203)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "echo hello world",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": "AgentConversation",
+      "rule": "evidence-in-conversation (#1183)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "pwd",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": "AgentConversation",
+      "rule": "evidence-in-conversation (#1183)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "cat foo.txt",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": "AgentConversation",
+      "rule": "command-shape (#808/#1203)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "wc -l foo.txt",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": "AgentConversation",
+      "rule": "command-shape (#808/#1203)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "uname -a",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": "AgentConversation",
+      "rule": "command-shape (#808/#1203)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "ls the",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": "AgentConversation",
+      "rule": "evidence-in-conversation (#1183)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "date",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": "AgentConversation",
+      "rule": "evidence-in-conversation (#1183)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "print -r -- $EPOCHREALTIME > lat_0",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": "AgentConversation",
+      "rule": "evidence-in-conversation (#1183)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "notacmd_x $HOME/x",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": "AgentConversation",
+      "rule": "shell-structure-unknown-head (#1560)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "xyz_nocmd > out_nc.txt",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": "AgentConversation",
+      "rule": "shell-structure-unknown-head (#1560)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "foo_nocmd --bar | grep x",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": "AgentConversation",
+      "rule": "shell-structure-unknown-head (#1560)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "what does this error mean",
+      "kind": "prose",
+      "want": "agent",
+      "got": "agent",
+      "surface": "AgentConversation",
+      "rule": "request-shape (#834/#965)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "how do I undo my last git commit",
+      "kind": "prose",
+      "want": "agent",
+      "got": "agent",
+      "surface": "AgentConversation",
+      "rule": "sentence-shape (#1234)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "explain why the build is failing",
+      "kind": "prose",
+      "want": "agent",
+      "got": "agent",
+      "surface": "AgentConversation",
+      "rule": "request-shape (#834/#965)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "why is my disk full",
+      "kind": "prose",
+      "want": "agent",
+      "got": "agent",
+      "surface": "AgentConversation",
+      "rule": "sentence-shape (#1234)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "can you summarize the changes in this repo",
+      "kind": "prose",
+      "want": "agent",
+      "got": "agent",
+      "surface": "AgentConversation",
+      "rule": "request-shape (#834/#965)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "please walk me through the failing test",
+      "kind": "prose",
+      "want": "agent",
+      "got": "agent",
+      "surface": "AgentConversation",
+      "rule": "request-shape (#834/#965)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "is five bigger than three",
+      "kind": "prose",
+      "want": "agent",
+      "got": "agent",
+      "surface": "AgentConversation",
+      "rule": "no-evidence-in-conversation (#1183)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "can you show me how to use --verbose?",
+      "kind": "prose",
+      "want": "agent",
+      "got": "agent",
+      "surface": "AgentConversation",
+      "rule": "model",
+      "verdict_give_up": false
+     },
+     {
+      "line": "explain $PATH to me",
+      "kind": "prose",
+      "want": "agent",
+      "got": "agent",
+      "surface": "AgentConversation",
+      "rule": "sentence-shape (#1234)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "find the bug in main.rs",
+      "kind": "ambiguous",
+      "want": "shell",
+      "got": "shell",
+      "surface": "AgentConversation",
+      "rule": "evidence-in-conversation (#1183)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "make a PR",
+      "kind": "ambiguous",
+      "want": "agent",
+      "got": "agent",
+      "surface": "AgentConversation",
+      "rule": "no-evidence-in-conversation (#1183)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "cat the error log and tell me what is wrong",
+      "kind": "ambiguous",
+      "want": "agent",
+      "got": "agent",
+      "surface": "AgentConversation",
+      "rule": "request-shape (#834/#965)",
+      "verdict_give_up": false
+     },
+     {
+      "line": "what is 5 > 3",
+      "kind": "ambiguous",
+      "want": "agent",
+      "got": "agent",
+      "surface": "AgentConversation",
+      "rule": "model",
+      "verdict_give_up": false
+     }
+    ],
+    "misroutes": 0,
+    "verdict_give_ups": 0,
+    "injector": {
+     "sent": 625,
+     "enters_sent": 27,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 625,
+     "unbound": 548,
+     "bound": 50,
+     "enters_bound": 27,
+     "seen": 625,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 27
+    },
+    "pty_write_cr": {
+     "writes": 15,
+     "with_cr": 0,
+     "enters": 27
+    }
+   },
+   "shots": [
+    "shots\\agent@gitbash_routing_table.png"
+   ]
+  },
+  {
+   "name": "intl_wide_paste",
+   "mode": "agent@gitbash",
+   "status": "pass",
+   "ran_mode": "agent",
+   "seconds": 6.3,
+   "evidence": [
+    "enter_route: 10 Enter(s) reached the input editor: Shell=10 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794707207.07,
+    1794707213.405
+   ],
+   "detail": [
+    "verified: 10 effect-file byte comparison(s) against the exact UTF-8 of the text; received command line verified 5 time(s), NOT verified 0 time(s) (no rec.log)",
+    "injector accounting: injector sent 125; app saw 125; lost-before-app 0 (Enter: sent 10, app saw 10); of the app's: 103 unbound keydown/typed, 12 taken by a key binding, 10 Enter by a binding",
+    "pty writes: 10, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 10 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "intl_checked_file_bytes": 10,
+    "intl_checked_received_command_line": 5,
+    "injector": {
+     "sent": 125,
+     "enters_sent": 10,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 125,
+     "unbound": 103,
+     "bound": 12,
+     "enters_bound": 10,
+     "seen": 125,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 10
+    },
+    "pty_write_cr": {
+     "writes": 10,
+     "with_cr": 0,
+     "enters": 10
+    }
+   },
+   "shots": [
+    "shots\\agent@gitbash_intl_wide_paste.png"
+   ]
+  },
+  {
+   "name": "ssh_gitbash_managed",
+   "mode": "agent@gitbash",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not played in the Windows app job (owner rule 2026-11-13: ssh tests run against the real lab, not the Windows fake sshd, #2007 #2051 #1992): the same behaviour is judged by lab_managed_connect in app-test-lab-windows (Git Bash pane), and by the same family on Linux and macOS; to run this fake-sshd version by hand set APPCI_WIN_FAKESSHD=1"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "ssh_gitbash_failing_not_local_managed",
+   "mode": "agent@gitbash",
+   "status": "pass",
+   "ran_mode": "agent",
+   "seconds": 23.7,
+   "evidence": [
+    "enter_route: 4 Enter(s) reached the input editor: Shell=4 [Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794707216.888,
+    1794707240.622
+   ],
+   "detail": [
+    "ssh_failing_not_local: ssh started 2.31 s before the first MUSTNOT key; the hanging listener had accepted 1 connection(s), 1 still open when typing began and 1 when it ended (ConnectTimeout 6 s)",
+    "the hanging listener accepted 2 connection(s) in all (1 when the line was typed): more than one is the Git Bash wrapper's banner check followed by ssh itself (the managed path is switched on in this shell)",
+    "ssh gate at the first MUSTNOT key: t=+0.002s [DEBUG] input_order hop=kh_hold_entry seq=1812 holding=false held_bytes=0 gate_armed=true pending_session=false table=1 t=1794707220586.543; first gate release/exit after it: t=+0.002s [DEBUG] input_order hop=kh_hold_exit seq=1812 branch=held held_bytes=0 table=1 t=1794707220586.559; ssh failed (connection closed) 10.96 s after typing began; listener-side typing window 0.34 s",
+    "injector accounting: injector sent 284; app saw 284; lost-before-app 0 (Enter: sent 5, app saw 5); of the app's: 276 unbound keydown/typed, 4 taken by a key binding, 4 Enter by a binding",
+    "pty writes: 12, of which carrying a CR (\\r): 1; Enter(s) the input editor started: 4 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "injector": {
+     "sent": 284,
+     "enters_sent": 5,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 284,
+     "unbound": 276,
+     "bound": 4,
+     "enters_bound": 4,
+     "seen": 284,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 5
+    },
+    "pty_write_cr": {
+     "writes": 12,
+     "with_cr": 1,
+     "enters": 4
+    }
+   },
+   "shots": [
+    "shots\\agent@gitbash_ssh_gitbash_failing_not_local_managed.png"
+   ]
+  },
+  {
+   "name": "selection_modes",
+   "mode": "agent@gitbash",
+   "status": "pass",
+   "ran_mode": "agent",
+   "seconds": 29.2,
+   "evidence": [
+    "enter_route: 8 Enter(s) reached the input editor: Shell=8 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794707245.275,
+    1794707274.441
+   ],
+   "detail": [
+    "Windows, agent view: Ctrl-C at an idle prompt with a word selected did not copy (the agent view takes an idle Ctrl-C first); 'the copy drops the selection' (#2131) was NOT judged in this pass",
+    "injector accounting: injector sent 288; app saw 288; lost-before-app 0 (Enter: sent 8, app saw 8); of the app's: 263 unbound keydown/typed, 17 taken by a key binding, 8 Enter by a binding",
+    "pty writes: 20, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 8 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "idle_ctrl_c_copy": {
+     "copied": false,
+     "selection_dropped": false
+    },
+    "cross_block_middle_lines": 1,
+    "stream_ticks_around_drag": [
+     3,
+     12,
+     15
+    ],
+    "ctrl_c_copy_ticks": [
+     15,
+     19
+    ],
+    "injector": {
+     "sent": 288,
+     "enters_sent": 8,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 288,
+     "unbound": 263,
+     "bound": 17,
+     "enters_bound": 8,
+     "seen": 288,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 8
+    },
+    "pty_write_cr": {
+     "writes": 20,
+     "with_cr": 0,
+     "enters": 8
+    }
+   },
+   "shots": [
+    "shots\\agent@gitbash_selection_modes.png"
+   ]
+  },
+  {
+   "name": "gitbash_typeahead_reps",
+   "mode": "agent@gitbash",
+   "status": "pass",
+   "ran_mode": "agent",
+   "seconds": 177.4,
+   "evidence": [
+    "enter_route: 240 Enter(s) reached the input editor: AI=7 Shell=233 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,...]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794707278.733,
+    1794707456.099
+   ],
+   "detail": [
+    "the precmd set-up line typed before tr12 was not routed to the shell: deferred=false buffer=\"__tr_slow() { sleep 0.25; }; precmd_functions+=(__tr_slow)\" input_type=AI t=1794707365266.784",
+    "tr12: 1 Enter(s) of this rep were not routed to the shell: deferred=false buffer=\".txt\" input_type=AI t=1794707370393.411",
+    "tr17: 2 Enter(s) of this rep were not routed to the shell: deferred=false buffer=\".txt\" input_type=AI t=1794707404602.133 | deferred=false buffer=\"echo t187_uynsg1awf0 >> r_tr17.txt\" input_type=AI t=1794707405119.279",
+    "tr20: 1 Enter(s) of this rep were not routed to the shell: deferred=false buffer=\"0.txt\" input_type=AI t=1794707427921.088",
+    "tr21: 1 Enter(s) of this rep were not routed to the shell: deferred=false buffer=\"echo t232_4l8aoiebiu >> r_tr21.txt\" input_type=AI t=1794707436098.029",
+    "injector accounting: injector sent 8395; app saw 8395; lost-before-app 0 (Enter: sent 242, app saw 242); of the app's: 8163 unbound keydown/typed, 2 taken by a key binding, 230 Enter by a binding",
+    "pty writes: 1604, of which carrying a CR (\\r): 11; Enter(s) the input editor started: 238 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "typeahead_reps": {
+     "reps": 24,
+     "lines_per_rep": 10,
+     "slow_precmd_reps": 12,
+     "reps_with_a_bad_line": []
+    },
+    "injector": {
+     "sent": 8395,
+     "enters_sent": 242,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 8395,
+     "unbound": 8163,
+     "bound": 2,
+     "enters_bound": 230,
+     "seen": 8395,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 242
+    },
+    "pty_write_cr": {
+     "writes": 1604,
+     "with_cr": 11,
+     "enters": 238
+    }
+   },
+   "shots": [
+    "shots\\agent@gitbash_gitbash_typeahead_reps.png"
+   ]
+  },
+  {
+   "name": "mode_proof",
+   "mode": "agent@pwsh7",
+   "status": "pass",
+   "ran_mode": "agent",
+   "seconds": 2.3,
+   "evidence": [
+    "mode_proof: log_view_mode=agent ocr_agent_markers=True ocr_terminal_hint=False queue_destination=table"
+   ],
+   "tainted": false,
+   "wall": [
+    1794707468.981,
+    1794707471.232
+   ],
+   "detail": [],
+   "metrics": {
+    "log_view_mode": "agent",
+    "queue_destination": "table",
+    "ocr_agent_markers": true,
+    "ocr_terminal_hint": false,
+    "ocr_model_chip_gpt_oss": true
+   },
+   "shots": [
+    "shots\\agent@pwsh7_mode_proof.png"
+   ]
+  },
+  {
+   "name": "key_delivery",
+   "mode": "agent@pwsh7",
+   "status": "pass",
+   "seconds": 0,
+   "detail": [
+    "marker typed and received via SendInput vk"
+   ],
+   "metrics": {
+    "method": "vk"
+   },
+   "shots": []
+  },
+  {
+   "name": "ctrl_c_behind_big_paste",
+   "mode": "agent@pwsh7",
+   "status": "fail",
+   "ran_mode": "agent",
+   "seconds": 17.8,
+   "evidence": [
+    "enter_route: 1 Enter(s) reached the input editor: Shell=1 [Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794707482.531,
+    1794707500.332
+   ],
+   "detail": [
+    "the reader was stopped by the ^C: the next line ran (file [])",
+    "NO-REFERENCE: ^C behind a 64 KiB paste: 2.4 ms from ctrl_c_keydown to its pty write (pty_write_bytes): no band yet for windows/agent@pwsh7/ctrl_c_behind_big_paste/ctrl_c_to_pty_write_ms (a new metric or pane: NOREF, not a pass) [windows/agent@pwsh7/ctrl_c_behind_big_paste/ctrl_c_to_pty_write_ms]",
+    "injector accounting: injector sent 105; app saw 105; lost-before-app 0 (Enter: sent 2, app saw 2); of the app's: 98 unbound keydown/typed, 6 taken by a key binding, 1 Enter by a binding"
+   ],
+   "metrics": {
+    "ctrl_c_to_pty_write_ms": 2.41,
+    "ctrl_c_hop_used": "pty_write_bytes",
+    "injector": {
+     "sent": 105,
+     "enters_sent": 2,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 105,
+     "unbound": 98,
+     "bound": 6,
+     "enters_bound": 1,
+     "seen": 105,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 2
+    },
+    "pty_write_cr": {
+     "writes": 43,
+     "with_cr": 9,
+     "enters": 1
+    }
+   },
+   "shots": [
+    "shots\\agent@pwsh7_ctrl_c_behind_big_paste_FAIL.png"
+   ]
+  },
+  {
+   "name": "powershell_setup_ctrl_c_keys",
+   "mode": "agent@pwsh7",
+   "status": "pass",
+   "ran_mode": "agent",
+   "seconds": 13.7,
+   "evidence": [
+    "enter_route: 2 Enter(s) reached the input editor: Shell=2 [Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794707505.194,
+    1794707518.845
+   ],
+   "detail": [
+    "the ^C did not skip the setup (hop subshell_setup_aborted_by_user absent: not stalled, so it cancelled the held line); the 4.5 s bound was not judged",
+    "injector accounting: injector sent 197; app saw 197; lost-before-app 0 (Enter: sent 6, app saw 6); of the app's: 189 unbound keydown/typed, 6 taken by a key binding, 2 Enter by a binding"
+   ],
+   "metrics": {
+    "setup_ctrl_c_line_after_ctrl_c_s": 0.42,
+    "setup_ctrl_c_aborted_by_user": false,
+    "injector": {
+     "sent": 197,
+     "enters_sent": 6,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 197,
+     "unbound": 189,
+     "bound": 6,
+     "enters_bound": 2,
+     "seen": 197,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 6
+    },
+    "pty_write_cr": {
+     "writes": 128,
+     "with_cr": 4,
+     "enters": 2
+    }
+   },
+   "shots": [
+    "shots\\agent@pwsh7_powershell_setup_ctrl_c_keys.png"
+   ]
+  },
+  {
+   "name": "key_delivery",
+   "mode": "agent@fake",
+   "status": "pass",
+   "seconds": 0,
+   "detail": [
+    "marker typed and received via SendInput vk"
+   ],
+   "metrics": {
+    "method": "vk"
+   },
+   "shots": []
+  },
+  {
+   "name": "agent_code_recycle",
+   "mode": "agent@fake",
+   "status": "noref",
+   "ran_mode": "agent",
+   "seconds": 146.4,
+   "evidence": [
+    "enter_route: 14 Enter(s) reached the input editor: AI=14 [AI,AI,AI,AI,AI,AI,AI,AI,AI,AI,AI,AI,AI,AI]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794707539.371,
+    1794707685.76
+   ],
+   "detail": [
+    "NO-REFERENCE: UNVERIFIABLE: the copy key (ctrl+shift+c) put none of the snippets on the clipboard: the snippet answer was not the selected block when the key was sent (clipboard 0 bytes; the answer's text is scripted, so this is the selection, not the wording); copy across the rebuild is NOT verified",
+    "the case's own Escape left the agent view; it re-entered with /agent (agent view again)",
+    "injector accounting: injector sent 557; app saw 557; lost-before-app 0 (Enter: sent 14, app saw 14); of the app's: 528 unbound keydown/typed, 15 taken by a key binding, 14 Enter by a binding",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 14 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "snippet_prompt_requests": 1,
+    "snippets_visible_after_answer": [
+     8,
+     9,
+     10,
+     11,
+     12
+    ],
+    "fillers_used": 12,
+    "recycle_events_after_fillers": [
+     [
+      "recycled",
+      "EntityId(2135)",
+      12
+     ]
+    ],
+    "recycled_editors": 12,
+    "rebuild_shot_stable": true,
+    "snippets_visible_rebuilt": [
+     [],
+     []
+    ],
+    "snippets_visible_first_on_screen": null,
+    "copy_missing": [
+     "echo RCYDPAA_01",
+     "echo RCYDPAA_02",
+     "echo RCYDPAA_03",
+     "echo RCYDPAA_04",
+     "echo RCYDPAA_05",
+     "echo RCYDPAA_06",
+     "echo RCYDPAA_07",
+     "echo RCYDPAA_08",
+     "echo RCYDPAA_09",
+     "echo RCYDPAA_10",
+     "echo RCYDPAA_11",
+     "echo RCYDPAA_12"
+    ],
+    "injector": {
+     "sent": 557,
+     "enters_sent": 14,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 557,
+     "unbound": 528,
+     "bound": 15,
+     "enters_bound": 14,
+     "seen": 557,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 14
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 14
+    }
+   },
+   "shots": [
+    "shots\\agent_agent_code_recycle.png"
+   ]
+  },
+  {
+   "name": "key_delivery",
+   "mode": "agent@gitbash+fake",
+   "status": "pass",
+   "seconds": 0,
+   "detail": [
+    "marker typed and received via SendInput vk"
+   ],
+   "metrics": {
+    "method": "vk"
+   },
+   "shots": []
+  },
+  {
+   "name": "agent_code_recycle",
+   "mode": "agent@gitbash+fake",
+   "status": "noref",
+   "ran_mode": "agent",
+   "seconds": 146.5,
+   "evidence": [
+    "enter_route: 14 Enter(s) reached the input editor: AI=14 [AI,AI,AI,AI,AI,AI,AI,AI,AI,AI,AI,AI,AI,AI]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794707702.245,
+    1794707848.779
+   ],
+   "detail": [
+    "NO-REFERENCE: UNVERIFIABLE: the copy key (ctrl+shift+c) put none of the snippets on the clipboard: the snippet answer was not the selected block when the key was sent (clipboard 0 bytes; the answer's text is scripted, so this is the selection, not the wording); copy across the rebuild is NOT verified",
+    "the case's own Escape left the agent view; it re-entered with /agent (agent view again)",
+    "injector accounting: injector sent 557; app saw 557; lost-before-app 0 (Enter: sent 14, app saw 14); of the app's: 528 unbound keydown/typed, 15 taken by a key binding, 14 Enter by a binding",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 14 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "snippet_prompt_requests": 1,
+    "snippets_visible_after_answer": [
+     8,
+     9,
+     10,
+     11,
+     12
+    ],
+    "fillers_used": 12,
+    "recycle_events_after_fillers": [
+     [
+      "recycled",
+      "EntityId(2127)",
+      12
+     ]
+    ],
+    "recycled_editors": 12,
+    "rebuild_shot_stable": true,
+    "snippets_visible_rebuilt": [
+     [],
+     []
+    ],
+    "snippets_visible_first_on_screen": null,
+    "copy_missing": [
+     "echo RCYWATU_01",
+     "echo RCYWATU_02",
+     "echo RCYWATU_03",
+     "echo RCYWATU_04",
+     "echo RCYWATU_05",
+     "echo RCYWATU_06",
+     "echo RCYWATU_07",
+     "echo RCYWATU_08",
+     "echo RCYWATU_09",
+     "echo RCYWATU_10",
+     "echo RCYWATU_11",
+     "echo RCYWATU_12"
+    ],
+    "injector": {
+     "sent": 557,
+     "enters_sent": 14,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 557,
+     "unbound": 528,
+     "bound": 15,
+     "enters_bound": 14,
+     "seen": 557,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 14
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 14
+    }
+   },
+   "shots": [
+    "shots\\agent@gitbash_agent_code_recycle.png"
+   ]
+  },
+  {
+   "name": "restore",
+   "mode": "-",
+   "status": "pass",
+   "seconds": 0,
+   "detail": [
+    "all 10 restore steps ok (data md5 identical, version v0.1.15, PATH/handler/uninstall/shortcuts restored)"
+   ],
+   "metrics": {},
+   "shots": []
+  }
+ ]
+}

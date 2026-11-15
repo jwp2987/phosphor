@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="appci-macos" tests="13" failures="1" skipped="0">
+<testcase classname="terminal" name="mode_proof" time="3.70">
+</testcase>
+<testcase classname="terminal" name="key_loss_control" time="41.80">
+</testcase>
+<testcase classname="terminal" name="enter_loss_control" time="78.30">
+</testcase>
+<testcase classname="terminal" name="fast_typing" time="68.30">
+</testcase>
+<testcase classname="terminal" name="expert_fuzz" time="33.80">
+</testcase>
+<testcase classname="terminal" name="subshell_ready_rc_clear" time="14.80">
+</testcase>
+<testcase classname="terminal" name="scroll_keys_position" time="37.00">
+</testcase>
+<testcase classname="agent" name="mode_proof" time="2.70">
+</testcase>
+<testcase classname="agent" name="fast_typing" time="66.90">
+</testcase>
+<testcase classname="agent" name="expert_fuzz" time="37.60">
+</testcase>
+<testcase classname="agent" name="subshell_ready_rc_clear" time="14.80">
+</testcase>
+<testcase classname="agent" name="scroll_keys_position" time="37.10">
+</testcase>
+<testcase classname="agent" name="agent_bg_job_output" time="15.30">
+<failure message="the job's line is on screen 2 times: it was repeated into another block (shots/*abj_2_next.png)">the job's line is on screen 2 times: it was repeated into another block (shots/*abj_2_next.png)
+injector accounting: injector sent 68; app saw 68; lost-before-app 0 (Enter: sent 2, app saw 2); of the app's: 59 unbound keydown/typed, 3 taken by a key binding, 2 Enter by a binding; macOS: 68 key-down(s) reached NSApplication, 68 dispatched as key events (4 of them a menu key equivalent), 0 not (1 Cmd chord(s) injected)
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 2 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+</testsuite>

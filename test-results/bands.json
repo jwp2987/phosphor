@@ -60,6 +60,22 @@
    -28.78
   ]
  },
+ "macos/agent/lab_tab_remote_dir.p_slowrc.lan.nohelper/tab_to_insert": {
+  "kind": "ms",
+  "lower": 161.0,
+  "mad": 0.0,
+  "median": 161.0,
+  "n": 1,
+  "provisional": true,
+  "runs": [
+   "2026-11-14_build_r31b_3069275695"
+  ],
+  "set_by": "data",
+  "upper": 161.3,
+  "values": [
+   161.0
+  ]
+ },
  "macos/agent/lab_tab_remote_dir.zsh.150.helper/tab_to_insert": {
   "kind": "ms",
   "lower": 242.2,
@@ -122,6 +138,22 @@
   "upper": 107.8,
   "values": [
    107.5
+  ]
+ },
+ "macos/agent/lab_tab_remote_dir.zshc.150.nohelper/tab_to_insert": {
+  "kind": "ms",
+  "lower": 245.2,
+  "mad": 0.0,
+  "median": 245.2,
+  "n": 1,
+  "provisional": true,
+  "runs": [
+   "2026-11-14_build_r31b_3069275695"
+  ],
+  "set_by": "data",
+  "upper": 245.5,
+  "values": [
+   245.2
   ]
  },
  "macos/agent/latency_enter/enter_to_start": {
@@ -404,32 +436,32 @@
  },
  "macos/agent/subshell_ready_rc_clear/clear_inner_line_after_enter_s": {
   "kind": "s",
-  "lower": 0.75,
-  "mad": 0.11,
+  "lower": 0.0,
+  "mad": 0.14,
   "median": 1.09,
   "n": 8,
   "provisional": false,
   "runs": [
-   "2026-11-10_build_r10a_3048440714",
    "2026-11-10_build_r11a_3049602519",
    "2026-11-10_build_r12a_3050758880",
    "2026-11-10_build_r13a_3051722998",
    "2026-11-12_build_r24a_3057403889",
    "2026-11-12_build_r27a_3060739487",
    "2026-11-13_build_r29a_3062372705",
-   "2026-11-13_build_r30b_3065705355"
+   "2026-11-13_build_r30b_3065705355",
+   "2026-11-14_build_r31b_3069275695"
   ],
   "set_by": "data",
   "upper": 1.32,
   "values": [
-   1.0,
    1.02,
    1.02,
    0.96,
    1.23,
    1.32,
    1.28,
-   1.17
+   1.17,
+   0.0
   ]
  },
  "macos/agent/subshell_ready_rc_questions/rcq_inner_line_after_enter_s": {
@@ -872,6 +904,22 @@
    52.6
   ]
  },
+ "macos/terminal/lab_tab_remote_dir.p_slowrc.lan.nohelper/tab_to_insert": {
+  "kind": "ms",
+  "lower": 162.5,
+  "mad": 0.0,
+  "median": 162.5,
+  "n": 1,
+  "provisional": true,
+  "runs": [
+   "2026-11-14_build_r31b_3069275695"
+  ],
+  "set_by": "data",
+  "upper": 162.8,
+  "values": [
+   162.5
+  ]
+ },
  "macos/terminal/lab_tab_remote_dir.zsh.150.helper/tab_to_insert": {
   "kind": "ms",
   "lower": 243.3,
@@ -934,6 +982,22 @@
   "upper": 109.4,
   "values": [
    109.1
+  ]
+ },
+ "macos/terminal/lab_tab_remote_dir.zshc.150.nohelper/tab_to_insert": {
+  "kind": "ms",
+  "lower": 234.8,
+  "mad": 0.0,
+  "median": 234.8,
+  "n": 1,
+  "provisional": true,
+  "runs": [
+   "2026-11-14_build_r31b_3069275695"
+  ],
+  "set_by": "data",
+  "upper": 235.1,
+  "values": [
+   234.8
   ]
  },
  "macos/terminal/latency_enter/enter_to_start": {
@@ -1222,32 +1286,32 @@
  },
  "macos/terminal/subshell_ready_rc_clear/clear_inner_line_after_enter_s": {
   "kind": "s",
-  "lower": 0.76,
-  "mad": 0.12,
+  "lower": 0.0,
+  "mad": 0.14,
   "median": 1.11,
   "n": 8,
   "provisional": false,
   "runs": [
-   "2026-11-10_build_r10a_3048440714",
    "2026-11-10_build_r11a_3049602519",
    "2026-11-10_build_r12a_3050758880",
    "2026-11-10_build_r13a_3051722998",
    "2026-11-12_build_r24a_3057403889",
    "2026-11-12_build_r27a_3060739487",
    "2026-11-13_build_r29a_3062372705",
-   "2026-11-13_build_r30b_3065705355"
+   "2026-11-13_build_r30b_3065705355",
+   "2026-11-14_build_r31b_3069275695"
   ],
   "set_by": "data",
   "upper": 1.3,
   "values": [
-   1.0,
    1.0,
    0.96,
    1.0,
    1.27,
    1.22,
    1.28,
-   1.23
+   1.23,
+   0.0
   ]
  },
  "macos/terminal/subshell_ready_rc_questions/rcq_inner_line_after_enter_s": {
@@ -1368,6 +1432,86 @@
    -0.06,
    0.31,
    0.3
+  ]
+ },
+ "wayland/agent/lab_tab_remote_dir.bash.150.nohelper/tab_to_insert": {
+  "kind": "ms",
+  "lower": 242.0,
+  "mad": 0.0,
+  "median": 242.0,
+  "n": 1,
+  "provisional": true,
+  "runs": [
+   "2026-11-14_build_r31b_3069275695"
+  ],
+  "set_by": "data",
+  "upper": 242.3,
+  "values": [
+   242.0
+  ]
+ },
+ "wayland/agent/lab_tab_remote_dir.fish.150.nohelper/tab_to_insert": {
+  "kind": "ms",
+  "lower": 248.9,
+  "mad": 0.0,
+  "median": 248.9,
+  "n": 1,
+  "provisional": true,
+  "runs": [
+   "2026-11-14_build_r31b_3069275695"
+  ],
+  "set_by": "data",
+  "upper": 249.2,
+  "values": [
+   248.9
+  ]
+ },
+ "wayland/agent/lab_tab_remote_dir.p_slowrc.150.nohelper/tab_to_insert": {
+  "kind": "ms",
+  "lower": 263.9,
+  "mad": 0.0,
+  "median": 263.9,
+  "n": 1,
+  "provisional": true,
+  "runs": [
+   "2026-11-14_build_r31b_3069275695"
+  ],
+  "set_by": "data",
+  "upper": 264.2,
+  "values": [
+   263.9
+  ]
+ },
+ "wayland/agent/lab_tab_remote_dir.p_slowrc.lan.nohelper/tab_to_insert": {
+  "kind": "ms",
+  "lower": 109.5,
+  "mad": 0.0,
+  "median": 109.5,
+  "n": 1,
+  "provisional": true,
+  "runs": [
+   "2026-11-14_build_r31b_3069275695"
+  ],
+  "set_by": "data",
+  "upper": 109.8,
+  "values": [
+   109.5
+  ]
+ },
+ "wayland/agent/lab_tab_remote_dir.zshc.150.nohelper/tab_to_insert": {
+  "kind": "ms",
+  "lower": 218.7,
+  "mad": 0.0,
+  "median": 218.7,
+  "n": 1,
+  "provisional": true,
+  "runs": [
+   "2026-11-14_build_r31b_3069275695"
+  ],
+  "set_by": "data",
+  "upper": 219.0,
+  "values": [
+   218.7
   ]
  },
  "wayland/agent/latency_enter/enter_to_start": {
@@ -1630,32 +1774,32 @@
  },
  "wayland/agent/subshell_ready_rc_clear/clear_inner_line_after_enter_s": {
   "kind": "s",
-  "lower": 0.47,
+  "lower": 0.0,
   "mad": 0.08,
   "median": 0.7,
   "n": 8,
   "provisional": false,
   "runs": [
-   "2026-11-10_build_r10a_3048440714",
    "2026-11-10_build_r11a_3049602519",
    "2026-11-10_build_r12a_3050758880",
    "2026-11-10_build_r13a_3051722998",
    "2026-11-12_build_r24a_3057403889",
    "2026-11-12_build_r27a_3060739487",
    "2026-11-13_build_r29a_3062372705",
-   "2026-11-13_build_r30b_3065705355"
+   "2026-11-13_build_r30b_3065705355",
+   "2026-11-14_build_r31b_3069275695"
   ],
   "set_by": "data",
   "upper": 0.95,
   "values": [
-   0.6,
    0.65,
    0.65,
    0.65,
    0.75,
    0.85,
    0.8,
-   0.8
+   0.8,
+   0.0
   ]
  },
  "wayland/agent/subshell_ready_rc_questions/rcq_inner_line_after_enter_s": {
@@ -1998,6 +2142,86 @@
    142.3
   ]
  },
+ "wayland/terminal/lab_tab_remote_dir.bash.150.nohelper/tab_to_insert": {
+  "kind": "ms",
+  "lower": 258.1,
+  "mad": 0.0,
+  "median": 258.1,
+  "n": 1,
+  "provisional": true,
+  "runs": [
+   "2026-11-14_build_r31b_3069275695"
+  ],
+  "set_by": "data",
+  "upper": 258.4,
+  "values": [
+   258.1
+  ]
+ },
+ "wayland/terminal/lab_tab_remote_dir.fish.150.nohelper/tab_to_insert": {
+  "kind": "ms",
+  "lower": 222.3,
+  "mad": 0.0,
+  "median": 222.3,
+  "n": 1,
+  "provisional": true,
+  "runs": [
+   "2026-11-14_build_r31b_3069275695"
+  ],
+  "set_by": "data",
+  "upper": 222.6,
+  "values": [
+   222.3
+  ]
+ },
+ "wayland/terminal/lab_tab_remote_dir.p_slowrc.150.nohelper/tab_to_insert": {
+  "kind": "ms",
+  "lower": 237.6,
+  "mad": 0.0,
+  "median": 237.6,
+  "n": 1,
+  "provisional": true,
+  "runs": [
+   "2026-11-14_build_r31b_3069275695"
+  ],
+  "set_by": "data",
+  "upper": 237.9,
+  "values": [
+   237.6
+  ]
+ },
+ "wayland/terminal/lab_tab_remote_dir.p_slowrc.lan.nohelper/tab_to_insert": {
+  "kind": "ms",
+  "lower": 107.2,
+  "mad": 0.0,
+  "median": 107.2,
+  "n": 1,
+  "provisional": true,
+  "runs": [
+   "2026-11-14_build_r31b_3069275695"
+  ],
+  "set_by": "data",
+  "upper": 107.5,
+  "values": [
+   107.2
+  ]
+ },
+ "wayland/terminal/lab_tab_remote_dir.zshc.150.nohelper/tab_to_insert": {
+  "kind": "ms",
+  "lower": 216.1,
+  "mad": 0.0,
+  "median": 216.1,
+  "n": 1,
+  "provisional": true,
+  "runs": [
+   "2026-11-14_build_r31b_3069275695"
+  ],
+  "set_by": "data",
+  "upper": 216.4,
+  "values": [
+   216.1
+  ]
+ },
  "wayland/terminal/latency_enter/enter_to_start": {
   "kind": "ms",
   "lower": 1.69,
@@ -2258,20 +2482,20 @@
  },
  "wayland/terminal/subshell_ready_rc_clear/clear_inner_line_after_enter_s": {
   "kind": "s",
-  "lower": 0.5,
+  "lower": 0.0,
   "mad": 0.08,
   "median": 0.73,
   "n": 8,
   "provisional": false,
   "runs": [
-   "2026-11-10_build_r10a_3048440714",
    "2026-11-10_build_r11a_3049602519",
    "2026-11-10_build_r12a_3050758880",
    "2026-11-10_build_r13a_3051722998",
    "2026-11-12_build_r24a_3057403889",
    "2026-11-12_build_r27a_3060739487",
    "2026-11-13_build_r29a_3062372705",
-   "2026-11-13_build_r30b_3065705355"
+   "2026-11-13_build_r30b_3065705355",
+   "2026-11-14_build_r31b_3069275695"
   ],
   "set_by": "data",
   "upper": 0.95,
@@ -2279,11 +2503,11 @@
    0.65,
    0.65,
    0.65,
-   0.65,
    0.8,
    0.8,
    0.8,
-   0.8
+   0.8,
+   0.0
   ]
  },
  "wayland/terminal/subshell_ready_rc_questions/rcq_inner_line_after_enter_s": {

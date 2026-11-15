@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="appci-linux-wayland" tests="16" failures="2" skipped="0">
+<testcase classname="terminal" name="mode_proof" time="1.50">
+</testcase>
+<testcase classname="terminal" name="key_loss_control" time="90.30">
+</testcase>
+<testcase classname="terminal" name="enter_loss_control" time="64.30">
+</testcase>
+<testcase classname="terminal" name="fast_typing" time="57.70">
+</testcase>
+<testcase classname="terminal" name="expert_fuzz" time="22.70">
+</testcase>
+<testcase classname="terminal" name="subshell_ready_rc_clear" time="13.00">
+</testcase>
+<testcase classname="terminal" name="ssh_drop_reconnect" time="73.00">
+</testcase>
+<testcase classname="terminal" name="scroll_keys_position" time="24.40">
+<failure message="after one typed key none of the job's last lines is on screen: the key did not bring the view back to the bottom (the job's last 8 lines were looked for; shots/*skp_5_after_key.png)">after one typed key none of the job's last lines is on screen: the key did not bring the view back to the bottom (the job's last 8 lines were looked for; shots/*skp_5_after_key.png)
+injector accounting: injector sent 194; app saw 194; lost-before-app 0 (Enter: sent 3, app saw 3); of the app's: 180 unbound keydown/typed, 11 taken by a key binding, 3 Enter by a binding
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 3 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="terminal" name="restore_shows_history" time="89.20">
+</testcase>
+<testcase classname="agent" name="mode_proof" time="0.60">
+</testcase>
+<testcase classname="agent" name="fast_typing" time="57.20">
+</testcase>
+<testcase classname="agent" name="expert_fuzz" time="21.60">
+</testcase>
+<testcase classname="agent" name="subshell_ready_rc_clear" time="12.90">
+</testcase>
+<testcase classname="agent" name="scroll_keys_position" time="23.80">
+<failure message="after one typed key none of the job's last lines is on screen: the key did not bring the view back to the bottom (the job's last 8 lines were looked for; shots/*skp_5_after_key.png)">after one typed key none of the job's last lines is on screen: the key did not bring the view back to the bottom (the job's last 8 lines were looked for; shots/*skp_5_after_key.png)
+injector accounting: injector sent 191; app saw 191; lost-before-app 0 (Enter: sent 3, app saw 3); of the app's: 178 unbound keydown/typed, 10 taken by a key binding, 3 Enter by a binding
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 3 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="agent" name="agent_bg_job_output" time="9.60">
+</testcase>
+<testcase classname="agent" name="restore_shows_history" time="114.20">
+</testcase>
+</testsuite>

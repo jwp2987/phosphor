@@ -1,0 +1,89 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="appci-windows" tests="29" failures="4" skipped="12">
+<testcase classname="terminal" name="lab_path_detect.p_exec.lan.nohelper" time="0.00">
+<skipped message="not run in the PowerShell pane: the lab cases use the local shell's rec.log / prompt.log and bash syntax: they run in the Git Bash pane"/>
+</testcase>
+<testcase classname="terminal" name="lab_chips.bash.lan.nohelper" time="0.00">
+<skipped message="not run in the PowerShell pane: the lab cases use the local shell's rec.log / prompt.log and bash syntax: they run in the Git Bash pane"/>
+</testcase>
+<testcase classname="terminal" name="lab_connect_typeahead.bash.lan.nohelper" time="0.00">
+<skipped message="not run in the PowerShell pane: the lab cases use the local shell's rec.log / prompt.log and bash syntax: they run in the Git Bash pane"/>
+</testcase>
+<testcase classname="terminal" name="lab_connect_typeahead.bash.150.nohelper" time="0.00">
+<skipped message="not run in the PowerShell pane: the lab cases use the local shell's rec.log / prompt.log and bash syntax: they run in the Git Bash pane"/>
+</testcase>
+<testcase classname="terminal" name="lab_connect_typeahead.bash.lan.helper" time="0.00">
+<skipped message="not run in the PowerShell pane: the lab cases use the local shell's rec.log / prompt.log and bash syntax: they run in the Git Bash pane"/>
+</testcase>
+<testcase classname="terminal" name="lab_connect_typeahead.bash.150.helper" time="0.00">
+<skipped message="not run in the PowerShell pane: the lab cases use the local shell's rec.log / prompt.log and bash syntax: they run in the Git Bash pane"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="key_delivery" time="0.00">
+</testcase>
+<testcase classname="terminal@gitbash" name="lab_path_detect.p_exec.lan.nohelper" time="73.00">
+<failure message="p_exec's profile execs zsh: the app log must say the zsh replaced the pending bash and took over its ssh session (#2155); it says: no such line">p_exec's profile execs zsh: the app log must say the zsh replaced the pending bash and took over its ssh session (#2155); it says: no such line
+injector accounting: injector sent 232; app saw 232; lost-before-app 0 (Enter: sent 7, app saw 7); of the app's: 219 unbound keydown/typed, 6 taken by a key binding, 7 Enter by a binding
+pty writes: 37, of which carrying a CR (\r): 2; Enter(s) the input editor started: 7 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="terminal@gitbash" name="lab_chips.bash.lan.nohelper" time="12.40">
+<failure message="the app log has no update_chip_value ShellGitBranch -&gt; brt8ogubbb line: the chip never took the branch">the app log has no update_chip_value ShellGitBranch -&gt; brt8ogubbb line: the chip never took the branch
+no side call at all with no helper: where did the branch chip come from?
+side-call producers (#2156): shell exec lines by producer: none; prompts the app ran a batch for: []
+injector accounting: injector sent 228; app saw 228; lost-before-app 0 (Enter: sent 7, app saw 7); of the app's: 217 unbound keydown/typed, 4 taken by a key binding, 7 Enter by a binding
+pty writes: 21, of which carrying a CR (\r): 0; Enter(s) the input editor started: 7 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="terminal@gitbash" name="lab_connect_typeahead.bash.lan.nohelper" time="32.70">
+</testcase>
+<testcase classname="terminal@gitbash" name="lab_connect_typeahead.bash.150.nohelper" time="50.60">
+</testcase>
+<testcase classname="terminal@gitbash" name="lab_connect_typeahead.bash.lan.helper" time="39.60">
+</testcase>
+<testcase classname="terminal@gitbash" name="lab_connect_typeahead.bash.150.helper" time="49.10">
+</testcase>
+<testcase classname="agent" name="lab_path_detect.p_exec.lan.nohelper" time="0.00">
+<skipped message="not run in the PowerShell pane: the lab cases use the local shell's rec.log / prompt.log and bash syntax: they run in the Git Bash pane"/>
+</testcase>
+<testcase classname="agent" name="lab_chips.bash.lan.nohelper" time="0.00">
+<skipped message="not run in the PowerShell pane: the lab cases use the local shell's rec.log / prompt.log and bash syntax: they run in the Git Bash pane"/>
+</testcase>
+<testcase classname="agent" name="lab_connect_typeahead.bash.lan.nohelper" time="0.00">
+<skipped message="not run in the PowerShell pane: the lab cases use the local shell's rec.log / prompt.log and bash syntax: they run in the Git Bash pane"/>
+</testcase>
+<testcase classname="agent" name="lab_connect_typeahead.bash.150.nohelper" time="0.00">
+<skipped message="not run in the PowerShell pane: the lab cases use the local shell's rec.log / prompt.log and bash syntax: they run in the Git Bash pane"/>
+</testcase>
+<testcase classname="agent" name="lab_connect_typeahead.bash.lan.helper" time="0.00">
+<skipped message="not run in the PowerShell pane: the lab cases use the local shell's rec.log / prompt.log and bash syntax: they run in the Git Bash pane"/>
+</testcase>
+<testcase classname="agent" name="lab_connect_typeahead.bash.150.helper" time="0.00">
+<skipped message="not run in the PowerShell pane: the lab cases use the local shell's rec.log / prompt.log and bash syntax: they run in the Git Bash pane"/>
+</testcase>
+<testcase classname="agent@gitbash" name="key_delivery" time="0.00">
+</testcase>
+<testcase classname="agent@gitbash" name="lab_path_detect.p_exec.lan.nohelper" time="73.70">
+<failure message="p_exec's profile execs zsh: the app log must say the zsh replaced the pending bash and took over its ssh session (#2155); it says: no such line">p_exec's profile execs zsh: the app log must say the zsh replaced the pending bash and took over its ssh session (#2155); it says: no such line
+injector accounting: injector sent 232; app saw 232; lost-before-app 0 (Enter: sent 7, app saw 7); of the app's: 219 unbound keydown/typed, 6 taken by a key binding, 7 Enter by a binding
+pty writes: 35, of which carrying a CR (\r): 2; Enter(s) the input editor started: 7 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="agent@gitbash" name="lab_chips.bash.lan.nohelper" time="12.50">
+<failure message="the app log has no update_chip_value ShellGitBranch -&gt; brt8ogubbb line: the chip never took the branch">the app log has no update_chip_value ShellGitBranch -&gt; brt8ogubbb line: the chip never took the branch
+no side call at all with no helper: where did the branch chip come from?
+side-call producers (#2156): shell exec lines by producer: none; prompts the app ran a batch for: []
+injector accounting: injector sent 228; app saw 228; lost-before-app 0 (Enter: sent 7, app saw 7); of the app's: 217 unbound keydown/typed, 4 taken by a key binding, 7 Enter by a binding
+pty writes: 20, of which carrying a CR (\r): 0; Enter(s) the input editor started: 7 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="agent@gitbash" name="lab_connect_typeahead.bash.lan.nohelper" time="32.60">
+</testcase>
+<testcase classname="agent@gitbash" name="lab_connect_typeahead.bash.150.nohelper" time="51.00">
+</testcase>
+<testcase classname="agent@gitbash" name="lab_connect_typeahead.bash.lan.helper" time="38.20">
+</testcase>
+<testcase classname="agent@gitbash" name="agent_view_not_restored_after_lab_connect_typeahead.bash.lan.helper" time="0.00">
+</testcase>
+<testcase classname="agent@gitbash" name="key_delivery" time="0.00">
+</testcase>
+<testcase classname="agent@gitbash" name="lab_connect_typeahead.bash.150.helper" time="49.40">
+</testcase>
+<testcase classname="-" name="restore" time="0.00">
+</testcase>
+</testsuite>

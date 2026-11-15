@@ -1,0 +1,102 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="appci-linux-wayland" tests="38" failures="4" skipped="11">
+<testcase classname="terminal" name="lab_tab_remote_dir.bash.150.nohelper" time="16.40">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: Tab -&gt; insert took 258 ms (RTT 150 ms): no band yet for wayland/terminal/lab_tab_remote_dir.bash.150.nohelper/tab_to_insert (a new metric or pane: NOREF, not a pass) "/>
+</testcase>
+<testcase classname="terminal" name="lab_tab_remote_dir.zshc.150.nohelper" time="17.30">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: Tab -&gt; insert took 216 ms (RTT 150 ms): no band yet for wayland/terminal/lab_tab_remote_dir.zshc.150.nohelper/tab_to_insert (a new metric or pane: NOREF, not a pass) "/>
+</testcase>
+<testcase classname="terminal" name="lab_tab_remote_dir.fish.150.nohelper" time="17.60">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: Tab -&gt; insert took 222 ms (RTT 150 ms): no band yet for wayland/terminal/lab_tab_remote_dir.fish.150.nohelper/tab_to_insert (a new metric or pane: NOREF, not a pass) "/>
+</testcase>
+<testcase classname="terminal" name="lab_tab_remote_dir.p_slowrc.lan.nohelper" time="26.30">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: Tab -&gt; insert took 107 ms (RTT 0 ms): no band yet for wayland/terminal/lab_tab_remote_dir.p_slowrc.lan.nohelper/tab_to_insert (a new metric or pane: NOREF, not a pass"/>
+</testcase>
+<testcase classname="terminal" name="lab_tab_remote_dir.p_slowrc.150.nohelper" time="29.30">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: Tab -&gt; insert took 238 ms (RTT 150 ms): no band yet for wayland/terminal/lab_tab_remote_dir.p_slowrc.150.nohelper/tab_to_insert (a new metric or pane: NOREF, not a pa"/>
+</testcase>
+<testcase classname="terminal" name="lab_path_detect.p_exec.lan.nohelper" time="7.70">
+</testcase>
+<testcase classname="terminal" name="lab_chips.bash.lan.nohelper" time="6.60">
+</testcase>
+<testcase classname="terminal" name="lab_chips.zsh.lan.nohelper" time="6.80">
+</testcase>
+<testcase classname="terminal" name="lab_connect_typeahead.bash.lan.nohelper" time="24.50">
+</testcase>
+<testcase classname="terminal" name="lab_connect_typeahead.bash.150.nohelper" time="42.30">
+</testcase>
+<testcase classname="terminal" name="lab_tab_no_helper.bash.lan.nohelper" time="17.90">
+</testcase>
+<testcase classname="terminal" name="lab_tab_no_helper.bash.150.nohelper" time="24.20">
+</testcase>
+<testcase classname="terminal" name="lab_tab_no_helper.zsh.lan.nohelper" time="16.80">
+<failure message="zsh without compinit answers an in-band Tab with nothing by design (#2174), so the completer answers: 0 candidate line(s), 0 empty answer(s)">zsh without compinit answers an in-band Tab with nothing by design (#2174), so the completer answers: 0 candidate line(s), 0 empty answer(s)
+injector accounting: injector sent 348; app saw 348; lost-before-app 0 (Enter: sent 12, app saw 12); of the app's: 328 unbound keydown/typed, 8 taken by a key binding, 12 Enter by a binding
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 12 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="terminal" name="lab_tab_no_helper.zsh.150.nohelper" time="25.20">
+<failure message="zsh without compinit answers an in-band Tab with nothing by design (#2174), so the completer answers: 0 candidate line(s), 0 empty answer(s)">zsh without compinit answers an in-band Tab with nothing by design (#2174), so the completer answers: 0 candidate line(s), 0 empty answer(s)
+injector accounting: injector sent 348; app saw 348; lost-before-app 0 (Enter: sent 12, app saw 12); of the app's: 328 unbound keydown/typed, 8 taken by a key binding, 12 Enter by a binding
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 14 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="terminal" name="lab_tab_no_helper.zshc.lan.nohelper" time="17.20">
+</testcase>
+<testcase classname="terminal" name="lab_tab_no_helper.zshc.150.nohelper" time="24.90">
+</testcase>
+<testcase classname="terminal" name="lab_connect_typeahead.bash.lan.helper" time="35.40">
+</testcase>
+<testcase classname="terminal" name="lab_connect_typeahead.bash.150.helper" time="39.60">
+</testcase>
+<testcase classname="agent" name="lab_tab_remote_dir.bash.150.nohelper" time="16.50">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: Tab -&gt; insert took 242 ms (RTT 150 ms): no band yet for wayland/agent/lab_tab_remote_dir.bash.150.nohelper/tab_to_insert (a new metric or pane: NOREF, not a pass) [wa"/>
+</testcase>
+<testcase classname="agent" name="lab_tab_remote_dir.zshc.150.nohelper" time="17.30">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: Tab -&gt; insert took 219 ms (RTT 150 ms): no band yet for wayland/agent/lab_tab_remote_dir.zshc.150.nohelper/tab_to_insert (a new metric or pane: NOREF, not a pass) [wa"/>
+</testcase>
+<testcase classname="agent" name="lab_tab_remote_dir.fish.150.nohelper" time="17.60">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: Tab -&gt; insert took 249 ms (RTT 150 ms): no band yet for wayland/agent/lab_tab_remote_dir.fish.150.nohelper/tab_to_insert (a new metric or pane: NOREF, not a pass) [wa"/>
+</testcase>
+<testcase classname="agent" name="lab_tab_remote_dir.p_slowrc.lan.nohelper" time="26.20">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: Tab -&gt; insert took 110 ms (RTT 0 ms): no band yet for wayland/agent/lab_tab_remote_dir.p_slowrc.lan.nohelper/tab_to_insert (a new metric or pane: NOREF, not a pass) ["/>
+</testcase>
+<testcase classname="agent" name="lab_tab_remote_dir.p_slowrc.150.nohelper" time="29.50">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: Tab -&gt; insert took 264 ms (RTT 150 ms): no band yet for wayland/agent/lab_tab_remote_dir.p_slowrc.150.nohelper/tab_to_insert (a new metric or pane: NOREF, not a pass)"/>
+</testcase>
+<testcase classname="agent" name="lab_path_detect.p_exec.lan.nohelper" time="7.80">
+</testcase>
+<testcase classname="agent" name="lab_chips.bash.lan.nohelper" time="6.70">
+</testcase>
+<testcase classname="agent" name="lab_chips.zsh.lan.nohelper" time="6.80">
+</testcase>
+<testcase classname="agent" name="lab_connect_typeahead.bash.lan.nohelper" time="24.50">
+</testcase>
+<testcase classname="agent" name="lab_connect_typeahead.bash.150.nohelper" time="42.30">
+</testcase>
+<testcase classname="agent" name="lab_tab_no_helper.bash.lan.nohelper" time="17.70">
+</testcase>
+<testcase classname="agent" name="lab_tab_no_helper.bash.150.nohelper" time="24.10">
+</testcase>
+<testcase classname="agent" name="lab_tab_no_helper.zsh.lan.nohelper" time="16.90">
+<failure message="zsh without compinit answers an in-band Tab with nothing by design (#2174), so the completer answers: 0 candidate line(s), 0 empty answer(s)">zsh without compinit answers an in-band Tab with nothing by design (#2174), so the completer answers: 0 candidate line(s), 0 empty answer(s)
+injector accounting: injector sent 348; app saw 348; lost-before-app 0 (Enter: sent 12, app saw 12); of the app's: 328 unbound keydown/typed, 8 taken by a key binding, 12 Enter by a binding
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 12 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="agent" name="lab_tab_no_helper.zsh.150.nohelper" time="25.30">
+<failure message="zsh without compinit answers an in-band Tab with nothing by design (#2174), so the completer answers: 0 candidate line(s), 0 empty answer(s)">zsh without compinit answers an in-band Tab with nothing by design (#2174), so the completer answers: 0 candidate line(s), 0 empty answer(s)
+injector accounting: injector sent 348; app saw 348; lost-before-app 0 (Enter: sent 12, app saw 12); of the app's: 328 unbound keydown/typed, 8 taken by a key binding, 12 Enter by a binding
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 15 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="agent" name="lab_tab_no_helper.zshc.lan.nohelper" time="17.30">
+</testcase>
+<testcase classname="agent" name="lab_tab_no_helper.zshc.150.nohelper" time="24.70">
+</testcase>
+<testcase classname="agent" name="lab_agent_nld_predict_ssh.bash.lan.nohelper" time="28.90">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: UNVERIFIABLE: the LOCAL control produced no nld_predict request, so none in the ssh session proves nothing"/>
+</testcase>
+<testcase classname="agent" name="lab_connect_typeahead.bash.lan.helper" time="35.60">
+</testcase>
+<testcase classname="agent" name="agent_view_not_restored_after_lab_connect_typeahead.bash.lan.helper" time="0.00">
+</testcase>
+<testcase classname="agent" name="lab_connect_typeahead.bash.150.helper" time="38.80">
+</testcase>
+</testsuite>

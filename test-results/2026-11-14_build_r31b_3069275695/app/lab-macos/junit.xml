@@ -1,0 +1,91 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="appci-macos" tests="31" failures="6" skipped="4">
+<testcase classname="terminal" name="lab_tab_remote_dir.zshc.150.nohelper" time="23.00">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: Tab -&gt; insert took 235 ms (RTT 150 ms): no band yet for macos/terminal/lab_tab_remote_dir.zshc.150.nohelper/tab_to_insert (a new metric or pane: NOREF, not a pass) [m"/>
+</testcase>
+<testcase classname="terminal" name="lab_tab_remote_dir.p_slowrc.lan.nohelper" time="29.50">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: Tab -&gt; insert took 162 ms (RTT 0 ms): no band yet for macos/terminal/lab_tab_remote_dir.p_slowrc.lan.nohelper/tab_to_insert (a new metric or pane: NOREF, not a pass) "/>
+</testcase>
+<testcase classname="terminal" name="lab_path_detect.p_exec.lan.nohelper" time="11.20">
+</testcase>
+<testcase classname="terminal" name="lab_chips.zsh.lan.nohelper" time="11.80">
+</testcase>
+<testcase classname="terminal" name="lab_chips.zsh.150.nohelper" time="16.40">
+<failure message="3 side-call exec channels for 1 prompt(s): the app must batch to at most one per prompt">3 side-call exec channels for 1 prompt(s): the app must batch to at most one per prompt
+exec_channel_timeline (s after the window opened, backend_route lines logged by then): 0.24/0, 0.24/0, 1.79/1
+side-call producers (#2156): shell exec lines by producer: none; prompts the app ran a batch for: []
+injector accounting: injector sent 90; app saw 90; lost-before-app 0 (Enter: sent 4, app saw 4); of the app's: 82 unbound keydown/typed, 2 taken by a key binding, 4 Enter by a binding; macOS: 90 key-down(s) reached NSApplication, 90 dispatched as key events (2 of them a menu key equivalent), 0 not (0 Cmd chord(s) injected)
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 4 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="terminal" name="lab_connect_typeahead.zsh.lan.nohelper" time="31.50">
+</testcase>
+<testcase classname="terminal" name="lab_connect_typeahead.zsh.150.nohelper" time="50.20">
+</testcase>
+<testcase classname="terminal" name="lab_tab_no_helper.bash.lan.nohelper" time="23.50">
+</testcase>
+<testcase classname="terminal" name="lab_tab_no_helper.bash.150.nohelper" time="30.60">
+</testcase>
+<testcase classname="terminal" name="lab_tab_no_helper.zsh.lan.nohelper" time="23.40">
+<failure message="zsh without compinit answers an in-band Tab with nothing by design (#2174), so the completer answers: 0 candidate line(s), 0 empty answer(s)">zsh without compinit answers an in-band Tab with nothing by design (#2174), so the completer answers: 0 candidate line(s), 0 empty answer(s)
+injector accounting: injector sent 348; app saw 348; lost-before-app 0 (Enter: sent 12, app saw 12); of the app's: 328 unbound keydown/typed, 6 taken by a key binding, 12 Enter by a binding; macOS: 348 key-down(s) reached NSApplication, 348 dispatched as key events (2 of them a menu key equivalent), 0 not (0 Cmd chord(s) injected)
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 12 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="terminal" name="lab_tab_no_helper.zsh.150.nohelper" time="30.30">
+<failure message="zsh without compinit answers an in-band Tab with nothing by design (#2174), so the completer answers: 0 candidate line(s), 0 empty answer(s)">zsh without compinit answers an in-band Tab with nothing by design (#2174), so the completer answers: 0 candidate line(s), 0 empty answer(s)
+injector accounting: injector sent 348; app saw 348; lost-before-app 0 (Enter: sent 12, app saw 12); of the app's: 328 unbound keydown/typed, 6 taken by a key binding, 12 Enter by a binding; macOS: 348 key-down(s) reached NSApplication, 348 dispatched as key events (2 of them a menu key equivalent), 0 not (0 Cmd chord(s) injected)
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 12 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="terminal" name="lab_tab_no_helper.zshc.lan.nohelper" time="23.40">
+</testcase>
+<testcase classname="terminal" name="lab_tab_no_helper.zshc.150.nohelper" time="29.80">
+</testcase>
+<testcase classname="terminal" name="lab_connect_typeahead.zsh.lan.helper" time="35.30">
+</testcase>
+<testcase classname="terminal" name="lab_connect_typeahead.zsh.150.helper" time="48.40">
+</testcase>
+<testcase classname="agent" name="lab_tab_remote_dir.zshc.150.nohelper" time="22.30">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: Tab -&gt; insert took 245 ms (RTT 150 ms): no band yet for macos/agent/lab_tab_remote_dir.zshc.150.nohelper/tab_to_insert (a new metric or pane: NOREF, not a pass) [maco"/>
+</testcase>
+<testcase classname="agent" name="lab_tab_remote_dir.p_slowrc.lan.nohelper" time="25.60">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: Tab -&gt; insert took 161 ms (RTT 0 ms): no band yet for macos/agent/lab_tab_remote_dir.p_slowrc.lan.nohelper/tab_to_insert (a new metric or pane: NOREF, not a pass) [ma"/>
+</testcase>
+<testcase classname="agent" name="lab_path_detect.p_exec.lan.nohelper" time="11.20">
+</testcase>
+<testcase classname="agent" name="lab_chips.zsh.lan.nohelper" time="11.50">
+</testcase>
+<testcase classname="agent" name="lab_chips.zsh.150.nohelper" time="16.80">
+<failure message="3 side-call exec channels for 1 prompt(s): the app must batch to at most one per prompt">3 side-call exec channels for 1 prompt(s): the app must batch to at most one per prompt
+exec_channel_timeline (s after the window opened, backend_route lines logged by then): 0.02/0, 0.02/0, 1.76/1
+side-call producers (#2156): shell exec lines by producer: none; prompts the app ran a batch for: []
+injector accounting: injector sent 90; app saw 90; lost-before-app 0 (Enter: sent 4, app saw 4); of the app's: 82 unbound keydown/typed, 2 taken by a key binding, 4 Enter by a binding; macOS: 90 key-down(s) reached NSApplication, 90 dispatched as key events (2 of them a menu key equivalent), 0 not (0 Cmd chord(s) injected)
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 4 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="agent" name="lab_connect_typeahead.zsh.lan.nohelper" time="31.60">
+</testcase>
+<testcase classname="agent" name="lab_connect_typeahead.zsh.150.nohelper" time="49.80">
+</testcase>
+<testcase classname="agent" name="lab_tab_no_helper.bash.lan.nohelper" time="23.50">
+</testcase>
+<testcase classname="agent" name="lab_tab_no_helper.bash.150.nohelper" time="30.30">
+</testcase>
+<testcase classname="agent" name="lab_tab_no_helper.zsh.lan.nohelper" time="23.80">
+<failure message="zsh without compinit answers an in-band Tab with nothing by design (#2174), so the completer answers: 0 candidate line(s), 0 empty answer(s)">zsh without compinit answers an in-band Tab with nothing by design (#2174), so the completer answers: 0 candidate line(s), 0 empty answer(s)
+injector accounting: injector sent 348; app saw 348; lost-before-app 0 (Enter: sent 12, app saw 12); of the app's: 328 unbound keydown/typed, 6 taken by a key binding, 12 Enter by a binding; macOS: 348 key-down(s) reached NSApplication, 348 dispatched as key events (2 of them a menu key equivalent), 0 not (0 Cmd chord(s) injected)
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 12 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="agent" name="lab_tab_no_helper.zsh.150.nohelper" time="30.30">
+<failure message="zsh without compinit answers an in-band Tab with nothing by design (#2174), so the completer answers: 0 candidate line(s), 0 empty answer(s)">zsh without compinit answers an in-band Tab with nothing by design (#2174), so the completer answers: 0 candidate line(s), 0 empty answer(s)
+injector accounting: injector sent 348; app saw 348; lost-before-app 0 (Enter: sent 12, app saw 12); of the app's: 328 unbound keydown/typed, 6 taken by a key binding, 12 Enter by a binding; macOS: 348 key-down(s) reached NSApplication, 348 dispatched as key events (2 of them a menu key equivalent), 0 not (0 Cmd chord(s) injected)
+pty writes: 0, of which carrying a CR (\r): 0; Enter(s) the input editor started: 12 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)</failure>
+</testcase>
+<testcase classname="agent" name="lab_tab_no_helper.zshc.lan.nohelper" time="23.30">
+</testcase>
+<testcase classname="agent" name="lab_tab_no_helper.zshc.150.nohelper" time="30.10">
+</testcase>
+<testcase classname="agent" name="lab_connect_typeahead.zsh.lan.helper" time="35.10">
+</testcase>
+<testcase classname="agent" name="agent_view_not_restored_after_lab_connect_typeahead.zsh.lan.helper" time="0.00">
+</testcase>
+<testcase classname="agent" name="lab_connect_typeahead.zsh.150.helper" time="47.40">
+</testcase>
+</testsuite>

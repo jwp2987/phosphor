@@ -1,0 +1,884 @@
+{
+ "meta": {
+  "platform": "linux-wayland",
+  "backend": "wayland",
+  "app_display": "wayland",
+  "seed": "1",
+  "commit": "6936b7cf",
+  "sha": "6936b7cf2d8706e6acf95d65c1bb30e783f18c3b",
+  "owner_settings": "sha256 81d188e9844d",
+  "tier": "targeted",
+  "scale": "1",
+  "display_scale": "1",
+  "outputs": "1"
+ },
+ "generated": "2026-11-14T19:11:07-0600",
+ "summary": {
+  "pass": 14,
+  "fail": 2,
+  "skip": 0,
+  "noref": 0
+ },
+ "cases": [
+  {
+   "name": "mode_proof",
+   "mode": "terminal",
+   "status": "pass",
+   "ran_mode": "terminal",
+   "seconds": 1.5,
+   "evidence": [
+    "mode_proof: log_view_mode=terminal ocr_agent_markers=False ocr_terminal_hint=False queue_destination=table"
+   ],
+   "tainted": false,
+   "wall": [
+    1794704349.237,
+    1794704350.753
+   ],
+   "detail": [
+    "injector accounting: injector sent 1; app saw 1; lost-before-app 0 (Enter: sent 0, app saw 0); of the app's: 0 unbound keydown/typed, 1 taken by a key binding, 0 Enter by a binding"
+   ],
+   "metrics": {
+    "log_view_mode": "terminal",
+    "queue_destination": "table",
+    "ocr_agent_markers": false,
+    "ocr_terminal_hint": false,
+    "injector": {
+     "sent": 1,
+     "enters_sent": 0,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 1,
+     "unbound": 0,
+     "bound": 1,
+     "enters_bound": 0,
+     "seen": 1,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_mode_proof.png"
+   ]
+  },
+  {
+   "name": "key_loss_control",
+   "mode": "terminal",
+   "status": "pass",
+   "ran_mode": "terminal",
+   "seconds": 90.3,
+   "evidence": [
+    "enter_route: 36 Enter(s) reached the input editor: Shell=36 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794704351.405,
+    1794704441.747
+   ],
+   "detail": [
+    "injector mode: persistent (persistent = one session-long virtual keyboard, so 'unprimed' measures Phosphor itself; percall = a keyboard per wtype call, the #1414 artifact)",
+    "phosphor / perline-unprimed: first char lost on 0/12 lines, other bad 0, missing 0",
+    "phosphor / perline: first char lost on 0/12 lines, other bad 0, missing 0",
+    "phosphor / oneshot: first char lost on 0/12 lines, other bad 0, missing 0",
+    "reference / perline-unprimed: first char lost on 0/12 lines, other bad 0, missing 0",
+    "reference / perline: first char lost on 0/12 lines, other bad 0, missing 0",
+    "reference / oneshot: first char lost on 0/12 lines, other bad 0, missing 0",
+    "injector accounting: injector sent 1608; app saw 1608; lost-before-app 0 (Enter: sent 36, app saw 36); of the app's: 1564 unbound keydown/typed, 8 taken by a key binding, 36 Enter by a binding",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 36 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "key_loss": {
+     "variants": [
+      {
+       "target": "phosphor",
+       "inject": "perline-unprimed",
+       "n": 12,
+       "lost_first": 0,
+       "other_bad": 0,
+       "missing": 0
+      },
+      {
+       "target": "phosphor",
+       "inject": "perline",
+       "n": 12,
+       "lost_first": 0,
+       "other_bad": 0,
+       "missing": 0
+      },
+      {
+       "target": "phosphor",
+       "inject": "oneshot",
+       "n": 12,
+       "lost_first": 0,
+       "other_bad": 0,
+       "missing": 0
+      },
+      {
+       "target": "reference",
+       "inject": "perline-unprimed",
+       "n": 12,
+       "lost_first": 0,
+       "other_bad": 0,
+       "missing": 0
+      },
+      {
+       "target": "reference",
+       "inject": "perline",
+       "n": 12,
+       "lost_first": 0,
+       "other_bad": 0,
+       "missing": 0
+      },
+      {
+       "target": "reference",
+       "inject": "oneshot",
+       "n": 12,
+       "lost_first": 0,
+       "other_bad": 0,
+       "missing": 0
+      }
+     ],
+     "reference": "foot",
+     "injector_mode": "persistent"
+    },
+    "injector": {
+     "sent": 1608,
+     "enters_sent": 36,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 1608,
+     "unbound": 1564,
+     "bound": 8,
+     "enters_bound": 36,
+     "seen": 1608,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 36
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 36
+    }
+   },
+   "shots": [
+    "shots/terminal_key_loss_control.png"
+   ]
+  },
+  {
+   "name": "enter_loss_control",
+   "mode": "terminal",
+   "status": "pass",
+   "ran_mode": "terminal",
+   "seconds": 64.3,
+   "evidence": [],
+   "tainted": false,
+   "wall": [
+    1794704442.516,
+    1794704506.85
+   ],
+   "detail": [
+    "reference foot gap 0.00s: 0/30 lines missing (merged/lost Enter), 0 lines not received exactly, injector posted 30 Enters",
+    "reference foot gap 0.25s: 0/30 lines missing (merged/lost Enter), 0 lines not received exactly, injector posted 30 Enters",
+    "injector accounting: injector sent 2; app saw 2; lost-before-app 0 (Enter: sent 0, app saw 0); of the app's: 0 unbound keydown/typed, 2 taken by a key binding, 0 Enter by a binding"
+   ],
+   "metrics": {
+    "enter_control": {
+     "reference": "foot",
+     "runs": {
+      "0.0": {
+       "ref": "foot",
+       "n": 30,
+       "bad": 0,
+       "posted": 30,
+       "lines": 30,
+       "exact_bad": 0
+      },
+      "0.25": {
+       "ref": "foot",
+       "n": 30,
+       "bad": 0,
+       "posted": 30,
+       "lines": 30,
+       "exact_bad": 0
+      }
+     }
+    },
+    "injector": {
+     "sent": 2,
+     "enters_sent": 0,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 2,
+     "unbound": 0,
+     "bound": 2,
+     "enters_bound": 0,
+     "seen": 2,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 0
+    }
+   },
+   "shots": [
+    "shots/terminal_enter_loss_control.png"
+   ]
+  },
+  {
+   "name": "fast_typing",
+   "mode": "terminal",
+   "status": "pass",
+   "ran_mode": "terminal",
+   "seconds": 57.7,
+   "evidence": [
+    "enter_route: 60 Enter(s) reached the input editor: Shell=60 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,...]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794704507.613,
+    1794704565.277
+   ],
+   "detail": [
+    "injector accounting: injector sent 2072; app saw 2072; lost-before-app 0 (Enter: sent 60, app saw 60); of the app's: 2010 unbound keydown/typed, 2 taken by a key binding, 60 Enter by a binding",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 60 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "injector": {
+     "sent": 2072,
+     "enters_sent": 60,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 2072,
+     "unbound": 2010,
+     "bound": 2,
+     "enters_bound": 60,
+     "seen": 2072,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 60
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 60
+    }
+   },
+   "shots": [
+    "shots/terminal_fast_typing.png"
+   ]
+  },
+  {
+   "name": "expert_fuzz",
+   "mode": "terminal",
+   "status": "pass",
+   "ran_mode": "terminal",
+   "seconds": 22.7,
+   "evidence": [
+    "enter_route: 25 Enter(s) reached the input editor: Shell=25 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794704566.144,
+    1794704588.811
+   ],
+   "detail": [
+    "injector accounting: injector sent 721; app saw 721; lost-before-app 0 (Enter: sent 25, app saw 25); of the app's: 662 unbound keydown/typed, 34 taken by a key binding, 25 Enter by a binding",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 25 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "injector": {
+     "sent": 721,
+     "enters_sent": 25,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 721,
+     "unbound": 662,
+     "bound": 34,
+     "enters_bound": 25,
+     "seen": 721,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 25
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 25
+    }
+   },
+   "shots": [
+    "shots/terminal_expert_fuzz.png"
+   ]
+  },
+  {
+   "name": "subshell_ready_rc_clear",
+   "mode": "terminal",
+   "status": "pass",
+   "ran_mode": "terminal",
+   "seconds": 13.0,
+   "evidence": [
+    "enter_route: 7 Enter(s) reached the input editor: Shell=7 [Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794704589.693,
+    1794704602.69
+   ],
+   "detail": [
+    "clear: setup armed decision=Write(None); InitSubshell@17 ms, InitShell@46 ms, Bootstrapped@261 ms",
+    "the first inner line ran 0.00 s after its Enter (its history band replaces the fixed 2 s budget): band 0.5-0.95 from n=8 run(s) (median 0.73); 0 is below the band (an improvement) [wayland/terminal/subshell_ready_rc_clear/clear_inner_line_after_enter_s]",
+    "injector accounting: injector sent 260; app saw 260; lost-before-app 0 (Enter: sent 7, app saw 7); of the app's: 250 unbound keydown/typed, 3 taken by a key binding, 7 Enter by a binding",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 7 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "clear_inner_line_after_enter_s": 0.0,
+    "injector": {
+     "sent": 260,
+     "enters_sent": 7,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 260,
+     "unbound": 250,
+     "bound": 3,
+     "enters_bound": 7,
+     "seen": 260,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 7
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 7
+    }
+   },
+   "shots": [
+    "shots/terminal_subshell_ready_rc_clear.png"
+   ]
+  },
+  {
+   "name": "ssh_drop_reconnect",
+   "mode": "terminal",
+   "status": "pass",
+   "ran_mode": "terminal",
+   "seconds": 73.0,
+   "evidence": [
+    "enter_route: 60 Enter(s) reached the input editor: Shell=60 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,...]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794704604.709,
+    1794704677.685
+   ],
+   "detail": [
+    "injector accounting: injector sent 2313; app saw 2313; lost-before-app 0 (Enter: sent 60, app saw 60); of the app's: 2249 unbound keydown/typed, 4 taken by a key binding, 60 Enter by a binding",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 60 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "escape_connect_bare_log_quiet": false,
+    "escape_after_cleared_line_cr_hops": [
+     "2026-11-15T01:04:06Z [DEBUG] input_order hop=ssh_escape_cr added t=1794704646794.892"
+    ],
+    "injector": {
+     "sent": 2313,
+     "enters_sent": 60,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 2313,
+     "unbound": 2249,
+     "bound": 4,
+     "enters_bound": 60,
+     "seen": 2313,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 60
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 60
+    }
+   },
+   "shots": [
+    "shots/terminal_ssh_drop_reconnect.png"
+   ]
+  },
+  {
+   "name": "scroll_keys_position",
+   "mode": "terminal",
+   "status": "fail",
+   "ran_mode": "terminal",
+   "seconds": 24.4,
+   "evidence": [
+    "enter_route: 3 Enter(s) reached the input editor: Shell=3 [Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794704680.613,
+    1794704705.054
+   ],
+   "detail": [
+    "after one typed key none of the job's last lines is on screen: the key did not bring the view back to the bottom (the job's last 8 lines were looked for; shots/*skp_5_after_key.png)",
+    "injector accounting: injector sent 194; app saw 194; lost-before-app 0 (Enter: sent 3, app saw 3); of the app's: 180 unbound keydown/typed, 11 taken by a key binding, 3 Enter by a binding",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 3 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "skp_lines_read_at_bottom": 21,
+    "skp_stream_drawn": {
+     "state": "drawn",
+     "printed": 17,
+     "read_on_screen": 8
+    },
+    "skp_after_pageup": {
+     "first": 331,
+     "last": 442,
+     "read": 36
+    },
+    "skp_pageup_hold": {
+     "verdict": "pass",
+     "new_lines": 27,
+     "read_before": 36,
+     "read_after": 36
+    },
+    "skp_top_hold": {
+     "new_lines": 28,
+     "anchor_words": 50,
+     "kept": 1.0,
+     "stream_lines_on_screen": 0
+    },
+    "skp_tail_lines_on_screen_after_key": 0,
+    "injector": {
+     "sent": 194,
+     "enters_sent": 3,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 194,
+     "unbound": 180,
+     "bound": 11,
+     "enters_bound": 3,
+     "seen": 194,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 3
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 3
+    }
+   },
+   "shots": [
+    "shots/terminal_scroll_keys_position_FAIL.png"
+   ]
+  },
+  {
+   "name": "restore_shows_history",
+   "mode": "terminal",
+   "status": "pass",
+   "ran_mode": "terminal",
+   "seconds": 89.2,
+   "evidence": [],
+   "tainted": false,
+   "wall": [
+    1794704708.212,
+    1794704797.402
+   ],
+   "detail": [
+    "injector accounting: injector sent 420; app saw 420; lost-before-app 0 (Enter: sent 4, app saw 4); of the app's: 208 unbound keydown/typed, 208 taken by a key binding, 4 Enter by a binding"
+   ],
+   "metrics": {
+    "rs_setup_quit": {
+     "exited": true,
+     "confirm_to_exit_s": 0.14,
+     "total_s": 0.14,
+     "dialog": false,
+     "attempt": 0
+    },
+    "rs_quit": {
+     "exited": true,
+     "confirm_to_exit_s": 0.08,
+     "total_s": 0.08,
+     "dialog": false,
+     "attempt": 0
+    },
+    "rs_store": {
+     "after_stop": [
+      2,
+      1
+     ],
+     "after_relaunch": [
+      3,
+      1
+     ]
+    },
+    "find_after_restore": [
+     "result=scroll block=1 moved=false viewport_lines=52.11 rendered_mode=PinnedToBottom scroll_mode=PinnedToBottom agent_fullscreen=false match_line=30.42 block_visible=true from=FixedAtPosition { scroll_lines: ScrollTop(Lines(OrderedFloat(0.0))) } to=FixedAtPosition { scroll_lines: ScrollTop(Lines(OrderedFloat(0.0))) } t=1794704767596.361"
+    ],
+    "rs_cleanup_quit": {
+     "exited": true,
+     "confirm_to_exit_s": 0.09,
+     "total_s": 0.09,
+     "dialog": false,
+     "attempt": 0
+    },
+    "injector": {
+     "sent": 420,
+     "enters_sent": 4,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 420,
+     "unbound": 208,
+     "bound": 208,
+     "enters_bound": 4,
+     "seen": 420,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 4
+    }
+   },
+   "shots": [
+    "shots/terminal_restore_shows_history.png"
+   ]
+  },
+  {
+   "name": "mode_proof",
+   "mode": "agent",
+   "status": "pass",
+   "ran_mode": "agent",
+   "seconds": 0.6,
+   "evidence": [
+    "mode_proof: log_view_mode=agent ocr_agent_markers=True ocr_terminal_hint=False queue_destination=table"
+   ],
+   "tainted": false,
+   "wall": [
+    1794704810.033,
+    1794704810.64
+   ],
+   "detail": [],
+   "metrics": {
+    "log_view_mode": "agent",
+    "queue_destination": "table",
+    "ocr_agent_markers": true,
+    "ocr_terminal_hint": false,
+    "ocr_model_chip_gpt_oss": true
+   },
+   "shots": [
+    "shots/agent_mode_proof.png"
+   ]
+  },
+  {
+   "name": "fast_typing",
+   "mode": "agent",
+   "status": "pass",
+   "ran_mode": "agent",
+   "seconds": 57.2,
+   "evidence": [
+    "enter_route: 60 Enter(s) reached the input editor: Shell=60 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,...]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794704811.241,
+    1794704868.412
+   ],
+   "detail": [
+    "injector accounting: injector sent 2004; app saw 2004; lost-before-app 0 (Enter: sent 60, app saw 60); of the app's: 1942 unbound keydown/typed, 2 taken by a key binding, 60 Enter by a binding",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 60 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "injector": {
+     "sent": 2004,
+     "enters_sent": 60,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 2004,
+     "unbound": 1942,
+     "bound": 2,
+     "enters_bound": 60,
+     "seen": 2004,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 60
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 60
+    }
+   },
+   "shots": [
+    "shots/agent_fast_typing.png"
+   ]
+  },
+  {
+   "name": "expert_fuzz",
+   "mode": "agent",
+   "status": "pass",
+   "ran_mode": "agent",
+   "seconds": 21.6,
+   "evidence": [
+    "enter_route: 25 Enter(s) reached the input editor: Shell=25 [Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794704869.174,
+    1794704890.802
+   ],
+   "detail": [
+    "injector accounting: injector sent 749; app saw 749; lost-before-app 0 (Enter: sent 25, app saw 25); of the app's: 663 unbound keydown/typed, 61 taken by a key binding, 25 Enter by a binding",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 25 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "injector": {
+     "sent": 749,
+     "enters_sent": 25,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 749,
+     "unbound": 663,
+     "bound": 61,
+     "enters_bound": 25,
+     "seen": 749,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 25
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 25
+    }
+   },
+   "shots": [
+    "shots/agent_expert_fuzz.png"
+   ]
+  },
+  {
+   "name": "subshell_ready_rc_clear",
+   "mode": "agent",
+   "status": "pass",
+   "ran_mode": "agent",
+   "seconds": 12.9,
+   "evidence": [
+    "enter_route: 7 Enter(s) reached the input editor: Shell=7 [Shell,Shell,Shell,Shell,Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794704891.587,
+    1794704904.488
+   ],
+   "detail": [
+    "clear: setup armed decision=Write(None); InitSubshell@15 ms, InitShell@41 ms, Bootstrapped@268 ms",
+    "the first inner line ran 0.00 s after its Enter (its history band replaces the fixed 2 s budget): band 0.47-0.95 from n=8 run(s) (median 0.7); 0 is below the band (an improvement) [wayland/agent/subshell_ready_rc_clear/clear_inner_line_after_enter_s]",
+    "injector accounting: injector sent 255; app saw 255; lost-before-app 0 (Enter: sent 7, app saw 7); of the app's: 245 unbound keydown/typed, 3 taken by a key binding, 7 Enter by a binding",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 7 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "clear_inner_line_after_enter_s": 0.0,
+    "injector": {
+     "sent": 255,
+     "enters_sent": 7,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 255,
+     "unbound": 245,
+     "bound": 3,
+     "enters_bound": 7,
+     "seen": 255,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 7
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 7
+    }
+   },
+   "shots": [
+    "shots/agent_subshell_ready_rc_clear.png"
+   ]
+  },
+  {
+   "name": "scroll_keys_position",
+   "mode": "agent",
+   "status": "fail",
+   "ran_mode": "agent",
+   "seconds": 23.8,
+   "evidence": [
+    "enter_route: 3 Enter(s) reached the input editor: Shell=3 [Shell,Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794704906.395,
+    1794704930.219
+   ],
+   "detail": [
+    "after one typed key none of the job's last lines is on screen: the key did not bring the view back to the bottom (the job's last 8 lines were looked for; shots/*skp_5_after_key.png)",
+    "injector accounting: injector sent 191; app saw 191; lost-before-app 0 (Enter: sent 3, app saw 3); of the app's: 178 unbound keydown/typed, 10 taken by a key binding, 3 Enter by a binding",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 3 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "skp_lines_read_at_bottom": 15,
+    "skp_stream_drawn": {
+     "state": "drawn",
+     "printed": 16,
+     "read_on_screen": 10
+    },
+    "skp_after_pageup": {
+     "first": 336,
+     "last": 367,
+     "read": 32
+    },
+    "skp_pageup_hold": {
+     "verdict": "pass",
+     "new_lines": 27,
+     "read_before": 32,
+     "read_after": 32
+    },
+    "skp_top_hold": {
+     "new_lines": 28,
+     "anchor_words": 50,
+     "kept": 1.0,
+     "stream_lines_on_screen": 0
+    },
+    "skp_tail_lines_on_screen_after_key": 0,
+    "injector": {
+     "sent": 191,
+     "enters_sent": 3,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 191,
+     "unbound": 178,
+     "bound": 10,
+     "enters_bound": 3,
+     "seen": 191,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 3
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 3
+    }
+   },
+   "shots": [
+    "shots/agent_scroll_keys_position_FAIL.png"
+   ]
+  },
+  {
+   "name": "agent_bg_job_output",
+   "mode": "agent",
+   "status": "pass",
+   "ran_mode": "agent",
+   "seconds": 9.6,
+   "evidence": [
+    "enter_route: 2 Enter(s) reached the input editor: Shell=2 [Shell,Shell]"
+   ],
+   "tainted": false,
+   "wall": [
+    1794704933.165,
+    1794704942.799
+   ],
+   "detail": [
+    "injector accounting: injector sent 67; app saw 67; lost-before-app 0 (Enter: sent 2, app saw 2); of the app's: 59 unbound keydown/typed, 6 taken by a key binding, 2 Enter by a binding",
+    "pty writes: 0, of which carrying a CR (\\r): 0; Enter(s) the input editor started: 2 (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)"
+   ],
+   "metrics": {
+    "injector": {
+     "sent": 67,
+     "enters_sent": 2,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 67,
+     "unbound": 59,
+     "bound": 6,
+     "enters_bound": 2,
+     "seen": 67,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 2
+    },
+    "pty_write_cr": {
+     "writes": 0,
+     "with_cr": 0,
+     "enters": 2
+    }
+   },
+   "shots": [
+    "shots/agent_agent_bg_job_output.png"
+   ]
+  },
+  {
+   "name": "restore_shows_history",
+   "mode": "agent",
+   "status": "pass",
+   "ran_mode": "agent",
+   "seconds": 114.2,
+   "evidence": [],
+   "tainted": false,
+   "wall": [
+    1794704944.56,
+    1794705058.714
+   ],
+   "detail": [
+    "injector accounting: injector sent 607; app saw 607; lost-before-app 0 (Enter: sent 7, app saw 7); of the app's: 260 unbound keydown/typed, 340 taken by a key binding, 7 Enter by a binding"
+   ],
+   "metrics": {
+    "rs_setup_quit": {
+     "exited": true,
+     "confirm_to_exit_s": 0.14,
+     "total_s": 0.14,
+     "dialog": false,
+     "attempt": 0
+    },
+    "rs_quit": {
+     "exited": true,
+     "confirm_to_exit_s": 0.13,
+     "total_s": 0.13,
+     "dialog": false,
+     "attempt": 0
+    },
+    "rs_store": {
+     "after_stop": [
+      1,
+      1
+     ],
+     "after_relaunch": [
+      1,
+      1
+     ]
+    },
+    "find_after_restore": [
+     "result=scroll block=0 moved=false viewport_lines=49.40 rendered_mode=PinnedToBottom scroll_mode=PinnedToBottom agent_fullscreen=true match_line=18.09 block_visible=true from=FixedAtPosition { scroll_lines: ScrollTop(Lines(OrderedFloat(0.0))) } to=FixedAtPosition { scroll_lines: ScrollTop(Lines(OrderedFloat(0.0))) } t=1794705020272.842"
+    ],
+    "find_conversation_after_restore": [
+     "result=scroll rich_content moved=false viewport_lines=49.40 rendered_mode=PinnedToBottom scroll_mode=PinnedToBottom agent_fullscreen=true from=FixedAtPosition { scroll_lines: ScrollTop(Lines(OrderedFloat(0.0))) } to=FixedAtPosition { scroll_lines: ScrollTop(Lines(OrderedFloat(0.0))) } t=1794705042211.631"
+    ],
+    "rs_cleanup_quit": {
+     "exited": true,
+     "confirm_to_exit_s": 0.08,
+     "total_s": 0.08,
+     "dialog": false,
+     "attempt": 0
+    },
+    "injector": {
+     "sent": 607,
+     "enters_sent": 7,
+     "errs": 0,
+     "pastes": 0,
+     "dispatched": 607,
+     "unbound": 260,
+     "bound": 340,
+     "enters_bound": 7,
+     "seen": 607,
+     "lost": 0,
+     "extra": 0,
+     "enters_seen": 7
+    }
+   },
+   "shots": [
+    "shots/agent_restore_shows_history.png"
+   ]
+  }
+ ]
+}
