@@ -159,6 +159,22 @@ pub fn invalidate_shared_directory_cache(session_id: SessionId) {
 /// Synchronous local directory listing. Only ever call this from a blocking-pool thread (see
 /// [`list_local_dir_off_pool`]): on a hung NFS/sshfs/autofs mount `read_dir` can sit in the
 /// kernel indefinitely.
+/// The shape of a directory path for a log line (`drive`, `unix_abs`, `relative`, `other`): the
+/// class only, never the path (#2222).
+fn dir_shape(directory: &TypedPath<'_>) -> &'static str {
+    let text = directory.to_path_buf().to_string_lossy().into_owned();
+    let b = text.trim_start_matches('/').as_bytes();
+    if b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':' {
+        "drive"
+    } else if text.starts_with('/') {
+        "unix_abs"
+    } else if text.is_empty() || text.starts_with('.') {
+        "relative"
+    } else {
+        "other"
+    }
+}
+
 fn read_local_dir_entries(dir: &Path) -> Vec<EngineDirEntry> {
     // Converting a `DirEntry` to `EngineDirEntry` can usually be
     // done without additional syscalls (though one is necessary if
@@ -450,13 +466,26 @@ impl SessionContext {
                     return (Vec::new(), true);
                 }
             };
-            return match list_local_dir_off_pool(
+            let shape = dir_shape(directory);
+            let listed = list_local_dir_off_pool(
                 dir.as_path().to_path_buf(),
                 LOCAL_LISTING_TIMEOUT,
                 |dir| read_local_dir_entries(&dir),
             )
-            .await
-            {
+            .await;
+            // #2222 (r31b): the Windows launcher's RUST_LOG shows only `warp::input_order`, so a
+            // Git Bash run whose argument menu never opens can say whether the directory was
+            // listed, came back empty or timed out. Shapes and counts only, never names.
+            warpui::input_order::log_hop("local_listing", || {
+                format!(
+                    "msys2={} requested={shape} entries={}",
+                    self.session.is_msys2(),
+                    listed
+                        .as_ref()
+                        .map_or("timeout".to_owned(), |e| e.len().to_string())
+                )
+            });
+            return match listed {
                 Some(entries) => (entries, true),
                 None => (Vec::new(), false),
             };
@@ -1193,3 +1222,19 @@ fn dir_entry_from_segment(segment: &[u8], file_type: EngineFileType) -> Option<E
 #[cfg(test)]
 #[path = "test.rs"]
 mod tests;
+
+#[cfg(test)]
+mod dir_shape_tests {
+    use super::dir_shape;
+    use typed_path::TypedPathBuf;
+
+    #[test]
+    fn dir_shape_classes_drive_unix_and_relative_without_names() {
+        let shape = |s: &str| dir_shape(&TypedPathBuf::from_unix(s).to_path());
+        assert_eq!(shape("C:/Users/x"), "drive");
+        assert_eq!(shape("/C:/Users/x"), "drive");
+        assert_eq!(shape("/c/Users/x"), "unix_abs");
+        assert_eq!(shape("./tc"), "relative");
+        assert_eq!(shape("tc"), "other");
+    }
+}
