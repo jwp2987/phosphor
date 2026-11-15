@@ -109,6 +109,10 @@ def r31_phosphor_scheme_handler_1546():
     assert CI.tab_dir_line("bash", "t1", "/f") == 'echo "t1:$PWD" >> /f' and CI.tab_dir_line("pwsh", "t1", "C:/f").startswith("Add-Content C:/f ")
     assert CI.INVALID_URI_RE.search("WARN Custom URI is invalid: Received url with unexpected scheme: warp")
     assert CI.received_urls("received url scheme=phosphor host=action path=/new_tab") == [("phosphor", "action", "/new_tab")]
+    assert CI.cd_back_line("pwsh", "C:/w") == "Set-Location -LiteralPath 'C:/w'" and CI.cd_back_line("bash", "/w") == "cd '/w'"
+    assert CI.cd_back_line("cmd", "C:/w") == 'cd /d "C:\\w"'
+    src = inspect.getsource(CI.c_phosphor_scheme_handler)
+    assert src.index("cd_back_line") < src.index("exact_burst"), "r31b: the end burst must run after the pane is back in the case's directory (the new tab is the active one)"
     names = [c["name"] for c in cases.CASES]
     assert names.count("phosphor_scheme_handler") == 1 and "phosphor_scheme_handler" in cases.PROVING
 
