@@ -180,5 +180,88 @@ class OpenIssues(unittest.TestCase):
             self.assertEqual(self.run_gate([], f)[0], 1)
 
 
+class Beta(unittest.TestCase):
+    """Owner decision 2026-11-14: a tag with "beta" in its name needs guards + the nine unit suites + the three builds, nothing heavier."""
+    BETA_OK = [(n, "success") for n in g.beta_required_jobs()]
+
+    def problems(self, jobs):
+        return g.check(Fake(jobs, {}), "1", SHA, (), True)[1]
+
+    def test_is_beta(self):
+        for t in ("v0.2.0-beta.1", "v0.2.0-BETA.2", "v0.2.0-Beta"):
+            self.assertTrue(g.is_beta(t), t)
+        for t in ("v0.2.0", "v0.2.0-rc.1", "", None):
+            self.assertFalse(g.is_beta(t), t)
+
+    def test_required_list_is_real_jobs(self):
+        self.assertEqual(len(g.BETA_UNIT_JOBS), 9)
+        self.assertEqual(len(g.BETA_BUILD_JOBS), 3)
+        self.assertFalse(set(g.beta_required_jobs()) - g.yml_jobs(), "every beta job is defined in .gitlab-ci.yml")
+
+    def test_passes_on_units_and_builds_without_app_tests_or_heavy_tier(self):
+        self.assertEqual(self.problems(self.BETA_OK), [])
+        self.assertNotIn("fuzz-smoke", g.beta_required_jobs())       # heavy tier not required
+        self.assertTrue(set(APPS) - set(g.beta_required_jobs()))
+
+    def test_fails_on_any_missing_or_red_unit_or_build(self):
+        for name in g.BETA_UNIT_JOBS + g.BETA_BUILD_JOBS + g.BASE_JOBS:
+            p = self.problems([(n, "failed" if n == name else s) for n, s in self.BETA_OK])
+            self.assertEqual(len(p), 1, name)
+            self.assertIn(name, p[0])
+            p = self.problems([(n, s) for n, s in self.BETA_OK if n != name])
+            self.assertEqual(len(p), 1, name)
+            self.assertIn("never ran", p[0])
+
+    def run_gate(self, tag, jobs, issues, results=None):
+        class W(Fake):
+            def get(self, path, raw=False):
+                if "/issues?" in path:
+                    if isinstance(issues, Exception):
+                        raise issues
+                    return issues
+                return Fake.get(self, path, raw)
+        import contextlib, io
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = g.run(W(jobs, results or {}), "1", SHA, [], "tag " + tag, g.release_label(tag))
+        return rc, out.getvalue(), err.getvalue()
+
+    def test_beta_passes_with_fixed_untested_open_and_lists_them(self):
+        rc, out, err = self.run_gate("v0.2.0-beta.1", self.BETA_OK, [issue(99, "v0.2.0-beta.1", "fixed-untested")])
+        self.assertEqual((rc, err), (0, ""))
+        self.assertIn("#99", out)
+        self.assertIn("BETA", out)
+        self.assertEqual(self.run_gate("v0.2.0-beta.1", self.BETA_OK, RuntimeError("no token"))[0], 0)
+
+    def test_beta_fails_when_a_suite_or_build_is_red(self):
+        rc, _, err = self.run_gate("v0.2.0-beta.1", [(n, "failed" if n == "build-windows-x86_64" else s) for n, s in self.BETA_OK], [])
+        self.assertEqual(rc, 1)
+        self.assertIn("build-windows-x86_64", err)
+        rc, _, err = self.run_gate("v0.2.0-BETA.1", [(n, s) for n, s in self.BETA_OK if n != "test-macos"], [])
+        self.assertEqual(rc, 1)
+
+    def test_non_beta_still_needs_the_full_tier_and_zero_fixed_untested(self):
+        rc, _, err = self.run_gate("v0.2.0", self.BETA_OK, [])
+        self.assertEqual(rc, 1)                                # units + builds alone are not enough
+        self.assertIn("fuzz-smoke", err)
+        self.assertIn("app-test-macos", err)
+        rc, _, err = self.run_gate("v0.2.0", ALL_JOBS, [issue(7, "v0.2.0", "fixed-untested")], ALL_RES)
+        self.assertEqual(rc, 1)
+        self.assertIn("#7", err)
+        self.assertEqual(self.run_gate("v0.2.0", ALL_JOBS, [], ALL_RES)[0], 0)
+        self.assertEqual(self.run_gate("v0.2.0-rc.1", ALL_JOBS, [], ALL_RES)[0], 0)
+        self.assertEqual(self.run_gate("v0.2.0-rc.1", self.BETA_OK, [])[0], 1)
+
+    def test_known_issues_markdown(self):
+        md = g.known_issues_markdown([issue(5, "v0.2.0-beta.1", "fixed-untested"), issue(3, "v0.2.0-beta.1", "fixed-untested"),
+                                      issue(4, "v0.2.0-beta.1"), issue(6, "v0.2.0-beta.1", "fixed-untested", state="closed")], "v0.2.0-beta.1")
+        self.assertIn("- #3 ", md)
+        self.assertIn("- #5 ", md)
+        self.assertNotIn("#4", md)
+        self.assertNotIn("#6", md)
+        self.assertLess(md.index("#3"), md.index("#5"))
+        self.assertIn("No open", g.known_issues_markdown([], "v0.2.0-beta.1"))
+
+
 if __name__ == "__main__":
     unittest.main()
