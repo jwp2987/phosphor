@@ -6306,6 +6306,10 @@ fn pwsh_bootstrap_sets_utf8_console_on_windows_powershell_before_psreadline() {
 ///   reads the user's own `.zshenv`. `inplacei` and `bashchild` are the macOS failure of r31a
 ///   on every platform: a `sh -c` that is bash gives its last command its own process, so that
 ///   `zsh -ic` has the replaced shell's pid and only "started with a command" tells it apart;
+/// - #2230, the one-connection path of Git Bash (the wrapper gave the remote bash its plain
+///   verdict, `WARP_SSH_PLAIN_HOOK`): `oneconn`, the zsh that replaced the bash prints that
+///   verdict and no InitShell, and reads the user's startup files as a plain login;
+///   `oneconninplace`, a `zsh -c` in place prints nothing;
 /// - the kill switch (in the environment: `exec` is untouched; as a line of the profile: the
 ///   exec hands ZDOTDIR through) and a shell that is not a managed ssh session.
 #[test]
@@ -6397,6 +6401,11 @@ sys.stdout.write(out.hex())
     // "USER_ZSHRC\r" (the user's .zshrc ran: a zsh nobody took over is at its prompt). With
     // nothing to type the driver stops half a second after it.
     const USER_ZSHRC: &str = "555345525f5a534852430d";
+    // #2230: the plain verdict the one-connection wrapper (Git Bash) gives the remote bash to
+    // pass on, as the wrapper encodes it: hex of PLAIN_VERDICT.
+    const PLAIN_VERDICT: &str = "{\"hook\": \"PlainSSHFallback\", \"value\": {\"session_id\": 77}}";
+    const PLAIN_VERDICT_HEX: &str = "7b22686f6f6b223a2022506c61696e53534846616c6c6261636b222c202276616c7565223a207b2273657373696f6e5f6964223a2037377d7d";
+    assert_eq!(hex::encode(PLAIN_VERDICT), PLAIN_VERDICT_HEX);
     struct Case {
         name: &'static str,
         profile: &'static str,
@@ -6542,6 +6551,29 @@ sys.stdout.write(out.hex())
             zshenv_written: false,
         },
         Case {
+            name: "oneconn",
+            profile: "exec zsh -l\n",
+            env: Some(("WARP_SSH_PLAIN_HOOK", PLAIN_VERDICT_HEX)),
+            trigger: USER_ZSHRC,
+            typed: "",
+            // Not InitShell: the wrapper's plain verdict, checked by name below.
+            hook: false,
+            expect: &["USER_ZSHENV zd=unset", "USER_ZSHRC"],
+            absent: &["SURVIVED"],
+            zshenv_written: true,
+        },
+        Case {
+            name: "oneconninplace",
+            profile: "exec zsh -c 'echo INPLACE zd=${ZDOTDIR-unset} i=${__WARP_EXEC_ZSH-unset}'\n",
+            env: Some(("WARP_SSH_PLAIN_HOOK", PLAIN_VERDICT_HEX)),
+            trigger: "",
+            typed: "",
+            hook: false,
+            expect: &["USER_ZSHENV zd=unset", "INPLACE zd=unset i=unset"],
+            absent: &["SURVIVED"],
+            zshenv_written: true,
+        },
+        Case {
             name: "notssh",
             profile: "exec zsh -l\n",
             env: Some(("WARP_IS_SSH", "")),
@@ -6622,7 +6654,11 @@ sys.stdout.write(out.hex())
                 .filter_map(|payload| hex::decode(payload).ok())
                 .map(|json| String::from_utf8_lossy(&json).into_owned())
                 .collect();
-            if case.hook {
+            if name == "oneconn" {
+                // #2230: the zsh that replaced the bash prints the verdict it was given, once,
+                // and nothing of its own: it is a plain login that read the user's files.
+                assert_eq!(hooks, vec![PLAIN_VERDICT.to_owned()], "{tag}");
+            } else if case.hook {
                 assert_eq!(hooks.len(), 1, "{tag}");
                 assert!(
                     hooks[0].starts_with(
@@ -6673,4 +6709,60 @@ fn zsh_bootstrap_skips_the_motd_for_a_zsh_that_replaced_the_bootstrapping_bash()
     let unset = zsh.find("unset __warp_exec_replaced_shell").unwrap();
     let rcfiles = zsh.find("source \"${ZDOTDIR:-$HOME}/.zshenv\"").unwrap();
     assert!(motd < unset && unset < rcfiles);
+}
+
+/// #2230 (owner 2026-11-14): only the one-connection ssh wrapper (Git Bash) hands the remote bash
+/// a plain verdict to pass on to a zsh that replaces it; every other path leaves it empty, so
+/// the zsh is handed the session (#2155). The verdict is this shell's `PlainSSHFallback`, hex
+/// only, set in the remote bash's rcfile and carried to the zsh in `__WARP_EXEC_ZSH`.
+#[test]
+fn only_the_one_connection_ssh_wrapper_gives_the_remote_bash_a_plain_verdict() {
+    let bash = include_str!("../../assets/bundled/bootstrap/bash_body.sh");
+    let start = bash
+        .find("local warp_plain_hex=\"\"")
+        .expect("warp_plain_hex");
+    let snippet = start
+        + bash[start..]
+            .find("warp_rc_snippet='")
+            .expect("the rc snippet");
+    let decided = &bash[start..snippet];
+    assert!(
+        decided.contains("if [[ $warp_single -eq 1 ]]; then"),
+        "{decided}"
+    );
+    assert!(
+        decided.contains(
+            "__warp_hex_encode_to \"{\\\"hook\\\": \\\"PlainSSHFallback\\\", \\\"value\\\": {\\\"session_id\\\": ${WARP_SESSION_ID:-}}}\""
+        ),
+        "{decided}"
+    );
+    assert_eq!(
+        bash.matches("warp_plain_hex=").count(),
+        2,
+        "set in one place"
+    );
+    let rc = &bash[snippet..];
+    let rc = &rc[..rc.find("local warp_remote_bootstrap").unwrap()];
+    assert!(
+        rc.contains("\n      WARP_SSH_PLAIN_HOOK='$warp_plain_hex'\n"),
+        "{rc}"
+    );
+    // The remote side: the verdict rides in the hand-over value, and the .zshenv prints it only
+    // when it is hex, in the zsh that is the replaced shell, before the take-over lines.
+    assert!(bash.contains(
+        ":${WARP_USING_WINDOWS_CON_PTY-}:${WARP_SSH_PLAIN_HOOK-}:${ZDOTDIR+1}:${ZDOTDIR-}\""
+    ));
+    let plain = bash
+        .find("if [[ -n $__warp_x_plain && -z ${__warp_x_plain//[0-9a-f]/} ]]; then")
+        .expect("the plain branch");
+    let same_pid = bash.find("if [[ $__warp_x_pid == $$ ").unwrap();
+    let take_over = bash.find("    unsetopt ZLE RCS GLOBAL_RCS\n").unwrap();
+    assert!(same_pid < plain && plain < take_over);
+    // The zsh and fish wrappers never run one connection: they send no verdict.
+    for other in [
+        include_str!("../../assets/bundled/bootstrap/zsh_body.sh"),
+        include_str!("../../assets/bundled/bootstrap/fish.sh"),
+    ] {
+        assert!(!other.contains("WARP_SSH_PLAIN_HOOK"));
+    }
 }

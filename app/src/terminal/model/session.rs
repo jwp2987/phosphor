@@ -660,6 +660,12 @@ impl Sessions {
         !self.pending_session_start_times.is_empty() || !self.sessions.is_empty()
     }
 
+    /// #2230: `session_id` was announced and will never bootstrap (its shell became a plain
+    /// login): it is no longer pending.
+    pub fn forget_pending_session(&mut self, session_id: SessionId) {
+        self.pending_session_start_times.remove(&session_id);
+    }
+
     /// #2155: whether `session_id` announced itself (`InitShell`) and has not bootstrapped yet.
     pub fn is_pending_session(&self, session_id: SessionId) -> bool {
         self.pending_session_start_times.contains_key(&session_id)
@@ -1018,6 +1024,22 @@ impl SessionInfo {
                 && matches!(
                     pending.is_legacy_ssh_session,
                     IsLegacySSHSession::Yes { .. }
+                )
+        })
+    }
+
+    /// #2230: whether `pending` is the login shell of a one-connection ssh session (Git Bash:
+    /// one ssh, no ControlMaster), announced and not bootstrapped. Only such a session can be
+    /// turned into a plain login by a plain verdict after it was announced.
+    pub(crate) fn is_pending_one_connection_ssh_login(pending: Option<&SessionInfo>) -> bool {
+        pending.is_some_and(|pending| {
+            pending.subshell_info.is_none()
+                && matches!(
+                    pending.is_legacy_ssh_session,
+                    IsLegacySSHSession::Yes {
+                        single_connection: true,
+                        ..
+                    }
                 )
         })
     }

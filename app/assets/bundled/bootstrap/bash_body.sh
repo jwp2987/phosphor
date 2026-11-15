@@ -2755,6 +2755,17 @@ export WARP_IS_SSH='1'
 test -n '$WARP_CLIENT_VERSION' && export WARP_CLIENT_VERSION='$WARP_CLIENT_VERSION'
 # Only forward the protocol version if it was set locally (i.e. the HOANotifications feature flag is on).
 test -n '$WARP_CLI_AGENT_PROTOCOL_VERSION' && export WARP_CLI_AGENT_PROTOCOL_VERSION='$WARP_CLI_AGENT_PROTOCOL_VERSION'"
+            # #2230 (owner 2026-11-14): on the one-connection path a remote bash profile that
+            # execs zsh gets a PLAIN session at once. A zsh bootstrap would have to be typed
+            # through ssh.exe's console (about 1 KB/s: a minute), so the remote bash is given the
+            # plain verdict of THIS shell, hex-encoded here, and the zsh that replaces it prints
+            # that instead of announcing itself (the __warp_exec_zsh block below). Empty on
+            # every other path: there the zsh is handed the session (#2155).
+            local warp_plain_hex=""
+            if [[ $warp_single -eq 1 ]]; then
+                __warp_hex_encode_to "{\"hook\": \"PlainSSHFallback\", \"value\": {\"session_id\": ${WARP_SESSION_ID:-}}}"
+                warp_plain_hex=$__warp_hex
+            fi
             # What the remote bash runs as its rcfile (`--rcfile <(echo '...')`): raw tty, the session
             # id, then the InitShell hook. Written for the inside of single quotes.
             local warp_rc_snippet
@@ -2764,6 +2775,7 @@ test -n '$WARP_CLI_AGENT_PROTOCOL_VERSION' && export WARP_CLI_AGENT_PROTOCOL_VER
       HISTIGNORE=" *"
       WARP_SESSION_ID='$remote_session_id'
       WARP_HONOR_PS1="'$WARP_HONOR_PS1'"
+      WARP_SSH_PLAIN_HOOK='$warp_plain_hex'
       _hostname=${HOSTNAME:-$(command -pv hostname >/dev/null 2>&1 && command -p hostname 2>/dev/null || command -p uname -n)}
       _user=${USER:-$(command -v whoami >/dev/null 2>&1 && command whoami 2>/dev/null || echo $USER)}
       _ju=${_user//\\/\\\\}; _ju=${_ju//\"/\\\"}; _jh=${_hostname//\\/\\\\}; _jh=${_jh//\"/\\\"}; for _i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 127; do printf -v _o %03o $_i; printf -v _c "\\$_o"; printf -v _h "\\\\u%04x" $_i; _ju=${_ju//$_c/$_h}; _jh=${_jh//$_c/$_h}; done
@@ -3603,7 +3615,8 @@ fi' RETURN
         # behind two environment assignments (an alias, not a function: a function cannot
         # keep the redirections of `exec 2>>log`, and an assignment in front of the builtin
         # changes nothing but the environment of the program it starts):
-        #   __WARP_EXEC_ZSH  this shell's pid, the session id and what ZDOTDIR was
+        #   __WARP_EXEC_ZSH  this shell's pid, the session id, the plain verdict if the
+        #                    wrapper gave one (#2230) and what ZDOTDIR was
         #   ZDOTDIR          ~/.phosphor/zsh-exec, whose .zshenv (written below, on the
         #                    first such exec) is the only thing that acts on the first
         # A zsh that IS this process (same pid: the exec replaced the shell), interactive,
@@ -3618,6 +3631,10 @@ fi' RETURN
         # that outlives this login keeps working. Only an exec of the shell itself counts
         # (BASH_SUBSHELL is 1 inside the alias's `$( )`): `( exec x )` and `exec x &` get
         # ZDOTDIR as it was (HOME when it was unset, which zsh reads the same way).
+        # #2230: when the ssh wrapper gave this shell a plain verdict to pass on
+        # (WARP_SSH_PLAIN_HOOK: the one-connection path of Git Bash), that zsh prints the
+        # verdict instead, reads the user's own startup files and is a plain login: the app
+        # drops the pending session and hands the held keys to ssh.
         # Kill switch, read on the remote side: PHOSPHOR_SSH_EXEC_ZSH=0 in the remote
         # environment (no alias at all), or as a line of the profile above its `exec`
         # (the exec then hands ZDOTDIR through like one in a subshell).
@@ -3630,12 +3647,21 @@ fi' RETURN
   __warp_x_sid=${__warp_x%%:*}; __warp_x=${__warp_x#*:}
   __warp_x_ps1=${__warp_x%%:*}; __warp_x=${__warp_x#*:}
   __warp_x_pty=${__warp_x%%:*}; __warp_x=${__warp_x#*:}
+  __warp_x_plain=${__warp_x%%:*}; __warp_x=${__warp_x#*:}
   if [[ ${__warp_x%%:*} == 1 ]]; then
     ZDOTDIR=${__warp_x#*:}
   else
     unset ZDOTDIR
   fi
   if [[ $__warp_x_pid == $$ && -n $__warp_x_sid && -z ${__warp_x_sid//[0-9]/} && -o interactive && ${+ZSH_EXECUTION_STRING} == 0 && ${+ZSH_SCRIPT} == 0 && -t 0 && -t 1 ]]; then
+    if [[ -n $__warp_x_plain && -z ${__warp_x_plain//[0-9a-f]/} ]]; then
+      builtin printf "\e]9278;d;%s\a" $__warp_x_plain
+      unset __warp_x __warp_x_pid __warp_x_sid __warp_x_ps1 __warp_x_pty __warp_x_plain
+      if [[ -f "${ZDOTDIR:-$HOME}/.zshenv" ]]; then
+        . "${ZDOTDIR:-$HOME}/.zshenv"
+      fi
+      return 0
+    fi
     unsetopt ZLE RCS GLOBAL_RCS
     setopt HIST_IGNORE_SPACE
     export TMPPREFIX="$HOME/.zshtmp-"
@@ -3649,10 +3675,10 @@ fi' RETURN
     _jh=${${_hostname//\\/\\\\}//\"/\\\"}; _jh=${_jh//[[:cntrl:]]/}
     _msg=$(builtin printf "{\"hook\": \"InitShell\", \"value\": {\"session_id\": $WARP_SESSION_ID, \"shell\": \"zsh\", \"user\": \"%s\", \"hostname\": \"%s\"}}" "$_ju" "$_jh" | command -p od -An -v -tx1 | command -p tr -d " \n")
     builtin printf "\e]9278;d;%s\a" $_msg
-    unset _hostname _user _ju _jh _msg __warp_x __warp_x_pid __warp_x_sid __warp_x_ps1 __warp_x_pty
+    unset _hostname _user _ju _jh _msg __warp_x __warp_x_pid __warp_x_sid __warp_x_ps1 __warp_x_pty __warp_x_plain
     return 0
   fi
-  unset __warp_x __warp_x_pid __warp_x_sid __warp_x_ps1 __warp_x_pty
+  unset __warp_x __warp_x_pid __warp_x_sid __warp_x_ps1 __warp_x_pty __warp_x_plain
 else
   unset ZDOTDIR
 fi
@@ -3677,7 +3703,7 @@ fi'
         }
         __warp_exec_zsh_info () {
             if __warp_exec_zsh_live && __warp_exec_zsh_write; then
-                builtin printf '%s' "$$:$WARP_SESSION_ID:${WARP_HONOR_PS1-}:${WARP_USING_WINDOWS_CON_PTY-}:${ZDOTDIR+1}:${ZDOTDIR-}"
+                builtin printf '%s' "$$:$WARP_SESSION_ID:${WARP_HONOR_PS1-}:${WARP_USING_WINDOWS_CON_PTY-}:${WARP_SSH_PLAIN_HOOK-}:${ZDOTDIR+1}:${ZDOTDIR-}"
             fi
             return 0
         }

@@ -12000,6 +12000,15 @@ impl TerminalView {
     ) {
         // #1933: a verdict ends the one-connection sync, whichever hook carried it.
         self.ssh_single = None;
+        // #2230: the plain verdict of the zsh that replaced an announced one-connection
+        // session's bash. The model dropped that session when it parsed the hook.
+        if !managed {
+            let dropped = self.model.lock().take_ssh_pending_made_plain();
+            if let Some(dropped) = dropped {
+                self.ssh_on_replaced_shell_plain(dropped, ctx);
+                return;
+            }
+        }
         let Some(gate) = self.ssh_connect_gate.as_mut() else {
             if managed {
                 self.ssh_rearm_window_for_managed_session(session_id, ctx);
@@ -12055,6 +12064,42 @@ impl TerminalView {
             let block_id = block_id.unwrap_or_else(|| self.model.lock().active_block_id().clone());
             self.ssh_on_tty_owned(&block_id, ctx);
         }
+    }
+
+    /// #2230 (owner 2026-11-14): the announced one-connection ssh session became a plain login
+    /// (its bash profile execs zsh; the zsh printed the wrapper's plain verdict and the model
+    /// dropped the pending session `dropped`). Everything the view kept for that session ends
+    /// at this event: its bootstrap give-up, its bootstrap-prompt evidence, its pending entry.
+    /// The connect window ends as an ended connect does (`SshConnectGate::end_for_plain_session`),
+    /// and what it holds is written to the pty in typed order, to ssh, which is the foreground
+    /// program: the write of every give-up of this hold (`ssh_give_up_fired`), run here by the
+    /// event instead of a timer. No key is dropped and none is left for the editor.
+    fn ssh_on_replaced_shell_plain(&mut self, dropped: SessionId, ctx: &mut ViewContext<Self>) {
+        self.cancel_bootstrap_failed_timer();
+        if self.bootstrap_precmd_seen_session == Some(dropped) {
+            self.bootstrap_precmd_seen_session = None;
+        }
+        self.sessions.update(ctx, |sessions, _| {
+            sessions.forget_pending_session(dropped);
+        });
+        warpui::input_order::log_hop("ssh_wrapper", || {
+            format!(
+                "replaced_shell_plain holding={} held_bytes={}",
+                self.ssh_typeahead_holding,
+                self.ssh_held_bytes()
+            )
+        });
+        if let Some(gate) = self.ssh_connect_gate.as_mut() {
+            gate.end_for_plain_session();
+        }
+        if self.ssh_typeahead_holding {
+            let was_giving_up = std::mem::replace(&mut self.ssh_give_up_in_progress, true);
+            self.deliver_ssh_typeahead_if_ready("replaced_shell_plain", ctx);
+            self.ssh_give_up_in_progress = was_giving_up;
+        } else if self.ssh_connect_gate.is_some() {
+            self.refresh_ssh_connect_gate();
+        }
+        ctx.notify();
     }
 
     /// #2120: the remote command printed the `SSH` hook of a login shell it does not bootstrap
@@ -20806,6 +20851,21 @@ impl TerminalView {
             ModelEvent::Handler(AnsiHandlerEvent::InitShell {
                 pending_session_info,
             }) => {
+                // #2155: a shell that announces itself under the id of a session whose
+                // bootstrap prompt was already seen replaced that session's shell (`exec zsh -l`
+                // in the remote profile). The prompt was the old shell's: it is no evidence that
+                // THIS shell's bootstrap is progressing, so the give-up's one grace is not owed
+                // to it (and is available again).
+                if bootstrap_prompt_evidence_is_of_a_replaced_shell(
+                    self.bootstrap_precmd_seen_session,
+                    pending_session_info.session_id,
+                    pending_session_info.subshell_info.is_some(),
+                ) {
+                    self.bootstrap_precmd_seen_session = None;
+                    if self.bootstrap_grace_used_session == Some(pending_session_info.session_id) {
+                        self.bootstrap_grace_used_session = None;
+                    }
+                }
                 // The remote confirmed a subshell bootstrap is starting. Hide the
                 // original long-running block now so the user doesn't see the
                 // bootstrap payload echoed into it.
@@ -42402,6 +42462,17 @@ struct SshConnectGate {
     single_awaits_remote: bool,
 }
 
+/// #2155: whether the bootstrap prompt (`Precmd`) recorded for `seen` belongs to a shell that
+/// the one announcing itself now (`announced`, an `InitShell`; `is_subshell` for a subshell's)
+/// replaced: the same session id, announced again by a login shell.
+fn bootstrap_prompt_evidence_is_of_a_replaced_shell(
+    seen: Option<SessionId>,
+    announced: SessionId,
+    is_subshell: bool,
+) -> bool {
+    !is_subshell && seen == Some(announced)
+}
+
 /// #2051: whether a plain verdict (`PlainSSHFallback`) applies to a window that is already
 /// `Managed`: only one made managed by the one-connection sync (`awaits_remote`), and only while
 /// the remote has announced nothing (`remote_announced`: the SSH hook or a session). Every other
@@ -42571,6 +42642,15 @@ impl SshConnectGate {
             submitted_command: None,
             single_awaits_remote: false,
         }
+    }
+
+    /// #2230: the announced session of this window became a plain login. The window is over
+    /// the way an ended connect is (`failed`: nothing of the managed session is coming), and the
+    /// wrapper holds nothing any more.
+    fn end_for_plain_session(&mut self) {
+        self.failed = true;
+        self.wrapper = SshWrapperHold::Off;
+        self.single_awaits_remote = false;
     }
 
     fn note_block_completed(&mut self, now: Instant, success: bool) {
