@@ -121,6 +121,12 @@ def release_label(tag):
     return tag if tag.startswith("v") else "v" + tag
 
 
+def beta_issue_label(rel_label):
+    """The issue label a beta's known-issues list reads: the version it heads for ('v0.2.0-beta.1' -> 'v0.2.0'), since issues carry the release
+    label, never a beta label. A non-beta label is returned unchanged (the full gate still judges its own label)."""
+    return re.sub(r"-[0-9A-Za-z.]+$", "", rel_label) if rel_label and is_beta(rel_label) else rel_label
+
+
 def parse_issue_list(text):
     """The JSON of `glab api --paginate` (pages may be concatenated as `][`) or of one API call -> list of issue dicts."""
     text = text.strip()
@@ -260,8 +266,9 @@ def run(api, proj, sha, pipelines, label, rel_label=None, issues_file=None):
             # the open-issue check is SKIPPED for a beta: the fixed-untested ones are listed as known, never a failure (an unreadable list is
             # reported but does not refuse; the release notes step says so itself)
             try:
-                issues = parse_issue_list(open(issues_file, encoding="utf-8").read()) if issues_file else fetch_open_issues(api, proj, rel_label)
-                ok += ["known (beta, unverified): #%s %s" % kt for kt in known_issues(issues, rel_label)] or ["no open %s fixed-untested issue" % rel_label]
+                ilabel = beta_issue_label(rel_label)
+                issues = parse_issue_list(open(issues_file, encoding="utf-8").read()) if issues_file else fetch_open_issues(api, proj, ilabel)
+                ok += ["known (beta, unverified): #%s %s" % kt for kt in known_issues(issues, ilabel)] or ["no open %s fixed-untested issue" % ilabel]
             except Exception as e:
                 ok.append("beta: open-issue list unreadable (%s); not a gate condition for a beta" % e)
         elif rel_label:
@@ -306,7 +313,7 @@ def main(argv):
     a = ap.parse_args(argv)
     if a.known_issues_md:
         tag = a.tag or os.environ.get("CI_COMMIT_TAG", "")
-        label, proj = release_label(tag), os.environ.get("CI_PROJECT_ID", "") or a.project
+        label, proj = beta_issue_label(release_label(tag)), os.environ.get("CI_PROJECT_ID", "") or a.project
         try:
             api = GlabApi() if a.sha else CiApi()
             issues = parse_issue_list(open(a.open_issues, encoding="utf-8").read()) if a.open_issues else fetch_open_issues(api, proj, label)

@@ -187,6 +187,12 @@ class Beta(unittest.TestCase):
     def problems(self, jobs):
         return g.check(Fake(jobs, {}), "1", SHA, (), True)[1]
 
+    def test_beta_reads_the_issues_of_the_version_it_heads_for(self):
+        self.assertEqual(g.beta_issue_label("v0.2.0-beta.1"), "v0.2.0")
+        self.assertEqual(g.beta_issue_label("v0.2.0-BETA"), "v0.2.0")
+        self.assertEqual(g.beta_issue_label("v0.2.0"), "v0.2.0")
+        self.assertEqual(g.beta_issue_label("v0.2.0-rc.1"), "v0.2.0-rc.1")     # non-beta: unchanged, the full gate judges its own label
+
     def test_is_beta(self):
         for t in ("v0.2.0-beta.1", "v0.2.0-BETA.2", "v0.2.0-Beta"):
             self.assertTrue(g.is_beta(t), t)
@@ -227,9 +233,11 @@ class Beta(unittest.TestCase):
         return rc, out.getvalue(), err.getvalue()
 
     def test_beta_passes_with_fixed_untested_open_and_lists_them(self):
-        rc, out, err = self.run_gate("v0.2.0-beta.1", self.BETA_OK, [issue(99, "v0.2.0-beta.1", "fixed-untested")])
+        # issues carry the release label (v0.2.0), never a beta label: the beta lists the v0.2.0 fixed-untested ones
+        rc, out, err = self.run_gate("v0.2.0-beta.1", self.BETA_OK, [issue(99, "v0.2.0", "fixed-untested"), issue(98, "v0.1.17", "fixed-untested")])
         self.assertEqual((rc, err), (0, ""))
         self.assertIn("#99", out)
+        self.assertNotIn("#98", out)
         self.assertIn("BETA", out)
         self.assertEqual(self.run_gate("v0.2.0-beta.1", self.BETA_OK, RuntimeError("no token"))[0], 0)
 

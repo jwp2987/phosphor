@@ -8636,3 +8636,5 @@ With #2225 a zsh session without compsys reports it at its Precmd and the app sk
 ## v0.2.0-beta.1: appci reads a pre-release app version
 
 `cases.version_tuple` accepts a pre-release suffix (`0.2.0-beta.1` -> `(0, 2, 0)`, the release it heads for), so the `editor_memory_close_trim_and_accepted_open_cost` self-test reads `app/Cargo.toml` after the beta bump; malformed suffixes stay unreadable. Also: `selftest_r32_2155.py` no longer imports `re` inside a function (the module-import shadow guard).
+
+Beta known-issues label: a beta tag reads the issues of the version it heads for (`v0.2.0-beta.1` lists the open `v0.2.0` fixed-untested issues; `beta_issue_label`), since issues never carry a beta label.
