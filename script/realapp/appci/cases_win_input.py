@@ -273,9 +273,18 @@ def c_ctrl_c_behind_big_paste(ctx, r):
     r.check(ms is not None, "the ^C reached the pty (hop ctrl_c_keydown, then the write carrying the ETX); keydown hops seen: %d" % downs)
     if ms is not None:
         bands.check(r, ctrl_c_band_key(ctx), ms, "^C behind a 64 KiB paste: %.1f ms from ctrl_c_keydown to its pty write (%s)" % (ms, which))
-    # the program stopped: a line typed after the ^C runs
+    # the program stopped: the shell shows its prompt again (the app logs hop=precmd_after_ctrl_c), and only THEN a line is typed. A line typed in the
+    # milliseconds after the ^C is typed AHEAD of the prompt: it goes to the dying reader (or is voided: a real ^C voids keys typed ahead, #1887 / #2209 Q3),
+    # which is what r31b's first version did (every pass failed with an empty file). The paste's own tail must be done by then, too.
+    stopped = ctx.until(lambda: "hop=precmd_after_ctrl_c" in ctx.log_since(off), 20)
+    r.check(stopped, "the ^C ended the stdin reader: the prompt came back (hop precmd_after_ctrl_c) within 20 s of the ^C; the app wrote the ETX %s ms after the keydown, "
+                     "so a reader still running here is the console's, not the app's write path" % ms)
+    if not stopped:
+        ctx.be.key("ctrl+c")                 # recover: a second ^C, sent with nothing queued behind it, ends the reader
+        ctx.until(lambda: ctx.log_since(off).count("hop=precmd_after_ctrl_c") >= 1, 20)
+    time.sleep(1.0)                          # the prompt's own setup, and any paste tail, finished
     ctx.be.type(ctx.append_cmd(ctx.pane_shell(), tok, f), 10, enter=True)
-    r.check(ctx.until(lambda: tok in ctx.lines(f), 15), "the reader was stopped by the ^C: the next line ran (file %r)" % ctx.lines(f))
+    r.check(ctx.until(lambda: tok in ctx.lines(f), 15), "after the prompt returned, a line typed ran (file %r)" % ctx.lines(f))
     ctx.reset()
 
 

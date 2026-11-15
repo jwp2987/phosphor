@@ -54,6 +54,14 @@ def r31_1887_cases_are_registered_proving_and_mapped_for_windows():
     assert "powershell_setup_ctrl_c_keys" in winmap.PS_ONLY
 
 
+@check
+def r31b_ctrl_c_case_types_its_follow_up_only_after_the_prompt_returns():
+    import inspect
+    src = inspect.getsource(W.c_ctrl_c_behind_big_paste)
+    assert "precmd_after_ctrl_c" in src
+    assert src.index("precmd_after_ctrl_c") < src.index("ctx.append_cmd(ctx.pane_shell(), tok, f)"), "r31b: the follow-up line was typed 70 ms after the ^C, ahead of the prompt"
+
+
 if __name__ == "__main__":
     bad = 0
     for fn in CHECKS:

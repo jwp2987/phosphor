@@ -514,6 +514,15 @@ def tab_dir_line(shell, tok, abs_file):
     return 'echo "%s:$PWD" >> %s' % (tok, abs_file)
 
 
+def cd_back_line(shell, directory):
+    """pure: the line that returns the active pane's shell to `directory` (quoted for pwsh and for sh-family shells alike)"""
+    if shell == "pwsh":
+        return "Set-Location -LiteralPath '%s'" % directory
+    if shell == "cmd":
+        return 'cd /d "%s"' % directory.replace("/", "\\")
+    return "cd '%s'" % directory
+
+
 @case("phosphor_scheme_handler", modes=("terminal",), order=94, gui=True)
 def c_phosphor_scheme_handler(ctx, r):
     """#1546, the handler half of 'phosphor:// end to end': what the operating system runs for a clicked `phosphor://` link is the app's own executable
@@ -569,6 +578,10 @@ def c_phosphor_scheme_handler(ctx, r):
             r.check(bool(INVALID_URI_RE.search(log)), "%s was handed to the app but it logged no 'Custom URI is invalid' line" % label)
         r.check(ctx.app.alive(), "the app died after %s" % label)
     ctx.be.guard()
+    # the tab (1) opened is the active one and its shell is in <dir>: the burst's effect file is a RELATIVE name read from the case's own directory
+    # (r31b: both lines ran, in ps_history, but landed in <dir>/r_scheme_end.txt and the case read 0/2). Go back to the case's directory first.
+    ctx.be.type(cd_back_line(ctx.pane_shell(), R.fwd(ctx.W)), 12, enter=True)
+    time.sleep(1.5)
     UI.exact_burst(ctx, r, "scheme_end", 2)
     R.keep_log(ctx, "phosphor_scheme_handler")
 
