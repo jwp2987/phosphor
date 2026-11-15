@@ -120,3 +120,45 @@ def r29_helper_takeover_accepts_the_lan_created_executor():
     class R:
         def note(self, *a): pass
     assert CL.wait_helper_takeover(C(lan), R(), {"helper": "helper"}, 0, quiet=0) is True
+
+
+# r31b: macOS lab_chips.zsh.150.nohelper counted the session's own connect-time exec channels (two file-tree snapshot execs, logged by the app at the second the window opened) as side calls
+@check
+def r31b_chips_window_waits_for_the_connect_time_work():
+    import cases_lab as CL
+    reg = "[INFO] shell mode: ControlMaster registered as the out-of-band channel for SessionId(1)\n"
+    snap = "[INFO] hop=file_tree event=snapshot source=shell removed=0 added=2 added_hash=[a,b]\n"
+    route = "[INFO] hop=backend_route family=repo_metadata backend=shell reason=caps\n"
+    assert CL.bootstrap_state("") == (False, 0)
+    assert CL.bootstrap_state(snap + route) == (False, 2), "work lines without the registration: not registered"
+    assert CL.bootstrap_state(reg + snap + snap + route) == (True, 3)
+
+    class C:
+        """log_since returns the next scripted excerpt each poll; until() polls up to 8 times"""
+        def __init__(self, logs): self.logs, self.i = logs, 0
+        def log_since(self, off): return self.logs[min(self.i, len(self.logs) - 1)]
+        def until(self, fn, t, step=0.1):
+            for _ in range(8):
+                self.i += 1
+                if fn():
+                    return True
+            return False
+
+    class R:
+        def __init__(self): self.notes = []
+        def note(self, m): self.notes.append(m)
+    r = R()
+    # steady: registered, work finished, the log stops growing -> settles
+    assert CL.wait_bootstrap_quiet(C([reg + snap + snap]), r, 0, quiet=0) is True
+    # still growing on every poll (a snapshot lands each time): never quiet, noted, the case goes on
+    grow = [reg + snap * k for k in range(1, 12)]
+    r = R()
+    assert CL.wait_bootstrap_quiet(C(grow), r, 0, quiet=0) is False and "NOT settled" in r.notes[-1]
+    # never registered: not settled
+    assert CL.wait_bootstrap_quiet(C([snap]), R(), 0, quiet=0) is False
+    # both chips and path_detect open their window after it
+    for fn in ("c_chips", "c_path_detect"):
+        src = open(os.path.join(HERE, "cases_lab.py"), encoding="utf-8").read()
+        body = src[src.index("def %s(" % fn):]
+        body = body[:body.index("\n@lab_case", 10)] if "\n@lab_case" in body[10:] else body
+        assert "wait_bootstrap_quiet(" in body and body.index("wait_bootstrap_quiet(") < body.index("ChannelWatch("), fn
