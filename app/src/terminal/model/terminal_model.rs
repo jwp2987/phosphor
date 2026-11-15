@@ -1917,11 +1917,18 @@ impl TerminalModel {
     /// and is a plain login. The pending session is dropped, the block list is marked
     /// bootstrapped as `Bootstrapped` would have, and the pane continues in an ordinary running
     /// block named after the typed `ssh` command, as an abandoned subshell bootstrap does
-    /// (`abandon_stalled_subshell_bootstrap`). Returns whether anything changed. Nothing else
-    /// takes this path: every other plain verdict comes before the remote announces a session.
-    pub(crate) fn make_pending_one_connection_ssh_session_plain(&mut self) -> bool {
-        if !SessionInfo::is_pending_one_connection_ssh_login(self.pending_session_info.as_ref())
-            || self.block_list.is_bootstrapped()
+    /// (`abandon_stalled_subshell_bootstrap`). Returns whether anything changed. Every other
+    /// plain verdict of the wrapper comes before the remote announces a session; one that does
+    /// not quote the wrapper's own session is ignored
+    /// (`SessionInfo::plain_verdict_drops_pending_one_connection_login`).
+    pub(crate) fn make_pending_one_connection_ssh_session_plain(
+        &mut self,
+        verdict_session: Option<u64>,
+    ) -> bool {
+        if !SessionInfo::plain_verdict_drops_pending_one_connection_login(
+            self.pending_session_info.as_ref(),
+            verdict_session,
+        ) || self.block_list.is_bootstrapped()
         {
             return false;
         }
@@ -1935,14 +1942,27 @@ impl TerminalModel {
         self.disarm_setup_echo();
         self.block_list.set_bootstrapped();
         if self.block_list.replace_stalled_bootstrap_block() {
-            self.preexec(PreexecValue {
-                command: dropped
-                    .legacy_ssh_spawning_command
-                    .clone()
-                    .unwrap_or_default(),
+            // The running block is named after the typed ssh command, at block level only: no
+            // `Preexec` event goes out for it. The view's Preexec handling of an `ssh ...`
+            // command starts a NEW connect (a window that holds keys, the pending warpify host,
+            // the end-of-login watch that offers to warpify): this is the same ssh, already
+            // connected, and a plain session by decision.
+            let command = dropped
+                .legacy_ssh_spawning_command
+                .clone()
+                .unwrap_or_default();
+            if !command.trim().is_empty() {
+                self.block_list
+                    .active_block_mut()
+                    .replace_command_text(&command);
+            }
+            self.block_list.apply_preexec_to_active(PreexecValue {
+                command,
                 session_id: None,
             });
         }
+        // The key path reads the active block from the published facts (#1403).
+        self.publish_key_facts();
         self.ssh_pending_made_plain = Some(dropped.session_id);
         true
     }
@@ -4299,7 +4319,7 @@ impl ansi::Handler for TerminalModel {
         // #2230: a plain verdict for an announced one-connection session drops that session
         // here, in stream order; the view ends its hold when it handles the event below.
         if !managed {
-            self.make_pending_one_connection_ssh_session_plain();
+            self.make_pending_one_connection_ssh_session_plain(session_id);
         }
         self.event_proxy
             .send_terminal_event(Event::SshWrapperVerdict {

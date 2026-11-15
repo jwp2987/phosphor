@@ -1029,6 +1029,23 @@ impl SessionInfo {
         })
     }
 
+    /// #2230: whether a plain verdict (`PlainSSHFallback`) quoting `verdict_session` turns
+    /// `pending` into a plain login. Only a pending one-connection ssh login, and only a
+    /// verdict that quotes ANOTHER session: the legitimate one is the local wrapper shell's
+    /// own (`WARP_SSH_PLAIN_HOOK` is encoded by the wrapper with its `WARP_SESSION_ID` and only
+    /// passed on by the remote). A verdict without an id, or one quoting the pending remote
+    /// session itself (something on the remote printing the hook with the remote
+    /// `WARP_SESSION_ID` while the rcfiles run), is not it.
+    pub(crate) fn plain_verdict_drops_pending_one_connection_login(
+        pending: Option<&SessionInfo>,
+        verdict_session: Option<u64>,
+    ) -> bool {
+        Self::is_pending_one_connection_ssh_login(pending)
+            && pending.is_some_and(|pending| {
+                verdict_session.is_some_and(|id| id != pending.session_id.as_u64())
+            })
+    }
+
     fn determine_session_type(
         init_shell_value: &InitShellValue,
         is_warpified_ssh_session: bool,

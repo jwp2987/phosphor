@@ -1,6 +1,6 @@
 # appci/selftest_r32_2155.py: offline self-test of #2155 (a remote ~/.bash_profile that runs `exec zsh -l`): the lab evidence line and its verdict, the
 # place the case asks for it, and that the line the pattern reads is the one the app logs. Pure Python.
-import inspect, os, sys
+import inspect, os, re, sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.normpath(os.path.join(HERE, "..", "..", ".."))
@@ -120,6 +120,16 @@ def r32_2230_path_detect_leaves_the_plain_arm_before_the_managed_checks():
     assert "r.unverifiable(plain_why)" in block and "finish_remote(ctx, r)" in block and "return" in block
     view = _src("app/src/terminal/view.rs")
     at = view.index("fn ssh_on_replaced_shell_plain(")
-    assert 'log_hop("ssh_wrapper"' in view[at:at + 1600] and '"replaced_shell_plain holding={} held_bytes={}"' in view[at:at + 1600]
+    assert 'log_hop("ssh_wrapper"' in view[at:at + 1600] and '"replaced_shell_plain holding={} held_bytes={} window={}"' in view[at:at + 1600]
+    # review of 5341ccb97: the release has its own name and the delivery its own finish hop (no give-up, no failed connect in the log)
+    phase = _src("app/src/terminal/input_queue/ssh_phase.rs")
+    assert 'SshRelease::ReplacedShellPlain => "replaced_shell_plain"' in phase
+    deliver = view[view.index("fn deliver_held_ssh_typeahead_to_plain_session("):]
+    deliver = deliver[:deliver.index("\n    }\n")]
+    assert '"source=replaced_shell_plain held_bytes={}"' in deliver and '"delivered=plain_session"' in deliver and "give_up" not in deliver
+    # cases.py reads the finish hops by these shapes: the held count from kh_finish_begin, the outcome from kh_finish_end
+    import cases
+    assert cases._SSH_FINISH_RE.search("hop=kh_finish_begin source=replaced_shell_plain held_bytes=3").group(1) == "3"
+    assert re.search(r"hop=kh_finish_(?:begin|end)\b.*?\b((?:delivered|give_up)=\w+)", "hop=kh_finish_end delivered=plain_session").group(1) == "delivered=plain_session"
     boot = _src("app/assets/bundled/bootstrap/bash_body.sh")
     assert "WARP_SSH_PLAIN_HOOK='$warp_plain_hex'" in boot and "if [[ $warp_single -eq 1 ]]; then" in boot

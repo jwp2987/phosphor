@@ -18,7 +18,7 @@
 //! | [`SshEdge::BlockCompleted`] | the ssh block ended (the remote shell's first precmd, or a failed connect) |
 //! | [`SshEdge::BootstrapFailed`] | the bootstrap-failed timer of the pending session (#1494's path) |
 //! | [`SshEdge::HoldStarted`] / [`SshEdge::HoldEnded`] | the first key held / the hold over (delivered, discarded, handed back) |
-//! | [`SshEdge::Released`] | the window ended: by an event ([`SshRelease::FirstPrompt`], [`SshRelease::Failed`], [`SshRelease::OtherCommand`]) or by a logged GIVE-UP ([`SshRelease::is_give_up`]) |
+//! | [`SshEdge::Released`] | the window ended: by an event ([`SshRelease::FirstPrompt`], [`SshRelease::Failed`], [`SshRelease::OtherCommand`], [`SshRelease::ReplacedShellPlain`]) or by a logged GIVE-UP ([`SshRelease::is_give_up`]) |
 //!
 //! No edge reads the screen. The window used to open on "visible text was printed" and to
 //! classify an unterminated line as a shell prompt or a credential prompt (#1561, #1575); four
@@ -92,6 +92,9 @@ pub enum SshRelease {
     Failed,
     /// A command that is not ssh started: the window is stale. An event.
     OtherCommand,
+    /// #2230: the announced one-connection session became a plain login (the zsh that replaced
+    /// its bash printed the wrapper's plain verdict). An event; what is held goes to ssh.
+    ReplacedShellPlain,
     /// GIVE-UP: the window passed its ceiling with none of the events above.
     GiveUpCeiling,
     /// GIVE-UP: the announced remote session finished its bootstrap and no first prompt came.
@@ -118,6 +121,7 @@ impl SshRelease {
             SshRelease::FirstPrompt => "first_prompt",
             SshRelease::Failed => "failed",
             SshRelease::OtherCommand => "other_command",
+            SshRelease::ReplacedShellPlain => "replaced_shell_plain",
             SshRelease::GiveUpCeiling => "give_up_ceiling",
             SshRelease::GiveUpFirstPromptGrace => "give_up_first_prompt_grace",
             SshRelease::GiveUpPostBlockGrace => "give_up_post_block_grace",
