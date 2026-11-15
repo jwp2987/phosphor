@@ -193,9 +193,26 @@ fn join_event_loop(join_handle: JoinHandle<()>, wait: bool) {
 
 impl<S> Drop for TerminalManager<S> {
     fn drop(&mut self) {
+        // A unit test ends by dropping its app, and the test process exits right after. The
+        // detached reaper would then still be killing the shell (on Windows a ConPTY shell and
+        // its conhost): a shell nobody has ended yet keeps the process's inherited stdout /
+        // stderr handles open, which nextest reports as LEAK (#2194). In a test the drop waits
+        // for the reader to finish (bounded, so a stuck reader cannot hang the test); in the app
+        // a tab close must never block the UI thread (#1376), so it stays detached.
+        #[cfg(test)]
+        {
+            self.shutdown_event_loop_within_bounded(TEST_DROP_JOIN_BUDGET);
+            return;
+        }
+        #[cfg(not(test))]
         self.shutdown_event_loop();
     }
 }
+
+/// How long a dropped `TerminalManager` waits in a unit test for its pty reader to end the shell
+/// (#2194). Killing and reaping a shell takes milliseconds; the budget only bounds a stuck reader.
+#[cfg(test)]
+const TEST_DROP_JOIN_BUDGET: std::time::Duration = std::time::Duration::from_secs(10);
 
 impl TerminalManager<TerminalView> {
     /// Test-only: whether this manager's pty controller was asked to shut the pty down (#980).
@@ -635,8 +652,42 @@ impl<S> TerminalManager<S> {
     /// This runs on the UI thread when a tab closes, so it must never block (#1376): the join
     /// moves to a short-lived "PTY reaper" thread, which still collects the reader (and so the
     /// shell it kills) when it finishes.
+    #[cfg_attr(test, allow(dead_code))] // unit tests drop through the bounded wait (#2194)
     fn shutdown_event_loop(&mut self) {
         self.shutdown_event_loop_within(false);
+    }
+
+    /// As `shutdown_event_loop`, but waits up to `budget` for the reader to finish (the join runs
+    /// on the reaper thread, so a reader that never ends costs the budget, not a hang). Test-only
+    /// (#2194, see `Drop`).
+    #[cfg(test)]
+    fn shutdown_event_loop_within_bounded(&mut self, budget: std::time::Duration) {
+        let shutdown_res = self.event_loop_tx.lock().send(Message::Shutdown);
+        if let Err(e) = shutdown_res {
+            log::info!("Failed to send Shutdown {e:?}");
+        }
+        if let Some(join_handle) = self.event_loop_handle.take() {
+            let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
+            let reaper = std::thread::Builder::new()
+                .name("PTY reaper".into())
+                .spawn(move || {
+                    if let Err(e) = join_handle.join() {
+                        log::error!("Failed to join event loop handle {e:?}");
+                    }
+                    let _ = done_tx.send(());
+                });
+            match reaper {
+                Ok(_) => {
+                    if done_rx.recv_timeout(budget).is_err() {
+                        log::warn!("The pty reader did not finish within {budget:?} of the drop");
+                    }
+                }
+                Err(e) => log::error!("Failed to spawn the PTY reaper thread: {e:?}"),
+            }
+        } else {
+            log::error!("No event loop handle to join when dropping terminal manager.");
+        }
+        self.inactive_pty_reads_rx.close();
     }
 
     /// As `shutdown_event_loop`, with `wait` blocking until the reader has finished.

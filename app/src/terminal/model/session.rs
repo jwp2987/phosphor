@@ -212,6 +212,21 @@ impl Entity for Sessions {
     type Event = SessionsEvent;
 }
 
+/// The model going away ends the children its sessions' executors spawned (the per-session
+/// executable-names probe, generators, `git rev-parse` probes). Their command futures live on
+/// background tasks that can outlive the model, and a child nobody ends keeps the process's
+/// inherited stdout / stderr handles open: on Windows that is nextest's LEAK (#2194).
+impl Drop for Sessions {
+    fn drop(&mut self) {
+        for session in self.sessions.values() {
+            session.end_spawned_children();
+        }
+        if let Some(executor) = &self.executor_for_all_sessions {
+            executor.end_spawned_children();
+        }
+    }
+}
+
 /// Waits between attempts to enumerate deferred function/builtin names after a transport error.
 const DEFERRED_NAME_RETRY_DELAYS: [std::time::Duration; 2] = [
     std::time::Duration::from_millis(500),
@@ -2385,6 +2400,11 @@ impl Session {
 
     pub fn cancel_active_commands(&self) {
         self.command_executor.read().cancel_active_commands();
+    }
+
+    /// See [`CommandExecutor::end_spawned_children`].
+    pub fn end_spawned_children(&self) {
+        self.command_executor.read().end_spawned_children();
     }
 
     pub async fn git_branches_for_command_corrections(&self, working_dir: &str) -> Vec<String> {
