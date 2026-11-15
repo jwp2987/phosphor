@@ -30,8 +30,13 @@
 #         python3 script/ci/check_release_gate.py --open-issues open-issues.json
 #     (a JSON list of issue objects with "iid", "title", "labels"; concatenated --paginate pages `][` are accepted). The label filter is applied here
 #     again, so a file holding more issues than the release's is fine. An unreadable list is a FAILURE, never a pass.
+#   * BETA TAGS (owner decision 2026-11-14, v0.2.0-beta.1): a tag whose name contains "beta" (case-insensitive; the same test release-meta uses
+#     for CHANNEL=beta) needs, on the SAME commit, only BASE_JOBS + BETA_UNIT_JOBS (the nine unit suites of Linux, macOS and Windows) +
+#     BETA_BUILD_JOBS (build-linux-x86_64, build-macos-arm64, build-windows-x86_64), all `success`. The heavy release-tier jobs and the app-test
+#     evidence are NOT required, and the open-issue check does not fail the tag: the open fixed-untested issues of the release are LISTED as
+#     known/unverified (here as `known` lines, and in the release notes through --known-issues-md). Every non-beta tag keeps the full gate above.
 # Missing read access, expired artifacts and smoke/candidate-tier runs are FAILURES, never passes.
-import json, os, sys, urllib.error, urllib.request
+import json, os, re, sys, urllib.error, urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import ci_seq  # noqa: E402  (the release tier's own job lists: the single source of truth)
@@ -39,6 +44,11 @@ import ci_seq  # noqa: E402  (the release tier's own job lists: the single sourc
 RELEASE_TIER = ci_seq.app_tier_name("release")
 UNTESTED_LABEL = "fixed-untested"
 BASE_JOBS = ["guards", "check-linux", "licenses", "advisories"]
+# Beta tags (owner 2026-11-14): the whole requirement, as an explicit list (test_check_release_gate checks each is a job .gitlab-ci.yml defines).
+BETA_UNIT_JOBS = ["test-linux", "test-warpui-core", "test-workspace-rest",
+                  "test-macos", "test-warpui-core-macos", "test-workspace-rest-macos",
+                  "test-windows", "test-warpui-core-windows", "test-workspace-rest-windows"]
+BETA_BUILD_JOBS = ["build-linux-x86_64", "build-macos-arm64", "build-windows-x86_64"]
 # app job -> results.json paths that must all be green (the Linux Wayland job also runs an XWayland pass).
 APP_RESULT_PATHS = {
     "app-test-linux-wayland": ["appci-out/wayland/run/results.json", "appci-out/xwayland/run/results.json"],
@@ -52,6 +62,15 @@ def yml_jobs(path=None):
     import re
     path = path or os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".gitlab-ci.yml")
     return set(re.findall(r"^([A-Za-z0-9_][A-Za-z0-9_.-]*):", open(path).read(), re.M))
+
+
+def is_beta(tag):
+    """A tag whose name contains "beta", any case (the rule release-meta uses to pick CHANNEL=beta)."""
+    return bool(re.search("beta", tag or "", re.I))
+
+
+def beta_required_jobs():
+    return BASE_JOBS + BETA_UNIT_JOBS + BETA_BUILD_JOBS
 
 
 def required_jobs(defined=None):
@@ -134,6 +153,26 @@ def judge_issues(issues, label):
     return ok, problems
 
 
+def known_issues(issues, label):
+    """Open issues of the release that still carry fixed-untested -> [(iid, title)] (a beta ships with these listed as known/unverified)."""
+    def labels(i):
+        return [l if isinstance(l, str) else l.get("name", "") for l in i.get("labels", [])]
+    return sorted((i.get("iid", i.get("id", 0)), i.get("title", "")) for i in issues
+                  if i.get("state", "opened") == "opened" and label in labels(i) and UNTESTED_LABEL in labels(i))
+
+
+def known_issues_markdown(issues, label):
+    """The release-notes section of a beta: numbers and titles only (no bodies, comments, paths or hosts)."""
+    items = known_issues(issues, label)
+    out = ["## Known issues (unverified in this beta)", ""]
+    if items:
+        out += ["These %s issues have a fix in this build that has not been verified by a passing test run yet:" % label, ""]
+        out += ["- #%s %s" % (n, " ".join(str(t).split())) for n, t in items]
+    else:
+        out.append("No open %s issue is waiting for verification." % label)
+    return "\n".join(out) + "\n"
+
+
 def judge_results(res, sha, label):
     """Problems (list of str) with one results.json document; empty = a green release-tier run of `sha`. The pass/fail rule is the appci one:
     fail > 0 or a run that judged nothing fails (report.py exits 1); NOREF (summary.noref) and KNOWN (a note on a pass row) do not."""
@@ -172,10 +211,10 @@ def collect_jobs(api, proj, sha, pipelines):
     return ids, jobs
 
 
-def check(api, proj, sha, pipelines=()):
-    """-> (ok lines, problem lines)."""
+def check(api, proj, sha, pipelines=(), beta=False):
+    """-> (ok lines, problem lines). beta=True (owner 2026-11-14): only the units + builds + base jobs, no app-test evidence."""
     ids, jobs = collect_jobs(api, proj, sha, pipelines)
-    plain, apps = required_jobs()
+    plain, apps = (beta_required_jobs(), []) if beta else required_jobs()
     problems, ok = [], []
     if not ids:
         return ok, ["no pipeline found for %s" % sha[:10]]
@@ -214,9 +253,18 @@ def check(api, proj, sha, pipelines=()):
 
 
 def run(api, proj, sha, pipelines, label, rel_label=None, issues_file=None):
+    beta = is_beta(rel_label)
     try:
-        ok, problems = check(api, proj, sha, pipelines)
-        if rel_label:
+        ok, problems = check(api, proj, sha, pipelines, beta)
+        if rel_label and beta:
+            # the open-issue check is SKIPPED for a beta: the fixed-untested ones are listed as known, never a failure (an unreadable list is
+            # reported but does not refuse; the release notes step says so itself)
+            try:
+                issues = parse_issue_list(open(issues_file, encoding="utf-8").read()) if issues_file else fetch_open_issues(api, proj, rel_label)
+                ok += ["known (beta, unverified): #%s %s" % kt for kt in known_issues(issues, rel_label)] or ["no open %s fixed-untested issue" % rel_label]
+            except Exception as e:
+                ok.append("beta: open-issue list unreadable (%s); not a gate condition for a beta" % e)
+        elif rel_label:
             if issues_file:
                 issues = parse_issue_list(open(issues_file, encoding="utf-8").read())
             else:
@@ -238,7 +286,10 @@ def run(api, proj, sha, pipelines, label, rel_label=None, issues_file=None):
               "  python3 script/ci/ci_seq.py build/<name> --tier release   (docs/testing.md, 'Release gate')\n"
               "then push the tag again." % (label, sha[:10], len(problems)), file=sys.stderr)
         return 1
-    print("RELEASE GATE: PASS %s (%s) has a green release-tier run" % (label, sha[:10]))
+    if beta:
+        print("RELEASE GATE: PASS %s (%s), BETA rule: guards, units and builds green on this commit (no release-tier app-test evidence required)" % (label, sha[:10]))
+    else:
+        print("RELEASE GATE: PASS %s (%s) has a green release-tier run" % (label, sha[:10]))
     return 0
 
 
@@ -249,8 +300,21 @@ def main(argv):
     ap.add_argument("--pipeline", action="append", default=[], help="dry run: only these pipeline ids (default: every pipeline of --sha)")
     ap.add_argument("--project", default=ci_seq.PROJECT)
     ap.add_argument("--tag", help="dry run: the tag whose version is the release label for the open-issue check (v0.2.0)")
+    ap.add_argument("--known-issues-md", metavar="FILE", help="write the beta release-notes section (open fixed-untested issues of the tag's version) to FILE and exit; "
+                    "needs CI_COMMIT_TAG or --tag, reads like the gate does (or --open-issues FILE)")
     ap.add_argument("--open-issues", metavar="FILE", help="JSON list of open issues (glab api --paginate output) instead of querying GitLab for them")
     a = ap.parse_args(argv)
+    if a.known_issues_md:
+        tag = a.tag or os.environ.get("CI_COMMIT_TAG", "")
+        label, proj = release_label(tag), os.environ.get("CI_PROJECT_ID", "") or a.project
+        try:
+            api = GlabApi() if a.sha else CiApi()
+            issues = parse_issue_list(open(a.open_issues, encoding="utf-8").read()) if a.open_issues else fetch_open_issues(api, proj, label)
+            text = known_issues_markdown(issues, label)
+        except Exception as e:  # the notes must still say so; a beta is not refused for this
+            text = "## Known issues (unverified in this beta)\n\nThe list of open fixed-untested %s issues could not be read when these notes were made (%s).\n" % (label, e)
+        open(a.known_issues_md, "w", encoding="utf-8").write(text)
+        return 0
     if a.sha:
         pipes = a.pipeline
         return run(GlabApi(), a.project, a.sha, pipes, "dry run", release_label(a.tag) if a.tag else None, a.open_issues)

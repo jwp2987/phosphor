@@ -1795,7 +1795,8 @@ app-test-windows-reuse:
 # the Mac and Windows unit/heavy suites) and the real-app tests need the build pipeline, the Mac / Windows machines and resource groups and are
 # manual by design (driven by script/ci/ci_seq.py --tier release), so they are NOT run inside the tag pipeline. This job refuses the tag
 # unless the SAME COMMIT has them all green in GitLab, the app tests with a results.json that says tier=release and this sha. The job list is
-# ci_seq.py's own release tier (script/ci/check_release_gate.py). KNOWN GAP: the app tests ran on `build-*` binaries, not the `release-*`
+# ci_seq.py's own release tier (script/ci/check_release_gate.py). A tag with "beta" in its name (owner 2026-11-14) is gated on guards +
+# every unit suite + the three builds only, and its open fixed-untested issues go into the notes as known issues. KNOWN GAP: the app tests ran on `build-*` binaries, not the `release-*`
 # ones built below (those have the CLI digests compiled in). docs/testing.md "Release gate".
 release-gate:
   extends: .shim_github_env
@@ -1893,6 +1894,11 @@ release-meta:
         if [ -n "$PREV" ]; then echo "## Changes since \`$PREV\`"; else echo "## Initial release changes"; fi
         echo; cat release-notes.md
       } > release-body.md
+      # A beta ships with its open fixed-untested issues listed as known/unverified (owner 2026-11-14; numbers and titles only).
+      if [[ "$TAG" =~ [Bb][Ee][Tt][Aa] ]] && [ -n "${CI_COMMIT_TAG:-}" ]; then
+        python3 script/ci/check_release_gate.py --known-issues-md known-issues.md
+        { echo; cat known-issues.md; } >> release-body.md
+      fi
       # GitLab limits a release description; keep well under it.
       if [ "$(wc -c < release-body.md)" -gt 120000 ]; then
         head -c 120000 release-body.md | head -n -1 > release-body.trimmed.md

@@ -1452,6 +1452,16 @@ Windows runners are separate machines), so a fix push is bounded by `check-linux
    pages are accepted; the label filter is applied again on the file). An unreadable list FAILs, never passes. Dry run: add `--tag v0.2.0`
    (without it the dry run skips this check and says so).
 
+4. *Beta tags (owner decision 2026-11-14, v0.2.0-beta.1).* A tag whose name contains `beta` (case-insensitive, the same test `release-meta` uses
+   for `CHANNEL=beta`) passes when, on the SAME commit, these are all `success` in GitLab: `guards`, `check-linux`, `licenses`, `advisories`, the
+   nine unit suites (`test-linux`, `test-warpui-core`, `test-workspace-rest`, and their `-macos` and `-windows` twins; `test-macos` and
+   `test-windows` are the plain ones) and the three builds (`build-linux-x86_64`, `build-macos-arm64`, `build-windows-x86_64`). The heavy
+   release-tier jobs and the app-test `results.json` evidence are NOT required, and the open `fixed-untested` check does not fail the tag:
+   `release-meta` instead appends a "Known issues (unverified in this beta)" section to the release notes, built by
+   `check_release_gate.py --known-issues-md` from the open issues labelled with the tag's version that carry `fixed-untested` (number and title
+   only). A red or missing unit suite or build still refuses the tag. Every tag without `beta` in its name keeps rules 1 to 3 unchanged. The tag
+   must still equal `v<app/Cargo.toml version>` (`0.2.0-beta.1` for `v0.2.0-beta.1`; `Cargo.lock`'s `warp` entry carries the same number).
+
 Procedure to release: bump the version and regenerate `docs/STATE.md` FIRST, merge, run `python3 script/ci/ci_seq.py build/<name> --tier release` on
 that exact commit, then tag that commit within 7 days. (v0.1.17 was tagged two commits after the last tested commit, a version bump and a STATE.md
 regeneration, so under this gate it would have been refused: the evidence must be on the tagged sha.)
@@ -1461,7 +1471,7 @@ regeneration, so under this gate it would have been refused: the evidence must b
 
 **Dry run (read-only, nothing is started):** `python3 script/ci/check_release_gate.py --sha <commit> [--pipeline <id> ...]` reads through `glab api`
 and prints ok / FAIL lines; exit 1 = it would refuse. Offline fixtures (pass, failed job, wrong sha, wrong tier, KNOWN, NOREF, missing platform,
-expired artifact, reuse variant, and the open-issue check: none / one / several fixed-untested, other labels and closed issues ignored, file input, unreadable list): `python3 script/ci/test_check_release_gate.py`, run by the `guards` job and `script/precheck`.
+expired artifact, reuse variant, and the open-issue check: none / one / several fixed-untested, other labels and closed issues ignored, file input, unreadable list, and the beta rule: passes on units+builds with fixed-untested open, fails on any red or missing suite or build, a non-beta tag still needs the full tier and zero fixed-untested): `python3 script/ci/test_check_release_gate.py`, run by the `guards` job and `script/precheck`.
 
 **OWNER STEPS (GitLab project settings; YAML cannot do these, so the owner does them, not CI or an agent):**
 
