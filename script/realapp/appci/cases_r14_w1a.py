@@ -583,7 +583,7 @@ def abj_verdict(text, tok, next_tok):
 
 @case("agent_bg_job_output", modes=("agent",), order=69, gui=True)
 def c_agent_bg_job_output(ctx, r):
-    """#2145 (owner decision 2026-11-13): the agent view SHOWS background-job output, as the terminal does. `(sleep 2; echo BGDONE_<tok>) &` is typed (the token split by "" in the typed line, so the echoed command is not read as the output),
+    """#2145 (owner decision 2026-11-13): the agent view SHOWS background-job output, as the terminal does. `(sleep 2; printf 'BGDONE_%s%s\\n' <tok halves>) &` is typed (the typed line never holds the token whole, so neither the echoed command nor zsh's job-done notice is read as the output; r31b),
     the prompt comes back, 3 s later the line is on screen (OCR), the NEXT command runs and its block does not hold it (the line is on screen once
     and above the next command's lines). Display only: the case does not look at what the model is sent (unit test
     background_output_after_a_precmd_is_drawn_in_the_agent_view_and_is_no_context)."""
@@ -596,7 +596,11 @@ def c_agent_bg_job_output(ctx, r):
     ctx.rm(eff)
     ctx.reset()
     rec = Received(ctx)
-    job = "(sleep 2; echo BGDONE_%s\"\"%s) &" % (tok[:3], tok[3:])      # the typed line holds the token split by "", so only the job's OUTPUT holds it whole
+    # The typed line must not hold the token whole even with quotes dropped: zsh's job-done notice ("[1] + done ( sleep 2; ... )") reprints
+    # the command, and OCR drops quote pairs (r31b macOS read `BGDONE_dnw""ydu` in that notice as a second hit). printf joins the halves only in the OUTPUT.
+    job = "(sleep 2; printf 'BGDONE_%%s%%s\\n' %s %s) &" % (tok[:3], tok[3:])
+    squeezed = re.sub(r"[\"']", "", job).lower()       # OCR drops quote pairs; it keeps the space between two words
+    assert ("bgdone_" + tok).lower() not in squeezed and tok.lower() not in squeezed, "the typed job line must not hold the token whole: %r" % job
     nxt = "echo %s >> %s" % (next_tok, eff)
     try:
         typed(ctx, job)
