@@ -6107,8 +6107,9 @@ _REPO = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)),
 
 
 def version_tuple(v):
-    """'0.1.17' / 'v0.1.17' -> (0, 1, 17); None when it is not a dotted version"""
-    m = re.match(r"v?(\d+(?:\.\d+)*)$", (v or "").strip())
+    """'0.1.17' / 'v0.1.17' -> (0, 1, 17); a pre-release '0.2.0-beta.1' -> (0, 2, 0) (the release it heads for); None when it is not a dotted
+    version"""
+    m = re.match(r"v?(\d+(?:\.\d+)*)(?:-[0-9A-Za-z.]+)?$", (v or "").strip())
     return tuple(int(x) for x in m.group(1).split(".")) if m else None
 
 

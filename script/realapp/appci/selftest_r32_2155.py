@@ -34,7 +34,6 @@ def r32_2155_exec_replaced_shell_evidence_verdicts():
 @check
 def r32_2155_pattern_reads_the_line_the_app_logs():
     """the Rust log line is one string literal split over lines with trailing backslashes: joined, the lab pattern must match it"""
-    import re
     import cases  # noqa: F401
     import cases_lab as C
     rs = _src("app/src/terminal/model/terminal_model.rs")

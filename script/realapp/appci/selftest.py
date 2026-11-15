@@ -3440,6 +3440,8 @@ def editor_memory_close_trim_and_accepted_open_cost():
         # versions and the acceptance window
         assert cases.version_tuple("v0.1.17") == (0, 1, 17) and cases.version_tuple("0.1.9") < cases.version_tuple("0.1.17")
         assert cases.version_tuple("") is None and cases.version_tuple("x") is None
+        assert cases.version_tuple("0.2.0-beta.1") == (0, 2, 0) and cases.version_tuple("v0.2.0-rc.2") == (0, 2, 0)   # v0.2.0-beta.1
+        assert cases.version_tuple("0.2.0-") is None and cases.version_tuple("0.2.0 beta") is None
         acc = cases.ACCEPTED_FOR_RELEASE["editor_open_cost"]
         assert acc["issue"] == 9001 and acc["release"] == "0.1.17", acc
         assert cases.accepted_for_release("editor_open_cost", "0.1.16") and cases.accepted_for_release("editor_open_cost", "0.1.17")
