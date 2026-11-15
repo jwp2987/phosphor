@@ -111,9 +111,15 @@ Plain session at once, on Windows only. Linux and macOS keep the #2155 hand-over
   continues in a running block named after the typed ssh command, as an abandoned subshell
   bootstrap does.
 - **View** (`ssh_on_replaced_shell_plain`): the bootstrap give-up for that session is
-  cancelled, its pending entry forgotten, and the connect window ends as an ended connect
-  does; what it holds is written to the pty in typed order, to ssh (the write every give-up of
-  this hold uses, run by the event). Hop: `ssh_wrapper replaced_shell_plain`.
+  cancelled, its pending entry forgotten, the phase machine is fed the facts, and the connect
+  window ends with its own release (`SshRelease::ReplacedShellPlain`). What it holds is
+  delivered once, in typed order, to ssh, the way a plain ssh's keys are when ssh owns the tty.
+  Hops: `ssh_wrapper replaced_shell_plain`, `ssh_gate_released how=replaced_shell_plain`,
+  `kh_finish_end delivered=plain_session`.
+- **After review of the first commit.** Only the wrapper's own verdict counts (it quotes the
+  local shell's session; one quoting the pending remote session, or none, is ignored). The
+  running block is named at block level with no `Preexec` event, so the view starts no new
+  connect window, pending warpify host or end-of-login watch for it.
 - **The two other faults.** The grace taken on the replaced bash's Precmd still applied to the
   Linux and macOS hand-over and is fixed: an InitShell under an id whose bootstrap prompt was
   already seen clears that evidence. The typeahead give-up writing into a bootstrap that is

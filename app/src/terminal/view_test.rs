@@ -19730,7 +19730,7 @@ fn plain_enter_always_reaches_the_pty() {
 /// #2230: the announced one-connection session became a plain login (the zsh that replaced its
 /// bash printed the wrapper's plain verdict). The window, which holds keys for the managed
 /// session's first prompt (announced, wrapper-managed, ssh block replaced), ends at that event
-/// as an ended connect does: released at once, by an event (not a give-up), holding nothing.
+/// released at once, by its own event (not a give-up, not a failed connect), holding nothing.
 /// Not compiled/run when written (no builds on the laptop).
 #[test]
 fn ssh_connect_gate_ends_when_its_announced_session_becomes_plain() {
@@ -19752,8 +19752,13 @@ fn ssh_connect_gate_ends_when_its_announced_session_becomes_plain() {
     // The pending session is gone (the model dropped it at the verdict).
     assert!(gate.should_release(t0 + Duration::from_secs(1), false));
     let how = gate.release_reason(t0 + Duration::from_secs(1), false);
-    assert_eq!(how, crate::terminal::input_queue::SshRelease::Failed);
+    assert_eq!(
+        how,
+        crate::terminal::input_queue::SshRelease::ReplacedShellPlain
+    );
+    assert_eq!(how.name(), "replaced_shell_plain");
     assert!(!how.is_give_up());
+    assert!(!gate.failed, "not a failed connect");
 }
 
 /// #2155: the bootstrap prompt seen for a session id is evidence for the shell that printed
@@ -22599,6 +22604,111 @@ fn one_connection_ssh_plain_verdict_after_the_ssh_hook_is_ignored() {
             "the held keys once, at the remote shell's first prompt"
         );
     })
+}
+
+/// #2230 (owner 2026-11-14): the remote bash of a one-connection session announced itself and
+/// its profile then replaced it with zsh, which printed the wrapper's plain verdict. The model
+/// drops the pending session when it parses the hook; the view, handling the event, ends the
+/// window with `ReplacedShellPlain` and what was held since `auth_done` goes to ssh once, in
+/// typed order, with nothing left held. Second arm: the window had already been released (a
+/// ceiling) with the keys still held when the verdict is handled; they are delivered all the
+/// same. The verdict quotes the local wrapper shell's session, as the real one does.
+/// Not compiled/run when written (no builds on the laptop).
+#[test]
+fn one_connection_ssh_whose_remote_shell_was_replaced_becomes_a_plain_session_with_its_keys() {
+    for window_released_first in [false, true] {
+        App::test((), move |mut app| async move {
+            initialize_app_for_terminal_view(&mut app);
+            app.add_singleton_model(|_| crate::workspace::ToastStack);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = record_all_pty_writes(&mut app, &terminal);
+            let written = {
+                let pty_writes = pty_writes.clone();
+                move || -> String {
+                    let bytes: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
+                    String::from_utf8_lossy(&bytes).into_owned()
+                }
+            };
+            terminal.update(&mut app, |view, ctx| {
+                one_connection_ssh_announced_for_test(view, ctx);
+                ssh_wrapper_sync_for_test(view, "auth", "7", "", ctx);
+                ssh_wrapper_sync_for_test(view, "auth_done", "7", "", ctx);
+                view.typed_characters_on_terminal("ls", ctx);
+                view.keydown_on_terminal("\r", ctx);
+                ssh_wrapper_sync_for_test(view, "managed", "7", "", ctx);
+                // The remote bash: the SSH hook of the one-connection path, then InitShell.
+                let remote_session = SessionId::from(167303092612202);
+                crate::terminal::model::ansi::Handler::ssh(
+                    &mut *view.model.lock(),
+                    crate::terminal::model::ansi::SSHValue {
+                        remote_shell: "bash".to_owned(),
+                        remote_session_id: Some(167303092612202),
+                        single_connection: true,
+                        bootstrap_in_command: true,
+                        ..Default::default()
+                    },
+                );
+                view.refresh_ssh_connect_gate();
+                view.ssh_observe(ctx);
+                view.model.lock().init_shell(InitShellValue {
+                    pid: None,
+                    session_id: remote_session,
+                    shell: "bash".to_owned(),
+                    user: "user".to_owned(),
+                    hostname: "host".to_owned(),
+                    ..Default::default()
+                });
+                assert!(view.refresh_ssh_connect_gate());
+                view.ssh_observe(ctx);
+                assert_eq!(view.model.lock().pending_session_id(), Some(remote_session));
+                assert!(view.ssh_typeahead_holding, "held for the managed session");
+                if window_released_first {
+                    view.ssh_connect_gate = None;
+                    view.note_ssh_gate_released(
+                        crate::terminal::input_queue::SshRelease::GiveUpCeiling,
+                    );
+                    assert!(view.ssh_typeahead_holding, "released with the keys held");
+                }
+
+                // The zsh's plain verdict: parsed by the model, then handled by the view.
+                crate::terminal::model::ansi::Handler::ssh_wrapper_verdict(
+                    &mut *view.model.lock(),
+                    false,
+                    Some(9001),
+                );
+                assert_eq!(
+                    view.model.lock().pending_session_id(),
+                    None,
+                    "/{window_released_first}: the model dropped the pending session"
+                );
+                view.handle_terminal_event(
+                    &ModelEvent::SshWrapperVerdict {
+                        managed: false,
+                        session_id: Some(SessionId::from(9001)),
+                    },
+                    ctx,
+                );
+                assert!(!view.ssh_typeahead_holding, "/{window_released_first}");
+                assert!(view.ssh_held_is_empty(), "/{window_released_first}");
+                assert!(view.ssh_connect_gate.is_none(), "/{window_released_first}");
+                assert!(!view.ssh_handover_after_release);
+                if !window_released_first {
+                    assert_eq!(
+                        view.ssh_phase.last_release(),
+                        Some(crate::terminal::input_queue::SshRelease::ReplacedShellPlain)
+                    );
+                }
+                // The running block is ssh's: no new window is armed for it.
+                view.refresh_ssh_connect_gate();
+                assert!(view.ssh_connect_gate.is_none(), "/{window_released_first}");
+            });
+            assert_eq!(
+                written(),
+                "ab:PHX7:Mls\r",
+                "/{window_released_first}: the held keys once, in typed order, to ssh"
+            );
+        })
+    }
 }
 
 /// #2125: an Enter typed during the one-connection login reaches the LocalCommand as LF (the

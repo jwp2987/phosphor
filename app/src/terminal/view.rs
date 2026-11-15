@@ -12068,12 +12068,20 @@ impl TerminalView {
 
     /// #2230 (owner 2026-11-14): the announced one-connection ssh session became a plain login
     /// (its bash profile execs zsh; the zsh printed the wrapper's plain verdict and the model
-    /// dropped the pending session `dropped`). Everything the view kept for that session ends
-    /// at this event: its bootstrap give-up, its bootstrap-prompt evidence, its pending entry.
-    /// The connect window ends as an ended connect does (`SshConnectGate::end_for_plain_session`),
-    /// and what it holds is written to the pty in typed order, to ssh, which is the foreground
-    /// program: the write of every give-up of this hold (`ssh_give_up_fired`), run here by the
-    /// event instead of a timer. No key is dropped and none is left for the editor.
+    /// dropped the pending session `dropped`, continuing in a running block for the same ssh).
+    /// Everything the view kept for that session ends at this event, in this order:
+    ///
+    /// 1. its bootstrap give-up, its bootstrap-prompt evidence and its pending entry;
+    /// 2. the phase machine is fed the facts now (no session is pending), before the release
+    ///    edge, so no later observation finds a window that is still armed;
+    /// 3. the running block is recorded as one ssh owns (`ssh_owned_block_without_window`): it
+    ///    is an established session, so no new window is armed for it;
+    /// 4. the connect window, if one is open, ends with `SshRelease::ReplacedShellPlain`;
+    /// 5. what was held is delivered the way a plain ssh's is when ssh owns the tty
+    ///    (`deliver_held_ssh_typeahead_to_plain_session`): once, in typed order, to ssh. This
+    ///    also runs when the window had already been released with the keys still held.
+    ///
+    /// No clock, no give-up flag, nothing read from the screen; no key is dropped.
     fn ssh_on_replaced_shell_plain(&mut self, dropped: SessionId, ctx: &mut ViewContext<Self>) {
         self.cancel_bootstrap_failed_timer();
         if self.bootstrap_precmd_seen_session == Some(dropped) {
@@ -12084,22 +12092,66 @@ impl TerminalView {
         });
         warpui::input_order::log_hop("ssh_wrapper", || {
             format!(
-                "replaced_shell_plain holding={} held_bytes={}",
+                "replaced_shell_plain holding={} held_bytes={} window={}",
                 self.ssh_typeahead_holding,
+                self.ssh_held_bytes(),
+                self.ssh_connect_gate.is_some()
+            )
+        });
+        self.ssh_observe(ctx);
+        let block_id = self.model.lock().active_block_id().clone();
+        self.ssh_owned_block_without_window =
+            Some(crate::terminal::model::key_facts::block_id_hash(&block_id));
+        if self.ssh_typeahead_holding {
+            // The hold is for the block that runs this ssh now.
+            self.ssh_hold_block_id = Some(block_id);
+        }
+        let window_open = match self.ssh_connect_gate.as_mut() {
+            Some(gate) => {
+                gate.end_for_plain_session();
+                true
+            }
+            None => false,
+        };
+        if window_open {
+            self.refresh_ssh_connect_gate();
+        }
+        self.ssh_handover_after_release = false;
+        if self.ssh_typeahead_holding {
+            self.deliver_held_ssh_typeahead_to_plain_session(ctx);
+        }
+        ctx.notify();
+    }
+
+    /// #2230: the delivery of [`Self::ssh_on_replaced_shell_plain`]: the hold ends and the queue
+    /// writes what it held, in typed order, each key routed from the facts of its delivery (a
+    /// running ssh: the pty), exactly as `deliver_held_ssh_typeahead_to_tty_owner` does for a
+    /// plain ssh. Its own hops, so a log never reads as a give-up or a failed connect.
+    fn deliver_held_ssh_typeahead_to_plain_session(&mut self, ctx: &mut ViewContext<Self>) {
+        warpui::profiling::zone!("typeahead_handoff");
+        warpui::input_order::log_hop("ssh_held_delivery", || {
+            format!(
+                "source=replaced_shell_plain held_bytes={}",
                 self.ssh_held_bytes()
             )
         });
-        if let Some(gate) = self.ssh_connect_gate.as_mut() {
-            gate.end_for_plain_session();
+        warpui::input_order::log_key_hop("kh_finish_begin", || {
+            format!(
+                "source=replaced_shell_plain held_bytes={}",
+                self.ssh_held_bytes()
+            )
+        });
+        self.set_ssh_typeahead_holding(false);
+        self.ssh_typeahead_precmd_wait_since = None;
+        if self.ssh_held_is_empty() {
+            self.ssh_hold_clear();
+            warpui::input_order::log_key_hop("kh_finish_end", || "delivered=none".to_owned());
+            return;
         }
-        if self.ssh_typeahead_holding {
-            let was_giving_up = std::mem::replace(&mut self.ssh_give_up_in_progress, true);
-            self.deliver_ssh_typeahead_if_ready("replaced_shell_plain", ctx);
-            self.ssh_give_up_in_progress = was_giving_up;
-        } else if self.ssh_connect_gate.is_some() {
-            self.refresh_ssh_connect_gate();
-        }
-        ctx.notify();
+        self.log_ssh_typeahead_delivery(self.ssh_held_count());
+        self.ssh_hold_deliver(ctx);
+        self.redetermine_terminal_focus(ctx);
+        warpui::input_order::log_key_hop("kh_finish_end", || "delivered=plain_session".to_owned());
     }
 
     /// #2120: the remote command printed the `SSH` hook of a login shell it does not bootstrap
@@ -42460,6 +42512,9 @@ struct SshConnectGate {
     /// into a plain login with `PlainSSHFallback` (a login shell that is not bash). Cleared by
     /// the next verdict; the SSH hook (`managed`) ends it too.
     single_awaits_remote: bool,
+    /// #2230: the announced session became a plain login (`end_for_plain_session`): the window
+    /// releases at once, as an event.
+    plain_session: bool,
 }
 
 /// #2155: whether the bootstrap prompt (`Precmd`) recorded for `seen` belongs to a shell that
@@ -42641,14 +42696,15 @@ impl SshConnectGate {
             auth_pass_through: false,
             submitted_command: None,
             single_awaits_remote: false,
+            plain_session: false,
         }
     }
 
     /// #2230: the announced session of this window became a plain login. The window is over
-    /// the way an ended connect is (`failed`: nothing of the managed session is coming), and the
-    /// wrapper holds nothing any more.
+    /// at this event (`SshRelease::ReplacedShellPlain`), holds nothing, and the wrapper holds
+    /// nothing any more.
     fn end_for_plain_session(&mut self) {
-        self.failed = true;
+        self.plain_session = true;
         self.wrapper = SshWrapperHold::Off;
         self.single_awaits_remote = false;
     }
@@ -42668,7 +42724,7 @@ impl SshConnectGate {
             self.saw_pending = true;
             self.managed = true;
         }
-        if self.failed || self.past_ceiling(now) {
+        if self.plain_session || self.failed || self.past_ceiling(now) {
             return true;
         }
         // The announced session came up (or exited). The remote shell owns input once it shows
@@ -42690,6 +42746,9 @@ impl SshConnectGate {
     /// Why [`Self::should_release`] just answered true (call right after it did): the event that
     /// ends the window, or the give-up that did (#1424 step 7). Same order as `should_release`.
     fn release_reason(&self, now: Instant, pending: bool) -> input_queue::SshRelease {
+        if self.plain_session {
+            return input_queue::SshRelease::ReplacedShellPlain;
+        }
         if self.failed {
             return input_queue::SshRelease::Failed;
         }
@@ -42790,6 +42849,7 @@ impl SshConnectGate {
     fn drops_keys(&self, alt_screen: bool) -> bool {
         !alt_screen
             && !self.failed
+            && !self.plain_session
             && (self.block_done || !self.tty_owned || self.bootstrap_done_at.is_some())
     }
 }

@@ -477,6 +477,16 @@ fn a_plain_verdict_drops_the_pending_one_connection_ssh_session() {
         .expect("the remote bash is pending");
     assert!(!terminal.block_list().is_bootstrapped());
 
+    // Not the wrapper's verdict: one without a session, and one that quotes the pending remote
+    // session itself (something on the remote printing the hook with its own WARP_SESSION_ID
+    // while the rcfiles run). Neither drops anything.
+    terminal.ssh_wrapper_verdict(false, None);
+    terminal.ssh_wrapper_verdict(false, Some(pending.as_u64()));
+    assert_eq!(terminal.pending_session_id(), Some(pending));
+    assert!(terminal.block_list().is_script_execution());
+    assert_eq!(terminal.take_ssh_pending_made_plain(), None);
+
+    // The wrapper's: it quotes the local shell that ran the wrapper.
     terminal.ssh_wrapper_verdict(false, Some(1));
 
     assert!(terminal.pending_session_info.is_none());
@@ -493,6 +503,46 @@ fn a_plain_verdict_drops_the_pending_one_connection_ssh_session() {
     // A second plain verdict has nothing left to drop.
     terminal.ssh_wrapper_verdict(false, Some(1));
     assert_eq!(terminal.take_ssh_pending_made_plain(), None);
+}
+
+/// #2230: which plain verdict turns a pending session into a plain login, row by row.
+#[test]
+fn only_the_wrappers_plain_verdict_drops_a_pending_one_connection_login() {
+    let pending = |single_connection: bool| {
+        SessionInfo::create_pending(
+            ShellType::Bash,
+            InitShellValue {
+                pid: None,
+                shell: "bash".into(),
+                user: "me".to_owned(),
+                hostname: "box".to_owned(),
+                session_id: 7.into(),
+                ..Default::default()
+            },
+            None,
+            None,
+            Some(SSHValue {
+                remote_shell: "bash".to_owned(),
+                remote_session_id: Some(7),
+                single_connection,
+                ..Default::default()
+            }),
+            false,
+            None,
+        )
+    };
+    let drops = |info: Option<&SessionInfo>, verdict: Option<u64>| {
+        SessionInfo::plain_verdict_drops_pending_one_connection_login(info, verdict)
+    };
+    let one_connection = pending(true);
+    assert!(drops(Some(&one_connection), Some(9001)));
+    assert!(
+        !drops(Some(&one_connection), Some(7)),
+        "the remote's own id"
+    );
+    assert!(!drops(Some(&one_connection), None), "no id");
+    assert!(!drops(Some(&pending(false)), Some(9001)), "a ControlMaster");
+    assert!(!drops(None, Some(9001)), "nothing pending");
 }
 
 /// #2230: only an announced ONE-CONNECTION session is dropped by a plain verdict. Over a
